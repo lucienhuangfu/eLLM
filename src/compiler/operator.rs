@@ -267,6 +267,7 @@ mod test {
             head_size,
             head_num,
             _strides2[2],
+            1.0,
             thread_num,
         ));
         operator.set_attention_chunk(tasks);
