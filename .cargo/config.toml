@@ -1,0 +1,15 @@
+[build]
+rustflags = ["-C", "target-cpu=native"]
+incremental = false
+
+[profile.release]
+opt-level = 3
+debug = false
+rpath = false
+lto = "fat"
+debug-assertions = false
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+unwind-tables = false
+overflow-checks = false
