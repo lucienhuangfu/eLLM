@@ -19,6 +19,7 @@ pub struct AttentionMul<T>
     head_num: usize,
     stride: usize,
     cpu_num: usize,
+    inverse_sqrt_head: T,
 }
 
 impl<T> AttentionMul<T>
@@ -28,11 +29,13 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T> + Mul<Output = T> + 
         head_size: usize,
         head_num: usize,
         stride: usize,
+        inverse_sqrt_head: T,
         cpu_num: usize,
     ) -> Self {
         Self {
             chunks: vec![],
             head_size: head_size,
+            inverse_sqrt_head: inverse_sqrt_head,
             head_num: head_num,
             stride: stride,
             cpu_num: cpu_num,
@@ -69,9 +72,10 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T> + Mul<Output = T> + 
             input_ptr2,
             input_ptr3,
             output_ptr,
+            self.inverse_sqrt_head,
             self.head_size,
             self.stride,
-            position
+            position,
         );
     }
 }
@@ -103,6 +107,7 @@ impl AttentionMulTrait<f16> for AttentionMul<f16> {
             input_ptr2,
             input_ptr3,
             output_ptr,
+            self.inverse_sqrt_head,
             self.head_size,
             self.stride,
             position
@@ -124,6 +129,7 @@ impl AttentionMulTrait<f32> for AttentionMul<f32> {
             input_ptr2,
             input_ptr3,
             output_ptr,
+            self.inverse_sqrt_head,
             self.head_size,
             self.stride,
             position
@@ -186,7 +192,7 @@ mod test {
         );
 
         let thread_num: usize = num_cpus::get();
-        let mut operator = AttentionMul::<f32>::new(head_size, head_num, _strides2[2], thread_num);
+        let mut operator = AttentionMul::<f32>::new(head_size, head_num, _strides2[2], 1.0, thread_num);
         operator.set_chunk(tasks);
 
         for i in 0..thread_num {
