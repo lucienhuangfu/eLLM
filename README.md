@@ -1,6 +1,6 @@
 # eLLM
 
 ## Description
-eLLM provides efficient million tokens inference on CPU-only machine
+eLLM provides million-token inference on CPU-only machines
 
 
