@@ -16,10 +16,10 @@ pub mod neg_infinity;
 pub mod exp;
 pub mod from_usize;
 pub mod sqrt;
+pub mod powf;
 pub mod from_f32;
 
 // pub mod matmul;
-
 // pub mod softmax;
 // pub mod gelu;
 // pub mod colmul;
