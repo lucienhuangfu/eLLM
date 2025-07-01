@@ -197,7 +197,7 @@ mod test {
 
         for i in 0..thread_num {
             // println!("{}", i);
-            operator.run(batch_size, sequence_length, i);
+            operator.run(batch_size, sequence_length - 1, i);
         }
 
         assert_ulps_eq!(data4[..], result[..], max_ulps = 4);

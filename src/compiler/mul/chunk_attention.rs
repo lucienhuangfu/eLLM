@@ -120,7 +120,7 @@ mod test {
                 1.0, // inverse_sqrt_head
                 head_size,
                 _strides2[2],
-                sequence_length,
+                sequence_length - 1
             );
         }     
         
@@ -184,7 +184,7 @@ mod test {
                 1.0,
                 head_size,
                 _strides2[2],
-                sequence_length,
+                sequence_length - 1,
             );
         }
 
