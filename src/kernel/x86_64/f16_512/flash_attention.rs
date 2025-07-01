@@ -32,6 +32,7 @@ pub fn flash_attention(
     K: *const f16,
     V: *const f16,
     o: *mut f16,
+    inverse_sqrt_head: f16,
     length: usize,
     stride: usize,
     position: usize,
@@ -67,6 +68,8 @@ pub fn flash_attention(
 
             // dot product
             let x_i = _dot_product(q, K.add(offset), length);
+            // 计算缩放后的 x_i
+            let x_i = x_i * inverse_sqrt_head;
             let m_i = if x_i > m_i_1 { x_i } else { m_i_1 };
 
             // 合并 update_exp 和 add_exp 的计算
@@ -144,7 +147,7 @@ mod tests {
         let V = allocate_init::<f16>(row_size * length, 1.0);
         let o = allocate_init::<f16>(length, 0.0);
         let o_slice = unsafe { slice::from_raw_parts(o, length) };
-        flash_attention(q, K, V, o, length, length, row_size - 1);
+        flash_attention(q, K, V, o, 1.0, length, length, row_size - 1);
         println!("Result: {:?}", o);
 
         let expected: Vec<f16> = vec![1.0; length];

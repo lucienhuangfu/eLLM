@@ -484,6 +484,7 @@ mod test {
             head_size,
             head_num,
             k_strides[2],
+            1.0,
             num_cpus::get(),
         ));
 

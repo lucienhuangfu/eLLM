@@ -58,7 +58,7 @@ unsafe fn scalar_vector_mul_and_acc<T>(
 /// * `stride` - Stride of the key and value matrices.
 /// * `position` - Number of positions to process.
 pub fn flash_attention<T>(
-    q: *const T, K: *const T, V: *const T, o: *mut T, length: usize, stride: usize, position: usize
+    q: *const T, K: *const T, V: *const T, o: *mut T, inverse_sqrt_head: T, length: usize, stride: usize, position: usize
 )
 where T: Copy + Default + Add<Output = T> + Sub<Output = T> + Mul<Output = T> + Div<Output = T> + PartialOrd + NegInfinity + Exp,
 {
@@ -69,7 +69,8 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T> + Mul<Output = T> + 
         unsafe {
             //  dot product
             let x_i = dot_product(q, K.add(offset), length);
-            let m_i = if x_i > m_i_1 { x_i } else { m_i_1 };
+            let scale_x_i =  x_i * inverse_sqrt_head;
+            let m_i = if  scale_x_i > m_i_1 { scale_x_i } else { m_i_1 };
 
             let update_exp = d_i_1 * (m_i_1 - m_i).exp();
             let add_exp = (x_i - m_i).exp();
@@ -132,6 +133,7 @@ mod tests {
             K.as_ptr(),
             V.as_ptr(),
             o.as_mut_ptr(),
+            1.0,
             length,
             length,
             row_size - 1,
