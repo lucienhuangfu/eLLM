@@ -28,9 +28,15 @@ pub fn build_graph(config: &Config,
 
     let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
     let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
-    let rope_vec = precompute_freqs_cis(64, config.max_position_embeddings, 10000.0f16);
-    let rope_embedding = Tensor::from_vec(rope_vec, String::from("model.rope_embedding.weight"), cache.clone(), operator_queue.clone());
-    
+    let dim =  config.attention_head_size / 2;
+    let rope_vec = precompute_freqs_cis(dim, config.max_position_embeddings, 10000.0f16);
+    // let rope_embedding = Tensor::from_vec(rope_vec, String::from("model.rope_embedding.weight"), cache.clone(), operator_queue.clone());
+    let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
+    for i in 0..rope_vec.len() {
+        unsafe {
+            position_embedding.data.add(i).write(rope_vec[i]);
+        }
+    }
     let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
 
     let model = Model::<f16>::new(
