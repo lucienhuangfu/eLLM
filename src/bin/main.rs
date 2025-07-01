@@ -7,14 +7,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::f16;
 
-use pLLM::compiler::operator::Operator;
-use pLLM::init::config::Config;
-use pLLM::memory::cache::Cache;
-use pLLM::ptensor::tensor::Tensor;
-use pLLM::llama::model::Model;
-use pLLM::runtime::start::start;
+use eLLM::compiler::operator::Operator;
+use eLLM::init::config::Config;
+use eLLM::memory::cache::Cache;
+use eLLM::ptensor::tensor::Tensor;
+use eLLM::llama::model::Model;
+use eLLM::runtime::start::start;
 
-use pLLM::ptensor::linear::Linear;
+use eLLM::ptensor::linear::Linear;
+use eLLM::llama::rope::precompute_freqs_cis;
 // use ScaleFlow::init::model_loader;
 // use ScaleFlow::serving::data::generate_data;
 
@@ -27,6 +28,9 @@ pub fn build_graph(config: &Config,
 
     let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
     let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
+    let rope_vec = precompute_freqs_cis(64, config.max_position_embeddings, 10000.0f16);
+    let rope_embedding = Tensor::from_vec(rope_vec, String::from("model.rope_embedding.weight"), cache.clone(), operator_queue.clone());
+    
     let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
 
     let model = Model::<f16>::new(

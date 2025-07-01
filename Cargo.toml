@@ -1,5 +1,5 @@
 [package]
-name = "pLLM"
+name = "eLLM"
 version = "0.1.0"
 edition = "2021"
 
@@ -18,16 +18,15 @@ serde_json = "1.0.108"
 nom = "7.1.3"
 zip = "0.6.6"
 num-traits="0.2.19"
+itertools = "0.14.0"
+num = "0.4.3"
 # linked-hash-map = "0.5.6"
-# itertools = "0.12.0"
 # hurdles = "1.0.1"
-
 # half  = {version = "2.4.1" , features = ["num-traits", "std"] }
 # half  = {version = "2.4.1" , features = [ "std"] }
 # zip = { version = "0.6", optional = true }
 # repugnant-pickle = { git = "https://github.com/KerfuffleV2/repugnant-pickle", features = ["torch"] }
 # smol = "1.3.0"
-
 
 
 [build-dependencies]
