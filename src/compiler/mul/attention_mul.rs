@@ -96,6 +96,7 @@ impl AttentionMulTrait<f16> for AttentionMul<f16> {
             input_ptr2,
             input_ptr3,
             output_ptr,
+            self.inverse_sqrt_head,
             self.head_size,
             self.stride,
             position
