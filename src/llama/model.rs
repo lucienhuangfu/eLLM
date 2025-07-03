@@ -55,20 +55,18 @@ where T: Copy
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let scope_name = String::from("model");
-        let mut module_vec: Vec<Layer<T>> = Vec::new();
+        let module_vec: Vec<Layer<T>> = Vec::new();
         Model {
             // layer: module_vec,
             output_linear: Linear::<T>::new(
                 config.hidden_size,
                 config.vocab_size,
                 1,
-                format!(
-                    "{}.output_proj",
-                    scope_name),
-                    cache.clone(),
-                    operator_queue.clone()
-                ),
-            
+                format!("lm_head"),
+                cache.clone(),
+                operator_queue.clone()
+            ),
+
             position_embedding: position_embedding,
             word_embedding: word_embedding,
             norm_weight: norm_weight,
@@ -114,12 +112,12 @@ where T: Copy
    
         let norm_output = hidden_state.mapv(
             Operator::RMSMap(RMSMap::new(self.config.hidden_size, self.norm_weight.data, self.rms_norm_eps, self.cpu_num)),
-            format!("{}.norm_hidden.weight", self.scope_name),
+            format!("{}.norm_hidden", self.scope_name),
         );    
     
         let logits = self
             .output_linear
-            .forward(&norm_output, format!("{}.lm_head.weight", self.scope_name));
+            .forward(&norm_output, format!("{}.lm_head", self.scope_name));
         /* 
         unsafe {
             logits.reduce(

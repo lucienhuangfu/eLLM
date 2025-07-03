@@ -21,7 +21,7 @@ use crate::transformer::self_attentions::SelfAttention;
 
 
 #[derive(Clone)]
-pub struct Layer<'a, T> {
+pub struct TransformerBlock<'a, T> {
     self_attention: SelfAttention<T>,
     feedforward: FeedForward<T>,
     scope_name: String,
@@ -39,7 +39,7 @@ pub struct Layer<'a, T> {
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
 }
 
-impl<'a, T> Layer<'a, T> 
+impl<'a, T> TransformerBlock<'a, T> 
 where T: Copy 
     + Default 
     + Sub<Output = T>

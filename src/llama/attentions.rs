@@ -16,7 +16,7 @@ use crate::compiler::mul::attention_mul::AttentionMul;
 // use crate::compiler::mul::col_mul::ColMul;
 
 #[derive(Clone)]
-pub struct SelfAttention<T> {
+pub struct Attention<T> {
 
     sequence_length: usize,
     batch_size: usize,
