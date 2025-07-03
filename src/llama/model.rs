@@ -119,7 +119,7 @@ where T: Copy
     
         let logits = self
             .output_linear
-            .forward(&norm_output, format!("{}.logits.weight", self.scope_name));
+            .forward(&norm_output, format!("{}.lm_head.weight", self.scope_name));
         /* 
         unsafe {
             logits.reduce(

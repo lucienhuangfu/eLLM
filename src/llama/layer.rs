@@ -61,7 +61,7 @@ where T: Copy
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
-        let scope_name = format!("{}.layer.{}", parent_scope_name, index);
+        let scope_name = format!("{}.layers.{}", parent_scope_name, index);
         Layer {
             self_attention: SelfAttention::<T>::new(
                 config.hidden_size,

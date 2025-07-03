@@ -25,7 +25,7 @@ pub fn build_graph(config: &Config,
     operator_queue: Rc<RefCell<Vec<Operator<f16>>>>,
     ) -> Tensor<f16> {
     let cpu_num = num_cpus::get();
-    let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
+    let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
     let dim =  config.attention_head_size / 2;
     let rope_vec = precompute_freqs_cis(dim, config.max_position_embeddings, 10000.0f32);
     let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
