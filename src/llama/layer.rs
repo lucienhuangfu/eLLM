@@ -8,7 +8,6 @@ use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::from_f32::FromF32;
 
-
 use crate::init::config::Config;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
