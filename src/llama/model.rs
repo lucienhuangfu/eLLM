@@ -15,7 +15,7 @@ use crate::init::config::Config;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
-use super::layer::Layer;
+use super::transformer_block::TransformerBlock;
 // use super::rope::precompute_freqs_cis;
 
 #[derive(Clone)]
@@ -55,7 +55,7 @@ where T: Copy
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let scope_name = String::from("model");
-        let module_vec: Vec<Layer<T>> = Vec::new();
+        let module_vec: Vec<TransformerBlock<T>> = Vec::new();
         Model {
             // layer: module_vec,
             output_linear: Linear::<T>::new(
@@ -80,10 +80,10 @@ where T: Copy
     }
 
     pub fn forward(&self, sequences: *mut usize) -> Tensor<T> {
-        let mut layer_vec: Vec<Layer<T>> = Vec::new();
+        let mut layer_vec: Vec<TransformerBlock<T>> = Vec::new();
 
         for i in 0..self.config.num_hidden_layers {
-            layer_vec.push(Layer::<T>::new(
+            layer_vec.push(TransformerBlock::<T>::new(
                 &self.config,
                 &self.word_embedding,
                 &self.position_embedding,

@@ -37,7 +37,7 @@ pub struct Attention<T> {
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
 }
 
-impl<T> SelfAttention<T> 
+impl<T> Attention<T> 
 where T: Copy 
     + Default 
     + Sub<Output = T>
@@ -65,7 +65,7 @@ where T: Copy
         let kv_head_size = num_kv_heads * attention_head_size;
         // let inverse_sqrt_head = f32::sqrt(attention_head_size as f32).recip();
         let scope_name = format!("{}.self_attn", parent_scope_name);
-        SelfAttention {
+        Attention {
             num_attention_heads: num_attention_heads,
             num_kv_heads: num_kv_heads,
             attention_head_size: attention_head_size,
@@ -231,7 +231,7 @@ mod test {
         let cache = Rc::new(RefCell::new(Cache::new()));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let self_attention = SelfAttention::new(
+        let self_attention = Attention::new(
             hidden_size,
             num_attention_heads,
             num_kv_heads,
@@ -293,7 +293,7 @@ mod test {
         let cache = Rc::new(RefCell::new(Cache::new()));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let self_attention = SelfAttention::new(
+        let self_attention = Attention::new(
             hidden_size,
             num_attention_heads,
             num_kv_heads,

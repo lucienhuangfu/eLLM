@@ -16,13 +16,13 @@ use super::super::compiler::zip_map::add_rms_zip::AddRMSZipMap;
 use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
-use crate::transformer::feedforward::FeedForward;
-use crate::transformer::self_attentions::SelfAttention;
+use super::feedforward::FeedForward;
+use super::attention::Attention;
 
 
 #[derive(Clone)]
 pub struct TransformerBlock<'a, T> {
-    self_attention: SelfAttention<T>,
+    self_attention: Attention<T>,
     feedforward: FeedForward<T>,
     scope_name: String,
     input_layernorm: Tensor<T>,
@@ -62,8 +62,8 @@ where T: Copy
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let scope_name = format!("{}.layers.{}", parent_scope_name, index);
-        Layer {
-            self_attention: SelfAttention::<T>::new(
+        TransformerBlock {
+            self_attention: Attention::<T>::new(
                 config.hidden_size,
                 config.num_attention_heads,
                 config.num_key_value_heads,
@@ -218,7 +218,7 @@ mod test {
         let word_embedding = Tensor::zeros(vec![4096, hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
         let position_embedding = Tensor::zeros(vec![max_position_embeddings, 1, 1, attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
 
-        let layer = Layer::<f32>::new(&config, 
+        let layer = TransformerBlock::<f32>::new(&config, 
             &word_embedding, 
             &position_embedding, 
             0, 
@@ -283,7 +283,7 @@ mod test {
         let word_embedding = Tensor::zeros(vec![4096, hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
         let position_embedding = Tensor::zeros(vec![max_position_embeddings, 1, 1, attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
 
-        let layer = Layer::<f16>::new(&config, 
+        let layer = TransformerBlock::<f16>::new(&config, 
             &word_embedding, 
             &position_embedding, 
             0, 
