@@ -239,14 +239,14 @@ mod test {
             batch_size,
             inverse_sqrt_head,
             num_cpus::get(),
-            "model.layer.1.self_attn",
+            "model.layers.1.self_attn",
             cache.clone(),
             operator_queue.clone(),
         );
 
         let hidden_states = Tensor::zeros(
             vec![batch_size, hidden_size],
-            String::from("model.layer.1.hidden_tensor"),
+            String::from("model.layers.1.hidden_tensor"),
             cache.clone(),
             operator_queue.clone(),
         );
@@ -301,14 +301,14 @@ mod test {
             batch_size,
             inverse_sqrt_head,
             num_cpus::get(),
-            "model.layer.1.self_attn",
+            "model.layers.1.self_attn",
             cache.clone(),
             operator_queue.clone(),
         );
 
         let hidden_states = Tensor::zeros(
             vec![batch_size, hidden_size],
-            String::from("model.layer.1.hidden_tensor"),
+            String::from("model.layers.1.hidden_tensor"),
             cache.clone(),
             operator_queue.clone(),
         );

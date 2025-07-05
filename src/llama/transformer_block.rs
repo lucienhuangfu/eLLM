@@ -228,7 +228,7 @@ mod test {
             operator_queue.clone());
 
         let shape = vec![batch_size, hidden_size];
-        let input = Tensor::from_cache(shape.clone(), String::from("model.layer.0.input_tensor"), cache.clone(), operator_queue.clone());
+        let input = Tensor::from_cache(shape.clone(), String::from("model.layers.0.input_tensor"), cache.clone(), operator_queue.clone());
         for i in 0..input.shape.iter().product() {
             unsafe {
                 input.data.add(i).write(1.0);
@@ -236,7 +236,7 @@ mod test {
         }
 
         let mut sequences = vec![0; config.max_position_embeddings];
-        let output_tensor = layer.forward(&input, sequences.as_mut_ptr() , String::from("model.layer.0.output_tensor"));
+        let output_tensor = layer.forward(&input, sequences.as_mut_ptr() , String::from("model.layers.0.output_tensor"));
 
         let thread_num: usize = num_cpus::get();
         for operator in output_tensor.operator_queue.borrow().iter() {
@@ -293,7 +293,7 @@ mod test {
             operator_queue.clone());
 
         let shape = vec![batch_size, hidden_size];
-        let input = Tensor::from_cache(shape.clone(), String::from("model.layer.0.input_tensor"), cache.clone(), operator_queue.clone());
+        let input = Tensor::from_cache(shape.clone(), String::from("model.layers.0.input_tensor"), cache.clone(), operator_queue.clone());
         for i in 0..input.shape.iter().product() {
             unsafe {
                 input.data.add(i).write(1.0);
@@ -301,7 +301,7 @@ mod test {
         }
 
         let mut sequences = vec![0; config.max_position_embeddings];
-        let output_tensor = layer.forward(&input, sequences.as_mut_ptr() , String::from("model.layer.0.output_tensor"));
+        let output_tensor = layer.forward(&input, sequences.as_mut_ptr() , String::from("model.layers.0.output_tensor"));
 
         let thread_num: usize = num_cpus::get();
         for operator in output_tensor.operator_queue.borrow().iter() {

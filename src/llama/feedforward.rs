@@ -127,17 +127,17 @@ mod test {
         let cache = Rc::new(RefCell::new(Cache::new()));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let feedforward = FeedForward::<f32>::new( hidden_size, hidden_dim, head_size, multiple_of, "model.layer.0", cache.clone(), operator_queue.clone());
+        let feedforward = FeedForward::<f32>::new( hidden_size, hidden_dim, head_size, multiple_of, "model.layers.0", cache.clone(), operator_queue.clone());
 
         let shape = vec![batch_size, hidden_size];
-        let input = Tensor::from_cache(shape.clone(), String::from("model.layer.0.input_tensor"), cache.clone(), operator_queue.clone());
+        let input = Tensor::from_cache(shape.clone(), String::from("model.layers.0.input_tensor"), cache.clone(), operator_queue.clone());
         for i in 0..input.shape.iter().product() {
             unsafe {
                 input.data.add(i).write(1.0);
             }
         }
 
-        let output_tensor = feedforward.forward(&input, String::from("model.layer.0.output_tensor"), num_cpus::get());
+        let output_tensor = feedforward.forward(&input, String::from("model.layers.0.output_tensor"), num_cpus::get());
 
         let thread_num: usize = num_cpus::get();
         for operator in output_tensor.operator_queue.borrow().iter() {
@@ -172,17 +172,17 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new()));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let feedforward = FeedForward::<f16>::new(hidden_size, hidden_dim, head_size, multiple_of, "model.layer.0", cache.clone(), operator_queue.clone());
+        let feedforward = FeedForward::<f16>::new(hidden_size, hidden_dim, head_size, multiple_of, "model.layers.0", cache.clone(), operator_queue.clone());
 
         let shape = vec![batch_size, hidden_size];
-        let input = Tensor::from_cache(shape.clone(), String::from("model.layer.0.input_tensor"), cache.clone(), operator_queue.clone());
+        let input = Tensor::from_cache(shape.clone(), String::from("model.layers.0.input_tensor"), cache.clone(), operator_queue.clone());
         for i in 0..input.shape.iter().product() {
             unsafe {
                 input.data.add(i).write(1.0);
             }
         }
 
-        let output_tensor = feedforward.forward(&input, String::from("model.layer.0.output_tensor"), num_cpus::get());
+        let output_tensor = feedforward.forward(&input, String::from("model.layers.0.output_tensor"), num_cpus::get());
 
         let thread_num: usize = num_cpus::get();
         for operator in output_tensor.operator_queue.borrow().iter() {
