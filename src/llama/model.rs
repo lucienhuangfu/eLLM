@@ -113,12 +113,12 @@ where T: Copy
    
         let norm_output = hidden_state.mapv(
             Operator::RMSMap(RMSMap::new(self.config.hidden_size, self.norm_weight.data, self.rms_norm_eps, self.cpu_num)),
-            format!("{}.norm_hidden", self.scope_name),
+            format!("{}.norm_hidden.output", self.scope_name),
         );    
     
         let logits = self
             .output_linear
-            .forward(&norm_output, format!("{}.lm_head", self.scope_name));
+            .forward(&norm_output, format!("{}.lm_head.output", self.scope_name));
         /* 
         unsafe {
             logits.reduce(
