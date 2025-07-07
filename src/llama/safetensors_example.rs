@@ -36,66 +36,7 @@ pub fn load_llama3_8b_example() -> Result<()> {
     Ok(())
 }
 
-/// 使用SafeTensorsModelLoader的详细示例
-pub fn detailed_loading_example() -> Result<()> {
-    let model_dir = "path/to/your/llama3-8b-model";
 
-    // 方法2：使用详细的加载器
-    let loader = SafeTensorsModelLoader::new(model_dir)?;
-
-    // 分别加载配置和权重
-    let config = loader.load_config()?;
-    let weights = loader.load_weights_f16()?;
-
-    // 验证关键层的存在
-    let expected_layers = [
-        "model.embed_tokens.weight",
-        "model.norm.weight",
-        "lm_head.weight",
-    ];
-
-    for layer_name in &expected_layers {
-        if weights.contains_key(*layer_name) {
-            println!("✓ Found layer: {}", layer_name);
-        } else {
-            println!("✗ Missing layer: {}", layer_name);
-        }
-    }
-
-    // 检查transformer层
-    for i in 0..config.num_hidden_layers {
-        let layer_prefix = format!("model.layers.{}", i);
-        let attention_layers = [
-            format!("{}.self_attn.q_proj.weight", layer_prefix),
-            format!("{}.self_attn.k_proj.weight", layer_prefix),
-            format!("{}.self_attn.v_proj.weight", layer_prefix),
-            format!("{}.self_attn.o_proj.weight", layer_prefix),
-            format!("{}.mlp.gate_proj.weight", layer_prefix),
-            format!("{}.mlp.up_proj.weight", layer_prefix),
-            format!("{}.mlp.down_proj.weight", layer_prefix),
-            format!("{}.input_layernorm.weight", layer_prefix),
-            format!("{}.post_attention_layernorm.weight", layer_prefix),
-        ];
-
-        let mut layer_complete = true;
-        for layer_name in &attention_layers {
-            if !weights.contains_key(layer_name) {
-                layer_complete = false;
-                break;
-            }
-        }
-
-        if layer_complete {
-            println!("✓ Layer {} complete", i);
-        } else {
-            println!("✗ Layer {} incomplete", i);
-        }
-    }
-
-    println!("Model loading verification completed!");
-
-    Ok(())
-}
 
 /// 内存使用情况分析
 pub fn analyze_memory_usage(model_dir: &str) -> Result<()> {
