@@ -27,7 +27,7 @@ where T: Copy
         let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
         let dim =  config.attention_head_size / 2;
         let rope_vec = precompute_freqs_cis(dim, config.max_position_embeddings, 10000.0f32);
-        let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
+        let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.output"), cache.clone(), operator_queue.clone());
         for i in 0..rope_vec.len() {
             unsafe {
                 position_embedding.data.add(i).write(rope_vec[i] as f16);
