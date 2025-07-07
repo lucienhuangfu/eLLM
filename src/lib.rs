@@ -4,6 +4,7 @@
 #![feature(sync_unsafe_cell)]
 #![feature(stdarch_x86_avx512)]
 #![feature(stdarch_x86_avx512_f16)]
+#![feature(stdarch_x86_avx512_bf16)]
 #![feature(avx512_target_feature)]
 #![feature(specialization)]
 #![allow(incomplete_features)]

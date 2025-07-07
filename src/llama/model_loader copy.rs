@@ -4,14 +4,130 @@ use safetensors::{Dtype, SafeTensors};
 use serde_json;
 use std::collections::HashMap;
 use std::f16;
-// use std::arch::x86_64::bf16;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
 use crate::init::config::Config;
-// use crate::llama::model::Model;
-// use crate::ptensor::tensor::Tensor;
+use crate::llama::model::Model;
+use crate::ptensor::tensor::Tensor;
+
+/// SafeTensors模型加载器
+pub struct SafeTensorsModelLoader {
+    /// 模型文件路径
+    model_path: String,
+    /// 配置文件路径
+    config_path: String,
+}
+
+impl SafeTensorsModelLoader {
+    /// 创建新的SafeTensors模型加载器
+    pub fn new<P: AsRef<Path>>(model_dir: P) -> Result<Self> {
+        let model_dir = model_dir.as_ref();
+
+        // 查找safetensors文件
+        let model_file = find_safetensors_file(model_dir)?;
+        let config_file = model_dir.join("config.json");
+
+        if !config_file.exists() {
+            return Err(anyhow!("config.json not found in model directory"));
+        }
+
+        Ok(SafeTensorsModelLoader {
+            model_path: model_file.to_string_lossy().to_string(),
+            config_path: config_file.to_string_lossy().to_string(),
+        })
+    }
+
+    /// 加载配置文件
+    pub fn load_config(&self) -> Result<Config> {
+        let file = File::open(&self.config_path)?;
+        let reader = BufReader::new(file);
+        let config: Config = serde_json::from_reader(reader)?;
+        Ok(config)
+    }
+
+    /// 加载模型权重到HashMap
+    pub fn load_weights_f16(&self) -> Result<HashMap<String, Vec<f16>>> {
+        let file = File::open(&self.model_path)?;
+        let mmap = unsafe { MmapOptions::new().map(&file)? };
+        let safetensors = SafeTensors::deserialize(&mmap)?;
+
+        let mut weights = HashMap::new();
+
+        for (name, tensor_view) in safetensors.tensors() {
+            let data = match tensor_view.dtype() {
+                Dtype::F16 => {
+                    // 直接从f16数据转换
+                    let raw_data = tensor_view.data();
+                    let f16_data: Vec<f16> = raw_data
+                        .chunks_exact(2)
+                        .map(|chunk| {
+                            let bytes = [chunk[0], chunk[1]];
+                            f16::from_le_bytes(bytes)
+                        })
+                        .collect();
+                    f16_data
+                }
+                Dtype::F32 => {
+                    // 从f32转换到f16
+                    let raw_data = tensor_view.data();
+                    let f32_data: Vec<f32> = raw_data
+                        .chunks_exact(4)
+                        .map(|chunk| {
+                            let bytes = [chunk[0], chunk[1], chunk[2], chunk[3]];
+                            f32::from_le_bytes(bytes)
+                        })
+                        .collect();
+                    f32_data.iter().map(|&x| x as f16).collect()
+                }
+                Dtype::BF16 => {
+                    // 从BF16转换到std::f16
+                    let raw_data = tensor_view.data();
+                    let bf16_data: Vec<half::bf16> = raw_data
+                        .chunks_exact(2)
+                        .map(|chunk| {
+                            let bytes = [chunk[0], chunk[1]];
+                            half::bf16::from_le_bytes(bytes)
+                        })
+                        .collect();
+                    bf16_data.iter().map(|&x| x.to_f32() as f16).collect()
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "Unsupported tensor dtype: {:?}",
+                        tensor_view.dtype()
+                    ));
+                }
+            };
+
+            weights.insert(name.to_string(), data);
+        }
+
+        Ok(weights)
+    }
+
+    /// 加载完整的Llama3模型
+    pub fn load_model<T>(&self) -> Result<Model<T>>
+    where
+        T: Copy
+            + Default
+            + std::ops::Sub<Output = T>
+            + std::ops::Neg<Output = T>
+            + crate::kernel::generic::exp::Exp
+            + crate::kernel::generic::neg_infinity::NegInfinity
+            + crate::kernel::generic::sigmoid::Sigmoid<T>
+            + crate::kernel::generic::sqrt::Sqrt
+            + crate::kernel::generic::from_f32::FromF32,
+    {
+        let config = self.load_config()?;
+        let weights = self.load_weights_f16()?;
+
+        // 这里需要根据你的Model实现来构建模型
+        // 由于Model的构造函数需要具体的参数，这里只是一个示例框架
+        todo!("需要根据具体的Model实现来构建模型")
+    }
+}
 
 /// 在指定目录中查找safetensors文件
 fn find_safetensors_file<P: AsRef<Path>>(model_dir: P) -> Result<std::path::PathBuf> {
@@ -75,7 +191,6 @@ impl MultiFileSafeTensorsLoader {
             let file_name_str = file_name.to_string_lossy();
 
             if file_name_str.ends_with(".safetensors") {
-                println!("Found safetensors file: {}", entry.path().to_string_lossy().to_string());
                 model_files.push(entry.path().to_string_lossy().to_string());
             }
         }
@@ -96,7 +211,7 @@ impl MultiFileSafeTensorsLoader {
     /// 加载所有权重文件
     pub fn load_all_weights_f16(&self) -> Result<HashMap<String, Vec<f16>>> {
         let mut all_weights = HashMap::new();
-        
+
         for model_file in &self.model_files {
             let file = File::open(model_file)?;
             let mmap = unsafe { MmapOptions::new().map(&file)? };
@@ -163,6 +278,23 @@ impl MultiFileSafeTensorsLoader {
 }
 
 /// 便民函数：从目录加载Llama3模型
+pub fn load_llama3_from_safetensors<P: AsRef<Path>>(
+    model_dir: P,
+) -> Result<(Config, HashMap<String, Vec<f16>>)> {
+    // 首先尝试单文件加载器
+    if let Ok(loader) = SafeTensorsModelLoader::new(&model_dir) {
+        let config = loader.load_config()?;
+        let weights = loader.load_weights_f16()?;
+        return Ok((config, weights));
+    }
+
+    // 如果单文件失败，尝试多文件加载器
+    let loader = MultiFileSafeTensorsLoader::new(model_dir)?;
+    let config = loader.load_config()?;
+    let weights = loader.load_all_weights_f16()?;
+
+    Ok((config, weights))
+}
 
 #[cfg(test)]
 mod tests {
@@ -176,71 +308,5 @@ mod tests {
     #[test]
     fn test_load_safetensors() {
         // 这里可以添加测试代码
-
-        let torch_file = String::from("D:/llama-3-chinese-8b-instruct-v3");
-        let loader = MultiFileSafeTensorsLoader::new(&torch_file).unwrap();
-        loader.load_all_weights_f16().unwrap();
     }
-
-    /* 
-    /// 使用SafeTensorsModelLoader的详细示例
-    pub fn detailed_loading_example() -> Result<()> {
-        let model_dir = "path/to/your/llama3-8b-model";
-
-        // 方法2：使用详细的加载器
-        let loader = SafeTensorsModelLoader::new(model_dir)?;
-
-        // 分别加载配置和权重
-        let config = loader.load_config()?;
-        let weights = loader.load_weights_f16()?;
-
-        // 验证关键层的存在
-        let expected_layers = [
-            "model.embed_tokens.weight",
-            "model.norm.weight",
-            "lm_head.weight",
-        ];
-
-        for layer_name in &expected_layers {
-            if weights.contains_key(*layer_name) {
-                println!("✓ Found layer: {}", layer_name);
-            } else {
-                println!("✗ Missing layer: {}", layer_name);
-            }
-        }
-
-        // 检查transformer层
-        for i in 0..config.num_hidden_layers {
-            let layer_prefix = format!("model.layers.{}", i);
-            let attention_layers = [
-                format!("{}.self_attn.q_proj.weight", layer_prefix),
-                format!("{}.self_attn.k_proj.weight", layer_prefix),
-                format!("{}.self_attn.v_proj.weight", layer_prefix),
-                format!("{}.self_attn.o_proj.weight", layer_prefix),
-                format!("{}.mlp.gate_proj.weight", layer_prefix),
-                format!("{}.mlp.up_proj.weight", layer_prefix),
-                format!("{}.mlp.down_proj.weight", layer_prefix),
-                format!("{}.input_layernorm.weight", layer_prefix),
-                format!("{}.post_attention_layernorm.weight", layer_prefix),
-            ];
-
-            let mut layer_complete = true;
-            for layer_name in &attention_layers {
-                if !weights.contains_key(layer_name) {
-                    layer_complete = false;
-                    break;
-                }
-            }
-
-            if layer_complete {
-                println!("✓ Layer {} complete", i);
-            } else {
-                println!("✗ Layer {} incomplete", i);
-            }
-        }
-
-        println!("Model loading verification completed!");
-
-        Ok(())
-    }*/
 }
