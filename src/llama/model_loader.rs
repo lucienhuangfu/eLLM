@@ -151,7 +151,7 @@ impl SafeTensorsLoader {
 
                 all_weights.insert(name.to_string(), data);
             }
-            break;
+            // break;
         }
 
         Ok(all_weights)
@@ -172,8 +172,6 @@ impl SafeTensorsLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-
 
     #[test]
     fn test_load_safetensors() {

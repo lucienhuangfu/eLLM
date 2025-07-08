@@ -149,6 +149,7 @@ mod test {
     use crate::ptensor::tensor::Tensor;
     use crate::memory::cache::Cache;
     use crate::memory::allocator::allocate_init;
+    use crate::llama::model_loader::SafeTensorsLoader;
 
     #[test]
     fn test_model_forward() {
@@ -191,6 +192,7 @@ mod test {
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
     }
 
+
     #[test]
     fn test_model_forward_f16() {
         let cpu_num = thread::available_parallelism().unwrap().get();
@@ -198,7 +200,14 @@ mod test {
         config.load_model_config(r"models/Llama-2-7b-hf/config.json");
         config.load_compile_config(r"models/Llama-2-7b-hf.json");
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
+        let model_dir = "models/Llama-2-7b-hf"; // Define model_dir
+        let loader = SafeTensorsLoader::new("D:/llama-3-chinese-8b-instruct-v3").unwrap();
+
+        // 分别加载配置和权重
+        // let config = loader.load_config()?;
+        let weights = loader.load_all_weights_f16().unwrap();
+
+        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(weights)));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
@@ -222,6 +231,8 @@ mod test {
         let output_tensor = unsafe {
             model.forward(sequences) 
         };
+
+        /* 
         let thread_num: usize = cpu_num;
 
         for p in 0..sequence_length {
@@ -232,7 +243,7 @@ mod test {
                 println!("{}", p);
             }
         }
-
+        */
 
 
         // Add assertions to verify the output_tensor
