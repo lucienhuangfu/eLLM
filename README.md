@@ -21,6 +21,11 @@
 * [ ] Qwen (coming soon)
 * [ ] DeepSeek (coming soon)
 
+## 🚀 Hardware
+
+- CPU-only setup: tested on 1×Xeon with DDR4/DDR5 memory
+- Memory requirements: support for multi-hundred GB memory (1TB+ preferred)
+
 ## 📄 Paper
 
 If you're interested in the technical details, check out our paper and cite:
@@ -53,7 +58,7 @@ Todo
 
 
 
-## 📦 Coming Soon
+## 🛠 Roadmap
 
 * Docker support
 * Multi-CPU parallelism
