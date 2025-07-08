@@ -4,6 +4,7 @@
 
 
 # eLLM: Achieving Lossless Million-Token LLM Inference on CPUs
+🌐 Language: [English](README.md) | [简体中文](README.zh-CN.md) 
 
 * **eLLM** is an inference framework that enables **lossless** large language models (LLMs) on **CPU-only machines**, 
 * supporting **sequences up to millions of tokens**. 
