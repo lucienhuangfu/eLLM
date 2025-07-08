@@ -157,7 +157,7 @@ mod test {
         config.load_model_config(r"models/Llama-2-7b-hf/config.json");
         config.load_compile_config(r"models/Llama-2-7b-hf.json");
 
-        let cache = Rc::new(RefCell::new(Cache::new()));
+        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
@@ -198,7 +198,7 @@ mod test {
         config.load_model_config(r"models/Llama-2-7b-hf/config.json");
         config.load_compile_config(r"models/Llama-2-7b-hf.json");
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new()));
+        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
