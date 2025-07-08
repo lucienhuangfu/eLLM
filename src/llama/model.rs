@@ -10,12 +10,13 @@ use crate::kernel::generic::from_f32::FromF32;
 
 use super::super::compiler::operator::Operator;
 use super::super::compiler::map::rms_map::RMSMap;
-use super::super::compiler::reduce::argmax_reduce::ArgmaxReduce;
+
+
 use crate::init::config::Config;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
-use super::layer::Layer;
+use super::transformer_block::TransformerBlock;
 // use super::rope::precompute_freqs_cis;
 
 #[derive(Clone)]
@@ -55,20 +56,18 @@ where T: Copy
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let scope_name = String::from("model");
-        let mut module_vec: Vec<Layer<T>> = Vec::new();
+        let module_vec: Vec<TransformerBlock<T>> = Vec::new();
         Model {
             // layer: module_vec,
             output_linear: Linear::<T>::new(
                 config.hidden_size,
                 config.vocab_size,
                 1,
-                format!(
-                    "{}.output_proj",
-                    scope_name),
-                    cache.clone(),
-                    operator_queue.clone()
-                ),
-            
+                format!("lm_head"),
+                cache.clone(),
+                operator_queue.clone()
+            ),
+
             position_embedding: position_embedding,
             word_embedding: word_embedding,
             norm_weight: norm_weight,
@@ -82,10 +81,10 @@ where T: Copy
     }
 
     pub fn forward(&self, sequences: *mut usize) -> Tensor<T> {
-        let mut layer_vec: Vec<Layer<T>> = Vec::new();
+        let mut layer_vec: Vec<TransformerBlock<T>> = Vec::new();
 
         for i in 0..self.config.num_hidden_layers {
-            layer_vec.push(Layer::<T>::new(
+            layer_vec.push(TransformerBlock::<T>::new(
                 &self.config,
                 &self.word_embedding,
                 &self.position_embedding,
@@ -114,12 +113,12 @@ where T: Copy
    
         let norm_output = hidden_state.mapv(
             Operator::RMSMap(RMSMap::new(self.config.hidden_size, self.norm_weight.data, self.rms_norm_eps, self.cpu_num)),
-            format!("{}.norm_hidden.weight", self.scope_name),
+            format!("{}.norm_hidden.output", self.scope_name),
         );    
     
         let logits = self
             .output_linear
-            .forward(&norm_output, format!("{}.logits.weight", self.scope_name));
+            .forward(&norm_output, format!("{}.lm_head.output", self.scope_name));
         /* 
         unsafe {
             logits.reduce(
@@ -150,6 +149,7 @@ mod test {
     use crate::ptensor::tensor::Tensor;
     use crate::memory::cache::Cache;
     use crate::memory::allocator::allocate_init;
+    use crate::llama::model_loader::SafeTensorsLoader;
 
     #[test]
     fn test_model_forward() {
@@ -158,11 +158,11 @@ mod test {
         config.load_model_config(r"models/Llama-2-7b-hf/config.json");
         config.load_compile_config(r"models/Llama-2-7b-hf.json");
 
-        let cache = Rc::new(RefCell::new(Cache::new()));
+        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
-        let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
+        let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
+        let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.output"), cache.clone(), operator_queue.clone());
         let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
 
         let model = Model::<f32>::new(
@@ -192,6 +192,7 @@ mod test {
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
     }
 
+
     #[test]
     fn test_model_forward_f16() {
         let cpu_num = thread::available_parallelism().unwrap().get();
@@ -199,11 +200,18 @@ mod test {
         config.load_model_config(r"models/Llama-2-7b-hf/config.json");
         config.load_compile_config(r"models/Llama-2-7b-hf.json");
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new()));
+        let model_dir = "models/Llama-2-7b-hf"; // Define model_dir
+        let loader = SafeTensorsLoader::new("D:/llama-3-chinese-8b-instruct-v3").unwrap();
+
+        // 分别加载配置和权重
+        // let config = loader.load_config()?;
+        let weights = loader.load_all_weights_f16().unwrap();
+
+        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(weights)));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
-        let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
+        let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
+        let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.output"), cache.clone(), operator_queue.clone());
         let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
 
         let model = Model::<f16>::new(
@@ -223,6 +231,8 @@ mod test {
         let output_tensor = unsafe {
             model.forward(sequences) 
         };
+
+        /* 
         let thread_num: usize = cpu_num;
 
         for p in 0..sequence_length {
@@ -233,7 +243,7 @@ mod test {
                 println!("{}", p);
             }
         }
-
+        */
 
 
         // Add assertions to verify the output_tensor
