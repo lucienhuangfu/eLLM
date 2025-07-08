@@ -20,6 +20,9 @@ zip = "0.6.6"
 num-traits="0.2.19"
 itertools = "0.14.0"
 num = "0.4.3"
+safetensors = "0.4.1"
+memmap2 = "0.9.4"
+half = { version = "2.4.1", features = ["num-traits", "std"] }
 # linked-hash-map = "0.5.6"
 # hurdles = "1.0.1"
 # half  = {version = "2.4.1" , features = ["num-traits", "std"] }
