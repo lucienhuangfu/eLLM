@@ -124,7 +124,7 @@ mod test {
         let multiple_of = 256;
 
 
-        let cache = Rc::new(RefCell::new(Cache::new()));
+        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let feedforward = FeedForward::<f32>::new( hidden_size, hidden_dim, head_size, multiple_of, "model.layers.0", cache.clone(), operator_queue.clone());
@@ -169,7 +169,7 @@ mod test {
         let multiple_of = 256;
 
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new()));
+        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let feedforward = FeedForward::<f16>::new(hidden_size, hidden_dim, head_size, multiple_of, "model.layers.0", cache.clone(), operator_queue.clone());

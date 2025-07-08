@@ -211,7 +211,7 @@ mod test {
         let multiple_of = config.multiple_of;
         let rms_norm_eps = config.rms_norm_eps;
 
-        let cache = Rc::new(RefCell::new(Cache::new()));
+        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let vocab_size = 4096;
@@ -276,7 +276,7 @@ mod test {
         let multiple_of = config.multiple_of;
         let rms_norm_eps = config.rms_norm_eps as f16;
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new()));
+        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let vocab_size = 4096;
