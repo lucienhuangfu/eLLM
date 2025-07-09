@@ -20,7 +20,7 @@ use super::transformer_block::TransformerBlock;
 // use super::rope::precompute_freqs_cis;
 
 #[derive(Clone)]
-pub struct Model<T> {
+pub struct Transformer<T> {
     config: Config,
     // pub layer: Vec<Layer<T>>,
     norm_weight: Tensor<T>,
@@ -35,7 +35,7 @@ pub struct Model<T> {
    
 }
 
-impl<T> Model<T> 
+impl<T> Transformer<T> 
 where T: Copy 
     + Default 
     + Sub<Output = T>
@@ -57,7 +57,7 @@ where T: Copy
     ) -> Self {
         let scope_name = String::from("model");
         let module_vec: Vec<TransformerBlock<T>> = Vec::new();
-        Model {
+        Transformer {
             // layer: module_vec,
             output_linear: Linear::<T>::new(
                 config.hidden_size,
@@ -165,7 +165,7 @@ mod test {
         let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.output"), cache.clone(), operator_queue.clone());
         let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
 
-        let model = Model::<f32>::new(
+        let model = Transformer::<f32>::new(
             config.clone(),
             word_embedding,
             position_embedding,
@@ -214,7 +214,7 @@ mod test {
         let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.output"), cache.clone(), operator_queue.clone());
         let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
 
-        let model = Model::<f16>::new(
+        let model = Transformer::<f16>::new(
             config.clone(),
             word_embedding,
             position_embedding,
