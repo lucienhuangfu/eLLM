@@ -3,7 +3,15 @@ name = "eLLM"
 version = "0.1.0"
 edition = "2021"
 
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "ellm"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
+pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38"], optional = true }
+numpy = { version = "0.20", optional = true }
 num_cpus = "1.13"
 regex = "1.10.2"
 core_affinity = "0.8.1"
@@ -47,3 +55,5 @@ approx = "0.5.1"
 channel = "nightly"
 
 [features]
+default = []
+python = ["pyo3", "numpy"]
