@@ -17,11 +17,15 @@ pub mod compiler;
 pub mod ptensor;
 pub mod llama;
 
+
+/*
 // Python 绑定模块
 #[cfg(feature = "python")]
 pub mod python_bindings;
 
 use pyo3::prelude::*;
+
+
 
 /// Python 模块定义
 #[pymodule]
@@ -41,7 +45,6 @@ fn ellm(_py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
-/*
 pub mod runtime;
 pub mod serving;
 */

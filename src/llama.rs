@@ -1,14 +1,6 @@
-// Llama model implementation
-// For now, just provide placeholder functionality
-
-pub struct LlamaModel {
-    // Model implementation will be added here
-}
-
-impl LlamaModel {
-    pub fn new() -> Self {
-        LlamaModel {}
-    }
-}
-
-
+pub mod rope;
+pub mod model_loader;
+pub mod attention;
+pub mod feedforward;
+pub mod transformer_block;
+pub mod transformer;
