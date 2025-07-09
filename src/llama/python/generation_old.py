@@ -18,8 +18,8 @@ from fairscale.nn.model_parallel.initialize import (
 )
 """
 
-from llama.model import ModelArgs, Transformer
-from llama.tokenizer import ChatFormat, Dialog, Message, Tokenizer
+from .model import ModelArgs, Transformer
+from .tokenizer import ChatFormat, Dialog, Message, Tokenizer
 
 
 class CompletionPrediction(TypedDict, total=False):
@@ -77,7 +77,7 @@ class Llama:
         #        model_parallel_size = int(os.environ.get("WORLD_SIZE", 1))
         #    initialize_model_parallel(model_parallel_size)
 
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        # local_rank = int(os.environ.get("LOCAL_RANK", 0))
         # torch.cuda.set_device(local_rank)
 
         # seed must be the same in all processes
@@ -97,11 +97,18 @@ class Llama:
         # with open(Path(ckpt_dir) / "params.json", "r") as f:
         #     params = json.loads(f.read())
 
-        # model_args: ModelArgs = ModelArgs(
-        #    max_seq_len=max_seq_len,
-        #    max_batch_size=max_batch_size,
-        #    **params,
-        # )
+        # Load model configuration from config.json
+        config_path = Path(ckpt_dir) / "config.json"
+        if config_path.exists():
+            model_args = ModelArgs.from_config_file(str(config_path))
+        else:
+            # Create default model args if config doesn't exist
+            model_args = ModelArgs()
+        
+        # Override with provided parameters
+        model_args.max_seq_len = max_seq_len
+        model_args.max_batch_size = max_batch_size
+        
         tokenizer = Tokenizer(model_path=tokenizer_path)
         # assert model_args.vocab_size == tokenizer.n_words
         # if torch.cuda.is_bf16_supported():
@@ -109,7 +116,8 @@ class Llama:
         # else:
         #    torch.set_default_tensor_type(torch.cuda.HalfTensor)
         model = Transformer(model_args)
-        model.load_state_dict(checkpoint, strict=False)
+        # model.load_state_dict(checkpoint, strict=False)
+        
         print(f"Loaded in {time.time() - start_time:.2f} seconds")
 
         return Llama(model, tokenizer)
@@ -148,40 +156,23 @@ class Llama:
             If logprobs is True, token log probabilities are computed for each generated token.
 
         """
-        params = self.model.params
-        bsz = len(prompt_tokens)
-        assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
-
-        min_prompt_len = min(len(t) for t in prompt_tokens)
-        max_prompt_len = max(len(t) for t in prompt_tokens)
-        assert max_prompt_len <= params.max_seq_len
-        total_len = min(params.max_seq_len, max_gen_len + max_prompt_len)
-
-        pad_id = self.tokenizer.pad_id
-        tokens = torch.full((bsz, total_len), pad_id, dtype=torch.long, device="cuda")
-        for k, t in enumerate(prompt_tokens):
-            tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device="cuda")
-        if logprobs:
-            token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
-
         prev_pos = 0
-        eos_reached = torch.tensor([False] * bsz, device="cuda")
-        input_text_mask = tokens != pad_id
-        if min_prompt_len == total_len:
-            logits = self.model.forward(tokens, prev_pos)
-            
-            token_logprobs = -F.cross_entropy(
-                input=logits.transpose(1, 2),
-                target=tokens,
-                reduction="none",
-                ignore_index=pad_id,
-            )
-
-        stop_tokens = torch.tensor(list(self.tokenizer.stop_tokens))
-
-        for cur_pos in range(min_prompt_len, total_len):
-            logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
-
+        
+        # Use the Rust-backed Transformer implementation
+        # Convert the input format and call the Rust backend
+        generated_sequences = self.model.generate(
+            prompt_tokens=prompt_tokens,
+            max_gen_len=max_gen_len,
+            temperature=temperature,
+            top_p=top_p
+        )
+        
+        if logprobs:
+            # Mock logprobs for now - in real implementation would come from Rust
+            mock_logprobs = [[0.0] * len(seq) for seq in generated_sequences]
+            return generated_sequences, mock_logprobs
+        else:
+            return generated_sequences, None
             
 
 
