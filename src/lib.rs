@@ -23,25 +23,15 @@ pub mod llama;
 #[cfg(feature = "python")]
 pub mod python_bindings;
 
-use pyo3::prelude::*;
-
-
+// 删除原有PyTransformer定义
+#[cfg(feature = "python")]
+pub mod python_bindings;
 
 /// Python 模块定义
 #[pymodule]
 fn ellm(_py: Python, m: &PyModule) -> PyResult<()> {
-    // 添加配置类
-    m.add_class::<python_bindings::PyConfig>()?;
-    
-    // 添加 Transformer 类
     m.add_class::<python_bindings::PyTransformer>()?;
-    
-    // 添加分词器类
-    m.add_class::<python_bindings::PyTokenizer>()?;
-    
-    // 添加版本信息
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    
     Ok(())
 }
 
