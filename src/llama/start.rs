@@ -10,7 +10,6 @@ use super::barrier::Barrier;
 use std::ops::{Add, Sub, Div, Mul, AddAssign, Neg };
 
 
-
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
 use crate::kernel::generic::sigmoid::Sigmoid;
@@ -72,7 +71,6 @@ where T: Copy
                         let prompt_end = 0;
                         // let generation_end = 128;
                       
-                        for generation_end in (256..=1024).step_by(256) {
                             let s = Instant::now();
                             for position_index in prompt_end..generation_end {
 
@@ -84,13 +82,9 @@ where T: Copy
                                 // println!("position {}", position_index);
                             }
                             let t = s.elapsed();
-                            if thread_id == 1 {
-                                println!("{} millseconds {}", generation_end, (t.as_millis() / (generation_end as u128)));
-                            }
-                        }
+               
 
-
-                        break;
+                        // break;
                     }
                 }
             });
