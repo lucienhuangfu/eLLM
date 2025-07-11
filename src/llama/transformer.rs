@@ -1,25 +1,18 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use serde::{Deserialize, Serialize};
+
 use std::ops::{Add, Sub, Div, Mul, AddAssign, Neg };
 use std::thread;
 use std::time::Instant;
 use core_affinity;
-use std::cell::SyncUnsafeCell;
 use std::sync::Arc;
 use std::sync::Barrier;
+
+use std::cell::SyncUnsafeCell;
+use serde::{Deserialize, Serialize};
 // use hurdles::Barrier;
 // use super::barrier::Barrier;
 // use serde::{Deserialize, Serialize};
-use std::ops::{Add, Sub, Div, Mul, AddAssign, Neg };
-
-
-use crate::kernel::generic::sqrt::Sqrt;
-use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
-use crate::kernel::generic::sigmoid::Sigmoid;
-use crate::kernel::generic::from_f32::FromF32;
-use super::super::compiler::operator::Operator;
-
 
 
 
@@ -27,13 +20,11 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::from_f32::FromF32;
-
 use super::super::compiler::operator::Operator;
-use super::super::compiler::map::rms_map::RMSMap;
-
 
 use crate::init::config::Config;
 use super::super::memory::cache::Cache;
+use super::super::compiler::map::rms_map::RMSMap;
 use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::transformer_block::TransformerBlock;
@@ -65,17 +56,49 @@ where T: Copy
     + Sigmoid<T>
     + Sqrt
     + FromF32
+    + Send
++ Sync,
 {
     pub fn new(
         config: Config,
-        word_embedding: Tensor<T>,
-        position_embedding: Tensor<T>,
-        norm_weight: Tensor<T>,
-        cpu_num: usize,
-        cache: Rc<RefCell<Cache<T>>>,
-        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+        // word_embedding: Tensor<T>,
+        // position_embedding: Tensor<T>,
+        // norm_weight: Tensor<T>,
+        // cpu_num: usize,
+        // cache: Rc<RefCell<Cache<T>>>,
+        // operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
-        let scope_name = String::from("model");
+    let scope_name = String::from("model");
+    let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
+    let operator_queue = Rc::new(RefCell::new(Vec::new()));
+
+    // Create default tensors
+    let word_embedding = Tensor::zeros(
+        vec![config.vocab_size, config.hidden_size],
+        String::from("model.embed_tokens.weight"),
+        cache.clone(),
+        operator_queue.clone(),
+    );
+
+    let position_embedding = Tensor::zeros(
+        vec![
+            config.max_position_embeddings,
+            1,
+            1,
+            config.hidden_size / config.num_attention_heads,
+        ],
+        String::from("model.position_embedding.weight"),
+        cache.clone(),
+        operator_queue.clone(),
+    );
+
+    let norm_weight = Tensor::zeros(
+        vec![1, config.hidden_size],
+        String::from("model.norm.weight"),
+        cache.clone(),
+        operator_queue.clone(),
+    );
+
         let module_vec: Vec<TransformerBlock<T>> = Vec::new();
         Transformer {
             // layer: module_vec,
@@ -93,7 +116,7 @@ where T: Copy
             norm_weight: norm_weight,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             config: config,
-            cpu_num: cpu_num,
+            cpu_num: num_cpus::get(),
             scope_name: scope_name,
             cache: cache,
             operator_queue: operator_queue,
@@ -155,13 +178,13 @@ where T: Copy
         hidden_state
     }
 
-    pub fn start<T>(&self,) {
+    pub fn start(&self) {
     println!("start");
     // let prompt_operator_num;
     // let data = SyncUnsafeCell::new(DataReader::new(prompt_data));
     let cpu_num = thread::available_parallelism().unwrap().get();
     // let sync_operator_queue = Arc::new(SyncUnsafeCell::new(operator_queue));
-    let sync_operator_queue = Arc::new(self.operator_queue);
+    let sync_operator_queue = Arc::new(self.operator_queue.borrow().clone());
     let barrier = Arc::new(Barrier::new(cpu_num));
    
    
@@ -194,7 +217,7 @@ where T: Copy
                         let batch_size: usize = 1;
                         let prompt_begin = 0;
                         let prompt_end = 0;
-                        // let generation_end = 128;
+                        let generation_end = 128;
                       
                             let s = Instant::now();
                             for position_index in prompt_end..generation_end {
@@ -223,7 +246,8 @@ where T: Copy
 }
 
     pub fn forward(&self, sequences: Vec<Vec<i32>>, start_pos: usize) -> Vec<Vec<f32>> {
-
+        let t = Vec::<Vec<f32>>::new();
+        t
     }
 }
 
@@ -248,21 +272,21 @@ mod test {
         config.load_model_config(r"models/Llama-2-7b-hf/config.json");
         config.load_compile_config(r"models/Llama-2-7b-hf.json");
 
-        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
-        let operator_queue = Rc::new(RefCell::new(Vec::new()));
+        // let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
+        // let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
-        let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.output"), cache.clone(), operator_queue.clone());
-        let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
+        // let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
+        // let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.output"), cache.clone(), operator_queue.clone());
+        // let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
 
         let model = Transformer::<f32>::new(
             config.clone(),
-            word_embedding,
-            position_embedding,
-            norm_weight,
-            cpu_num,
-            cache.clone(),
-            operator_queue.clone(),
+            // word_embedding,
+            // position_embedding,
+            // norm_weight,
+            // cpu_num,
+            // cache.clone(),
+            // operator_queue.clone(),
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
@@ -306,12 +330,12 @@ mod test {
 
         let model = Transformer::<f16>::new(
             config.clone(),
-            word_embedding,
-            position_embedding,
-            norm_weight,
-            cpu_num,
-            cache.clone(),
-            operator_queue.clone(),
+            // word_embedding,
+            // position_embedding,
+            // norm_weight,
+            // cpu_num,
+            // cache.clone(),
+            // operator_queue.clone(),
         );
 
         let sequence_length = 128;
