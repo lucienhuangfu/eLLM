@@ -103,8 +103,16 @@ where
         }
         panic!()
     }
+
+
 }
 
+unsafe impl <T:Copy + Default
+    + Send
+    + Sync> Send for Cache<T> {}
+unsafe impl <T:Copy + Default
+    + Send
+    + Sync>Sync for Cache<T> {}
 // pub static mut cache: Lazy<Cache> = Lazy::new(|| {Cache::new()});
 
 #[cfg(test)]
