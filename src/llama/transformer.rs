@@ -1,15 +1,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-
+use std::sync::{Arc, RwLock};
 use std::ops::{Add, Sub, Div, Mul, AddAssign, Neg };
 use std::thread;
 use std::time::Instant;
 use core_affinity;
-use std::sync::Arc;
+// use std::sync::Arc;
 use std::sync::Barrier;
 
 use std::cell::SyncUnsafeCell;
-use serde::{Deserialize, Serialize};
+// use serde::{Deserialize, Serialize};
 // use hurdles::Barrier;
 // use super::barrier::Barrier;
 // use serde::{Deserialize, Serialize};
@@ -20,6 +20,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::from_f32::FromF32;
+use crate::memory::cache;
 use super::super::compiler::operator::Operator;
 
 use crate::init::config::Config;
@@ -28,21 +29,24 @@ use super::super::compiler::map::rms_map::RMSMap;
 use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::transformer_block::TransformerBlock;
+use super::model_loader::SafeTensorsLoader;
 // use super::rope::precompute_freqs_cis;
 
 #[derive(Clone)]
 pub struct Transformer<T> {
     config: Config,
     // pub layer: Vec<Layer<T>>,
-    norm_weight: Tensor<T>,
-    word_embedding: Tensor<T>,
+    tokens: Vec<Vec<i32>>,
+    start_pos: usize,
+    // word_embedding: Tensor<T>,
+    /// position_embedding: Tensor<T>,
+    // norm_weight: Tensor<T>,
     rms_norm_eps: T,
-    output_linear: Linear<T>,
+    // output_linear: Linear<T>,
+    pub cache: Arc<RwLock<Cache<T>>>,
+    pub operator_queue: Arc<RwLock<Vec<Operator<T>>>>,
     scope_name: String,
-    position_embedding: Tensor<T>,
     cpu_num: usize,
-    pub cache: Rc<RefCell<Cache<T>>>,
-    pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
    
 }
 
@@ -57,7 +61,7 @@ where T: Copy
     + Sqrt
     + FromF32
     + Send
-+ Sync,
+    + Sync,
 {
     pub fn new(
         config: Config,
@@ -69,9 +73,18 @@ where T: Copy
         // operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
     let scope_name = String::from("model");
-    let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
-    let operator_queue = Rc::new(RefCell::new(Vec::new()));
+    
+    // let torch_file = String::from("D:/llama-3-chinese-8b-instruct-v3");
+    // let loader = SafeTensorsLoader::new(&torch_file).unwrap();
+    // let tensors = loader.load_all_weights_f16().unwrap();
+    let tensors   = std::collections::HashMap::new();
 
+    let cache = Rc::new(RefCell::new(Cache::new(tensors)));
+
+    
+    
+    let operator_queue: Rc<RefCell<Vec<Operator<T>>>> = Rc::new(RefCell::new(Vec::new()));
+        /* 
     // Create default tensors
     let word_embedding = Tensor::zeros(
         vec![config.vocab_size, config.hidden_size],
@@ -97,11 +110,14 @@ where T: Copy
         String::from("model.norm.weight"),
         cache.clone(),
         operator_queue.clone(),
-    );
+    );*/
 
         let module_vec: Vec<TransformerBlock<T>> = Vec::new();
         Transformer {
             // layer: module_vec,
+            tokens: Vec::new(),
+            start_pos: 0,
+            /* 
             output_linear: Linear::<T>::new(
                 config.hidden_size,
                 config.vocab_size,
@@ -110,10 +126,10 @@ where T: Copy
                 cache.clone(),
                 operator_queue.clone()
             ),
-
-            position_embedding: position_embedding,
-            word_embedding: word_embedding,
-            norm_weight: norm_weight,
+            */
+            // position_embedding: position_embedding,
+            // word_embedding: word_embedding,
+            // norm_weight: norm_weight,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             config: config,
             cpu_num: num_cpus::get(),
@@ -123,7 +139,9 @@ where T: Copy
         }
     }
 
-    pub fn build(&self, sequences: *mut usize) -> Tensor<T> {
+    pub fn build(&self,) {
+    // -> Tensor<T> {
+        /* 
         let mut layer_vec: Vec<TransformerBlock<T>> = Vec::new();
 
         for i in 0..self.config.num_hidden_layers {
@@ -161,6 +179,8 @@ where T: Copy
         let logits = self
             .output_linear
             .forward(&norm_output, format!("{}.lm_head.output", self.scope_name));
+        
+        */
         /* 
         unsafe {
             logits.reduce(
@@ -175,25 +195,26 @@ where T: Copy
             );
         }*/
 
-        hidden_state
+        // hidden_state
     }
 
     pub fn start(&self) {
+
+
     println!("start");
     // let prompt_operator_num;
     // let data = SyncUnsafeCell::new(DataReader::new(prompt_data));
     let cpu_num = thread::available_parallelism().unwrap().get();
-    // let sync_operator_queue = Arc::new(SyncUnsafeCell::new(operator_queue));
-    let sync_operator_queue = Arc::new(self.operator_queue.borrow().clone());
+    // let sync_operator_queue = Arc::new(SyncUnsafeCell::new(self.operator_queue.borrow().clone()));
+    // let sync_operator_queue = Arc::new(self.operator_queue);
+    let sync_operator_queue =self.operator_queue.clone();
+    
     let barrier = Arc::new(Barrier::new(cpu_num));
    
-   
-
     thread::scope(|s| {
         let mut handles = Vec::with_capacity(cpu_num);
         // let reader = SyncUnsafeCell::new(DataReader::new(prompt_data));
         let core_ids = core_affinity::get_core_ids().unwrap();
-
         for (i, core_id) in core_ids.into_iter().enumerate() {
             println!("thread id {}", i);
             // let _state = &state;
@@ -206,7 +227,7 @@ where T: Copy
             let queue = Arc::clone(&sync_operator_queue);
 
             let handle = s.spawn(move || {
-                
+                let start_pos = self.start_pos;  // 显式捕获当前值
                 let thread_id = i;
                 core_affinity::set_for_current(core_id);
                 println!("{} start", thread_id);
@@ -214,6 +235,8 @@ where T: Copy
 
                 loop {
                     unsafe {
+                        println!("{} self.start_pos {}", thread_id, self.start_pos);
+                        /*
                         let batch_size: usize = 1;
                         let prompt_begin = 0;
                         let prompt_end = 0;
@@ -230,8 +253,7 @@ where T: Copy
                                 // println!("position {}", position_index);
                             }
                             let t = s.elapsed();
-               
-
+                         */
                         // break;
                     }
                 }
@@ -243,9 +265,11 @@ where T: Copy
             handle.join().unwrap();
         }
     });
-}
+    }
 
-    pub fn forward(&self, sequences: Vec<Vec<i32>>, start_pos: usize) -> Vec<Vec<f32>> {
+    pub fn forward(&self, tokens: Vec<Vec<i32>>, start_pos: usize) -> Vec<Vec<f32>> {
+        self.tokens = tokens;
+        self.start_pos = start_pos;
         let t = Vec::<Vec<f32>>::new();
         t
     }
@@ -264,20 +288,13 @@ mod test {
     use crate::memory::cache::Cache;
     use crate::memory::allocator::allocate_init;
     use crate::llama::model_loader::SafeTensorsLoader;
-
+/*
     #[test]
     fn test_model_forward() {
-        let cpu_num =  thread::available_parallelism().unwrap().get();
+        // let cpu_num =  thread::available_parallelism().unwrap().get();
         let mut config: Config = Config::new();
         config.load_model_config(r"models/Llama-2-7b-hf/config.json");
         config.load_compile_config(r"models/Llama-2-7b-hf.json");
-
-        // let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
-        // let operator_queue = Rc::new(RefCell::new(Vec::new()));
-
-        // let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
-        // let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.output"), cache.clone(), operator_queue.clone());
-        // let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
 
         let model = Transformer::<f32>::new(
             config.clone(),
@@ -294,13 +311,14 @@ mod test {
         let output_tensor = unsafe {
             model.build(sequences) 
         };
+        /*
         let thread_num: usize = num_cpus::get();
         for operator in output_tensor.operator_queue.borrow().iter() {
             for i in 0..thread_num {
                 operator.run(1, 0, i);
             }
         }
-
+         */
         // Add assertions to verify the output_tensor
         // For example:
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
@@ -345,7 +363,7 @@ mod test {
         let output_tensor = unsafe {
             model.build(sequences) 
         };
-
+ */
         /* 
         let thread_num: usize = cpu_num;
 
@@ -363,6 +381,6 @@ mod test {
         // Add assertions to verify the output_tensor
         // For example:
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
-    }
+    // }
 
 }

@@ -12,7 +12,10 @@ pub struct Cache<T> {
 
 impl<T> Cache<T>
 where
-    T: Copy + Default,
+    T: Copy + Default
+    + Send
+    + Sync
+
 {
     pub fn new(parameters: HashMap<String, Vec<T>>) -> Self {
         let regex_set = RegexSet::new(&[
@@ -47,7 +50,8 @@ where
                 0 => {
                     // parameters
                     // println!("parameters {} ", name);
-                    // let data_ptr: *mut T = allocate_init(size, T::default());
+                    
+                    /*
                     match self.parameters.remove(name) {
                         Some(data) => {
                             // 将Vec<T>转换为Box<[T]>然后泄露到堆上获取指针
@@ -58,8 +62,9 @@ where
                         }
                         None => panic!("Parameter {} not found", name),
                     }
-                    // self.storge.insert(name.to_owned(), data_ptr);
-                    // data_ptr
+                    */
+                    let data_ptr: *mut T = allocate_init(size, T::default());
+                    data_ptr
                 }
                 1 => {
                     // kv
