@@ -75,7 +75,9 @@ where T: Copy
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let length: usize = shape.iter().product();
+
         let data = cache.borrow_mut().get(&tensor_name, length);
+        
         let strides = get_strides(&shape);
         Tensor {
             data: data,
@@ -387,6 +389,14 @@ where T: Copy
 
     */
 }
+
+unsafe impl <T:Copy + Default
+    + Send
+    + Sync> Send for Tensor <T> {}
+unsafe impl <T:Copy + Default
+    + Send
+    + Sync> Sync for Tensor <T> {}
+
 
 #[cfg(test)]
 mod test {
