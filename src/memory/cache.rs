@@ -13,8 +13,8 @@ pub struct Cache<T> {
 impl<T> Cache<T>
 where
     T: Copy + Default
-    + Send
-    + Sync
+    // + Send
+    // + Sync
 
 {
     pub fn new(parameters: HashMap<String, Vec<T>>) -> Self {
@@ -106,13 +106,14 @@ where
 
 
 }
-
+/* 
 unsafe impl <T:Copy + Default
     + Send
     + Sync> Send for Cache<T> {}
 unsafe impl <T:Copy + Default
     + Send
-    + Sync>Sync for Cache<T> {}
+    + Sync> Sync for Cache<T> {}
+    */
 // pub static mut cache: Lazy<Cache> = Lazy::new(|| {Cache::new()});
 
 #[cfg(test)]
