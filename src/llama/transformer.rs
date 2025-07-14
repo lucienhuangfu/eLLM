@@ -1,26 +1,25 @@
-use core_affinity;
 use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Instant;
-// use std::sync::Arc;
 use std::sync::Barrier;
-
+use core_affinity;
 use std::cell::SyncUnsafeCell;
+
 // use serde::{Deserialize, Serialize};
 // use hurdles::Barrier;
 // use super::barrier::Barrier;
 // use serde::{Deserialize, Serialize};
 
-use super::super::compiler::operator::Operator;
+
 use crate::kernel::generic::from_f32::FromF32;
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use crate::memory::cache;
-
+use super::super::compiler::operator::Operator;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::linear::Linear;
@@ -35,12 +34,13 @@ pub struct Transformer<T> {
     config: Config,
     // pub layer: Vec<Layer<T>>,
     tokens: Vec<Vec<i32>>,
+    sequences: Vec<usize>,
     start_pos: usize,
-    // word_embedding: Tensor<T>,
-    /// position_embedding: Tensor<T>,
-    // norm_weight: Tensor<T>,
+    word_embedding: Tensor<T>,
+    position_embedding: Tensor<T>,
+    norm_weight: Tensor<T>,
     rms_norm_eps: T,
-    // output_linear: Linear<T>,
+    output_linear: Linear<T>,
     pub cache: Rc<RefCell<Cache<T>>>,
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     scope_name: String,
@@ -80,7 +80,7 @@ where
         let cache = Rc::new(RefCell::new(Cache::new(tensors)));
 
         let operator_queue: Rc<RefCell<Vec<Operator<T>>>> = Rc::new(RefCell::new(Vec::new()));
-        /*
+        
         // Create default tensors
         let word_embedding = Tensor::zeros(
             vec![config.vocab_size, config.hidden_size],
@@ -106,14 +106,15 @@ where
             String::from("model.norm.weight"),
             cache.clone(),
             operator_queue.clone(),
-        );*/
+        );
 
         let module_vec: Vec<TransformerBlock<T>> = Vec::new();
         Transformer {
             // layer: module_vec,
             tokens: Vec::new(),
+            sequences: vec![0; (config.max_position_embeddings + 1) * config.batch_size],
             start_pos: 0,
-            /*
+            
             output_linear: Linear::<T>::new(
                 config.hidden_size,
                 config.vocab_size,
@@ -122,10 +123,10 @@ where
                 cache.clone(),
                 operator_queue.clone()
             ),
-            */
-            // position_embedding: position_embedding,
-            // word_embedding: word_embedding,
-            // norm_weight: norm_weight,
+            
+            position_embedding: position_embedding,
+            word_embedding: word_embedding,
+            norm_weight: norm_weight,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             config: config,
             cpu_num: num_cpus::get(),
@@ -135,9 +136,9 @@ where
         }
     }
 
-    pub fn build(&self) {
+    pub fn build(&mut self) {
         // -> Tensor<T> {
-        /*
+        // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
         let mut layer_vec: Vec<TransformerBlock<T>> = Vec::new();
 
         for i in 0..self.config.num_hidden_layers {
@@ -158,7 +159,7 @@ where
         for (i, layer_module) in layer_vec.iter().enumerate() {
             hidden_state = layer_module.forward(
                 &hidden_state,
-                sequences,
+            self.sequences.as_mut_ptr(),
                 format!("{}.hidden_states.{}", self.scope_name, i),
             );
             // all_hidden_states.push(hidden_states);
@@ -176,7 +177,7 @@ where
             .output_linear
             .forward(&norm_output, format!("{}.lm_head.output", self.scope_name));
 
-        */
+        
         /*
         unsafe {
             logits.reduce(
