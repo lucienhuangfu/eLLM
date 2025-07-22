@@ -195,7 +195,7 @@ where
         // hidden_state
     }
 
-    pub fn start(&self) {
+    pub fn start(&mut self) {
         println!("start");
         // let prompt_operator_num;
         // let data = SyncUnsafeCell::new(DataReader::new(prompt_data));
@@ -287,7 +287,7 @@ mod test {
     use crate::memory::allocator::allocate_init;
     use crate::memory::cache::Cache;
     use crate::ptensor::tensor::Tensor;
-    /*
+
        #[test]
        fn test_model_forward() {
            // let cpu_num =  thread::available_parallelism().unwrap().get();
@@ -295,7 +295,7 @@ mod test {
            config.load_model_config(r"models/Llama-2-7b-hf/config.json");
            config.load_compile_config(r"models/Llama-2-7b-hf.json");
 
-           let model = Transformer::<f32>::new(
+           let mut model = Transformer::<f32>::new(
                config.clone(),
                // word_embedding,
                // position_embedding,
@@ -306,9 +306,9 @@ mod test {
            );
 
            // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-           let mut sequences = allocate_init::<usize>((config.max_position_embeddings + 1)*config.batch_size, 0);
+           // let mut sequences = allocate_init::<usize>((config.max_position_embeddings + 1)*config.batch_size, 0);
            let output_tensor = unsafe {
-               model.build(sequences)
+               model.build()
            };
            /*
            let thread_num: usize = num_cpus::get();
@@ -323,7 +323,7 @@ mod test {
            // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
        }
 
-
+    /*
        #[test]
        fn test_model_forward_f16() {
            let cpu_num = thread::available_parallelism().unwrap().get();
