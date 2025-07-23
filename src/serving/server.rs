@@ -1,11 +1,14 @@
-use axum::{Router, routing::post, Json, http::StatusCode, response::Sse, response::sse::ServerSentEvent, extract::State};
+use async_stream::stream;
+use axum::{
+    extract::State, http::StatusCode, response::sse::Event, response::IntoResponse, response::Sse,
+    routing::post, Json, Router,
+};
 use futures::stream::StreamExt;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use async_stream::stream;
-use rand::Rng;
+use tokio::net::TcpListener;
 // use ellm::llama::generation::generate_text;
-
 
 // OpenAI API request/response models
 #[derive(Debug, Deserialize)]
@@ -63,7 +66,10 @@ struct AppState {
 
 // Fake text generation function for demonstration
 use futures::stream::BoxStream;
-async fn fake_generate_text(_model: &str, prompt: &str) -> Result<BoxStream<'static, String>, Box<dyn std::error::Error>> {
+async fn fake_generate_text(
+    _model: &str,
+    prompt: &str,
+) -> Result<BoxStream<'static, String>, String> {
     use async_stream::stream;
     // Generate fake response stream
     let response = format!("Fake response to: {}", prompt);
@@ -86,8 +92,8 @@ fn format_prompt(messages: &[ChatMessage]) -> String {
 // Handler for chat completions endpoint
 async fn chat_completions(
     State(_state): State<AppState>,
-    Json(request): Json<ChatCompletionRequest>
-) -> Result<impl axum::response::IntoResponse, StatusCode> {
+    Json(request): Json<ChatCompletionRequest>,
+) -> impl IntoResponse {
     // Extract prompt from messages
     let prompt = format_prompt(&request.messages);
     let request_id = format!("chatcmpl-{}", rand::thread_rng().gen::<u64>());
@@ -101,13 +107,12 @@ async fn chat_completions(
         // Create SSE response for streaming
         let sse_stream = stream! {
             let mut generated_text = String::new();
-            let mut finish_reason: Option<String> = None;
 
             // Get LLM generation stream
             let mut generation_stream = match fake_generate_text(&request.model, &prompt).await {
                 Ok(stream) => stream,
                 Err(_) => {
-                    yield Ok(ServerSentEvent::default()
+                    yield Ok::<_, std::convert::Infallible>(Event::default()
                         .event("error")
                         .data("Failed to generate text")
                         .id("error")
@@ -118,9 +123,9 @@ async fn chat_completions(
 
             while let Some(chunk) = generation_stream.next().await {
                 generated_text.push_str(&chunk);
-                
+
                 // Send SSE event with chunk
-                yield Ok(ServerSentEvent::default()
+                yield Ok::<_, std::convert::Infallible>(Event::default()
                     .data(serde_json::to_string(&StreamResponse {
                         id: request_id.clone(),
                         object: "chat.completion.chunk".to_string(),
@@ -138,7 +143,7 @@ async fn chat_completions(
             }
 
             // Send final SSE event with finish reason
-            yield Ok(ServerSentEvent::default()
+            yield Ok::<_, std::convert::Infallible>(Event::default()
                 .data(serde_json::to_string(&StreamResponse {
                     id: request_id.clone(),
                     object: "chat.completion.chunk".to_string(),
@@ -155,7 +160,13 @@ async fn chat_completions(
                 }).unwrap()));
         };
 
-        Ok(Sse::new(sse_stream).keep_alive(Some(ServerSentEvent::default().event("keep-alive").data("ping").retry(Duration::from_secs(10)))))
+        Ok(Sse::new(sse_stream)
+            .keep_alive(
+                axum::response::sse::KeepAlive::new()
+                    .interval(Duration::from_secs(10))
+                    .text("keep-alive"),
+            )
+            .into_response())
     } else {
         // Non-streaming response
         let generated_text = match fake_generate_text(&request.model, &prompt).await {
@@ -165,7 +176,7 @@ async fn chat_completions(
                     result.push_str(&chunk);
                 }
                 result
-            },
+            }
             Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
         };
 
@@ -184,8 +195,9 @@ async fn chat_completions(
                     },
                     finish_reason: Some("stop".to_string()),
                 }],
-            })
-        ))
+            }),
+        )
+            .into_response())
     }
 }
 
@@ -200,12 +212,10 @@ pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(app_state);
 
     // Run the server on port 8000
-    let addr = "0.0.0.0:8000".parse()?;
-    println!("Server running on http://{}", addr);
+    let listener = TcpListener::bind("0.0.0.0:8000").await?;
+    println!("Server running on http://{}", listener.local_addr()?);
 
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
