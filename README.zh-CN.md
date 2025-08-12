@@ -7,7 +7,7 @@
 
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)
 
-##✅ 重要提示
+## ✅ 重要提示
 * 项目正在积极开发中，预计将在 **约 1 个月后** 发布最小原型（Qwen30B）！  
 * 我们目前正在寻找志愿者——如果你感兴趣，请联系 **lucienhuangfu@outlook.com**。
 
