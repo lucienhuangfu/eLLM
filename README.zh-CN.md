@@ -113,3 +113,7 @@
   journal={preprint https://www.researchgate.net/publication/393416965},
   year={2025}
 }
+```
+
+## 📜 开源协议
+这个项目使用 [Apache 2.0 License](LICENSE).

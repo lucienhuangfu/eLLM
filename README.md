@@ -27,7 +27,7 @@ How It Works:
 - Financial statement compliance checks
 - Literary creation / extended writing
 
-## Competitive Advantage: Lowering the Barrier to LLM Private Deployment
+## Competitive Advantage: Lowering the Barrier to Private LLM  Deployment
 
 **eLLM enables small and medium teams to deploy large models with lower costs and more flexible setups.**
 
@@ -108,10 +108,9 @@ If you're interested in the technical details, you can read our paper and cite:
   journal={preprint https://www.researchgate.net/publication/393416965},
   year={2025}
 }
-
+```
 
 ## 📜 License
-
 This project is licensed under the [Apache 2.0 License](LICENSE).
 
 
