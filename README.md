@@ -4,7 +4,7 @@ eLLM can run full-scale MoE models (Qwen3-480B) on a single-socket CPU-only serv
 - Runs lossless long-sequence inferences up to **millions of tokens**
 
 How It Works:
-- Leverages the large memory capacity of CPUs to achieve extreme inference performance through a **space-for-time** optimization strategy
+- Leverages the large memory capacity of CPUs to achieve extreme inference performance through a **space-for-time** design strategy
 
 🌐 Language: [English](README.md) | [简体中文](README.zh-CN.md)
 
