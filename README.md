@@ -1,33 +1,35 @@
-# eLLM: An LLM Inference Framework for Single-Socket CPU-Only Servers
-- Runs full-scale MoE models (Qwen3-480B) with real-time short-text inference capability (~100ms/token)
-- Supports deep reasoning and understanding for long contexts up to **millions of tokens**
+# eLLM: Running Efficient Million-Token LLM Inference on CPUs
+eLLM can run full-scale MoE models (Qwen3-480B) on a single-socket CPU-only server. It
+- Runs real-time short-sequence inferences (100ms/token)
+- Runs lossless long-sequence inferences up to **millions of tokens**
 
 How It Works:
 - Leverages the large memory capacity of CPUs to achieve extreme inference performance through a **space-for-time** optimization strategy
 
 🌐 Language: [English](README.md) | [简体中文](README.zh-CN.md)
 
-## ✅ Important
+## ✅ Call for Contributors
 * The project is under active development, with the **minimum prototype (Qwen30B)** expected to be released in about **1 month**!  
 * We are currently looking for volunteers — if you're interested, please contact **lucienhuangfu@outlook.com**.
 
 **Key Capabilities**:
 * Full MoE model loading with dynamic expert activation
 * Full storage for million-token context (KV Cache)
-* Standard attention inference (token deeply interconnected to the entire context)
+* Standard attention inference (every token can reference the full context)
 
-## Use Case 1: Online Short-Text Inference
+## Use Cases
+### Online Short-Text Inference
 * Search-based Q&A
 * Code completion
 * Chatbots
 
-## Use Case 2: Offline Long-Text Inference (Deep Research)
+### Offline Long-Text Inference (Deep Research)
 - Code auditing / high-risk vulnerability detection
 - Contract review / document compliance checking  
 - Financial statement compliance checks
 - Literary creation / extended writing
 
-## Competitive Advantage: Lowering the Barrier to Private LLM  Deployment
+## Competitive Advantage: Private LLM Deployment Without GPUs
 
 **eLLM enables small and medium teams to deploy large models with lower costs and more flexible setups.**
 
@@ -68,18 +70,18 @@ Machine Comparison: CPU-Only Server vs GPU Server
 
 - MoE is a “store big, compute small” architecture
   - High storage demand: TB-level expert parameters must reside in memory  
-  - Low communication demand: only activated experts are loaded, low bandwidth requirements  
-  - Low compute demand: only active paths are computed, low FLOP requirements  
+  - Low bandwidth demand: only activated experts are loaded 
+  - Low compute demand: only active paths are computed  
 - CPU-only architecture matches MoE inference needs
-  - **Large memory capacity**: easily holds all expert parameters  
-  - **Low memory bandwidth**: few activated experts, low memory bandwidth pressure
+  - **Large storage capacity**: easily holds all expert parameters  
+  - **Low bandwidth capacity**: few activated experts, low memory bandwidth pressure
     - **MRDIMM**: doubles memory bandwidth, fully saturates compute pipelines  
-  - **Low computation power**: ideal for AMX matrix acceleration
+  - **Low computation capacity**: ideal for AMX matrix acceleration
     - **AMX**: matrix instruction extensions, delivering multiple times performance improvement
 
 ## Why eLLM Outperforms Existing Frameworks (vLLM)
 
-### Space-for-Time: Rebuilding the Core Logic of CPU Inference Engines
+### Space-for-Time: Rebuilding CPU Inference Engines
 
 #### 🛠️ Static Resource Allocation
 - Static memory allocation + static graph compilation → static task set
