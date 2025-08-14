@@ -1,4 +1,4 @@
-# eLLM: Running Efficient Million-Token LLM Inference on CPUs
+# eLLM: Infer Qwen3-480B on a CPU in Real Time
 eLLM can run full-scale MoE models (Qwen3-480B) on a single-socket CPU-only server. It
 - Runs real-time short-sequence inferences (100ms/token)
 - Runs lossless long-sequence inferences up to **millions of tokens**
