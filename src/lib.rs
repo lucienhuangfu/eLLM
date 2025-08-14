@@ -4,21 +4,38 @@
 #![feature(sync_unsafe_cell)]
 #![feature(stdarch_x86_avx512)]
 #![feature(stdarch_x86_avx512_f16)]
+#![feature(stdarch_x86_avx512_bf16)]
 #![feature(avx512_target_feature)]
 #![feature(specialization)]
 #![allow(incomplete_features)]
 #![allow(unused_parens)]
-// #![feature(trait_upcasting)]
-// #![feature(asm_const)]
+
 pub mod init;
 pub mod memory;
 pub mod kernel;
 pub mod compiler;
 pub mod ptensor;
-pub mod transformer;
 pub mod llama;
-pub mod runtime;
+
+
 /*
+// Python 绑定模块
+#[cfg(feature = "python")]
+pub mod python_bindings;
+
+// 删除原有PyTransformer定义
+#[cfg(feature = "python")]
+pub mod python_bindings;
+
+/// Python 模块定义
+#[pymodule]
+fn ellm(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_class::<python_bindings::PyTransformer>()?;
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    Ok(())
+}
+
+pub mod runtime;
 pub mod serving;
 */
 

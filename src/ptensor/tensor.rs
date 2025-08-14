@@ -75,7 +75,9 @@ where T: Copy
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let length: usize = shape.iter().product();
+
         let data = cache.borrow_mut().get(&tensor_name, length);
+        
         let strides = get_strides(&shape);
         Tensor {
             data: data,
@@ -388,6 +390,14 @@ where T: Copy
     */
 }
 
+unsafe impl <T:Copy + Default
+    + Send
+    + Sync> Send for Tensor <T> {}
+unsafe impl <T:Copy + Default
+    + Send
+    + Sync> Sync for Tensor <T> {}
+
+
 #[cfg(test)]
 mod test {
     use approx::assert_ulps_eq;
@@ -446,7 +456,7 @@ mod test {
         let v_strides = get_strides(&v_shape);
         let output_strides = get_strides(&output_shape);
 
-        let mut cache: Cache<f32> = Cache::new();
+        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
         let mut operator_queue: Vec<Operator<f32>> = Vec::new();
         let cache_rc = Rc::new(RefCell::new(cache));
 
@@ -484,6 +494,7 @@ mod test {
             head_size,
             head_num,
             k_strides[2],
+            1.0,
             num_cpus::get(),
         ));
 
@@ -529,7 +540,7 @@ mod test {
             result[i] = hidden_size as f32;
         }
 
-        let mut cache: Cache<f32> = Cache::new();
+        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
         let mut operator_queue: Vec<Operator<f32>> = Vec::new();
         let cache_rc = Rc::new(RefCell::new(cache));
 
@@ -621,7 +632,7 @@ mod test {
             result[i + offset] = hidden_size as f32;
         }
 
-        let mut cache: Cache<f32> = Cache::new();
+        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
         let mut operator_queue: Vec<Operator<f32>> = Vec::new();
         let cache_rc = Rc::new(RefCell::new(cache));
 
@@ -716,7 +727,7 @@ mod test {
             1300.0, -55.0, 1512.0, -59.0, 1740.0, -63.0, 1984.0, -67.0, 2244.0,
         ];
 
-        let mut cache: Cache<f32> = Cache::new();
+        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
         let mut operator_queue: Vec<Operator<f32>> = Vec::new();
         let cache_rc = Rc::new(RefCell::new(cache));
 
@@ -796,7 +807,7 @@ mod test {
             1300.0, -55.0, 1512.0, -59.0, 1740.0, -63.0, 1984.0, -67.0, 2244.0,
         ];
 
-        let mut cache: Cache<f32> = Cache::new();
+        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
         let mut operator_queue: Vec<Operator<f32>> = Vec::new();
         let cache_rc = Rc::new(RefCell::new(cache));
 
@@ -864,7 +875,7 @@ mod test {
             .collect();
         let mut output_data: Vec<usize> = vec![0usize; batch_size * sequence_length];
 
-        let mut cache: Cache<f32> = Cache::new();
+        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
         let mut operator_queue: Vec<Operator<f32>> = Vec::new();
         let cache_rc = Rc::new(RefCell::new(cache));
 
@@ -907,7 +918,7 @@ mod test {
         let tensor = Tensor::<f32>::from_cache(
             shape,
             String::from("modelweight"),
-            Rc::new(RefCell::new(Cache::new())),
+            Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new()))),
             Rc::new(RefCell::new(Vec::new())),
         );
 
@@ -938,7 +949,7 @@ mod test {
         //let input_data: Vec<f32> = (0..length).map(|x| x as f32).collect();
         let mut input_data: Vec<f32> = (1..=18).cycle().take(180).map(|x| x as f32).collect();
 
-        let mut cache: Cache<f32> = Cache::new();
+        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
         let mut operator_queue: Vec<Operator<f32>> = Vec::new();
         let mut output_data: Vec<f32> = vec![0.0; length];
         let input_tensor = Tensor::from_cache(

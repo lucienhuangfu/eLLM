@@ -7,43 +7,19 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::f16;
 
-use pLLM::compiler::operator::Operator;
-use pLLM::init::config::Config;
-use pLLM::memory::cache::Cache;
-use pLLM::ptensor::tensor::Tensor;
-use pLLM::llama::model::Model;
-use pLLM::runtime::start::start;
+use eLLM::compiler::operator::Operator;
+use eLLM::init::config::Config;
+use eLLM::memory::cache::Cache;
+use eLLM::ptensor::tensor::Tensor;
+use eLLM::llama::model::Model;
+use eLLM::runtime::start::start;
 
-use pLLM::ptensor::linear::Linear;
+use eLLM::ptensor::linear::Linear;
+use eLLM::llama::rope::precompute_freqs_cis;
 // use ScaleFlow::init::model_loader;
 // use ScaleFlow::serving::data::generate_data;
 
-pub fn build_graph(config: &Config, 
-    sequences: *mut usize,
-    cache: Rc<RefCell<Cache<f16>>>,
-    operator_queue: Rc<RefCell<Vec<Operator<f16>>>>,
-    ) -> Tensor<f16> {
-    let cpu_num = num_cpus::get();
 
-    let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
-    let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
-    let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
-
-    let model = Model::<f16>::new(
-        config.clone(),
-        word_embedding,
-        position_embedding,
-        norm_weight,
-        cpu_num,
-        cache.clone(),
-        operator_queue.clone(),
-    );
-     
-    let output_tensor = unsafe {
-        model.forward(sequences.add(config.batch_size)) 
-    };
-    output_tensor
-}
 
 
 fn build_linear(
