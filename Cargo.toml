@@ -17,6 +17,10 @@ path = "src/serving/server.rs"
 name = "enhanced-server"
 path = "src/serving/enhanced_server.rs"
 
+[[bin]]
+name = "batch-server"
+path = "src/serving/batch_server.rs"
+
 [dependencies]
 pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38"], optional = true }
 numpy = { version = "0.20", optional = true }

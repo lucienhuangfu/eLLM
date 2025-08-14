@@ -4,7 +4,6 @@ use axum::{
     routing::post, Json, Router,
 };
 use crossbeam::channel::{self, Receiver, Sender};
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -13,9 +12,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-// ===== LLM 工作线程相关定义 =====
+// ===== 批处理请求定义 =====
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct BatchRequest {
     id: String,
     model: String,
@@ -40,16 +39,8 @@ struct LLMChunk {
     is_final: bool,
 }
 
-#[derive(Debug)]
-enum LLMResponse {
-    Status {
-        active_tasks: usize,
-        processed_total: u64,
-    },
-    ShutdownAck,
-}
+// ===== 批处理收集器 =====
 
-// 批处理收集器
 struct BatchCollector {
     pending_requests: Arc<Mutex<VecDeque<BatchRequest>>>,
     task_tx: Sender<LLMTask>,
@@ -71,7 +62,7 @@ impl BatchCollector {
         let task_tx = collector.task_tx.clone();
         let batch_size = collector.batch_size;
         let batch_timeout = collector.batch_timeout;
-        
+
         thread::spawn(move || {
             Self::batch_scheduler(pending_requests, task_tx, batch_size, batch_timeout);
         });
@@ -82,12 +73,12 @@ impl BatchCollector {
     fn add_request(&self, request: BatchRequest) {
         let mut pending = self.pending_requests.lock().unwrap();
         pending.push_back(request);
-        
+
         // 如果达到批大小，立即触发处理
         if pending.len() >= self.batch_size {
             let batch: Vec<_> = pending.drain(..self.batch_size).collect();
             drop(pending); // 释放锁
-            
+
             if let Err(e) = self.task_tx.send(LLMTask::ProcessBatch(batch)) {
                 println!("发送批处理任务失败: {:?}", e);
             }
@@ -100,38 +91,42 @@ impl BatchCollector {
         batch_size: usize,
         batch_timeout: Duration,
     ) {
-        println!("批处理调度器启动，批大小: {}, 超时: {:?}", batch_size, batch_timeout);
-        
+        println!(
+            "批处理调度器启动，批大小: {}, 超时: {:?}",
+            batch_size, batch_timeout
+        );
+
         loop {
             thread::sleep(batch_timeout);
-            
+
             let mut pending = match pending_requests.lock() {
                 Ok(p) => p,
                 Err(_) => break,
             };
-            
+
             if pending.is_empty() {
                 continue;
             }
-            
+
             // 检查是否有超时的请求
             let now = Instant::now();
             let mut batch = Vec::new();
-            
+
             while let Some(front) = pending.front() {
-                if now.duration_since(front.timestamp) >= batch_timeout || batch.len() >= batch_size {
+                if now.duration_since(front.timestamp) >= batch_timeout || batch.len() >= batch_size
+                {
                     if let Some(request) = pending.pop_front() {
                         batch.push(request);
                     }
                 } else {
                     break;
                 }
-                
+
                 if batch.len() >= batch_size {
                     break;
                 }
             }
-            
+
             if !batch.is_empty() {
                 drop(pending); // 释放锁
                 println!("调度器发送批处理任务，批大小: {}", batch.len());
@@ -141,15 +136,18 @@ impl BatchCollector {
                 }
             }
         }
-        
+
         println!("批处理调度器退出");
     }
+}
 
-// LLM 工作器 - 批处理版本
+// ===== LLM 工作器 =====
+
 struct LLMWorker {
     id: usize,
     task_rx: Receiver<LLMTask>,
-    processed_count: u64,
+    processed_batches: u64,
+    processed_requests: u64,
     start_time: Instant,
 }
 
@@ -158,7 +156,8 @@ impl LLMWorker {
         LLMWorker {
             id,
             task_rx,
-            processed_count: 0,
+            processed_batches: 0,
+            processed_requests: 0,
             start_time: Instant::now(),
         }
     }
@@ -173,7 +172,7 @@ impl LLMWorker {
                         LLMTask::ProcessBatch(batch) => {
                             println!("Worker {} 处理批次，大小: {}", self.id, batch.len());
                             self.process_batch(batch);
-                            self.processed_count += 1;
+                            self.processed_batches += 1;
                         }
                         LLMTask::GetStatus => {
                             // 状态查询不需要处理，会有专门的处理逻辑
@@ -192,64 +191,92 @@ impl LLMWorker {
         }
 
         println!(
-            "Worker {} 结束，处理了 {} 个批次",
-            self.id, self.processed_count
+            "Worker {} 结束，处理了 {} 个批次，总共 {} 个请求",
+            self.id, self.processed_batches, self.processed_requests
         );
     }
 
-    fn process_batch(&self, batch: Vec<BatchRequest>) {
-        println!("Worker {} 开始处理批次，包含 {} 个请求", self.id, batch.len());
-        
-        // 批量处理 - 可以进行批量优化，如并行计算、内存复用等
-        for (idx, request) in batch.iter().enumerate() {
-            println!("Worker {} 处理批次中的请求 {}/{}: {}", 
-                self.id, idx + 1, batch.len(), request.id);
-            
-            // 模拟批处理的LLM推理
-            let result = self.process_llm_request(&request);
-            
-            // 发送结果
-            if request.stream {
-                if let Some(ref tx) = request.response_tx {
-                    // 分段发送结果
-                    let words: Vec<&str> = result.split_whitespace().collect();
-                    for (i, word) in words.iter().enumerate() {
-                        let chunk = LLMChunk {
-                            request_id: request.id.clone(),
-                            content: format!("{} ", word),
-                            is_final: i == words.len() - 1,
-                        };
-                        if tx.send(chunk).is_err() {
-                            break;
-                        }
-                        thread::sleep(Duration::from_millis(30)); // 批处理模式下更快的流式输出
-                    }
-                }
-            } else {
-                if let Some(ref tx) = request.completion_tx {
-                    let _ = tx.send(result);
-                }
-            }
+    fn process_batch(&mut self, batch: Vec<BatchRequest>) {
+        let batch_size = batch.len();
+        println!(
+            "Worker {} 开始处理批次，包含 {} 个请求",
+            self.id, batch_size
+        );
+
+        // 模拟批处理的预处理阶段
+        let batch_start = Instant::now();
+
+        // 在实际应用中，这里可以进行批量优化：
+        // 1. 批量分词和编码
+        // 2. 批量推理计算
+        // 3. 并行解码
+        // 4. 内存复用和优化
+
+        // 批量处理所有请求
+        let batch_results = self.batch_inference(&batch);
+
+        // 分发结果给各个请求
+        for (request, result) in batch.into_iter().zip(batch_results.iter()) {
+            self.send_result(request, result.clone());
         }
-        
-        println!("Worker {} 完成批次处理", self.id);
+
+        self.processed_requests += batch_size as u64;
+
+        let batch_duration = batch_start.elapsed();
+        println!(
+            "Worker {} 完成批次处理，耗时: {:?}，平均每请求: {:?}",
+            self.id,
+            batch_duration,
+            batch_duration / batch_size as u32
+        );
     }
 
-    fn process_llm_request(&self, request: &BatchRequest) -> String {
-        // 在批处理模式下，可以进行更多优化
-        // 比如并行处理、内存复用、模型状态共享等
-        
-        // 模拟批处理优化后的处理时间（比单个处理更高效）
-        let base_time = Duration::from_millis(200); // 批处理基础时间
-        let per_request_time = Duration::from_millis(50); // 每个请求的增量时间
-        let processing_time = base_time + per_request_time;
-        
-        thread::sleep(processing_time);
+    fn batch_inference(&self, batch: &[BatchRequest]) -> Vec<String> {
+        // 模拟批处理推理
+        // 在实际实现中，这里会进行真正的批量LLM推理
 
-        format!(
-            "Worker {} batch response to '{}' using model {}: This is a batch-processed response from the LLM. Batch processing enables better resource utilization and throughput.",
-            self.id, request.prompt, request.model
-        )
+        let batch_size = batch.len();
+        println!("Worker {} 执行批量推理，批大小: {}", self.id, batch_size);
+
+        // 批处理通常有更好的并行效率
+        // 基础时间 + 每个请求的边际时间
+        let base_time = Duration::from_millis(300);
+        let per_request_time = Duration::from_millis(30);
+        let total_time = base_time + per_request_time * batch_size as u32;
+
+        thread::sleep(total_time);
+
+        // 为每个请求生成结果
+        batch.iter().map(|request| {
+            format!(
+                "Worker {} batch response to '{}' using model {}: This is a batch-processed response (batch size: {}). Batch processing enables better resource utilization and higher throughput.",
+                self.id, request.prompt, request.model, batch_size
+            )
+        }).collect()
+    }
+
+    fn send_result(&self, request: BatchRequest, result: String) {
+        if request.stream {
+            if let Some(tx) = request.response_tx {
+                // 分段发送结果
+                let words: Vec<&str> = result.split_whitespace().collect();
+                for (i, word) in words.iter().enumerate() {
+                    let chunk = LLMChunk {
+                        request_id: request.id.clone(),
+                        content: format!("{} ", word),
+                        is_final: i == words.len() - 1,
+                    };
+                    if tx.send(chunk).is_err() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(20)); // 批处理模式下更快的流式输出
+                }
+            }
+        } else {
+            if let Some(tx) = request.completion_tx {
+                let _ = tx.send(result);
+            }
+        }
     }
 }
 
@@ -326,9 +353,7 @@ impl AppState {
             });
         }
 
-        AppState {
-            batch_collector,
-        }
+        AppState { batch_collector }
     }
 }
 
@@ -353,18 +378,18 @@ async fn chat_completions(
         // 流式响应
         let (chunk_tx, chunk_rx) = channel::unbounded::<LLMChunk>();
 
-        let task = LLMTask::Generate {
+        let batch_request = BatchRequest {
             id: request_id.clone(),
             model: request.model.clone(),
             prompt,
             stream: true,
             response_tx: Some(chunk_tx),
             completion_tx: None,
+            timestamp: Instant::now(),
         };
 
-        if state.llm_task_tx.send(task).is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Worker unavailable").into_response();
-        }
+        // 添加到批处理收集器
+        state.batch_collector.add_request(batch_request);
 
         let stream_response = stream! {
             loop {
@@ -410,18 +435,18 @@ async fn chat_completions(
         // 非流式响应
         let (completion_tx, completion_rx) = oneshot::channel::<String>();
 
-        let task = LLMTask::Generate {
+        let batch_request = BatchRequest {
             id: request_id.clone(),
             model: request.model.clone(),
             prompt,
             stream: false,
             response_tx: None,
             completion_tx: Some(completion_tx),
+            timestamp: Instant::now(),
         };
 
-        if state.llm_task_tx.send(task).is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Worker unavailable").into_response();
-        }
+        // 添加到批处理收集器
+        state.batch_collector.add_request(batch_request);
 
         match completion_rx.await {
             Ok(content) => {
@@ -453,7 +478,8 @@ async fn chat_completions(
 async fn status() -> impl IntoResponse {
     Json(serde_json::json!({
         "status": "running",
-        "workers": "shared task queue"
+        "mode": "batch_processing",
+        "info": "Requests are collected and processed in batches for better efficiency"
     }))
 }
 
@@ -469,10 +495,18 @@ fn generate_id() -> String {
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("启动共享任务队列的 OpenAI 兼容服务器...");
+    println!("启动批处理模式的 OpenAI 兼容服务器...");
 
-    let worker_count = 2; // 2个worker共享任务队列
-    let app_state = AppState::new(worker_count);
+    let worker_count = 2; // 2个worker
+    let batch_size = 4; // 每批最多4个请求
+    let batch_timeout_ms = 100; // 100ms超时
+
+    println!("批处理配置:");
+    println!("  - Worker数量: {}", worker_count);
+    println!("  - 批大小: {}", batch_size);
+    println!("  - 批超时: {}ms", batch_timeout_ms);
+
+    let app_state = AppState::new(worker_count, batch_size, batch_timeout_ms);
 
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))
@@ -483,7 +517,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("服务器运行在 http://0.0.0.0:8000");
     println!("API 端点:");
-    println!("  POST /v1/chat/completions - OpenAI 兼容的聊天完成");
+    println!("  POST /v1/chat/completions - OpenAI 兼容的聊天完成 (批处理模式)");
     println!("  GET  /status - 服务器状态");
 
     axum::serve(listener, app).await?;
