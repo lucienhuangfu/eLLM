@@ -13,6 +13,7 @@ pub fn chunk_map<T>(
 
     unsafe {
         match shapes.len() {
+            /* 
             2 => {
                 for i in 0..shapes[0] {
                     let input_stride0 = input_data.add(i * strides[0]);
@@ -26,7 +27,7 @@ pub fn chunk_map<T>(
                     ));
                 }
                 tasks
-            }
+            }*/
             3 => {
                 for i in 0..shapes[0] {
                     let input_stride0 = input_data.add(i * strides[0]);
@@ -77,9 +78,6 @@ mod test {
     // use std::f16;
     use num_traits::Float;
 
-    use crate::kernel::generic::from_usize::FromUsize;
-    use std::ops::{Add, Div, Mul, Neg, Sub};
-
     use super::*;
     use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
     use crate::ptensor::tensor_utils::get_strides;
@@ -94,34 +92,15 @@ mod test {
     }
 
     #[test]
-    fn test2dimension() {
-        let head_size = 128;
-        let head_num = 64;
-        let batch_size = 16;
-        let sequence_length = 256;
-        let hidden_size = 8192;
-
-        let shapes = vec![batch_size, hidden_size];
-        let length = shapes.iter().product();
-        let strides = get_strides(&shapes);
-        let data = vec![1.0; length];
-        let mut output = vec![0.0; length];
-        let tasks = chunk_map(shapes, strides, data.as_ptr(), output.as_mut_ptr());
-        for (input, output) in tasks {
-            fun(input, output, head_size);
-        }
-        //println!("{:?}", output);
-    }
-
-    #[test]
     fn test3dimension() {
         let head_size = 128;
         let head_num = 64;
         let batch_size = 16;
         let sequence_length = 256;
         let hidden_size = 8192;
+        let sequence_threshold = 64;
 
-        let shapes = vec![batch_size, head_num, head_size];
+        let shapes = vec![sequence_threshold, batch_size, hidden_size];
         let length = shapes.iter().product();
         let strides = get_strides(&shapes);
         let data = vec![1.0; length];
@@ -135,20 +114,22 @@ mod test {
 
     #[test]
     fn test4dimension() {
-        let inner_size = 32;
         let head_size = 128;
         let head_num = 64;
         let batch_size = 16;
         let sequence_length = 256;
+        let hidden_size = 8192;
+        let sequence_threshold = 64;
 
-        let shapes = vec![batch_size, head_num, head_size, inner_size];
+
+        let shapes = vec![sequence_threshold, batch_size, head_num, head_size];
         let length = shapes.iter().product();
         let strides = get_strides(&shapes);
         let data = vec![1.0; length];
         let mut output = vec![0.0; length];
         let tasks = chunk_map(shapes, strides, data.as_ptr(), output.as_mut_ptr());
         for (input, output) in tasks {
-            fun(input, output, inner_size);
+            fun(input, output, head_size);
         }
         //println!("{:?}", output);
     }
