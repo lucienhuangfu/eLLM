@@ -11,6 +11,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 pub struct LookupRMSMap<T> {
     chunks: Vec<(ConstPtr<T>, MutPtr<T>)>,
     word_embedding: ConstPtr<T>,
+    // sequences 维度是 [sequence, batch]
     sequences: ConstPtr<usize>,
     length: usize,
     weight: ConstPtr<T>,
@@ -52,13 +53,27 @@ impl<T: Sqrt> LookupRMSMap<T> {
         self.chunks = chunks;
     }
 
-    // Run the map for a given batch size, position index, and thread ID
-    pub fn run(&self, batch_size: usize, position_index: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(batch_size, self.cpu_num, thread_id) {
+    // Run the map for a given batch size, position interval, and thread ID
+    pub fn run(&self, batch_size: usize, position_start: usize, position_interval: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(batch_size * position_interval, self.cpu_num, thread_id) {
+            
+            // Calculate the current pointer for sequences
             let current = self
                 .sequences
                 .ptr
-                .wrapping_add(self.max_batch_size * position_index);
+                .wrapping_add(self.max_batch_size * position_start);
+            
+            // 前段
+
+            
+            
+            // 中段
+
+
+
+            // 后段
+
+
             for i in begin..end {
                 let (_, b) = self.chunks.get(i).unwrap();
                 unsafe {
@@ -67,6 +82,8 @@ impl<T: Sqrt> LookupRMSMap<T> {
                     self.compute(a_ptr, b.ptr, self.length);
                 }
             }
+
+
         }
     }
 }
