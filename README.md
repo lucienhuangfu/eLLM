@@ -105,6 +105,7 @@ Machine Comparison: CPU-Only Server vs GPU Server
 * [ ] DeepSeek (coming soon)
 * [ ] gpt-oss
 
+## Github: https://github.com/lucienhuangfu/eLLM
 ## 📄 Paper
 
 If you're interested in the technical details, you can read our paper and cite:
@@ -117,7 +118,6 @@ If you're interested in the technical details, you can read our paper and cite:
   year         = {2025},
   url          = {https://www.researchgate.net/publication/393416965}
 }
-
 ```
 
 ## 📜 License
