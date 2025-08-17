@@ -13,7 +13,7 @@ How It Works:
 * The project is under active development, with the **minimum prototype (Qwen30B)** expected to be released in about **1 month**!  
 * We are looking for volunteers — if you're interested, please contact **lucienhuangfu@outlook.com**.
 * We are looking for funding — if you're interested, please contact **lucienhuangfu@outlook.com**.
-* 
+  
 **Key Capabilities**:
 * Full MoE model loading with dynamic expert activation
 * Full storage for million-token context (KV Cache)
