@@ -3,15 +3,17 @@ eLLM can run full MoE models (Qwen3-480B) on a single-socket CPU-only server. It
 - Runs real-time short-sequence inferences (100ms/token)
 - Runs lossless long-sequence inferences up to **millions of tokens**
 
-How It Works:
-- Leverages the large memory capacity of CPUs to achieve extreme inference performance through a **space-for-time** design strategy
+How It Works:  
+- Leverages the large memory capacity of CPUs with a **space-for-time** strategy design strategy to maximize inference efficiency
+- Introduces an **elastic computation graph** that replaces dynamic computation graphs to eliminate costly preparations before computation. 
 
 🌐 Language: [English](README.md) | [简体中文](README.zh-CN.md)
 
-## ✅ Call for Contributors
+## ✅ Call for Contributors & Funding
 * The project is under active development, with the **minimum prototype (Qwen30B)** expected to be released in about **1 month**!  
-* We are currently looking for volunteers — if you're interested, please contact **lucienhuangfu@outlook.com**.
-
+* We are looking for volunteers — if you're interested, please contact **lucienhuangfu@outlook.com**.
+* We are looking for funding — if you're interested, please contact **lucienhuangfu@outlook.com**.
+* 
 **Key Capabilities**:
 * Full MoE model loading with dynamic expert activation
 * Full storage for million-token context (KV Cache)
@@ -79,7 +81,7 @@ Machine Comparison: CPU-Only Server vs GPU Server
   - **Low computation capacity**: ideal for AMX matrix acceleration
     - **AMX**: matrix instruction extensions, delivering multiple times performance improvement
 
-## Why eLLM Outperforms Existing Frameworks (vLLM)
+## Why eLLM Outperforms Existing Frameworks (vLLM, Llama.cpp)
 
 ### Space-for-Time: Rebuilding CPU Inference Engines
 
@@ -92,6 +94,10 @@ Machine Comparison: CPU-Only Server vs GPU Server
 - Contiguous memory layout: maximizes KV Cache bandwidth utilization  
 - Dynamic task scheduling: supports irregular input  
 - Dynamic expert activation: only computes necessary paths, saving compute
+
+## Performance  
+- Preliminary tests indicate that it runs approximately **30% faster than Llama.cpp**.  
+- More detailed benchmarking results will be released soon. 
 
 ## Roadmap
 * [ ] Qwen (30B, 480B) (coming soon)
