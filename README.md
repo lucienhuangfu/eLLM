@@ -110,12 +110,14 @@ Machine Comparison: CPU-Only Server vs GPU Server
 If you're interested in the technical details, you can read our paper and cite:
 
 ```bibtex
-@article{ellm2025,
-  title={eLLM: Achieving Lossless Million-Token LLM Inference on CPUs Faster Than GPUs},
-  author={Yaguang Huangfu},
-  journal={preprint https://www.researchgate.net/publication/393416965},
-  year={2025}
+@misc{huangfu2025ellm,
+  title        = {eLLM: Achieving Lossless Million-Token LLM Inference on CPUs Faster Than GPUs},
+  author       = {Huangfu, Yaguang},
+  howpublished = {Preprint, ResearchGate},
+  year         = {2025},
+  url          = {https://www.researchgate.net/publication/393416965}
 }
+
 ```
 
 ## 📜 License
