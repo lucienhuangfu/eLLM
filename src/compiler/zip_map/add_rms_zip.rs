@@ -12,6 +12,7 @@ use crate::kernel;
 #[derive(Clone)]
 pub struct AddRMSZipMap<T> {
     chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>,
+    max_batch_size: usize,
     length: usize,
     weight: ConstPtr<T>,
     eps: T,
@@ -21,10 +22,11 @@ pub struct AddRMSZipMap<T> {
 impl<T> AddRMSZipMap<T> 
 where T: Sqrt
 {
-    pub fn new(length: usize, weight: *const T, eps: T, cpu_num: usize) -> Self {
+    pub fn new(max_batch_size: usize, length: usize, weight: *const T, eps: T, cpu_num: usize) -> Self {
         Self {
             chunks: vec![],
-            length: length,
+            max_batch_size,
+            length,
             weight: ConstPtr { ptr: weight },
             eps: eps,
             cpu_num: cpu_num,
@@ -35,11 +37,26 @@ where T: Sqrt
         self.chunks = chunks;
     }
 
-    pub fn run(&self, batch_size: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(batch_size, self.cpu_num, thread_id) {
-            for &(a, b, c) in self.chunks.get(begin..end).unwrap() {
-                self.compute(a.ptr, b.ptr, c.ptr);
+    pub fn run(&self,  batch_size: usize, position_start: usize, position_interval: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(batch_size*position_interval , self.cpu_num, thread_id) {
+            // 从begin得到对应的坐标
+            let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
+            for i in begin..end {
+                let index = row_index * self.max_batch_size + col_index; 
+                unsafe {
+                     let (a, b, c) = self.chunks.get_unchecked(index);
+                    self.compute(a.ptr, b.ptr, c.ptr);
+                }
+                if col_index == batch_size {
+                    col_index = 0;
+                    row_index += 1;
+                }
             }
+            
+            
+            // for &(a, b, c) in self.chunks.get(begin..end).unwrap() {
+            //     self.compute(a.ptr, b.ptr, c.ptr);
+            // }
         }
     }
 }

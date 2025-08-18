@@ -10,6 +10,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 #[derive(Clone)]
 pub struct LookupRMSMap<T> {
     chunks: Vec<(ConstPtr<T>, MutPtr<T>)>,
+        max_batch_size: usize,
     word_embedding: ConstPtr<T>,
     // sequences 维度是 [sequence, batch]
     sequences: ConstPtr<usize>,
@@ -18,20 +19,20 @@ pub struct LookupRMSMap<T> {
     eps: T,
     cpu_num: usize,
     hidden_size: usize,
-    max_batch_size: usize,
+
 }
 
 impl<T: Sqrt> LookupRMSMap<T> {
     // Constructor for LookupRMSMap
     pub fn new(
+        max_batch_size: usize,
         length: usize,
         weight: *const T,
         eps: T,
-        cpu_num: usize,
         word_embedding: *const T,
         sequences: *const usize,
         hidden_size: usize,
-        max_batch_size: usize,
+        cpu_num: usize,
     ) -> Self {
         Self {
             chunks: vec![],
@@ -56,10 +57,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
     // Run the map for a given batch size, position interval, and thread ID
     pub fn run(&self, batch_size: usize, position_start: usize, position_interval: usize, thread_id: usize) {
         if let Some((begin, end)) = assign(batch_size * position_interval, self.cpu_num, thread_id) {
-            let (beg_quotient, beg_remainder) = (begin / self.max_batch_size, begin % self.max_batch_size);     
-           
-            let mut col_index = beg_remainder;
-            let mut row_index = beg_quotient;
+            let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
 
             // Calculate the current pointer for sequences
             let current = self
@@ -69,8 +67,9 @@ impl<T: Sqrt> LookupRMSMap<T> {
             
             for i in begin..end {
                 let index = row_index * self.max_batch_size + col_index;
-                let (_, b) = self.chunks.get(index).unwrap();
+                
                 unsafe {
+                    let (_, b) = self.chunks.get_unchecked(index);
                     let p = *current.add(index);
                     let a_ptr = self.word_embedding.ptr.add(p * self.hidden_size);
                     self.compute(a_ptr, b.ptr, self.length);
