@@ -56,35 +56,32 @@ impl<T: Sqrt> LookupRMSMap<T> {
     // Run the map for a given batch size, position interval, and thread ID
     pub fn run(&self, batch_size: usize, position_start: usize, position_interval: usize, thread_id: usize) {
         if let Some((begin, end)) = assign(batch_size * position_interval, self.cpu_num, thread_id) {
-            
+            let (beg_quotient, beg_remainder) = (begin / self.max_batch_size, begin % self.max_batch_size);     
+           
+            let mut col_index = beg_remainder;
+            let mut row_index = beg_quotient;
+
             // Calculate the current pointer for sequences
             let current = self
                 .sequences
                 .ptr
                 .wrapping_add(self.max_batch_size * position_start);
             
-            // 前段
-
-            
-            
-            // 中段
-
-
-
-            // 后段
-
-
             for i in begin..end {
-                let (_, b) = self.chunks.get(i).unwrap();
+                let index = row_index * self.max_batch_size + col_index;
+                let (_, b) = self.chunks.get(index).unwrap();
                 unsafe {
-                    let p = *current.add(i);
+                    let p = *current.add(index);
                     let a_ptr = self.word_embedding.ptr.add(p * self.hidden_size);
                     self.compute(a_ptr, b.ptr, self.length);
                 }
+                if col_index == batch_size {
+                    col_index = 0;
+                    row_index += 1;
+                }
             }
-
-
         }
+
     }
 }
 
