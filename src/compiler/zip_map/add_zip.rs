@@ -12,6 +12,7 @@ use crate::kernel;
 #[derive(Clone)]
 pub struct AddZipMap <T> {
     chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>,
+    max_batch_size: usize,
     length: usize,
     h_num: usize, 
     cpu_num: usize
@@ -21,15 +22,17 @@ impl <T> AddZipMap <T>
 where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + Div<Output = T> + Neg<Output = T> + Sigmoid<T>,
 {
     pub fn new(
+        max_batch_size: usize,
         length: usize,
         h_num: usize,
-        cpu_num:usize
-    ) -> Self { 
+        cpu_num: usize
+    ) -> Self {
         Self {
             chunks: vec![],
-            length: length,
-            h_num: h_num,
-            cpu_num:cpu_num
+            max_batch_size,
+            length,
+            h_num,
+            cpu_num
         }
     }
 
@@ -39,13 +42,32 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
     
     pub fn run(&self,    
             batch_size: usize, 
-            position: usize,
+            position_begin: usize,
+            position_interval: usize,
             thread_id: usize) {
-        if let Some((begin, end)) = assign(batch_size*self.h_num, self.cpu_num, thread_id) {
-            // let begin = 0;
-            // let end = batch_size;
-            for &(a, b, c) in self.chunks.get(begin..end).unwrap() {
-                self.compute(a.ptr, b.ptr, c.ptr);
+        let stride = batch_size * self.h_num;
+        let max_stride = self.max_batch_size * self.h_num;
+        if let Some((begin, end)) = assign(position_interval * stride, self.cpu_num, thread_id) {
+      
+            // 从begin得到对应的坐标
+            let (mut high_index, mut _index) = (begin / stride, begin % stride);
+            let (mut row_index, mut col_index) = (_index / batch_size, _index % batch_size);
+
+            // 遍历每个chunk
+            for i in begin..end {
+                let index = high_index* max_stride + row_index * self.max_batch_size + col_index;
+                unsafe {
+                    let (a, b, c) = self.chunks.get_unchecked(index);
+                    self.compute(a.ptr, b.ptr, c.ptr);
+                }
+                if col_index == self.h_num {
+                    col_index = 0;
+                    row_index += 1;
+                }
+                if row_index ==  batch_size {
+                    row_index = 0;
+                    high_index += 1;
+                }
             }
         }
 

@@ -14,6 +14,7 @@ pub struct ComplexZipMap<T>
 //    T: Copy + Default + Add<Output = T>+ Sub<Output = T> + Mul<Output = T> + Div<Output = T> + Neg<Output = T> + Sigmoid<T>,
 {
     chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>,
+    max_batch_size: usize,
     head_size: usize,
     head_num: usize,
     sequence_stride: usize,
@@ -26,6 +27,7 @@ where
 
 {
     pub fn new(
+        max_batch_size: usize,
         head_size: usize,
         head_num: usize,
         batch_size: usize,
@@ -33,6 +35,7 @@ where
     ) -> Self {
         Self {
             chunks: vec![],
+            max_batch_size: max_batch_size,
             head_size: head_size,
             head_num: head_num,
             sequence_stride: batch_size * head_num,
@@ -43,21 +46,8 @@ where
     pub fn set_chunk(&mut self, chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>) {
         self.chunks = chunks;
     }
-    /*  original version
-    fn run(&self,
-            batch_size: usize,
-            position: usize ) {
-        // let (begin, end) = SELF::assign(batch_size, cpu_num, thread_id);
-        let mut index = 0;
-        let col_size = batch_size * self.head_num;
-        for p in 0..position {
-            for (a, b, c) in self.chunks.get(index..(index+col_size)).unwrap() {
-                self.compute(a.ptr, b.ptr, c.ptr);
-            }
-            index += self.maximum_size;
-        }
-    }
-    */
+
+    /* 
     //new version
     pub fn run(&self, batch_size: usize, position: usize, thread_id: usize) {
         let index = position * self.sequence_stride;
@@ -72,8 +62,43 @@ where
                 self.compute(a.ptr, b.ptr, c.ptr);
             }
         }
+    }*/
 
+        pub fn run(&self,    
+            batch_size: usize, 
+            position_begin: usize,
+            position_interval: usize,
+            thread_id: usize) {
+        let stride = batch_size * self.head_num;
+        let max_stride = self.max_batch_size * self.head_num;
+        if let Some((begin, end)) = assign(position_interval * stride, self.cpu_num, thread_id) {
+      
+            // 从begin得到对应的坐标
+            let (mut high_index, mut _index) = (begin / stride, begin % stride);
+            let (mut row_index, mut col_index) = (_index / batch_size, _index % batch_size);
+
+            // 遍历每个chunk
+            for i in begin..end {
+                let index = high_index* max_stride + row_index * self.max_batch_size + col_index;
+                unsafe {
+                    let (a, b, c) = self.chunks.get_unchecked(index);
+                    self.compute(a.ptr, b.ptr, c.ptr);
+                }
+                if col_index == self.head_num {
+                    col_index = 0;
+                    row_index += 1;
+                }
+                if row_index ==  batch_size {
+                    row_index = 0;
+                    high_index += 1;
+                }
+            }
+        }
     }
+
+
+
+
 }
 // unsafe impl<T: Float> Send for ComplexZipMap<T> {}
 // unsafe impl<T: Float> Sync for ComplexZipMap<T> {}
