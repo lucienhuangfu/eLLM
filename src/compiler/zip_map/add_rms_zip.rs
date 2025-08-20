@@ -54,10 +54,6 @@ where T: Sqrt
                 }
             }
             
-            
-            // for &(a, b, c) in self.chunks.get(begin..end).unwrap() {
-            //     self.compute(a.ptr, b.ptr, c.ptr);
-            // }
         }
     }
 }
@@ -137,19 +133,25 @@ mod test {
 
     #[test]
     fn test_add_rms_zip() {
-        let shapes = vec![10, 18];
-        let input_strides1 = vec![18, 1];
-        let input_strides2 = vec![18, 1];
-        let output_strides = vec![18, 1];
+
+
+        let sequence_threshold = 64;
+        let batch_size = 10;
+        let hidden_size = 18;
+
+        let shapes = vec![sequence_threshold, batch_size, hidden_size];
+        let input_strides1 = vec![batch_size * hidden_size, hidden_size, 1];
+        let input_strides2 = vec![batch_size * hidden_size, hidden_size, 1];
+        let output_strides = vec![batch_size * hidden_size, hidden_size, 1];
         let length = shapes.iter().product(); // 总元素数量
-        let batch_size = 10; // 每次批处理 10 个元素
+        // let batch_size = 10; // 每次批处理 10 个元素
         let position_size = 0; // 起始位置，根据实际情况可以修改
 
         // 创建模拟的输入和输出数据
         //let input_data: Vec<f32> = (0..length).map(|x| x as f32).collect();
         let input_data1: Vec<f32> = (0..=17).cycle().take(180).map(|x| x as f32).collect();
-        let input_data2 = [1.0f32; 180];
-        let weight = [1.0f32; 180];
+        let input_data2 = vec![1.0f32; length];
+        let weight = vec![1.0f32; hidden_size];
         let eps = 1e-6;
         let mut output_data: Vec<f32> = vec![0.0; length];
 
@@ -165,7 +167,13 @@ mod test {
         );
         // 使用这些块和长度初始化 ArgmaxMap
         let thread_num: usize = num_cpus::get();
-        let mut argmax_operator = AddRMSZipMap::new(18, weight.as_ptr(), eps, thread_num);
+        let mut argmax_operator = AddRMSZipMap::new(
+            batch_size,
+            18,
+            weight.as_ptr(),
+            eps,
+            thread_num,
+        );
         let result = [
             0.09238425642251968,
             0.18476851284503937,
@@ -189,11 +197,11 @@ mod test {
         argmax_operator.set_chunk(chunks);
 
         for i in 0..thread_num {
-            argmax_operator.run(batch_size, i);
+            argmax_operator.run(batch_size, position_size,sequence_threshold, i);
         }
 
         // 如需打印输出数据，请取消以下注释
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
-        println!("{:?}", output_data);
+        // println!("{:?}", output_data);
     }
 }

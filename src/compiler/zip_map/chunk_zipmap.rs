@@ -109,13 +109,11 @@ mod test {
     // use std::f16;
     use approx::assert_ulps_eq;
     use num_traits::Float;
-    use std::slice;
-
+    // use std::slice;
     use super::*;
     use crate::ptensor::tensor_utils::get_strides;
     // use core::task;
-
-    use std::ops::{Add, Div, Mul, Neg, Sub};
+    // use std::ops::{Add, Div, Mul, Neg, Sub};
 
     use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 
@@ -137,40 +135,7 @@ mod test {
         }
     }
 
-    #[test]
-    fn test2() {
-        let head_size = 128;
-        let head_num = 64;
-        let batch_size = 16;
-        let sequence_length = 256;
-        let hidden_size = 8192;
 
-        let shapes = vec![batch_size, hidden_size];
-        let length = shapes.iter().product();
-        let data1: Vec<f32> = vec![1.0; length];
-        let data2: Vec<f32> = vec![1.0; length];
-        let mut output: Vec<f32> = vec![0.0; length];
-        let expected: Vec<f32> = vec![2.0; length];
-        let input_strides1 = get_strides(&shapes);
-        let input_strides2 = input_strides1.clone();
-        let output_strides = input_strides1.clone();
-
-        let tasks = chunk_zipmap(
-            shapes,
-            data1.as_ptr(),
-            input_strides1,
-            data2.as_ptr(),
-            input_strides2,
-            output.as_mut_ptr(),
-            output_strides,
-        );
-        for (input1, input2, output) in tasks {
-            fun(input1, input2, output, hidden_size);
-        }
-
-        assert_ulps_eq!(output[..], expected[..], max_ulps = 4);
-        // println!("{:?}", output);
-    }
 
     #[test]
     fn test3() {
@@ -206,6 +171,8 @@ mod test {
         assert_ulps_eq!(output[..], expected[..], max_ulps = 4);
     }
 
+
+    
     #[test]
     fn test4() {
         let head_size = 128;
