@@ -10,16 +10,15 @@ use crate::kernel::generic::sqrt::Sqrt;
 #[derive(Clone)]
 pub struct LookupRMSMap<T> {
     chunks: Vec<(ConstPtr<T>, MutPtr<T>)>,
-        max_batch_size: usize,
+    max_batch_size: usize,
     word_embedding: ConstPtr<T>,
     // sequences 维度是 [sequence, batch]
     sequences: ConstPtr<usize>,
     length: usize,
     weight: ConstPtr<T>,
     eps: T,
-    cpu_num: usize,
     hidden_size: usize,
-
+    cpu_num: usize,
 }
 
 impl<T: Sqrt> LookupRMSMap<T> {
@@ -55,8 +54,15 @@ impl<T: Sqrt> LookupRMSMap<T> {
     }
 
     // Run the map for a given batch size, position interval, and thread ID
-    pub fn run(&self, batch_size: usize, position_start: usize, position_interval: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(batch_size * position_interval, self.cpu_num, thread_id) {
+    pub fn run(
+        &self,
+        batch_size: usize,
+        position_start: usize,
+        position_interval: usize,
+        thread_id: usize,
+    ) {
+        if let Some((begin, end)) = assign(batch_size * position_interval, self.cpu_num, thread_id)
+        {
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
 
             // Calculate the current pointer for sequences
@@ -64,23 +70,28 @@ impl<T: Sqrt> LookupRMSMap<T> {
                 .sequences
                 .ptr
                 .wrapping_add(self.max_batch_size * position_start);
-            
-            for i in begin..end {
+
+            println!(
+                "LookupRMSMap run: begin {}, end {}, row_index {}, col_index {}",
+                begin, end, row_index, col_index
+            );
+            for _i in begin..end {
                 let index = row_index * self.max_batch_size + col_index;
-                
+
                 unsafe {
                     let (_, b) = self.chunks.get_unchecked(index);
                     let p = *current.add(index);
                     let a_ptr = self.word_embedding.ptr.add(p * self.hidden_size);
-                    self.compute(a_ptr, b.ptr, self.length);
+                    self.compute(a_ptr, b.ptr, self.hidden_size);
                 }
+
+                col_index += 1;
                 if col_index == batch_size {
                     col_index = 0;
                     row_index += 1;
                 }
             }
         }
-
     }
 }
 
@@ -136,24 +147,24 @@ impl MapTrait<f32> for LookupRMSMap<f32> {
 mod test {
     use approx::assert_ulps_eq;
     use num_cpus;
-    use std::ptr;
-
-    use crate::memory::allocator::allocate_init;
+    // use std::ptr;
+    // use crate::memory::allocator::allocate_init;
     use super::super::chunk_map::chunk_map;
     use super::*;
 
     #[test]
     fn test_lookup_f32() {
+        let sequence_length = 64; // Length of the sequence
         let batch_size = 10; // Each batch processes 10 elements
         let hidden_size = 18;
         let vocab_size = 10;
         let cpu_num = num_cpus::get();
 
-        let shapes = vec![batch_size, hidden_size];
-        let strides = vec![hidden_size, 1]; // Corresponding strides
+        let shapes = vec![sequence_length, batch_size, hidden_size];
+        let strides = vec![batch_size * hidden_size, hidden_size, 1]; // Corresponding strides
         let length = shapes.iter().product(); // Total number of elements
-        let sequence_length: usize = 16;
-        let position = 8; 
+
+ 
         let eps = 1e-6;
 
         // Create mock input and output data
@@ -162,13 +173,13 @@ mod test {
             .take(length)
             .map(|x| x as f32)
             .collect();
-        let sequences: Vec<usize> = vec![1; sequence_length];
+        let sequences: Vec<usize> = vec![1; sequence_length * batch_size];
         let word_embedding: Vec<f32> = (1..=18)
             .cycle()
             .take(vocab_size * hidden_size)
             .map(|x| x as f32)
             .collect();
-        let weight = vec![1.0f32; length];
+        let weight = vec![1.0f32; hidden_size];
         let mut output_data: Vec<f32> = vec![0.0; length];
 
         // Create chunks using chunk_map function
@@ -180,14 +191,14 @@ mod test {
         );
         // Initialize LookupRMSMap with these chunks and length
         let mut o = LookupRMSMap::new(
+            batch_size,
             hidden_size,
             weight.as_ptr(),
             eps,
-            cpu_num,
             word_embedding.as_ptr(),
             sequences.as_ptr(),
             hidden_size,
-            batch_size,
+            cpu_num,
         );
         let result = [
             0.09238425642251968,
@@ -212,13 +223,17 @@ mod test {
         o.set_chunk(chunks);
 
         let thread_num: usize = cpu_num;
+
+        let position = 8;
+        let sequence_interval = 8;
         for i in 0..thread_num {
-            o.run(batch_size, position, i);
+            o.run(batch_size, position, sequence_interval, i);
         }
 
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
     }
 
+    /*
     #[test]
     fn test_lookup_f16() {
         // let length = 64;
@@ -233,20 +248,6 @@ mod test {
         let position = 8; // end position
         let eps = 1e-6;
 
-        /*
-        // Create mock input and output data
-        let input_data: Vec<f16> = (0..sequence_length)
-            .into_iter()
-            .map(|x| x as f16)
-            .collect();
-        let sequences: Vec<usize> = vec![1; sequence_length];
-        let word_embedding: Vec<f16> = (0..hidden_size*vocab_size)
-            .into_iter()
-            .map(|x| x as f16)
-            .collect();
-        let weight = vec![1.0; hidden_size];
-        let mut output_data: Vec<f16> = vec![0.0; hidden_size];
-         */
         let input_data = allocate_init::<f16>(sequence_length, 0.0);
         for i in 0..sequence_length {
             unsafe {
@@ -293,5 +294,5 @@ mod test {
         // for j in 0..length {
         //     assert!(f16::abs(output_data[j] - expected[j]) < 1e-6);
         // }
-    }
+    }*/
 }

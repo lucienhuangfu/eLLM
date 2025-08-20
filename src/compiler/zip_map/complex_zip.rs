@@ -84,6 +84,7 @@ where
                     let (a, b, c) = self.chunks.get_unchecked(index);
                     self.compute(a.ptr, b.ptr, c.ptr);
                 }
+                col_index += 1;
                 if col_index == self.head_num {
                     col_index = 0;
                     row_index += 1;

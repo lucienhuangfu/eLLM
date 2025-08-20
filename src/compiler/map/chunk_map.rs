@@ -13,21 +13,7 @@ pub fn chunk_map<T>(
 
     unsafe {
         match shapes.len() {
-            /* 
-            2 => {
-                for i in 0..shapes[0] {
-                    let input_stride0 = input_data.add(i * strides[0]);
-                    let output_stride0 = output_data.add(i * strides[0]);
-
-                    tasks.push((
-                        ConstPtr { ptr: input_stride0 },
-                        MutPtr {
-                            ptr: output_stride0,
-                        },
-                    ));
-                }
-                tasks
-            }*/
+            // [sequence*batch]  <- [sequence, batch, hidden_size]
             3 => {
                 for i in 0..shapes[0] {
                     let input_stride0 = input_data.add(i * strides[0]);
@@ -45,6 +31,7 @@ pub fn chunk_map<T>(
                 }
                 tasks
             }
+            // [sequence * batch * head_num]  <- [sequence, batch, head_num, head_size]
             4 => {
                 for i in 0..shapes[0] {
                     let input_stride0 = input_data.add(i * strides[0]);
@@ -75,13 +62,12 @@ pub fn chunk_map<T>(
 
 #[cfg(test)]
 mod test {
-    // use std::f16;
-    use num_traits::Float;
 
+    use num_traits::Float;
     use super::*;
     use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
     use crate::ptensor::tensor_utils::get_strides;
-    // use core::ops::Deref;
+
 
     fn fun<T: Float>(input_ptr: ConstPtr<T>, output_ptr: MutPtr<T>, length: usize) {
         for i in 0..length {
