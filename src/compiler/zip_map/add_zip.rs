@@ -45,6 +45,9 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
             position_begin: usize,
             position_interval: usize,
             thread_id: usize) {
+
+        //     [sequence, batch_size, head_num]
+        // stride [batch_size * head_num, head_num,1]
         let stride = batch_size * self.h_num;
         let max_stride = self.max_batch_size * self.h_num;
         if let Some((begin, end)) = assign(position_interval * stride, self.cpu_num, thread_id) {
@@ -53,9 +56,14 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
             let (mut high_index, mut _index) = (begin / stride, begin % stride);
             let (mut row_index, mut col_index) = (_index / batch_size, _index % batch_size);
 
+            println!("thread_id: {}, begin: {}, end: {}, high_index: {}, row_index: {}, col_index: {}", thread_id, begin, end, high_index, row_index, col_index);
+
+
             // 遍历每个chunk
             for i in begin..end {
-                let index = high_index* max_stride + row_index * self.max_batch_size + col_index;
+
+                println!(" high_index: {}, row_index: {}, col_index: {}",  high_index, row_index, col_index);
+                let index = high_index* max_stride + row_index * self.h_num + col_index;
                 unsafe {
                     let (a, b, c) = self.chunks.get_unchecked(index);
                     self.compute(a.ptr, b.ptr, c.ptr);
@@ -115,29 +123,27 @@ impl ZipMapTrait<f32> for AddZipMap<f32> {
         kernel::generic::add::add(input_ptr1, input_ptr2, output_ptr , self.length);
     }
 }
-impl ZipMapTrait<f64> for AddZipMap<f64> {
-    fn compute (&self, input_ptr1: *const f64, input_ptr2: *const f64, output_ptr: *mut f64) {
-        // print!("f64 \n");
-        // add_block(input_ptr1 , input_ptr2 , output_ptr , self.length);   
-    }
-}
+
+
 
 
 #[cfg(test)]
 mod test {
     
-
     use super::*;
     use super::super::chunk_zipmap::chunk_zipmap;
     use crate::ptensor::tensor_utils::get_strides;
     use approx::assert_ulps_eq;
+    // use nom::sequence;
+    // use rand::seq;
 
     #[test]
     fn test_add_zip() {
+        let sequence_threshold = 64;
         let batch_size = 2; // 每次批处理 10 个元素
-        let head_num = 64;
-        let head_size = 128;
-        let shapes = vec![batch_size, head_num, head_size]; 
+        let head_num = 8;
+        let head_size = 4;
+        let shapes = vec![sequence_threshold, batch_size, head_num, head_size]; 
         let length = shapes.iter().product(); // 总元素数量
         
         let position_index = 0; // 起始位置，根据实际情况可以修改
@@ -151,24 +157,27 @@ mod test {
         let input_data1: Vec<f32> = (0..head_size).cycle().take(length).map(|x| x as f32).collect();
         let input_data2:Vec<f32> =vec![1.0;length];
         let results: Vec<f32>=(1..=head_size).cycle().take(length).map(|x| x as f32).collect();
-        //println!("{:?}", input_data2);
+        // println!("{:?}", input_data2);
         let mut output_data: Vec<f32> = vec![0.0; length];
         
-            // 使用 chunk_map 函数创建块
+        // 使用 chunk_map 函数创建块
         let chunks = chunk_zipmap(shapes,  input_data1.as_ptr(),input_strides1,input_data2.as_ptr(),input_strides2, output_data.as_mut_ptr(),output_strides);
-            // 使用这些块和长度初始化 ArgmaxMap
-        let thread_num: usize = num_cpus::get();
-        let mut argmax_operator = AddZipMap::new(head_size,head_num, thread_num);
+        // 使用这些块和长度初始化 ArgmaxMap
+        let thread_num: usize = 64; 
+        // num_cpus::get();
         
-        argmax_operator.set_chunk(chunks);
         
-        for i in 0..thread_num {
-            argmax_operator.run(batch_size, position_index,i);
-        }
+        let mut operator = AddZipMap::new(batch_size, head_size, head_num, thread_num);
+
+        operator.set_chunk(chunks);
+        
+        // for i in 0..thread_num {
+            operator.run(batch_size, position_index, sequence_threshold, 0);
+        // }
             
             // 如需打印输出数据，请取消以下注释
-        assert_ulps_eq!(output_data[0..length], results[0..length], max_ulps=4); 
-        // println!("{:?}", output_data);
+        assert_ulps_eq!(output_data[0..batch_size*head_num*head_size], results[0..batch_size*head_num*head_size], max_ulps=4); 
+        // println!("{:?}", output_data[0..batch_size*head_num*head_size]);
         // println!("{:?}", output);
     }
 }
