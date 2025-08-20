@@ -60,6 +60,7 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
                     let (a, b, c) = self.chunks.get_unchecked(index);
                     self.compute(a.ptr, b.ptr, c.ptr);
                 }
+                col_index += 1;
                 if col_index == self.h_num {
                     col_index = 0;
                     row_index += 1;

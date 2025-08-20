@@ -43,6 +43,7 @@ impl<T: Sqrt> RMSMap<T> {
                      let (a, b) = self.chunks.get_unchecked(index);
                     self.compute(a.ptr, b.ptr, self.length);
                 }
+                col_index += 1;
                 if col_index == batch_size {
                     col_index = 0;
                     row_index += 1;
