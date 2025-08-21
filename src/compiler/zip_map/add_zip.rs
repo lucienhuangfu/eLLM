@@ -139,7 +139,7 @@ mod test {
 
     #[test]
     fn test_add_zip() {
-        let sequence_threshold = 64;
+        let sequence_threshold = 4;
         let batch_size = 2; // 每次批处理 10 个元素
         let head_num = 8;
         let head_size = 4;
@@ -163,7 +163,7 @@ mod test {
         // 使用 chunk_map 函数创建块
         let chunks = chunk_zipmap(shapes,  input_data1.as_ptr(),input_strides1,input_data2.as_ptr(),input_strides2, output_data.as_mut_ptr(),output_strides);
         // 使用这些块和长度初始化 ArgmaxMap
-        let thread_num: usize = 64; 
+        let thread_num: usize = 4; 
         // num_cpus::get();
         
         
@@ -171,12 +171,12 @@ mod test {
 
         operator.set_chunk(chunks);
         
-        // for i in 0..thread_num {
-            operator.run(batch_size, position_index, sequence_threshold, 0);
-        // }
+        for i in 0..thread_num {
+            operator.run(batch_size, position_index, sequence_threshold, i);
+        }
             
             // 如需打印输出数据，请取消以下注释
-        assert_ulps_eq!(output_data[0..batch_size*head_num*head_size], results[0..batch_size*head_num*head_size], max_ulps=4); 
+        assert_ulps_eq!(output_data[0..sequence_threshold*batch_size*head_num*head_size], results[0..sequence_threshold*batch_size*head_num*head_size], max_ulps=4); 
         // println!("{:?}", output_data[0..batch_size*head_num*head_size]);
         // println!("{:?}", output);
     }
