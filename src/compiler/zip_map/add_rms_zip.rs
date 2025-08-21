@@ -8,7 +8,6 @@ use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 
 
-
 #[derive(Clone)]
 pub struct AddRMSZipMap<T> {
     chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>,

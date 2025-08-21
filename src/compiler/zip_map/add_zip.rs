@@ -54,7 +54,7 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
       
             // 从begin得到对应的坐标
             let (mut high_index, mut _index) = (begin / stride, begin % stride);
-            let (mut row_index, mut col_index) = (_index / batch_size, _index % batch_size);
+            let (mut row_index, mut col_index) = (_index / self.h_num, _index % self.h_num);
 
             println!("thread_id: {}, begin: {}, end: {}, high_index: {}, row_index: {}, col_index: {}", thread_id, begin, end, high_index, row_index, col_index);
 
