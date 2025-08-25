@@ -2,6 +2,8 @@
 use std::f16;
 use std::ops::{Add,Sub, Mul, Div, Neg};
 
+use axum::http::HeaderName;
+
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use super::zip_map_trait::ZipMapTrait;
@@ -11,10 +13,13 @@ use crate::kernel;
 
 #[derive(Clone)]
 pub struct AddZipMap <T> {
-    chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>,
+    // chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>,
+    ptr1: ConstPtr<T>,
+    ptr2: ConstPtr<T>,
+    output_ptr: MutPtr<T>,
     max_batch_size: usize,
-    length: usize,
-    h_num: usize, 
+    head_num: usize,
+    head_size: usize,
     cpu_num: usize
 }
 
@@ -22,54 +27,65 @@ impl <T> AddZipMap <T>
 where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + Div<Output = T> + Neg<Output = T> + Sigmoid<T>,
 {
     pub fn new(
+        ptr1: *const T,
+        ptr2: *const T,
+        output_ptr: *mut T,
         max_batch_size: usize,
-        length: usize,
-        h_num: usize,
+        head_num: usize,
+        head_size: usize,
         cpu_num: usize
     ) -> Self {
         Self {
-            chunks: vec![],
+            // chunks: vec![],
+            ptr1: ConstPtr { ptr: ptr1 },
+            ptr2: ConstPtr { ptr: ptr2 },
+            output_ptr: MutPtr { ptr: output_ptr },
             max_batch_size,
-            length,
-            h_num,
+            head_num,
+            head_size,
             cpu_num
         }
     }
 
+    /*
     pub fn set_chunk(&mut self, chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>) {
         self.chunks = chunks;
     }
-    
-    pub fn run(&self,    
-            batch_size: usize, 
+     */
+    pub fn run(&self,   
             position_begin: usize,
-            position_interval: usize,
+            position_interval: usize, 
+            batch_size: usize, 
             thread_id: usize) {
 
         //     [sequence, batch_size, head_num]
         // stride [batch_size * head_num, head_num,1]
-        let stride = batch_size * self.h_num;
-        let max_stride = self.max_batch_size * self.h_num;
+        let stride = batch_size * self.head_num;
+        let max_stride = self.max_batch_size * self.head_num;
         if let Some((begin, end)) = assign(position_interval * stride, self.cpu_num, thread_id) {
       
             // 从begin得到对应的坐标
             let (mut high_index, mut _index) = (begin / stride, begin % stride);
-            let (mut row_index, mut col_index) = (_index / self.h_num, _index % self.h_num);
+            let (mut row_index, mut col_index) = (_index / self.head_num, _index % self.head_num);
 
             println!("thread_id: {}, begin: {}, end: {}, high_index: {}, row_index: {}, col_index: {}", thread_id, begin, end, high_index, row_index, col_index);
 
+            let ptr1 = self.ptr1.ptr;
+            let ptr2 = self.ptr2.ptr;
+            let output_ptr = self.output_ptr.ptr;
 
             // 遍历每个chunk
             for i in begin..end {
 
                 println!(" high_index: {}, row_index: {}, col_index: {}",  high_index, row_index, col_index);
-                let index = high_index* max_stride + row_index * self.h_num + col_index;
+                let index = high_index* max_stride + row_index * self.head_num + col_index;
                 unsafe {
-                    let (a, b, c) = self.chunks.get_unchecked(index);
-                    self.compute(a.ptr, b.ptr, c.ptr);
+                    // let (a, b, c) = self.chunks.get_unchecked(index);
+                    let p = index * self.head_size;
+                    self.compute(ptr1.add(p), ptr2.add(p), output_ptr.add(p));
                 }
                 col_index += 1;
-                if col_index == self.h_num {
+                if col_index == self.head_num {
                     col_index = 0;
                     row_index += 1;
                 }
@@ -91,7 +107,7 @@ where T: Copy + Default + Add<Output = T>+ Sub<Output = T> + Mul<Output = T> + D
     
     default fn compute(&self, input_ptr1: *const T, input_ptr2:*const T, output_ptr: *mut T, ) {
         // print!("generic \n");
-        kernel::generic::add::add(input_ptr1 , input_ptr2 , output_ptr , self.length);
+        kernel::generic::add::add(input_ptr1 , input_ptr2 , output_ptr , self.head_size);
     }
 }
 
@@ -106,7 +122,7 @@ impl ZipMapTrait<f16> for AddZipMap<f16> {
             );
         };
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        kernel::generic::add::add(input_ptr1 , input_ptr2, output_ptr , self.length);      
+        kernel::generic::add::add(input_ptr1 , input_ptr2, output_ptr , self.head_size);
     }
 }
 
@@ -120,7 +136,7 @@ impl ZipMapTrait<f32> for AddZipMap<f32> {
             );
         };
         // #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]*/
-        kernel::generic::add::add(input_ptr1, input_ptr2, output_ptr , self.length);
+        kernel::generic::add::add(input_ptr1, input_ptr2, output_ptr , self.head_size);
     }
 }
 
@@ -161,18 +177,18 @@ mod test {
         let mut output_data: Vec<f32> = vec![0.0; length];
         
         // 使用 chunk_map 函数创建块
-        let chunks = chunk_zipmap(shapes,  input_data1.as_ptr(),input_strides1,input_data2.as_ptr(),input_strides2, output_data.as_mut_ptr(),output_strides);
+        // let chunks = chunk_zipmap(shapes,  input_data1.as_ptr(),input_strides1,input_data2.as_ptr(),input_strides2, output_data.as_mut_ptr(),output_strides);
         // 使用这些块和长度初始化 ArgmaxMap
         let thread_num: usize = 4; 
         // num_cpus::get();
-        
-        
-        let mut operator = AddZipMap::new(batch_size, head_size, head_num, thread_num);
 
-        operator.set_chunk(chunks);
+
+        let mut operator = AddZipMap::new(input_data1.as_ptr(), input_data2.as_ptr(), output_data.as_mut_ptr(), batch_size, head_num, head_size, thread_num);
+
+        // operator.set_chunk(chunks);
         
         for i in 0..thread_num {
-            operator.run(batch_size, position_index, sequence_threshold, i);
+            operator.run(position_index, sequence_threshold, batch_size, i);
         }
             
             // 如需打印输出数据，请取消以下注释
