@@ -1,47 +1,70 @@
 use std::f16;
 
-use crate::kernel;
-use crate::kernel::generic::from_usize::FromUsize;
-use crate::kernel::generic::sqrt::Sqrt;
 use super::map_trait::MapTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::kernel;
+use crate::kernel::generic::from_usize::FromUsize;
+use crate::kernel::generic::sqrt::Sqrt;
 
 #[derive(Clone)]
 pub struct RMSMap<T> {
-    chunks: Vec<(ConstPtr<T>, MutPtr<T>)>,
-    length: usize,
+    // chunks: Vec<(ConstPtr<T>, MutPtr<T>)>,
+    ptr1: ConstPtr<T>,
+    output_ptr: MutPtr<T>,
     max_batch_size: usize,
+    hidden_size: usize,
     weight: ConstPtr<T>,
     eps: T,
     cpu_num: usize,
 }
 
 impl<T: Sqrt> RMSMap<T> {
-    pub fn new(max_batch_size: usize, length: usize, weight: *const T, eps: T, cpu_num: usize) -> Self {
+    pub fn new(
+        ptr1: *const T,
+        output_ptr: *mut T,
+        max_batch_size: usize,
+        hidden_size: usize,
+        weight: *const T,
+        eps: T,
+        cpu_num: usize,
+    ) -> Self {
         Self {
-            chunks: vec![],
+            // chunks: vec![],
+            ptr1: ConstPtr { ptr: ptr1 },
+            output_ptr: MutPtr { ptr: output_ptr },
             max_batch_size,
-            length,
+            hidden_size,
             weight: ConstPtr { ptr: weight },
             eps: eps,
             cpu_num: cpu_num,
         }
     }
 
+    /*
     pub fn set_chunk(&mut self, chunks: Vec<(ConstPtr<T>, MutPtr<T>)>) {
         self.chunks = chunks;
-    }
+    } */
 
-    pub fn run(&self, batch_size: usize, position_begin: usize, position_interval: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(batch_size * position_interval, self.cpu_num, thread_id) {
-
+    pub fn run(
+        &self,
+        position_begin: usize,
+        position_interval: usize,
+        batch_size: usize,
+        thread_id: usize,
+    ) {
+        if let Some((begin, end)) = assign(batch_size * position_interval, self.cpu_num, thread_id)
+        {
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
+            let mut ptr1 = self.ptr1.ptr;
+            let mut output_ptr = self.output_ptr.ptr;
+
             for i in begin..end {
-                let index = row_index * self.max_batch_size + col_index; 
+                let index = row_index * self.max_batch_size + col_index;
                 unsafe {
-                     let (a, b) = self.chunks.get_unchecked(index);
-                    self.compute(a.ptr, b.ptr, self.length);
+                    // let (a, b) = self.chunks.get_unchecked(index);
+                    let p = index * self.hidden_size;
+                    self.compute(ptr1.add(p), output_ptr.add(p), self.hidden_size);
                 }
                 col_index += 1;
                 if col_index == batch_size {
@@ -67,7 +90,6 @@ impl<T: Sqrt> MapTrait<T> for RMSMap<T> {
 
 impl MapTrait<f16> for RMSMap<f16> {
     fn compute(&self, input_ptr: *const f16, output_ptr: *mut f16, length: usize) {
-        
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::rms_norm::rms_norm(
             input_ptr,
@@ -76,7 +98,7 @@ impl MapTrait<f16> for RMSMap<f16> {
             self.weight.ptr,
             self.eps,
         );
-        
+
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::generic::rms_norm::rms_norm(
             input_ptr,
@@ -119,7 +141,7 @@ mod test {
     use rand::seq;
     // use std::ptr;
 
-    use super::super::chunk_map::chunk_map;
+    // use super::super::chunk_map::chunk_map;
     // use crate::memory::allocator::allocate_init;
     use super::*;
 
@@ -132,10 +154,10 @@ mod test {
         let shapes = vec![seq_threshold, batch_size, hidden_size];
         let strides = vec![batch_size * hidden_size, hidden_size, 1]; // 对应的步长
         let length = shapes.iter().product(); // 总元素数量
-        // let batch_size = 10; // 每次批处理 10 个元素
+                                              // let batch_size = 10; // 每次批处理 10 个元素
         let position_index = 0; // 起始位置，根据实际情况可以修改
         let position_interval = 4; // 间隔位置，根据实际情况可以修改
-        
+
         let cpu_num = num_cpus::get();
 
         // 创建模拟的输入和输出数据
@@ -144,6 +166,7 @@ mod test {
         let eps = 1e-6;
         let mut output_data: Vec<f32> = vec![0.0; length];
 
+        /*
         // 使用 chunk_map 函数创建块
         let chunks = chunk_map(
             shapes,
@@ -151,8 +174,18 @@ mod test {
             input_data.as_ptr(),
             output_data.as_mut_ptr(),
         );
+         */
+
         // 使用这些块和长度初始化 ArgmaxMap
-        let mut operator = RMSMap::new(batch_size, hidden_size, weight.as_ptr(), eps, cpu_num);
+        let mut operator = RMSMap::new(
+            input_data.as_ptr(),
+            output_data.as_mut_ptr(),
+            batch_size,
+            hidden_size,
+            weight.as_ptr(),
+            eps,
+            cpu_num,
+        );
         let result = [
             0.09238425642251968,
             0.18476851284503937,
@@ -173,11 +206,11 @@ mod test {
             1.5705323219299316,
             1.662916660308838,
         ];
-        operator.set_chunk(chunks);
+        // operator.set_chunk(chunks);
         let thread_num: usize = cpu_num;
-        
+
         for i in 0..thread_num {
-            operator.run(batch_size, position_index, position_interval, i);
+            operator.run(position_index, position_interval, batch_size,  i);
         }
         // 如需打印输出数据，请取消以下注释
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
@@ -193,12 +226,12 @@ mod test {
         let shapes = vec![batch_size, hidden_size];
         let strides = vec![hidden_size, 1]; // 对应的步长
         let length = shapes.iter().product(); // 总元素数量
-     
-        let position_index = 5; 
+
+        let position_index = 5;
         let cpu_num = num_cpus::get();
         let eps = 1e-6;
         // 创建模拟的输入和输出数据
-        /* 
+        /*
         let input_data: Vec<f16> = (1..=hidden_size).cycle().take(length).map(|x| x as f16).collect();
         let weight = vec![1.0; hidden_size];
         let mut output_data: Vec<f16> = vec![0.0; length];
@@ -261,9 +294,5 @@ mod test {
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
         // println!("{:?}", output_data);
          */
-    }*/ 
-
-
-
-
+    }*/
 }

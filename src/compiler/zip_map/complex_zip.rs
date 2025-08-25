@@ -12,12 +12,12 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 #[derive(Clone)]
 pub struct ComplexZipMap<T> {
     // chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>,
-    ptr1: *const T,
-    ptr2: *const T,
-    output_ptr: *mut T,
+    ptr1: ConstPtr<T>,
+    ptr2: ConstPtr<T>,
+    output_ptr: MutPtr<T>,
     batch_size: usize,
-    head_size: usize,
     head_num: usize,
+    head_size: usize,
     sequence_stride: usize,
     cpu_num: usize,
 }
@@ -39,33 +39,34 @@ where
         ptr2: *const T,
         output_ptr: *mut T,
         batch_size: usize,
-        head_size: usize,
         head_num: usize,
+        head_size: usize,
         cpu_num: usize,
     ) -> Self {
         Self {
-            ptr1: ptr1,
-            ptr2: ptr2,
-            output_ptr: output_ptr,
+            ptr1: ConstPtr { ptr: ptr1 },
+            ptr2: ConstPtr { ptr: ptr2 },
+            output_ptr: MutPtr { ptr: output_ptr },
             // chunks: vec![],
             batch_size: batch_size,
-            head_size: head_size,
             head_num: head_num,
+            head_size: head_size,
             sequence_stride: batch_size * head_num,
             cpu_num: cpu_num,
         }
     }
 
-    /* 
+    /*
     pub fn set_chunk(&mut self, chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>) {
         self.chunks = chunks;
     }*/
 
     pub fn run(
         &self,
-        batch_size: usize,
         position_begin: usize,
         position_interval: usize,
+        batch_size: usize,
+
         thread_id: usize,
     ) {
         let stride = batch_size * self.head_num;
@@ -76,7 +77,6 @@ where
             let (mut row_index, mut col_index) = (_index / self.head_num, _index % self.head_num);
 
             unsafe {
-                let mut _ptr2 = self.ptr2.add(position_begin * self.head_size);
                 // 遍历每个chunk;
 
                 println!(
@@ -86,19 +86,26 @@ where
                     end,
                     // self.chunks.len()
                 );
+
+                let ptr1 = self.ptr1.ptr;
+                // let ptr2 = self.ptr2.ptr;
+                let mut ptr2 = self.ptr2.ptr.add(position_begin * self.head_size);
+                let output_ptr = self.output_ptr.ptr;
+
                 for i in begin..end {
-                    let index = (high_index * max_stride + row_index * self.head_num + col_index)* self.head_size;
+                    let index = (high_index * max_stride + row_index * self.head_num + col_index)
+                        * self.head_size;
                     println!(
                         " high_index: {}, row_index: {}, col_index: {}, index: {}",
                         high_index, row_index, col_index, index
                     );
 
                     // Print values from self.ptr1 as slice
-               
-                    let slice = std::slice::from_raw_parts(self.ptr1.add(index), self.head_size);
+
+                    let slice = std::slice::from_raw_parts(ptr1.add(index), self.head_size);
                     println!("self.ptr1 slice at index {}: {:?}", index, slice);
 
-                    self.compute(self.ptr1.add(index), _ptr2, self.output_ptr.add(index));
+                    self.compute(ptr1.add(index), ptr2, output_ptr.add(index));
 
                     col_index += 1;
                     if col_index == self.head_num {
@@ -108,7 +115,7 @@ where
                     if row_index == batch_size {
                         row_index = 0;
                         high_index += 1;
-                        _ptr2 = _ptr2.add(self.head_size);
+                        ptr2 = ptr2.add(self.head_size);
                     }
                 }
             }
@@ -264,8 +271,8 @@ mod test {
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
             batch_size,
-            head_size,
             head_num,
+            head_size,
             thread_num,
         );
         // operator.set_chunk(chunks);
@@ -273,7 +280,7 @@ mod test {
 
         for i in 0..thread_num {
             // for position_index in 0..sequence_length {
-            operator.run(batch_size, position_index, sequence_threshold, i);
+            operator.run(position_index, sequence_threshold, batch_size, i);
             // }
             break;
         }
