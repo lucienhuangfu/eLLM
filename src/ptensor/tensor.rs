@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::iter::zip;
 use std::rc::Rc;
-use std::ops::{Add, Sub, Div, Mul, AddAssign, Neg };
+use std::ops::{Add, Sub, Div, Mul, AddAssign, Neg};
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
 use crate::kernel::generic::sigmoid::Sigmoid;
@@ -119,6 +119,7 @@ where T: Copy
         output_tensor
         //重点！
     }
+
 
     pub fn mapv(
         &self,

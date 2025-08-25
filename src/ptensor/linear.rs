@@ -7,12 +7,12 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
 use crate::kernel::generic::sigmoid::Sigmoid;
 
-
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::mul::mat_mul::MatMul;
 use crate::init::matmul_params::MatMulParams;
 use crate::compiler::operator::Operator;
+
 #[derive(Clone)]
 pub struct Linear<T> {
     pub weight: Tensor<T>,
@@ -59,8 +59,8 @@ where T: Copy
     }
 
     pub fn forward(&self, input: &Tensor<T>, tensor_name: String) -> Tensor<T> {
-        //[batch_size , hidden_size]   <- [batch_size, hidden_size]   [ hidden_size, hidden_size]
-        let a_row = input.shape[0];
+        //[position_window_size, batch_size , hidden_size]   <- [position_window_size, batch_size, hidden_size]   [ hidden_size, hidden_size]
+        let a_row = input.shape[1];
         let b_row =  self.weight.shape[0];
         let column = self.weight.shape[1];
         let a_row_step_macro = 16;
@@ -81,8 +81,8 @@ where T: Copy
         };
 
         let thread_num: usize = num_cpus::get();
-        let barrier = Barrier::new(thread_num);
-        let barrier_arc = Arc::new(barrier);
+        // let barrier = Barrier::new(thread_num);
+        // let barrier_arc = Arc::new(barrier);
         let runner = Operator::MatMul(MatMul::new(
             a_row,
             b_row,
@@ -112,11 +112,15 @@ mod test {
 
     #[test]
     fn test_linear_batch_size_1() {
-        let head_size = 128;
-        let head_num = 64;
-        let hidden_size = head_num * head_size;
-        let batch_size = 32;
         let sequence_length = 1;
+        let position_window_size = 4;
+        let batch_size = 32;
+        let head_num = 64;
+        let head_size = 128;
+        
+        let hidden_size = head_num * head_size;
+        
+
 
         let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
@@ -127,7 +131,7 @@ mod test {
             unsafe { linear.weight.data.add(i).write(1.0f32) };
         }
         
-        let shape1 = vec![batch_size, hidden_size];
+        let shape1 = vec![position_window_size, batch_size, hidden_size];
 
         let input = Tensor::from_cache(shape1, String::from("model.layer.0.input_tensor"), cache.clone(), operator_queue.clone());
         for i in 0..input.shape.iter().product() {
@@ -136,7 +140,7 @@ mod test {
             }
         }
 
-        let output_shape = vec![batch_size, hidden_size];
+        let output_shape = vec![position_window_size, batch_size, hidden_size];
         let size3 = output_shape.iter().product();
         let mut result = vec![0.0; size3];
         for i in 0..hidden_size {
