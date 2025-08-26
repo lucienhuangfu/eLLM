@@ -92,7 +92,7 @@ where
                 let mut ptr2 = self.ptr2.ptr.add(position_begin * self.head_size);
                 let output_ptr = self.output_ptr.ptr;
 
-                for i in begin..end {
+                for _ in begin..end {
                     let index = (high_index * max_stride + row_index * self.head_num + col_index)
                         * self.head_size;
                     println!(

@@ -59,7 +59,7 @@ impl<T: Sqrt> RMSMap<T> {
             let mut ptr1 = self.ptr1.ptr;
             let mut output_ptr = self.output_ptr.ptr;
 
-            for i in begin..end {
+            for _ in begin..end {
                 let index = row_index * self.max_batch_size + col_index;
                 unsafe {
                     // let (a, b) = self.chunks.get_unchecked(index);

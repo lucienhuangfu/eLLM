@@ -75,7 +75,7 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
             let output_ptr = self.output_ptr.ptr;
 
             // 遍历每个chunk
-            for i in begin..end {
+            for _ in begin..end {
 
                 println!(" high_index: {}, row_index: {}, col_index: {}",  high_index, row_index, col_index);
                 let index = high_index* max_stride + row_index * self.head_num + col_index;
