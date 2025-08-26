@@ -119,27 +119,19 @@ where T: Copy
     ) -> Tensor<T> {
         // # Attention 层
         let norm_hidden = if self.index != 0 {
-            hidden_states.mapv(
-                Operator::RMSMap(RMSMap::new(
-                    hidden_states.shape[1],
+            hidden_states.rms(
                     self.input_layernorm.data,
                     self.rms_norm_eps,
-                    self.cpu_num,
-                )),
+                    // self.cpu_num,
                 format!("{}.norm_hidden", self.scope_name),
             )
         } else {
-            hidden_states.mapv(
-                Operator::LookupRMSMap(LookupRMSMap::new(
-                    hidden_states.shape[1],
+            hidden_states.lookup_rms(
+                self.word_embedding.data,
                     self.input_layernorm.data,
                     self.rms_norm_eps,
-                    self.cpu_num,
-                    self.word_embedding.data,
-                    sequences,
-                    self.hidden_size,
-                    self.max_batch_size,
-                )),
+                    // self.cpu_num,
+                    
                 format!("{}.norm_hidden", self.scope_name),
             )
         };
