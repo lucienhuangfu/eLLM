@@ -17,7 +17,7 @@ pub struct LookupRMSMap<T> {
     word_embedding: ConstPtr<T>,
     weight: ConstPtr<T>,
     eps: T,
-    cpu_num: usize,
+    // cpu_num: usize,
 }
 
 impl<T: Sqrt> LookupRMSMap<T> {
@@ -30,7 +30,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
         word_embedding: *const T,
         weight: *const T,
         eps: T,
-        cpu_num: usize,
+        // cpu_num: usize,
     ) -> Self {
         Self {
             // chunks: vec![],
@@ -44,7 +44,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
             },
 
             eps,
-            cpu_num,
+            // cpu_num,
         }
     }
 
@@ -203,8 +203,8 @@ mod test {
             hidden_size,
             word_embedding.as_ptr(),
             weight.as_ptr(),
-            eps,
-            cpu_num,
+            eps
+            // cpu_num,
         );
         let result = [
             0.09238425642251968,

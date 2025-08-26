@@ -44,7 +44,7 @@ pub struct Transformer<T> {
     pub cache: Rc<RefCell<Cache<T>>>,
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     scope_name: String,
-    cpu_num: usize,
+    // cpu_num: usize,
 }
 
 impl<T> Transformer<T>
@@ -116,6 +116,7 @@ where
             start_pos: 0,
             
             output_linear: Linear::<T>::new(
+                config.batch_size,
                 config.hidden_size,
                 config.vocab_size,
                 1,
@@ -168,10 +169,13 @@ where
 
         // hidden_states.last().unwrap().to_owned();
 
-        let norm_output = hidden_state.mapv(
-            Operator::RMSMap(RMSMap::new(self.config.hidden_size, self.norm_weight.data, self.rms_norm_eps, self.cpu_num)),
-            format!("{}.norm_hidden.output", self.scope_name),
+        let norm_output = hidden_state.rms(
+            self.norm_weight.data, self.rms_norm_eps, self.cpu_num,
+            format!("{}.norm_hidden.output", self.scope_name)
         );
+        
+        
+  
 
         let logits = self
             .output_linear

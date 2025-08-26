@@ -120,6 +120,59 @@ where T: Copy
         //重点！
     }
 
+    pub fn rms(
+        &self,
+        weight: *const T,
+        eps: T,
+        tensor_name: String,
+    ) -> Self {
+        let output_tensor = Tensor::from_cache(
+            self.shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+      
+        let operator = Operator::RMSMap(RMSMap::new(self.data, 
+            output_tensor.data, 
+            self.shape[1], 
+            self.shape[2], 
+            weight, 
+            eps));
+        
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+    pub fn lookup_rms(
+        &self,
+        word_embedding: *const T,
+        weight: *const T,
+        eps: T,
+        tensor_name: String,
+    ) -> Self {
+        let output_tensor = Tensor::from_cache(
+            self.shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+      
+        let operator = Operator::LookupRMSMap(LookupRMSMap::new(
+                    self.data,
+                    output_tensor.data,
+                    self.shape[1],
+                    self.shape[2],
+                    word_embedding,
+                    weight,
+                    eps,
+                    // self.cpu_num, 
+                ));
+        
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
 
     pub fn mapv(
         &self,
