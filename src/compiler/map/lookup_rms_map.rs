@@ -79,7 +79,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
                     begin, end, row_index, col_index
                 );
                 let mut output_ptr = self.output_ptr.ptr;
-                for _i in begin..end {
+                for _ in begin..end {
                     let index = row_index * self.max_batch_size + col_index;
                     let p = *current.add(index);
                     let a_ptr = self.word_embedding.ptr.add(p * self.hidden_size);

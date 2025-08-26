@@ -70,7 +70,7 @@ where
             let mut output_ptr = self.output_ptr.ptr;
 
             // 遍历每个chunk
-            for i in begin..end {
+            for _ in begin..end {
                 
                 let index = high_index * max_stride + row_index * self.head_num + col_index;
                 println!(" high_index: {}, row_index: {}, col_index: {}, index: {}",  high_index, row_index, col_index, index);
