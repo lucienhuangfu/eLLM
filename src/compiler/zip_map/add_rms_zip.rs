@@ -17,7 +17,7 @@ pub struct AddRMSZipMap<T> {
     hidden_size: usize,
     weight: ConstPtr<T>,
     eps: T,
-    cpu_num: usize,
+    // cpu_num: usize,
 }
 
 impl<T> AddRMSZipMap<T>
@@ -32,7 +32,7 @@ where
         hidden_size: usize,
         weight: *const T,
         eps: T,
-        cpu_num: usize,
+        // cpu_num: usize,
     ) -> Self {
         Self {
             // chunks: vec![],
@@ -43,7 +43,7 @@ where
             hidden_size,
             weight: ConstPtr { ptr: weight },
             eps: eps,
-            cpu_num: cpu_num,
+            // cpu_num: cpu_num,
         }
     }
 
@@ -56,9 +56,11 @@ where
         position_start: usize,
         position_interval: usize,
         batch_size: usize,
+        cpu_num: usize,
         thread_id: usize,
+        
     ) {
-        if let Some((begin, end)) = assign(batch_size * position_interval, self.cpu_num, thread_id)
+        if let Some((begin, end)) = assign(batch_size * position_interval, cpu_num, thread_id)
         {
             // 从begin得到对应的坐标
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
@@ -201,7 +203,7 @@ mod test {
             hidden_size,
             weight.as_ptr(),
             eps,
-            thread_num,
+            // thread_num,
         );
         let result = [
             0.09238425642251968,
@@ -226,7 +228,7 @@ mod test {
         // argmax_operator.set_chunk(chunks);
 
         for i in 0..thread_num {
-            operator.run(position_size, sequence_threshold, batch_size, i);
+            operator.run(position_size, sequence_threshold, batch_size, thread_num, i);
         }
 
         // 如需打印输出数据，请取消以下注释

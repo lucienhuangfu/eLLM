@@ -10,7 +10,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 #[derive(Clone)]
 pub struct LookupRMSMap<T> {
     // sequences 维度是 [sequence, batch]
-    sequences: ConstPtr<usize>,
+    sequences: MutPtr<usize>,
     output_ptr: MutPtr<T>,
     max_batch_size: usize,
     hidden_size: usize,
@@ -23,7 +23,7 @@ pub struct LookupRMSMap<T> {
 impl<T: Sqrt> LookupRMSMap<T> {
     // Constructor for LookupRMSMap
     pub fn new(
-        sequences: *const usize,
+        sequences: *mut usize,
         output_ptr: *mut T,
         max_batch_size: usize,
         hidden_size: usize,
@@ -34,7 +34,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
     ) -> Self {
         Self {
             // chunks: vec![],
-            sequences: ConstPtr { ptr: sequences },
+            sequences: MutPtr { ptr: sequences },
             output_ptr: MutPtr { ptr: output_ptr },
             max_batch_size,
             hidden_size,
@@ -60,9 +60,10 @@ impl<T: Sqrt> LookupRMSMap<T> {
         position_start: usize,
         position_interval: usize,
         batch_size: usize,
+        cpu_num: usize,
         thread_id: usize,
     ) {
-        if let Some((begin, end)) = assign(batch_size * position_interval, self.cpu_num, thread_id)
+        if let Some((begin, end)) = assign(batch_size * position_interval, cpu_num, thread_id)
         {
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
 
@@ -177,7 +178,7 @@ mod test {
             .take(length)
             .map(|x| x as f32)
             .collect();
-        let sequences: Vec<usize> = vec![1; sequence_length * batch_size];
+        let mut sequences: Vec<usize> = vec![1; sequence_length * batch_size];
         let word_embedding: Vec<f32> = (1..=18)
             .cycle()
             .take(vocab_size * hidden_size)
@@ -197,7 +198,7 @@ mod test {
 
         // Initialize LookupRMSMap with these chunks and length
         let mut o = LookupRMSMap::new(
-            sequences.as_ptr(),
+            sequences.as_mut_ptr(),
             output_data.as_mut_ptr(),
             batch_size,
             hidden_size,
@@ -233,7 +234,7 @@ mod test {
         let position = 8;
         let sequence_interval = 8;
         for i in 0..thread_num {
-            o.run(position, sequence_interval, batch_size, i);
+            o.run(position, sequence_interval, batch_size, cpu_num,i);
         }
 
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);

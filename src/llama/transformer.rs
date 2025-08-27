@@ -170,7 +170,7 @@ where
         // hidden_states.last().unwrap().to_owned();
 
         let norm_output = hidden_state.rms(
-            self.norm_weight.data, self.rms_norm_eps, self.cpu_num,
+            self.norm_weight.data, self.rms_norm_eps,
             format!("{}.norm_hidden.output", self.scope_name)
         );
         

@@ -19,7 +19,7 @@ pub struct ComplexZipMap<T> {
     head_num: usize,
     head_size: usize,
     sequence_stride: usize,
-    cpu_num: usize,
+    // cpu_num: usize,
 }
 
 impl<T> ComplexZipMap<T>
@@ -41,7 +41,7 @@ where
         batch_size: usize,
         head_num: usize,
         head_size: usize,
-        cpu_num: usize,
+        // cpu_num: usize,
     ) -> Self {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
@@ -52,7 +52,7 @@ where
             head_num: head_num,
             head_size: head_size,
             sequence_stride: batch_size * head_num,
-            cpu_num: cpu_num,
+            // cpu_num: cpu_num,
         }
     }
 
@@ -66,12 +66,12 @@ where
         position_begin: usize,
         position_interval: usize,
         batch_size: usize,
-
+        cpu_num: usize,
         thread_id: usize,
     ) {
         let stride = batch_size * self.head_num;
         let max_stride = self.batch_size * self.head_num;
-        if let Some((begin, end)) = assign(position_interval * stride, self.cpu_num, thread_id) {
+        if let Some((begin, end)) = assign(position_interval * stride, cpu_num, thread_id) {
             // 从begin得到对应的坐标
             let (mut high_index, mut _index) = (begin / stride, begin % stride);
             let (mut row_index, mut col_index) = (_index / self.head_num, _index % self.head_num);
@@ -273,14 +273,14 @@ mod test {
             batch_size,
             head_num,
             head_size,
-            thread_num,
+            // thread_num,
         );
         // operator.set_chunk(chunks);
         let position_index = 0; // Assuming we want to run for the first position
 
         for i in 0..thread_num {
             // for position_index in 0..sequence_length {
-            operator.run(position_index, sequence_threshold, batch_size, i);
+            operator.run(position_index, sequence_threshold, batch_size, cpu_num, i);
             // }
             break;
         }

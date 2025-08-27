@@ -1,18 +1,21 @@
 use std::cell::RefCell;
-use std::iter::zip;
+// use std::iter::zip;
 use std::rc::Rc;
 use std::ops::{Add, Sub, Div, Mul, AddAssign, Neg};
+use crate::compiler::zip_map::add_rms_zip::AddRMSZipMap;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
 use crate::kernel::generic::sigmoid::Sigmoid;
 
 use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
-use crate::compiler::map::chunk_map::chunk_map;
-use crate::compiler::mul::chunk_matmul::chunk_matmul;
-use crate::compiler::mul::chunk_attention::chunk_attention;
-use crate::compiler::reduce::chunk_reduce::chunk_reduce;
-use crate::compiler::zip_map::chunk_zipmap::chunk_zipmap;
+use super::super::compiler::map::rms_map::RMSMap;
+use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
+use super::super::compiler::zip_map::add_zip::AddZipMap;
+use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
+use crate::compiler::zip_map::silu_mul_zip::SiluZipMap;
+
+// use crate::compiler::zip_map::chunk_zipmap::chunk_zipmap;
 // use super::chunk_colmul::chunk_colmul;
 // use super::chunk_vecmul::chunk_vecmul;
 
@@ -139,7 +142,6 @@ where T: Copy
             self.shape[2], 
             weight, 
             eps));
-        
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
@@ -173,8 +175,247 @@ where T: Copy
         output_tensor
     }
 
+    
+    pub fn add_rms(
+        &self,
+        b_tensor: &Tensor<T>,
+        weight: *const T,
+        eps: T,
+        tensor_name: String,
+    ) -> Self {
+        let output_tensor = Tensor::from_cache(
+            self.shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+      
+        let operator = Operator::AddRMSZipMap(AddRMSZipMap::new(self.data, 
+            b_tensor.data, 
+            output_tensor.data, 
+            self.shape[1], 
+            self.shape[2], 
+            weight, 
+            eps));
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
 
-    pub fn mapv(
+
+    pub fn silu_mul(
+        &self,
+        b_tensor: &Tensor<T>,
+        tensor_name: String,
+    ) -> Self {
+        let output_tensor = Tensor::from_cache(
+            self.shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+        let operator = Operator::SiluMul(SiluMul::new(self.data, 
+            b_tensor.data, 
+            output_tensor.data, 
+            self.shape[1], 
+            self.shape[2], 
+self.shape[3], 
+            ));
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+        pub fn add(
+        &self,
+        b_tensor: &Tensor<T>,
+        tensor_name: String,
+    ) -> Self {
+        let output_tensor = Tensor::from_cache(
+            self.shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+        let operator = Operator::AddZipMap(AddZipMap::new(self.data, 
+            b_tensor.data, 
+            output_tensor.data, 
+            self.shape[1], 
+            self.shape[2], 
+self.shape[3], 
+            ));
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+
+
+    pub fn complex_mul(
+        &self,
+        b_tensor: &Tensor<T>,
+        tensor_name: String,
+    ) -> Self {
+        let output_tensor = Tensor::from_cache(
+            self.shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+        let operator = Operator::ComplexZipMap(ComplexZipMap::new(self.data, 
+            b_tensor.data, 
+            output_tensor.data, 
+            self.shape[1], 
+            self.shape[2], 
+            self.shape[3],
+            ));
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+
+
+    
+
+
+    pub fn matmul(
+        &self,
+        tensor2: &Tensor<T>,
+        mut operator: Operator<T>,
+        params: MatMulParams,
+        sequence_length: usize,
+        tensor_name: String,
+    ) -> Self {
+        let single_output_shape = vec![self.shape[0], tensor2.shape[0]];
+        let output_shape = if sequence_length == 1 {
+            single_output_shape.clone()
+        } else {
+            vec![
+                sequence_length,
+                single_output_shape[0],
+                single_output_shape[1],
+            ]
+        };
+
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let chunks = chunk_matmul(self.data, tensor2.data, output_tensor.data, &params);
+
+        if sequence_length == 1 {
+            operator.set_zipmap_chunk(chunks);
+        } else {
+            let sequence_stride: usize = single_output_shape.iter().product();
+            let mut expand_chunks = vec![];
+
+            for i in 0..sequence_length {
+                let offset = i * sequence_stride;
+                for item in &chunks {
+                    let mut temp = item.clone();
+                    temp.2.ptr = unsafe { temp.2.ptr.add(offset) };
+                    expand_chunks.push(temp);
+                }
+            }
+            operator.set_zipmap_chunk(expand_chunks);
+        }
+
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+
+
+
+
+    fn _view(&self, shape: Vec<usize>, strides: Vec<usize>) -> Self {
+        // let size: usize = shape.iter().product();
+        Tensor {
+            data: self.data,
+            shape: shape.clone(),
+            strides: strides,
+            tensor_name: self.tensor_name.clone(),
+            cache: self.cache.clone(),
+            operator_queue: self.operator_queue.clone(),
+        }
+    }
+
+    pub fn view(&self, shape: Vec<usize>) -> Self {
+        let strides = get_strides(&shape);
+        self._view(shape, strides)
+    }
+
+    pub fn permute(&self, dims: Vec<usize>) -> Self {
+        let shape: Vec<usize> = dims
+            .clone()
+            .into_iter()
+            .map(|index| self.shape[index])
+            .collect();
+        let strides: Vec<usize> = dims
+            .clone()
+            .into_iter()
+            .map(|index| self.strides[index])
+            .collect();
+        // let maximum_shape: Vec<usize> = dims.clone().into_iter().map(|index| self.maximum_shape[index]).collect();
+        // let tensor = self._view(shape, strides, tensor_name);
+        // tensor.set_contiguous(false) ;
+        Tensor {
+            data: self.data,
+            shape: shape,
+            strides: strides,
+            tensor_name: self.tensor_name.clone(),
+            cache: self.cache.clone(),
+            operator_queue: self.operator_queue.clone(),
+        }
+    }
+
+    pub fn transpose(&mut self, index1: usize, index2: usize) -> Self {
+        let mut dims: Vec<usize> = (0..self.shape.len()).collect();
+        dims.swap(index1, index2);
+        // self.set_contiguous(false);
+        self.permute(dims)
+    }
+
+    /*
+        pub fn reduce(
+        &self,
+        sequences: *mut usize,
+        sequence_length: usize,
+        mut operator: Operator<T>,
+        tensor_name: String,
+        // cache: &mut Cache<T>,
+        // operator_queue: &mut Vec<Operator<T>>,
+    ) {
+        /*
+        let output_shape = vec![sequence_length, self.shape[0]];
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        ); */
+
+        let chunks = chunk_reduce(
+            self.shape.clone(),
+            self.data,
+            self.strides.clone(),
+            sequences,
+            vec![1],
+        );
+        let mut extended_chunks = vec![];
+        for step in (0..self.shape[0] * sequence_length).step_by(self.shape[0]) {
+            for (a_ptr, mut b_ptr) in chunks.iter().cloned() {
+                unsafe {
+                    b_ptr.ptr = b_ptr.ptr.add(step);
+                    extended_chunks.push((a_ptr, b_ptr));
+                }
+            }
+        }
+        operator.set_reduce_chunk(extended_chunks);
+        self.operator_queue.borrow_mut().push(operator);
+        // output_tensor
+    }
+        pub fn mapv(
         &self,
         mut operator: Operator<T>,
         tensor_name: String,
@@ -242,143 +483,6 @@ where T: Copy
         output_tensor
     }
 
-    pub fn matmul(
-        &self,
-        tensor2: &Tensor<T>,
-        mut operator: Operator<T>,
-        params: MatMulParams,
-        sequence_length: usize,
-        tensor_name: String,
-    ) -> Self {
-        let single_output_shape = vec![self.shape[0], tensor2.shape[0]];
-        let output_shape = if sequence_length == 1 {
-            single_output_shape.clone()
-        } else {
-            vec![
-                sequence_length,
-                single_output_shape[0],
-                single_output_shape[1],
-            ]
-        };
-
-        let output_tensor = Tensor::from_cache(
-            output_shape.clone(),
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-
-        let chunks = chunk_matmul(self.data, tensor2.data, output_tensor.data, &params);
-
-        if sequence_length == 1 {
-            operator.set_zipmap_chunk(chunks);
-        } else {
-            let sequence_stride: usize = single_output_shape.iter().product();
-            let mut expand_chunks = vec![];
-
-            for i in 0..sequence_length {
-                let offset = i * sequence_stride;
-                for item in &chunks {
-                    let mut temp = item.clone();
-                    temp.2.ptr = unsafe { temp.2.ptr.add(offset) };
-                    expand_chunks.push(temp);
-                }
-            }
-            operator.set_zipmap_chunk(expand_chunks);
-        }
-
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
-    }
-
-    pub fn reduce(
-        &self,
-        sequences: *mut usize,
-        sequence_length: usize,
-        mut operator: Operator<T>,
-        tensor_name: String,
-        // cache: &mut Cache<T>,
-        // operator_queue: &mut Vec<Operator<T>>,
-    ) {
-        /*
-        let output_shape = vec![sequence_length, self.shape[0]];
-        let output_tensor = Tensor::from_cache(
-            output_shape.clone(),
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        ); */
-
-        let chunks = chunk_reduce(
-            self.shape.clone(),
-            self.data,
-            self.strides.clone(),
-            sequences,
-            vec![1],
-        );
-        let mut extended_chunks = vec![];
-        for step in (0..self.shape[0] * sequence_length).step_by(self.shape[0]) {
-            for (a_ptr, mut b_ptr) in chunks.iter().cloned() {
-                unsafe {
-                    b_ptr.ptr = b_ptr.ptr.add(step);
-                    extended_chunks.push((a_ptr, b_ptr));
-                }
-            }
-        }
-        operator.set_reduce_chunk(extended_chunks);
-        self.operator_queue.borrow_mut().push(operator);
-        // output_tensor
-    }
-
-    fn _view(&self, shape: Vec<usize>, strides: Vec<usize>) -> Self {
-        // let size: usize = shape.iter().product();
-        Tensor {
-            data: self.data,
-            shape: shape.clone(),
-            strides: strides,
-            tensor_name: self.tensor_name.clone(),
-            cache: self.cache.clone(),
-            operator_queue: self.operator_queue.clone(),
-        }
-    }
-
-    pub fn view(&self, shape: Vec<usize>) -> Self {
-        let strides = get_strides(&shape);
-        self._view(shape, strides)
-    }
-
-    pub fn permute(&self, dims: Vec<usize>) -> Self {
-        let shape: Vec<usize> = dims
-            .clone()
-            .into_iter()
-            .map(|index| self.shape[index])
-            .collect();
-        let strides: Vec<usize> = dims
-            .clone()
-            .into_iter()
-            .map(|index| self.strides[index])
-            .collect();
-        // let maximum_shape: Vec<usize> = dims.clone().into_iter().map(|index| self.maximum_shape[index]).collect();
-        // let tensor = self._view(shape, strides, tensor_name);
-        // tensor.set_contiguous(false) ;
-        Tensor {
-            data: self.data,
-            shape: shape,
-            strides: strides,
-            tensor_name: self.tensor_name.clone(),
-            cache: self.cache.clone(),
-            operator_queue: self.operator_queue.clone(),
-        }
-    }
-
-    pub fn transpose(&mut self, index1: usize, index2: usize) -> Self {
-        let mut dims: Vec<usize> = (0..self.shape.len()).collect();
-        dims.swap(index1, index2);
-        // self.set_contiguous(false);
-        self.permute(dims)
-    }
-
-    /*
     pub fn colmul(&self, tensor2: &Tensor<T>, mut operator: Operator<T>, tensor_name: String) -> Self {
         let output_shape = [self.shape[..2].to_vec(), tensor2.shape[3..4].to_vec()].concat();
         let output_tensor = Tensor::from_cache(
@@ -462,26 +566,7 @@ mod test {
     use std::thread;
 
     use super::*;
-    /*
 
-    use super::super::super::compiler::map::lookup_rms_map::LookupRMSMap;
-    use super::super::super::compiler::map::softmax_map::SoftmaxMap;
-
-    use super::super::super::compiler::mul::mat_mul::MatMulTrait;
-    use super::super::super::compiler::zip_map::complex_zip::ComplexZipMap;
-    use super::super::super::compiler::zip_map::add_rms_zip::AddRMSZipMap;
-    use super::super::super::compiler::zip_map::add_zip::AddZipMap;
-    use super::super::super::compiler::zip_map::silu_mul_zip::SiluZipMap;
-    use super::super::super::compiler::mul::vec_mul::VecMul;
-    use super::super::super::compiler::mul::col_mul::ColMul;
-    */
-
-    use super::super::super::compiler::map::rms_map::RMSMap;
-    use super::super::super::compiler::mul::attention_mul::AttentionMul;
-    use super::super::super::compiler::mul::mat_mul::MatMul;
-    use super::super::super::compiler::operator::Operator;
-    use super::super::super::compiler::reduce::argmax_reduce::ArgmaxReduce;
-    use super::super::super::compiler::zip_map::complex_zip::ComplexZipMap;
 
     #[test]
     fn test_attention() {

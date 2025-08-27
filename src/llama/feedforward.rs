@@ -9,7 +9,7 @@ use super::super::memory::cache::Cache;
 use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
-use crate::compiler::zip_map::silu_mul_zip::SiluZipMap;
+
 
 #[derive(Clone)]
 pub struct FeedForward<T> {
@@ -99,14 +99,8 @@ where
             self.head_size * 2,
         ]);
 
-        let nonlinear = view_linear1.zip_mapv(
+        let nonlinear = view_linear1.silu_mul(
             &view_linear3,
-            Operator::SiluMulZipMap(SiluZipMap::new(
-                self.head_size,
-                view_linear1.shape[2],
-                cpu_num,
-            )),
-            false,
             format!("{}.nonlinear", self.scope_name),
         );
 

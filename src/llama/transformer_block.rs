@@ -9,10 +9,7 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::from_f32::FromF32;
 
 use crate::init::config::Config;
-use super::super::compiler::map::rms_map::RMSMap;
-use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
-use super::super::compiler::zip_map::add_zip::AddZipMap;
-use super::super::compiler::zip_map::add_rms_zip::AddRMSZipMap;
+
 use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
@@ -122,7 +119,6 @@ where T: Copy
             hidden_states.rms(
                     self.input_layernorm.data,
                     self.rms_norm_eps,
-                    // self.cpu_num,
                 format!("{}.norm_hidden", self.scope_name),
             )
         } else {
@@ -130,8 +126,8 @@ where T: Copy
                 self.word_embedding.data,
                     self.input_layernorm.data,
                     self.rms_norm_eps,
-                    // self.cpu_num,
                     
+             
                 format!("{}.norm_hidden", self.scope_name),
             )
         };
@@ -142,21 +138,16 @@ where T: Copy
             // format!("{}.attention_hidden1", self.scope_name),
             // self.cpu_num,
         );
-        let attention_hidden2 = attention_hidden1.zip_mapv(
+        let attention_hidden2 = attention_hidden1.add_rms(
             hidden_states,
-            Operator::AddRMSZipMap(AddRMSZipMap::new(
-                attention_hidden1.shape[1],
-                self.post_attention_layernorm.data,
-                self.rms_norm_eps,
-                self.cpu_num,
-            )),
-            false,
-            format!("{}.norm_hidden2", self.scope_name),
+            self.post_attention_layernorm.data,
+            self.rms_norm_eps,
+            format!("{}.norm_hidden2", self.scope_name)
         );
+
         let attention_hidden3 = self.feedforward.forward(
             &attention_hidden2,
             format!("{}.attention_hidden3", self.scope_name),
-            self.cpu_num,
         );
 
         let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],
@@ -168,13 +159,11 @@ where T: Copy
             self.head_size]);
 
         // [batch_size, head_num, head_size]
-        let out = view_attention_hidden2.zip_mapv(
+        let out = view_attention_hidden2.add(
             &view_attention_hidden3,
-            Operator::AddZipMap(AddZipMap::<T>::new(self.head_size, view_attention_hidden2.shape[1], self.cpu_num)),
-            false,
-            // bug
             format!("{}.output", self.scope_name),
         );
+        
         out.view(attention_hidden2.shape.clone())
     }
 }
