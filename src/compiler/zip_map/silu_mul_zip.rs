@@ -17,7 +17,7 @@ pub struct SiluZipMap<T> {
     max_batch_size: usize,
     head_num: usize,
     head_size: usize,
-    cpu_num: usize
+    // cpu_num: usize
 }
 
 impl <T> SiluZipMap <T> 
@@ -42,7 +42,7 @@ where
             max_batch_size: max_batch_size,
             head_num: head_num,
             head_size: head_size,
-            cpu_num: cpu_num
+            // cpu_num: cpu_num
         }
     }
 
@@ -54,11 +54,12 @@ where
             position_begin: usize,
             position_interval: usize,
             batch_size: usize, 
+            cpu_num: usize,
             thread_id: usize) {
         let stride = batch_size * self.head_num;
         let max_stride = self.max_batch_size * self.head_num;
-        if let Some((begin, end)) = assign(position_interval * stride, self.cpu_num, thread_id) {
-      
+        if let Some((begin, end)) = assign(position_interval * stride, cpu_num, thread_id) {
+
             // 从begin得到对应的坐标
             let (mut high_index, mut _index) = (begin / stride, begin % stride);
             let (mut row_index, mut col_index) = (_index / self.head_num, _index % self.head_num);
@@ -216,7 +217,7 @@ mod test {
         // _operator.set_chunk(chunks);
         let position_index = 0; // 起始位置，根据实际情况可以修改
         for i in 0..thread_num {
-            _operator.run(position_index, sequence_threshold, batch_size,   i);
+            _operator.run(position_index, sequence_threshold, batch_size,   cpu_num, i);
         }
         let result = vec![
             1.9444659948349,

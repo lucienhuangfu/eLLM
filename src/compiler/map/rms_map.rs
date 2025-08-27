@@ -16,7 +16,7 @@ pub struct RMSMap<T> {
     hidden_size: usize,
     weight: ConstPtr<T>,
     eps: T,
-    cpu_num: usize,
+    // cpu_num: usize,
 }
 
 impl<T: Sqrt> RMSMap<T> {
@@ -27,7 +27,7 @@ impl<T: Sqrt> RMSMap<T> {
         hidden_size: usize,
         weight: *const T,
         eps: T,
-        cpu_num: usize,
+        // cpu_num: usize,
     ) -> Self {
         Self {
             // chunks: vec![],
@@ -37,7 +37,7 @@ impl<T: Sqrt> RMSMap<T> {
             hidden_size,
             weight: ConstPtr { ptr: weight },
             eps: eps,
-            cpu_num: cpu_num,
+            // cpu_num: cpu_num,
         }
     }
 
@@ -51,9 +51,10 @@ impl<T: Sqrt> RMSMap<T> {
         position_begin: usize,
         position_interval: usize,
         batch_size: usize,
+        cpu_num: usize,
         thread_id: usize,
     ) {
-        if let Some((begin, end)) = assign(batch_size * position_interval, self.cpu_num, thread_id)
+        if let Some((begin, end)) = assign(batch_size * position_interval, cpu_num, thread_id)
         {
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
             let mut ptr1 = self.ptr1.ptr;
@@ -210,7 +211,7 @@ mod test {
         let thread_num: usize = cpu_num;
 
         for i in 0..thread_num {
-            operator.run(position_index, position_interval, batch_size,  i);
+            operator.run(position_index, position_interval, batch_size,  thread_num, i);
         }
         // 如需打印输出数据，请取消以下注释
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);

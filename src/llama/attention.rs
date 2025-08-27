@@ -143,27 +143,13 @@ where
             // 这两个zipmap 可以合并
             // [sequence, batch_size, head_num, head_size] <- [batch_size, head_num, head_size]  [sequence, 1, 1, head_size]
             // output 为一个
-            let query_position_tensor = view_query.zip_mapv(
+            let query_position_tensor = view_query.complex_mul(
                 position_embedding,
-                Operator::ComplexZip(ComplexZipMap::new(
-                    self.attention_head_size,
-                    self.num_attention_heads,
-                    self.batch_size,
-                    self.cpu_num,
-                )),
-                true,
                 format!("{}.query_position_tensor", self.scope_name),
             );
 
-            let key_position_tensor = view_key.zip_mapv(
+            let key_position_tensor = view_key.complex_mul(
                 position_embedding,
-                Operator::ComplexZip(ComplexZipMap::new(
-                    self.attention_head_size,
-                    self.num_kv_heads,
-                    self.batch_size,
-                    self.cpu_num,
-                )),
-                false,
                 format!("{}.key_position_tensor", self.scope_name),
             );
 

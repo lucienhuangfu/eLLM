@@ -20,7 +20,7 @@ pub struct AddZipMap <T> {
     max_batch_size: usize,
     head_num: usize,
     head_size: usize,
-    cpu_num: usize
+    // cpu_num: usize
 }
 
 impl <T> AddZipMap <T> 
@@ -33,7 +33,7 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
         max_batch_size: usize,
         head_num: usize,
         head_size: usize,
-        cpu_num: usize
+        // cpu_num: usize
     ) -> Self {
         Self {
             // chunks: vec![],
@@ -43,7 +43,7 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
             max_batch_size,
             head_num,
             head_size,
-            cpu_num
+            // cpu_num
         }
     }
 
@@ -56,13 +56,14 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
             position_begin: usize,
             position_interval: usize, 
             batch_size: usize, 
+            cpu_num: usize,
             thread_id: usize) {
 
         //     [sequence, batch_size, head_num]
         // stride [batch_size * head_num, head_num,1]
         let stride = batch_size * self.head_num;
         let max_stride = self.max_batch_size * self.head_num;
-        if let Some((begin, end)) = assign(position_interval * stride, self.cpu_num, thread_id) {
+        if let Some((begin, end)) = assign(position_interval * stride, cpu_num, thread_id) {
       
             // 从begin得到对应的坐标
             let (mut high_index, mut _index) = (begin / stride, begin % stride);
@@ -183,12 +184,12 @@ mod test {
         // num_cpus::get();
 
 
-        let mut operator = AddZipMap::new(input_data1.as_ptr(), input_data2.as_ptr(), output_data.as_mut_ptr(), batch_size, head_num, head_size, thread_num);
+        let mut operator = AddZipMap::new(input_data1.as_ptr(), input_data2.as_ptr(), output_data.as_mut_ptr(), batch_size, head_num, head_size);
 
         // operator.set_chunk(chunks);
         
         for i in 0..thread_num {
-            operator.run(position_index, sequence_threshold, batch_size, i);
+            operator.run(position_index, sequence_threshold, batch_size, thread_num, i);
         }
             
             // 如需打印输出数据，请取消以下注释
