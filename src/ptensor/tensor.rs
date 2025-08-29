@@ -2,25 +2,26 @@ use std::cell::RefCell;
 // use std::iter::zip;
 use std::rc::Rc;
 use std::ops::{Add, Sub, Div, Mul, AddAssign, Neg};
-use crate::compiler::zip_map::add_rms_zip::AddRMSZipMap;
+
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
 use crate::kernel::generic::sigmoid::Sigmoid;
 
-use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
+use super::tensor_utils::{get_strides};
+use crate::init::matmul_params::MatMulParams;
+
+use super::super::compiler::operator::Operator;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::zip_map::add_zip::AddZipMap;
 use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
-use crate::compiler::zip_map::silu_mul_zip::SiluZipMap;
+use super::super::compiler::zip_map::silu_mul_zip::SiluZipMap;
+use crate::compiler::zip_map::add_rms_zip::AddRMSZipMap;
 
-// use crate::compiler::zip_map::chunk_zipmap::chunk_zipmap;
-// use super::chunk_colmul::chunk_colmul;
-// use super::chunk_vecmul::chunk_vecmul;
 
-use super::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
-use crate::init::matmul_params::MatMulParams;
+
+
 
 #[derive(Clone)]
 pub struct Tensor<T> {
@@ -278,21 +279,12 @@ self.shape[3],
     pub fn matmul(
         &self,
         tensor2: &Tensor<T>,
-        mut operator: Operator<T>,
         params: MatMulParams,
-        sequence_length: usize,
         tensor_name: String,
     ) -> Self {
-        let single_output_shape = vec![self.shape[0], tensor2.shape[0]];
-        let output_shape = if sequence_length == 1 {
-            single_output_shape.clone()
-        } else {
-            vec![
-                sequence_length,
-                single_output_shape[0],
-                single_output_shape[1],
-            ]
-        };
+
+
+         let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
@@ -301,41 +293,26 @@ self.shape[3],
             self.operator_queue.clone(),
         );
 
-                let runner = Operator::MatMul(MatMul::new(
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-            self.sequence_length,
-            //chunks,
+
+        let operator = Operator::MatMul(MatMul::new(
+            self.data,
+            tensor2.data,
+            output_tensor.data,
+
+
+            params.a_row,
+            params.b_row,
+            params.column,
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+            // self.sequence_length,
+            // chunks,
             // thread_num,
             // barrier_arc,
         ));
-
-
-
-        let chunks = chunk_matmul(self.data, tensor2.data, output_tensor.data, &params);
-
-        if sequence_length == 1 {
-            operator.set_zipmap_chunk(chunks);
-        } else {
-            let sequence_stride: usize = single_output_shape.iter().product();
-            let mut expand_chunks = vec![];
-
-            for i in 0..sequence_length {
-                let offset = i * sequence_stride;
-                for item in &chunks {
-                    let mut temp = item.clone();
-                    temp.2.ptr = unsafe { temp.2.ptr.add(offset) };
-                    expand_chunks.push(temp);
-                }
-            }
-            operator.set_zipmap_chunk(expand_chunks);
-        }
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor

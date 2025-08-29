@@ -26,7 +26,7 @@ impl<T> ComplexZipMap<T>
 where
     T: Copy
         + Default
-        + Debug
+        // + Debug
         + Add<Output = T>
         + Sub<Output = T>
         + Mul<Output = T>
