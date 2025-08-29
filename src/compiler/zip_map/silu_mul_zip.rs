@@ -9,7 +9,7 @@ use crate::kernel;
 
 
 #[derive(Clone)]
-pub struct SiluZipMap<T> {
+pub struct SiluMulZipMap<T> {
     // chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>,
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
@@ -20,7 +20,7 @@ pub struct SiluZipMap<T> {
     // cpu_num: usize
 }
 
-impl <T> SiluZipMap <T> 
+impl <T> SiluMulZipMap <T> 
 where
     T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + Div<Output = T> + Neg<Output = T> + Sigmoid<T>,
 {
@@ -32,7 +32,7 @@ where
         max_batch_size: usize,
         head_num: usize,
         head_size: usize,
-        cpu_num: usize
+        // cpu_num: usize
     ) -> Self { 
         Self {
             // chunks: vec![],
@@ -97,7 +97,7 @@ where
 // unsafe impl <T:Float>Send for SiluZipMap<T> {}
 // unsafe impl <T:Float>Sync for SiluZipMap<T> {}
 
-impl <T> ZipMapTrait  <T> for SiluZipMap<T>
+impl <T> ZipMapTrait  <T> for SiluMulZipMap<T>
 where
     T: Copy + Default + Add<Output = T>+ Sub<Output = T> + Mul<Output = T> + Div<Output = T> + Neg<Output = T> + Sigmoid<T>,
 {
@@ -106,7 +106,7 @@ where
         kernel::generic::silu::silu_multiply(input_ptr1 , input_ptr2, output_ptr , self.head_size);
     }
 }
-impl ZipMapTrait<f16> for SiluZipMap<f16> {
+impl ZipMapTrait<f16> for SiluMulZipMap<f16> {
     fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
         // print!("f16 runner\n");
         
@@ -121,7 +121,7 @@ impl ZipMapTrait<f16> for SiluZipMap<f16> {
     }
 }
 
-impl ZipMapTrait<f32> for SiluZipMap<f32> {
+impl ZipMapTrait<f32> for SiluMulZipMap<f32> {
     fn compute (&self, input_ptr1: *const f32, input_ptr2: *const f32,output_ptr: *mut f32) {
         //print!("f32 runner\n");
         /*#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
@@ -209,7 +209,7 @@ mod test {
 
         let chunks = chunk_zipmap(shapes, input_data1.as_ptr(), input_strides1, input_data2.as_ptr(), input_strides2, output_data.as_mut_ptr(), output_strides);
         let thread_num: usize = num_cpus::get();
-        let mut _operator: SiluZipMap<f32> = SiluZipMap::new(
+        let mut _operator: SiluMulZipMap<f32> = SiluMulZipMap::new(
                 input_data1.as_ptr(),
                 input_data2.as_ptr(),
                 output_data.as_mut_ptr(),

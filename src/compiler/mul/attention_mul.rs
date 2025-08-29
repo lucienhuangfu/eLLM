@@ -1,15 +1,16 @@
 use std::f16;
 use std::ops::{Add, Div, Mul, Sub};
 
+use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use super::super::super::init::send_sync_ptr::{ConstPtr, MutPtr};
 use super::super::super::kernel;
+
 use super::mul_trait::AttentionMulTrait;
 use crate::compiler::assign::assign;
-use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+
 
 #[derive(Clone)]
 pub struct AttentionMul<T> {
-    // chunks: Vec<(ConstPtr<T>, ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>,
     q_ptr: ConstPtr<T>,
     k_ptr: ConstPtr<T>,
     v_ptr: ConstPtr<T>,
@@ -18,10 +19,9 @@ pub struct AttentionMul<T> {
     attention_head_num: usize,
     kv_head_num: usize,
     head_size: usize,
-
     kv_strides: Vec<usize>,
-    //v_strides: Vec<usize>,
     inverse_sqrt_head: T,
+    //v_strides: Vec<usize>,
     // cpu_num: usize,
     // stride: usize,
 }
@@ -39,35 +39,31 @@ where
         + Exp,
 {
     pub fn new(
-        q_ptr: ConstPtr<T>,
-        k_ptr: ConstPtr<T>,
-        v_ptr: ConstPtr<T>,
-        output_ptr: MutPtr<T>,
+        q_ptr: *const T,
+        k_ptr: *const T,
+        v_ptr: *const T,
+        output_ptr: *mut T,
         batch_size: usize,
+        attention_head_num: usize,
+        kv_head_num: usize,
         head_size: usize,
-        head_num: usize,
         kv_strides: Vec<usize>,
-        // v_strides: Vec<usize>,
         inverse_sqrt_head: T,
-        // stride: usize,
-        // cpu_num: usize,
+     
     ) -> Self {
         Self {
-            q_ptr: q_ptr,
-            k_ptr: k_ptr,
-            v_ptr: v_ptr,
-            output_ptr: output_ptr,
+            q_ptr: ConstPtr { ptr: q_ptr },
+            k_ptr: ConstPtr { ptr: k_ptr },
+            v_ptr: ConstPtr { ptr: v_ptr },
+            output_ptr: MutPtr { ptr: output_ptr },
             batch_size: batch_size,
-            head_num: head_num,
+            attention_head_num: attention_head_num,
+            kv_head_num: kv_head_num,
             head_size: head_size,
             kv_strides: kv_strides,
             inverse_sqrt_head: inverse_sqrt_head,
         }
     }
-
-    // pub fn set_chunk(&mut self, chunks: Vec<(ConstPtr<T>, ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>) {
-    //     self.chunks = chunks;
-    // }
 
     pub fn run(
         &self,
@@ -78,20 +74,12 @@ where
         thread_id: usize,
     ) {
         // [sequence, batch, head_num, head_size]
-        let mut q_ptr = self.q_ptr.ptr;
-        let mut k_ptr = self
-            .k_ptr
-            .ptr
-            .add(position_index * self.kv_strides[position_index]);
-        let mut v_ptr = self
-            .v_ptr
-            .ptr
-            .add(position_index * self.kv_strides[position_index]);
-        let mut output_ptr = self.output_ptr.ptr;
-
+        // [sequence, batch, share_num , attention_head_num, head_size]
+        
         let stride = batch_size * self.attention_head_num;
-        let max_stride = self.batch_size * self.attention_head_num;
+        
         if let Some((begin, end)) = assign(position_interval * stride, cpu_num, thread_id) {
+            let max_stride = self.batch_size * self.attention_head_num;
             // 从begin得到对应的坐标
             let (mut high_index, mut _index) = (begin / stride, begin % stride);
             let (mut row_index, mut col_index) = (
@@ -100,6 +88,18 @@ where
             );
 
             unsafe {
+                let mut q_ptr = self.q_ptr.ptr;
+                let mut k_ptr = self
+                    .k_ptr
+                    .ptr
+                    .add(position_index * self.kv_strides[position_index]);
+                let mut v_ptr = self
+                    .v_ptr
+                    .ptr
+                    .add(position_index * self.kv_strides[position_index]);
+                let mut output_ptr = self.output_ptr.ptr;
+
+
                 // 遍历每个chunk;
                 println!(
                     "thread_id: {}, begin: {}, end: {}",
@@ -111,8 +111,8 @@ where
 
                 // [sequence, batch, head_num, head_size]
                 for _ in begin..end {
-                    let index = (high_index * max_stride + row_index * self.head_num + col_index)
-                        * self.attention_head_size;
+                    let index = (high_index * max_stride + row_index * self.attention_head_num + col_index)
+                        * self.head_size;
 
                     // println!(
                     //     " high_index: {}, row_index: {}, col_index: {}, index: {}",
@@ -179,7 +179,7 @@ where
             output_ptr,
             self.inverse_sqrt_head,
             self.head_size,
-            self.stride,
+           self.kv_strides[2],
             position,
         );
     }
@@ -244,7 +244,7 @@ impl AttentionMulTrait<f32> for AttentionMul<f32> {
 
 #[cfg(test)]
 mod test {
-    use super::super::chunk_attention::chunk_attention;
+    // use super::super::chunk_attention::chunk_attention;
     use super::*;
     use crate::ptensor::tensor_utils::get_strides;
     use approx::assert_ulps_eq;
@@ -254,27 +254,35 @@ mod test {
         let sequence_chunk_size = 256;
         let sequence_length = 256;
         let batch_size = 16;
-        let head_num = 8;
+        let attention_head_num = 8;
+        let kv_head_num = 8;
         let head_size = 128;
-        
-        let shape1 = vec![sequence_chunk_size, batch_size, head_num, head_size];
-        let size1 = shape1.iter().product();
-        let data1 = vec![1.0; size1];
-        let strides1 = get_strides(&shape1);
 
-        let shape2 = vec![sequence_length, batch_size, head_num, head_size];
-        let strides2 = get_strides(&shape2);
-        let size2 = shape2.iter().product();
-        let data2 = vec![1.0; size2];
+        let q_shape = vec![sequence_chunk_size, batch_size, attention_head_num, head_size];
+        let q_size = q_shape.iter().product();
+        let q_data = vec![1.0; q_size];
+        let q_strides = get_strides(&q_shape);
 
-        let _shape2 = vec![batch_size, head_num, sequence_length, head_size];
-        let _strides2 = vec![strides2[1], strides2[2], strides2[0], strides2[3]];
+        let k_shape = vec![sequence_length, batch_size, kv_head_num, head_size];
+        let k_strides = get_strides(&k_shape);
+        let k_size = k_shape.iter().product();
+        let k_data = vec![1.0; k_size];
 
-        let shape3 = vec![batch_size, sequence_length, head_num, head_size];
-        let size3 = shape3.iter().product();
-        let data3 = vec![1.0; size3];
+        let v_shape = vec![sequence_length, batch_size, kv_head_num, head_size];
+        let v_strides = get_strides(&v_shape);
+        let v_size = v_shape.iter().product();
+        let v_data = vec![1.0; v_size];
 
-        let shape4 = vec![batch_size, head_num, head_size];
+        let kv_strides2 = vec![k_strides[1], k_strides[2], k_strides[0], k_strides[3]];
+
+        let o_shape = vec![sequence_chunk_size, batch_size, attention_head_num, head_size];
+        let o_size = o_shape.iter().product();
+        let mut o_data = vec![1.0; o_size];
+        let o_strides = get_strides(&o_shape);
+
+
+
+        let shape4 = vec![sequence_chunk_size, batch_size, attention_head_num, head_size];
         let size4 = shape4.iter().product();
         let mut data4 = vec![0.0; size4];
         let strides4 = get_strides(&shape4);
@@ -283,12 +291,26 @@ mod test {
 
         let thread_num: usize = num_cpus::get();
         let mut operator =
-            AttentionMul::<f32>::new(head_size, head_num, _strides2[2], 1.0, thread_num);
-        operator.set_chunk(tasks);
+            AttentionMul::<f32>::new(
+                q_data.as_ptr(),
+                k_data.as_ptr(),
+                v_data.as_ptr(),
+                o_data.as_mut_ptr(),
+                batch_size,
+                attention_head_num,
+                kv_head_num,
+                head_size,
+                kv_strides2,
+                1.0,
+            );
+        // operator.set_chunk(tasks);
+
+        let position_index = 0;
+        let position_interval = 1;
 
         for i in 0..thread_num {
             // println!("{}", i);
-            operator.run(batch_size, sequence_length - 1, i);
+            operator.run(position_index, position_interval, batch_size, thread_num, i);
         }
 
         assert_ulps_eq!(data4[..], result[..], max_ulps = 4);
