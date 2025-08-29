@@ -80,25 +80,8 @@ where T: Copy
             b_row_step_micro,
         };
 
-        let thread_num: usize = num_cpus::get();
-        // let barrier = Barrier::new(thread_num);
-        // let barrier_arc = Arc::new(barrier);
-        let runner = Operator::MatMul(MatMul::new(
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-            self.sequence_length,
-            //chunks,
-            thread_num,
-            // barrier_arc,
-        ));
-
-        let product = input.matmul(&self.weight, runner, params, self.sequence_length, tensor_name);
+        // let thread_num: usize = num_cpus::get();
+        let product = input.matmul(&self.weight, params, self.sequence_length, tensor_name);
         product
     }
 }

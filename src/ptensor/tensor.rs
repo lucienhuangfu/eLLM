@@ -301,6 +301,23 @@ self.shape[3],
             self.operator_queue.clone(),
         );
 
+                let runner = Operator::MatMul(MatMul::new(
+            a_row,
+            b_row,
+            column,
+            a_row_step_macro,
+            b_row_step_macro,
+            column_step_macro,
+            a_row_step_micro,
+            b_row_step_micro,
+            self.sequence_length,
+            //chunks,
+            // thread_num,
+            // barrier_arc,
+        ));
+
+
+
         let chunks = chunk_matmul(self.data, tensor2.data, output_tensor.data, &params);
 
         if sequence_length == 1 {
