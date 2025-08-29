@@ -10,7 +10,7 @@ use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
 // use super::map::softmax_map::SoftmaxMap;
-use super::reduce::argmax_reduce::ArgmaxReduce;
+// use super::reduce::argmax_reduce::ArgmaxReduce;
 use super::mul::mat_mul::MatMul;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
 use super::zip_map::add_zip::AddZipMap;
@@ -31,8 +31,6 @@ pub enum Operator<T> {
     RMSMap(RMSMap<T>),
     SiluMulZipMap(SiluZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
-    // VecMul(VecMul<T>),
-    // ColMul(ColMul<T>),
     MatMul(MatMul<T>),
 }
 

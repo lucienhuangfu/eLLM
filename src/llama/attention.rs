@@ -171,13 +171,7 @@ where
             let context_tensor = query_position_tensor.attention(
                 &view_key_position_tensor,
                 &view_value_tensor2,
-                Operator::AttentionMul(AttentionMul::new(
-                    self.attention_head_size,
-                    self.num_attention_heads,
-                    view_key_position_tensor.strides[2],
-                    self.inverse_sqrt_head,
-                    self.cpu_num,
-                )),
+     
                 format!("{}.context_tensor", self.scope_name),
             );
 
