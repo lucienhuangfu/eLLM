@@ -81,7 +81,6 @@ where
         let position_begin = position_index;
         let position_interval = 1;
 
-        // 
         let (mut a_chunk_num, remainder) = (self.params.a_row / self.params.a_row_step_macro, self.params.a_row % self.params.a_row_step_macro);
         if remainder > 0 {
             a_chunk_num += 1;

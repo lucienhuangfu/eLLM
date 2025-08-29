@@ -1,19 +1,22 @@
-use crate::kernel::generic::sigmoid::Sigmoid;
-use crate::kernel::generic::sqrt::Sqrt;
-use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+
 use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
+use crate::kernel::generic::sigmoid::Sigmoid;
+use crate::kernel::generic::sqrt::Sqrt;
+use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+
+
 use super::super::memory::cache::Cache;
-use super::super::ptensor::linear::Linear;
-use super::super::ptensor::tensor::Tensor;
 use crate::compiler::mul::attention_mul::AttentionMul;
 use crate::compiler::operator::Operator;
-use crate::compiler::zip_map::complex_zip::ComplexZipMap;
-// use crate::compiler::map::softmax_map::SoftmaxMap;
-// use crate::compiler::mul::vec_mul::VecMul;
-// use crate::compiler::mul::col_mul::ColMul;
+
+use super::super::ptensor::linear::Linear;
+use super::super::ptensor::tensor::Tensor;
+
+
+
 
 #[derive(Clone)]
 pub struct Attention<T> {
