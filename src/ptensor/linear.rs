@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Barrier};
+// use std::sync::{Arc, Barrier};
 
 use std::ops::{Add, Sub, Div, Mul, AddAssign, Neg};
 use crate::kernel::generic::sqrt::Sqrt;
@@ -9,7 +9,7 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
-use crate::compiler::mul::mat_mul::MatMul;
+// use crate::compiler::mul::mat_mul::MatMul;
 use crate::init::matmul_params::MatMulParams;
 use crate::compiler::operator::Operator;
 
@@ -91,12 +91,12 @@ mod test {
     use super::*;
     use approx::assert_relative_eq;
     // use std::f16;
-    use std::thread;
+    // use std::thread;
 
     #[test]
     fn test_linear_batch_size_1() {
         let sequence_length = 1;
-        let position_window_size = 4;
+        let sequence_chunk_size = 4;
         let batch_size = 32;
         let head_num = 64;
         let head_size = 128;
@@ -113,8 +113,8 @@ mod test {
         for i in 0..linear.weight.shape.iter().product() {
             unsafe { linear.weight.data.add(i).write(1.0f32) };
         }
-        
-        let shape1 = vec![position_window_size, batch_size, hidden_size];
+
+        let shape1 = vec![sequence_chunk_size, batch_size, hidden_size];
 
         let input = Tensor::from_cache(shape1, String::from("model.layer.0.input_tensor"), cache.clone(), operator_queue.clone());
         for i in 0..input.shape.iter().product() {
@@ -123,7 +123,7 @@ mod test {
             }
         }
 
-        let output_shape = vec![position_window_size, batch_size, hidden_size];
+        let output_shape = vec![sequence_chunk_size, batch_size, hidden_size];
         let size3 = output_shape.iter().product();
         let mut result = vec![0.0; size3];
         for i in 0..hidden_size {
@@ -134,7 +134,7 @@ mod test {
         
         let thread_num: usize = num_cpus::get();
         for i in 0..thread_num {
-            output_tensor.operator_queue.borrow()[0].run(1, 0, i);
+            output_tensor.operator_queue.borrow()[0].run(0, sequence_chunk_size, batch_size, thread_num, i);
         }
 
         let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, size3) };

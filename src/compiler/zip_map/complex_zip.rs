@@ -1,24 +1,27 @@
 // use num_traits::Float;
 use std::f16;
-use std::fmt::Debug;
+// use std::fmt::Debug;
 use std::ops::{Add, Div, Mul, Neg, Sub};
+
 
 use super::zip_map_trait::ZipMapTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::kernel::generic::sigmoid::Sigmoid;
-// ::generic::complex_mul::complex_mul as complex_mul_block;
+
 #[derive(Clone)]
 pub struct ComplexZipMap<T> {
     // chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>,
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
     output_ptr: MutPtr<T>,
+    sequence_length: usize,
     batch_size: usize,
     head_num: usize,
     head_size: usize,
-    sequence_stride: usize,
+    output_to_kv: bool,   
+    // sequence_stride: usize,
     // cpu_num: usize,
 }
 
@@ -38,20 +41,23 @@ where
         ptr1: *const T,
         ptr2: *const T,
         output_ptr: *mut T,
+        sequence_length: usize,
         batch_size: usize,
         head_num: usize,
         head_size: usize,
+        output_to_kv: bool,
         // cpu_num: usize,
     ) -> Self {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             ptr2: ConstPtr { ptr: ptr2 },
             output_ptr: MutPtr { ptr: output_ptr },
-            // chunks: vec![],
+            sequence_length: sequence_length,
             batch_size: batch_size,
             head_num: head_num,
             head_size: head_size,
-            sequence_stride: batch_size * head_num,
+            output_to_kv: output_to_kv,
+            // sequence_stride: batch_size * head_num,
             // cpu_num: cpu_num,
         }
     }
@@ -70,8 +76,9 @@ where
         thread_id: usize,
     ) {
         let stride = batch_size * self.head_num;
-        let max_stride = self.batch_size * self.head_num;
+        
         if let Some((begin, end)) = assign(position_interval * stride, cpu_num, thread_id) {
+            let max_stride = self.batch_size * self.head_num;
             // 从begin得到对应的坐标
             let (mut high_index, mut _index) = (begin / stride, begin % stride);
             let (mut row_index, mut col_index) = (_index / self.head_num, _index % self.head_num);
@@ -87,7 +94,11 @@ where
                     // self.chunks.len()
                 );
 
-                let ptr1 = self.ptr1.ptr;
+                let ptr1 = if self.output_to_kv {
+                    self.ptr1.ptr.add(position_begin * max_stride * self.head_size)
+                } else {
+                    self.ptr1.ptr
+                };
                 // let ptr2 = self.ptr2.ptr;
                 let mut ptr2 = self.ptr2.ptr.add(position_begin * self.head_size);
                 let output_ptr = self.output_ptr.ptr;
@@ -102,8 +113,8 @@ where
 
                     // Print values from self.ptr1 as slice
 
-                    let slice = std::slice::from_raw_parts(ptr1.add(index), self.head_size);
-                    println!("self.ptr1 slice at index {}: {:?}", index, slice);
+                    // let slice = std::slice::from_raw_parts(ptr1.add(index), self.head_size);
+                    // println!("self.ptr1 slice at index {}: {:?}", index, slice);
 
                     self.compute(ptr1.add(index), ptr2, output_ptr.add(index));
 

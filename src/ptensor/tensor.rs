@@ -205,6 +205,11 @@ where
         sequence_length: usize,
         tensor_name: String,
     ) -> Self {
+        let output_to_kv = if self.shape[0] == sequence_length {
+            false
+        } else {
+            true
+        };
         let output_shape = vec![sequence_length, self.shape[1], b_tensor.shape[2]];
         let output_tensor = Tensor::from_cache(
             output_shape,
@@ -220,6 +225,7 @@ where
             self.shape[1],
             self.shape[2],
             self.shape[3],
+            output_to_kv
         ));
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
@@ -234,6 +240,11 @@ where
     ) -> Self {
         let output_shape = vec![sequence_length, self.shape[1], tensor2.shape[0]];
 
+        let output_to_kv = if self.shape[0] <= sequence_length {
+            false
+        } else {
+            true
+        };
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
             tensor_name,
@@ -254,6 +265,7 @@ where
             params.a_row_step_micro,
             params.b_row_step_micro,
             sequence_length,
+            output_to_kv
         ));
 
         self.operator_queue.borrow_mut().push(operator);

@@ -1,39 +1,42 @@
-
+use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
-use std::sync::{Arc, Barrier};
-use std::f16;
+// use std::sync::{Arc, Barrier};
 
-use super::mul_trait::MatlMulTrait;
-use super::super::super::init::{send_sync_ptr::{ConstPtr, MutPtr}, matmul_params::MatMulParams};
+use super::super::super::init::{
+    matmul_params::MatMulParams,
+    send_sync_ptr::{ConstPtr, MutPtr},
+};
 use super::super::super::kernel;
 use super::super::assign::assign;
-
-
+use super::mul_trait::MatlMulTrait;
 
 // there will be just one instance of this runner in the program
 // this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
-pub struct MatMul<T>
-{
-    pub params: MatMulParams,
-    _marker: PhantomData<T>,
-    
+pub struct MatMul<T> {
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
     output_ptr: MutPtr<T>,
-    sequence_chunk_size: usize,
-    batch_size: usize,
-    hidden_size: usize,
-    output_to_kv: bool,    
+    sequence_length: usize,
+    output_to_kv: bool,
+    pub params: MatMulParams,
+    _marker: PhantomData<T>,
     // sequence_stride: usize,
-
+    // batch_size: usize,
+    // hidden_size: usize,
 }
 impl<T> MatMul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
     pub fn new(
+        ptr1: *const T,
+        ptr2: *const T,
+        output_ptr: *mut T,
+        sequence_length: usize,
+        output_to_kv: bool,
+
         // these are the parameters of the matrix multiplication, this matrix is a largest possible one
         // for later matrix multiplication, the actual size of the matrix will be smaller
         // so this is reserving enough spaces in memory, and later lay the data into a small portion of it
@@ -52,10 +55,13 @@ where
         // how they are determined is not clear
         a_row_step_micro: usize,
         b_row_step_micro: usize,
- 
-        sequence_length: usize,
     ) -> Self {
         Self {
+            ptr1: ConstPtr { ptr: ptr1 },
+            ptr2: ConstPtr { ptr: ptr2 },
+            output_ptr: MutPtr { ptr: output_ptr },
+            sequence_length: sequence_length,
+            output_to_kv: output_to_kv,
             params: MatMulParams {
                 a_row,
                 b_row,
@@ -67,20 +73,19 @@ where
                 b_row_step_micro,
             },
             _marker: PhantomData,
-            // chunks: vec![],
-            // sequence_length: sequence_length,
-            // sequence_stride: a_row * b_row,
-            // cpu_num: cpu_num,
-            // barrier_arc: barrier_arc,
         }
     }
 
-    pub fn run(&self, position_index: usize, position_interval: usize, batch_size: usize, cpu_num: usize, thread_id: usize) {
+    pub fn run(
+        &self,
+        position_index: usize,
+        position_interval: usize,
+        batch_size: usize,
+        cpu_num: usize,
+        thread_id: usize,
+    ) {
 
-        // let sequence_chunk_size = self.sequence_length;
-        let position_begin = position_index;
-        let position_interval = 1;
-
+        /*
         let (mut a_chunk_num, remainder) = (self.params.a_row / self.params.a_row_step_macro, self.params.a_row % self.params.a_row_step_macro);
         if remainder > 0 {
             a_chunk_num += 1;
@@ -90,15 +95,16 @@ where
         {
             //  [sequence_chunk_size, batch_size, hidden_size]
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
-            let mut input_ptr1 = self.ptr1.ptr;
+                          let ptr1 = if self.output_to_kv {
+        self.ptr1.ptr.add(position_begin * max_stride * self.head_size)
+                } else {
+                    self.ptr1.ptr
+                };
             let mut input_ptr2 = self.ptr2.ptr;
             let mut output_ptr = self.output_ptr.ptr;
-
-
-        }
+        }*/
     }
 }
-
 
 impl<T> MatlMulTrait<T> for MatMul<T>
 where
@@ -106,41 +112,65 @@ where
 {
     default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T) {
         //print!("generic runner\n");
-        kernel::generic::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &(self.params));
+        kernel::generic::matmul_block::matmul_block(
+            input_ptr1,
+            input_ptr2,
+            output_ptr,
+            &(self.params),
+        );
     }
 
-    default fn compute2(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T, length: usize) {
-        
+    default fn compute2(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        output_ptr: *mut T,
+        length: usize,
+    ) {
         kernel::generic::dot_product::dot_product(input_ptr1, input_ptr2, output_ptr, length);
     }
-
 }
 
 impl MatlMulTrait<f16> for MatMul<f16> {
     fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
         // print!("f16 runner\n");
-         
+
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            kernel::x86_64::f16_512::matmul_block::  matmul_block(
-                 input_ptr1, input_ptr2, output_ptr, &self.params);
+            kernel::x86_64::f16_512::matmul_block::matmul_block(
+                input_ptr1,
+                input_ptr2,
+                output_ptr,
+                &self.params,
+            );
         };
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        kernel::generic::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &(self.params));
+        kernel::generic::matmul_block::matmul_block(
+            input_ptr1,
+            input_ptr2,
+            output_ptr,
+            &(self.params),
+        );
     }
 
-    fn compute2(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16, length: usize) {
+    fn compute2(
+        &self,
+        input_ptr1: *const f16,
+        input_ptr2: *const f16,
+        output_ptr: *mut f16,
+        length: usize,
+    ) {
         // print!("f16 runner\n");
-        
+
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            kernel::x86_64::f16_512::dot_product::dot_product(input_ptr1, input_ptr2, output_ptr, length);
-
+            kernel::x86_64::f16_512::dot_product::dot_product(
+                input_ptr1, input_ptr2, output_ptr, length,
+            );
         };
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::generic::dot_product::dot_product(input_ptr1, input_ptr2, output_ptr, length);
     }
-
 }
 
 impl MatlMulTrait<f32> for MatMul<f32> {
@@ -157,7 +187,13 @@ impl MatlMulTrait<f32> for MatMul<f32> {
         // generic_matmul_block(input_ptr1, input_ptr2, output_ptr, &(self.params));
     }
 
-    fn compute2(&self, input_ptr1: *const f32, input_ptr2: *const f32, output_ptr: *mut f32, length: usize) {
+    fn compute2(
+        &self,
+        input_ptr1: *const f32,
+        input_ptr2: *const f32,
+        output_ptr: *mut f32,
+        length: usize,
+    ) {
         // print!("f32 runner\n");
 
         /*//implementation for f32 on platform with avx2
@@ -171,14 +207,12 @@ impl MatlMulTrait<f32> for MatMul<f32> {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::thread;
 
-    use super::super::chunk_matmul::chunk_matmul;
+    // use super::super::chunk_matmul::chunk_matmul;
 
     #[test]
     fn test_f32_single() {
@@ -226,15 +260,7 @@ mod tests {
             b_row_step_micro,
         };
         // get the tasks
-        let chunks = chunk_matmul(
-            a.as_ptr(),
-            
-            b.as_ptr(),
-        
-            c.as_mut_ptr(),
-    
-            &params,
-        );
+        let chunks = chunk_matmul(a.as_ptr(), b.as_ptr(), c.as_mut_ptr(), &params);
         // initialize the runner and multi-threaded run
         // create as many threads as the logical cores in the machine
         let thread_num: usize = num_cpus::get();
@@ -282,7 +308,7 @@ mod tests {
         }
     }
 
-        /*
+    /*
     // Helper function to compare two f16 arrays with a tolerance
     fn compare_f16_arrays(arr1: &[f16], arr2: &[f16], tolerance: f32, length: usize) -> bool {
         // tell if the first length elements in both arrays are equal within the tolerance
@@ -407,7 +433,7 @@ mod tests {
 
         assert!(compare_f16_arrays(&c, &expected, 1e-3, batch_size * b_row));
 
-        
+
     }
 
     // test f32 runner
@@ -457,11 +483,11 @@ mod tests {
         // get the tasks
         let chunks = chunk_matmul(
             a.as_ptr(),
-            
+
             b.as_ptr(),
-        
+
             c.as_mut_ptr(),
-    
+
             &params,
         );
         // initialize the runner and multi-threaded run
@@ -517,8 +543,7 @@ mod tests {
         let batch_size = 1;
         let sequence_length = 8;
         let position_index = 4;
-        
-        
+
         let a_row = 128;
         let b_row = 256;
         let column = 256;
@@ -527,8 +552,6 @@ mod tests {
         let column_step_macro = 64;
         let a_row_step_micro = 8;
         let b_row_step_micro = 8;
-
-
 
         let mut a = vec![0.0; a_row * column];
         let b = vec![1.0; b_row * column];
@@ -540,7 +563,7 @@ mod tests {
             }
         }
         let mut c = vec![0.0; sequence_length * a_row * b_row];
-        let mut expected = vec![0.0; sequence_length *a_row * b_row];
+        let mut expected = vec![0.0; sequence_length * a_row * b_row];
         let offset = a_row * b_row * position_index;
         // calculate expected using the naive method
         for i in 0..batch_size {
@@ -562,17 +585,9 @@ mod tests {
             a_row_step_micro,
             b_row_step_micro,
         };
-        
+
         // get the tasks
-        let chunks = chunk_matmul(
-            a.as_ptr(),
-            
-            b.as_ptr(),
-        
-            c.as_mut_ptr(),
-    
-            &params,
-        );
+        let chunks = chunk_matmul(a.as_ptr(), b.as_ptr(), c.as_mut_ptr(), &params);
         // initialize the runner and multi-threaded run
         // create as many threads as the logical cores in the machine
         let thread_num: usize = num_cpus::get();
@@ -594,7 +609,6 @@ mod tests {
         runner.set_chunk(chunks);
         let runner_arc = Arc::new(runner);
 
-    
         thread::scope(|s| {
             let mut handles = Vec::with_capacity(thread_num);
             for thread_id in (0..thread_num) {
@@ -618,7 +632,6 @@ mod tests {
                 //print!("{:?} ", c[i * b_row + j]);
             }
             //println!();
-        } 
+        }
     }
-
 }

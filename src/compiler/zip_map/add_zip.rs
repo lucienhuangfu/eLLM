@@ -10,7 +10,6 @@ use super::zip_map_trait::ZipMapTrait;
 use crate::compiler::assign::assign;
 use crate::kernel;
 
-
 #[derive(Clone)]
 pub struct AddZipMap <T> {
     // chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>,
@@ -52,6 +51,7 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
         self.chunks = chunks;
     }
      */
+    
     pub fn run(&self,   
             position_begin: usize,
             position_interval: usize, 
@@ -59,7 +59,8 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
             cpu_num: usize,
             thread_id: usize) {
 
-        //     [sequence, batch_size, head_num]
+        //  [sequence_chunk_size, max_batch_size, head_num， head_size]
+        
         // stride [batch_size * head_num, head_num,1]
         let stride = batch_size * self.head_num;
         let max_stride = self.max_batch_size * self.head_num;
@@ -102,6 +103,7 @@ where T: Copy + Default + Add<Output = T> + Sub<Output = T>+ Mul<Output = T> + D
 
 // unsafe impl <T:Float>Send for AddZipMap<T> {}
 // unsafe impl <T:Float>Sync for AddZipMap<T> {}
+
 impl <T> ZipMapTrait <T> for AddZipMap  <T>
 where T: Copy + Default + Add<Output = T>+ Sub<Output = T> + Mul<Output = T> + Div<Output = T> + Neg<Output = T> + Sigmoid<T>,
 {
