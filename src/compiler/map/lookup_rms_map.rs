@@ -155,7 +155,7 @@ mod test {
     use num_cpus;
     // use std::ptr;
     // use crate::memory::allocator::allocate_init;
-    use super::super::chunk_map::chunk_map;
+    // use super::super::chunk_map::chunk_map;
     use super::*;
 
     #[test]

@@ -206,9 +206,9 @@ impl ZipMapTrait<f64> for ComplexZipMap<f64> {
 
 #[cfg(test)]
 mod test {
-    use super::super::chunk_zipmap::chunk_zipmap;
+    // use super::super::chunk_zipmap::chunk_zipmap;
     use super::*;
-    use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
+    // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     use approx::assert_ulps_eq;
     // use nom::sequence;
     // use rand::seq;
@@ -238,12 +238,12 @@ mod test {
     #[test]
     fn test_complexmul2() {
         let sequence_length = 10;
-        let sequence_threshold = 4;
+        let sequence_chunk_size = 4;
         let batch_size = 10;
         let head_num = 10;
         let head_size = 34;
 
-        let shape1 = vec![sequence_threshold, batch_size, head_num, head_size];
+        let shape1 = vec![sequence_chunk_size, batch_size, head_num, head_size];
         let shape2 = vec![sequence_length, head_size];
 
         // let broadcast_shape = get_broadcast_shape(&shape1, &shape2);
@@ -265,33 +265,26 @@ mod test {
             1300.0, -55.0, 1512.0, -59.0, 1740.0, -63.0, 1984.0, -67.0, 2244.0,
         ];
 
-        /*
-        let chunks = chunk_zipmap(
-            broadcast_shape,
-            input_data1.as_ptr(),
-            input_strides1,
-            input_data2.as_ptr(),
-            input_strides2,
-            output_data.as_mut_ptr(),
-            output_strides,
-        ); */
+
 
         let thread_num: usize = num_cpus::get();
         let mut operator: ComplexZipMap<f32> = ComplexZipMap::new(
             input_data1.as_ptr(),
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
+            sequence_chunk_size,
             batch_size,
             head_num,
             head_size,
+            false
             // thread_num,
         );
         // operator.set_chunk(chunks);
         let position_index = 0; // Assuming we want to run for the first position
-
+        let thread_num: usize = num_cpus::get();
         for i in 0..thread_num {
             // for position_index in 0..sequence_length {
-            operator.run(position_index, sequence_threshold, batch_size, cpu_num, i);
+            operator.run(position_index, sequence_chunk_size, batch_size, thread_num, i);
             // }
             break;
         }

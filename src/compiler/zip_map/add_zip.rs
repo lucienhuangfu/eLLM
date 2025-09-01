@@ -150,7 +150,7 @@ impl ZipMapTrait<f32> for AddZipMap<f32> {
 mod test {
     
     use super::*;
-    use super::super::chunk_zipmap::chunk_zipmap;
+    // use super::super::chunk_zipmap::chunk_zipmap;
     use crate::ptensor::tensor_utils::get_strides;
     use approx::assert_ulps_eq;
     // use nom::sequence;
