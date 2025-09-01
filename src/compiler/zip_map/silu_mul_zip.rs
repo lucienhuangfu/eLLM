@@ -146,18 +146,18 @@ impl ZipMapTrait<f64> for SiluZipMap<f64> {
 mod test {
     
     use super::*;
-    use super::super::chunk_zipmap::chunk_zipmap;
+    // use super::super::chunk_zipmap::chunk_zipmap;
     use crate::ptensor::tensor_utils::get_strides;
     use approx::assert_ulps_eq;
-    use rand::seq;
+    // use rand::seq;
     #[test]
     fn test_silu_multiply() {
-        let sequence_threshold = 4;
+        let sequence_chunk_size = 4;
         let batch_size = 32;
         let head_num = 64;
         let head_size = 128;
         // let hidden_size = 19;
-        let shapes = vec![sequence_threshold, batch_size, head_num, head_size];
+        let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
         let length = shapes.iter().product(); // 总元素数量
         let input_strides1 = get_strides(&shapes);
         //println!("{:?}", input_strides1);
@@ -203,21 +203,21 @@ mod test {
             // -0.9305257201194763,
             // 0.5145581364631653,
             // 0.6260590553283691,
-        ].repeat(sequence_threshold*batch_size*head_num*4);
+        ].repeat(sequence_chunk_size*batch_size*head_num*4);
         let input_data2 = vec![1.0; length];
         let mut output_data: Vec<f32> = vec![0.0; length];
 
-        let chunks = chunk_zipmap(shapes, input_data1.as_ptr(), input_strides1, input_data2.as_ptr(), input_strides2, output_data.as_mut_ptr(), output_strides);
+        // let chunks = chunk_zipmap(shapes, input_data1.as_ptr(), input_strides1, input_data2.as_ptr(), input_strides2, output_data.as_mut_ptr(), output_strides);
         let thread_num: usize = num_cpus::get();
         let mut _operator: SiluMulZipMap<f32> = SiluMulZipMap::new(
                 input_data1.as_ptr(),
                 input_data2.as_ptr(),
                 output_data.as_mut_ptr(),
-            batch_size, head_num, head_size,  thread_num);
+            batch_size, head_num, head_size);
         // _operator.set_chunk(chunks);
         let position_index = 0; // 起始位置，根据实际情况可以修改
         for i in 0..thread_num {
-            _operator.run(position_index, sequence_threshold, batch_size,   cpu_num, i);
+            _operator.run(position_index, sequence_chunk_size, batch_size, thread_num, i);
         }
         let result = vec![
             1.9444659948349,
@@ -252,7 +252,7 @@ mod test {
             2.033867835998535,
             -0.22532200813293457,
             -0.0007826874498277903,
-        ].repeat(sequence_threshold*batch_size*head_num*4);
+        ].repeat(sequence_chunk_size*batch_size*head_num*4);
         //println!("{:?}",result.len());
         assert_ulps_eq!(output_data[..], result, max_ulps=4); 
         // println!("{:?}", output);

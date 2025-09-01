@@ -155,7 +155,7 @@ impl ZipMapTrait<f64> for AddRMSZipMap<f64> {
 }
 #[cfg(test)]
 mod test {
-    use super::super::chunk_zipmap::chunk_zipmap;
+    // use super::super::chunk_zipmap::chunk_zipmap;
     use super::*;
     use approx::assert_ulps_eq;
 

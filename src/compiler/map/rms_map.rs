@@ -185,7 +185,7 @@ mod test {
             hidden_size,
             weight.as_ptr(),
             eps,
-            cpu_num,
+            // cpu_num,
         );
         let result = [
             0.09238425642251968,
