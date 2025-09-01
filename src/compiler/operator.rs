@@ -5,8 +5,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
 use crate::kernel::generic::sigmoid::Sigmoid;
 
-use crate::init::matmul_params::MatMulParams;
-use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+
 use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
 // use super::map::softmax_map::SoftmaxMap;
@@ -15,21 +14,23 @@ use super::mul::mat_mul::MatMul;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
 use super::zip_map::add_zip::AddZipMap;
 use super::zip_map::complex_zip::ComplexZipMap;
-use super::zip_map::silu_mul_zip::SiluZipMap;
+use super::zip_map::silu_mul_zip::SiluMulZipMap;
+use super::mul::attention_mul::AttentionMul;
 // use super::mul::vec_mul::VecMul;
 // use super::mul::col_mul::ColMul;
-use super::mul::attention_mul::AttentionMul;
+// use crate::init::matmul_params::MatMulParams;
+// use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 
 #[derive(Clone)]
 pub enum Operator<T> {
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
-    ArgmaxReduce(ArgmaxReduce<T>),
+    // ArgmaxReduce(ArgmaxReduce<T>),
     AttentionMul(AttentionMul<T>),
-    ComplexZip(ComplexZipMap<T>),
+    ComplexZipMap(ComplexZipMap<T>),
     LookupRMSMap(LookupRMSMap<T>),
     RMSMap(RMSMap<T>),
-    SiluMulZipMap(SiluZipMap<T>),
+    SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
     MatMul(MatMul<T>),
 }
@@ -45,33 +46,39 @@ where T:
     + Sigmoid<T>
     + Sqrt
 {
-    pub fn run(&self, batch_size: usize, position_index: usize, thread_id: usize) {
+    pub fn run(&self, position_index: usize, position_interval: usize, batch_size: usize, cpu_num: usize, thread_id: usize) {
         match self {
             Self::AddRMSZipMap(operator) => {
-                operator.run(batch_size, thread_id);
+                operator.run(position_index, position_interval, batch_size, cpu_num, thread_id);
             }
             Self::AddZipMap(operator) => {
-                operator.run(batch_size, position_index, thread_id);
+                operator.run(position_index, position_interval, batch_size, cpu_num, thread_id);
             }
-            Self::ArgmaxReduce(operator) => {
-                operator.run(batch_size, position_index, thread_id);
-            }, 
+
             Self::AttentionMul(operator) => {
-                operator.run(batch_size, position_index, thread_id);
+                operator.run(position_index, position_interval, batch_size, cpu_num, thread_id);
             }
-            Self::ComplexZip(operator) => {
-                operator.run(batch_size, position_index, thread_id);
+            Self::ComplexZipMap(operator) => {
+                operator.run(position_index, position_interval, batch_size, cpu_num, thread_id);
             }
             Self::LookupRMSMap(operator) => {
-                operator.run(batch_size, position_index, thread_id);
+                operator.run(position_index, position_interval, batch_size, cpu_num, thread_id);
             }
             Self::RMSMap(operator) => {
-                operator.run(batch_size, position_index, thread_id);
+                operator.run(position_index, position_interval, batch_size, cpu_num, thread_id);
             }
             Self::SiluMulZipMap(operator) => {
-                operator.run(batch_size, thread_id);
+                operator.run(position_index, position_interval, batch_size, cpu_num, thread_id);
             }
-              /*
+
+            Self::MatMul(operator) => {
+                operator.run(position_index, position_interval, batch_size, cpu_num, thread_id);
+            }
+
+            /*
+            Self::ArgmaxReduce(operator) => {
+                operator.run(batch_size, position_index, thread_id);
+            },
             Self::SoftmaxMap(operator) => {
                 operator.run(batch_size, position_index, thread_id);
             }
@@ -83,10 +90,6 @@ where T:
                 operator.run(batch_size, position_index, thread_id);
             },
              */
-            Self::MatMul(operator) => {
-                operator.run(batch_size, position_index, thread_id);
-            }
-
             _ => panic!(),
         }
     }

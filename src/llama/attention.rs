@@ -144,15 +144,17 @@ where
             ]);
 
             // 这两个zipmap 可以合并
-            // [sequence, batch_size, head_num, head_size] <- [batch_size, head_num, head_size]  [sequence, 1, 1, head_size]
+            // [sequence, batch_size, head_num, head_size] <- [sequence, batch_size, head_num, head_size]  [sequence, 1, 1, head_size]
             // output 为一个
             let query_position_tensor = view_query.complex_mul(
                 position_embedding,
+                view_query.shape[0],
                 format!("{}.query_position_tensor", self.scope_name),
             );
 
             let key_position_tensor = view_key.complex_mul(
                 position_embedding,
+                sequence_length,
                 format!("{}.key_position_tensor", self.scope_name),
             );
 
