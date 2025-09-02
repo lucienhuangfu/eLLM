@@ -3,7 +3,6 @@ use std::f16;
 // use std::fmt::Debug;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
-
 use super::zip_map_trait::ZipMapTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
@@ -20,7 +19,7 @@ pub struct ComplexZipMap<T> {
     batch_size: usize,
     head_num: usize,
     head_size: usize,
-    output_to_kv: bool,   
+    output_to_kv: bool,
     // sequence_stride: usize,
     // cpu_num: usize,
 }
@@ -62,10 +61,6 @@ where
         }
     }
 
-    /*
-    pub fn set_chunk(&mut self, chunks: Vec<(ConstPtr<T>, ConstPtr<T>, MutPtr<T>)>) {
-        self.chunks = chunks;
-    }*/
 
     pub fn run(
         &self,
@@ -76,7 +71,7 @@ where
         thread_id: usize,
     ) {
         let stride = batch_size * self.head_num;
-        
+
         if let Some((begin, end)) = assign(position_interval * stride, cpu_num, thread_id) {
             let max_stride = self.batch_size * self.head_num;
             // 从begin得到对应的坐标
@@ -95,7 +90,9 @@ where
                 );
 
                 let ptr1 = if self.output_to_kv {
-                    self.ptr1.ptr.add(position_begin * max_stride * self.head_size)
+                    self.ptr1
+                        .ptr
+                        .add(position_begin * max_stride * self.head_size)
                 } else {
                     self.ptr1.ptr
                 };
@@ -214,7 +211,7 @@ mod test {
     // use rand::seq;
 
     #[test]
-    fn test_complexmul() {
+    fn test_kernel() {
         let head_size = 34;
         let input_data1: Vec<f32> = (1..=34).cycle().take(head_size).map(|x| x as f32).collect();
         let input_data2: Vec<f32> = (1..=34).cycle().take(head_size).map(|x| x as f32).collect();
@@ -246,12 +243,6 @@ mod test {
         let shape1 = vec![sequence_chunk_size, batch_size, head_num, head_size];
         let shape2 = vec![sequence_length, head_size];
 
-        // let broadcast_shape = get_broadcast_shape(&shape1, &shape2);
-
-        // let input_strides1 = get_aligned_strides(&shape1, &broadcast_shape);
-        // let input_strides2 = get_aligned_strides(&shape2, &broadcast_shape);
-        // let output_strides = get_strides(&broadcast_shape);
-
         let length1: usize = shape1.iter().product();
         let length2: usize = shape2.iter().product();
         let length: usize = shape1.iter().product();
@@ -265,9 +256,6 @@ mod test {
             1300.0, -55.0, 1512.0, -59.0, 1740.0, -63.0, 1984.0, -67.0, 2244.0,
         ];
 
-
-
-        let thread_num: usize = num_cpus::get();
         let mut operator: ComplexZipMap<f32> = ComplexZipMap::new(
             input_data1.as_ptr(),
             input_data2.as_ptr(),
@@ -276,15 +264,20 @@ mod test {
             batch_size,
             head_num,
             head_size,
-            false
-            // thread_num,
+            false, // thread_num,
         );
         // operator.set_chunk(chunks);
         let position_index = 0; // Assuming we want to run for the first position
         let thread_num: usize = num_cpus::get();
         for i in 0..thread_num {
             // for position_index in 0..sequence_length {
-            operator.run(position_index, sequence_chunk_size, batch_size, thread_num, i);
+            operator.run(
+                position_index,
+                sequence_chunk_size,
+                batch_size,
+                thread_num,
+                i,
+            );
             // }
             break;
         }
