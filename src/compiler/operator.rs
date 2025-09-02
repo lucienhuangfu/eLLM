@@ -129,13 +129,6 @@ where
             Self::SoftmaxMap(operator) => {
                 operator.run(batch_size, position_index, thread_id);
             }
-
-            Self::VecMul(operator) => {
-                operator.run(batch_size, position_index, thread_id);
-            },
-            Self::ColMul(operator) => {
-                operator.run(batch_size, position_index, thread_id);
-            },
              */
             _ => panic!(),
         }
@@ -147,6 +140,7 @@ mod test {
     use super::*;
     use approx::assert_ulps_eq;
     use nom::sequence;
+    use rand::seq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use nom::sequence;
     // use nom::sequence;
@@ -203,7 +197,11 @@ mod test {
 
         let shapes = vec![sequence_chunk_size, batch_size, hidden_size];
         let length = shapes.iter().product();
-        let input_data: Vec<f32> = (1..=hidden_size).cycle().take(length).map(|x| x as f32).collect();
+        let input_data: Vec<f32> = (1..=hidden_size)
+            .cycle()
+            .take(length)
+            .map(|x| x as f32)
+            .collect();
         let weight = [1.0f32; 18];
         let eps = 1e-6;
         let mut output_data: Vec<f32> = vec![0.0; length];
@@ -244,51 +242,45 @@ mod test {
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
         println!("{:?}", output_data);
     }
-    /*
+
     #[test]
     fn test_lookup_rms_map() {
+        let sequence_chunk_size = 1;
         let batch_size = 10;
         let hidden_size = 18;
         let vocab_size = 10;
         let cpu_num = num_cpus::get();
-
-        let shapes = vec![batch_size, hidden_size];
-        let strides = vec![hidden_size, 1];
-        let length = shapes.iter().product();
         let sequence_length = 16;
         let position = 0;
+
+        let shapes = vec![sequence_chunk_size, batch_size, hidden_size];
+        // let strides = vec![hidden_size, 1];
+        let length = shapes.iter().product();
 
         let input_data: Vec<f32> = (1..=hidden_size)
             .cycle()
             .take(length)
             .map(|x| x as f32)
             .collect();
-        let sequences = vec![1; sequence_length];
+        let mut sequences = vec![1; sequence_length];
         let word_embedding: Vec<f32> = (1..=18)
             .cycle()
             .take(vocab_size * hidden_size)
             .map(|x| x as f32)
             .collect();
 
-        let weight = vec![1.0f32; length];
+        let weight = vec![1.0f32; hidden_size];
         let eps = 1e-6;
         let mut output_data: Vec<f32> = vec![0.0; length];
 
-        let chunks = chunk_map(
-            shapes,
-            strides,
-            input_data.as_ptr(),
-            output_data.as_mut_ptr(),
-        );
         let mut Operator = Operator::LookupRMSMap(LookupRMSMap::new(
+            sequences.as_mut_ptr(),
+            output_data.as_mut_ptr(),
+            batch_size,
             hidden_size,
+            word_embedding.as_ptr(),
             weight.as_ptr(),
             eps,
-            cpu_num,
-            word_embedding.as_ptr(),
-            sequences.as_ptr(),
-            hidden_size,
-            batch_size,
         ));
         let result = [
             0.09238425642251968,
@@ -310,11 +302,10 @@ mod test {
             1.5705323219299316,
             1.662916660308838,
         ];
-        Operator.set_map_chunk(chunks);
 
         let thread_num: usize = cpu_num;
         for i in 0..thread_num {
-            Operator.run(batch_size, position, i);
+            Operator.run(position, sequence_chunk_size, batch_size, thread_num, i);
         }
 
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
@@ -322,25 +313,29 @@ mod test {
     }
 
     #[test]
-    fn test_complexmul_with_broadcast() {
-        let head_size = 34;
-        let head_num = 10;
-        let batch_size = 10;
+    fn test_complexmul() {
         let sequence_length = 10;
+        let sequence_chunk_size = 8;
+        let batch_size = 10;
+        let head_num = 10;
+        let head_size = 34;
 
-        let shape1 = vec![batch_size, head_num, head_size];
-        let shape2 = vec![sequence_length, 1, 1, head_size];
-        let broadcast_shape = get_broadcast_shape(&shape1, &shape2);
-
-        let length: usize = broadcast_shape.iter().product();
-        let input_strides1 = get_aligned_strides(&shape1, &broadcast_shape);
-        let input_strides2 = get_aligned_strides(&shape2, &broadcast_shape);
-        let output_strides = get_strides(&broadcast_shape);
+        let shape1 = vec![sequence_chunk_size, batch_size, head_num, head_size];
+        let shape2 = vec![sequence_length, head_size];
 
         let length1: usize = shape1.iter().product();
         let length2: usize = shape2.iter().product();
-        let input_data1: Vec<f32> = (1..=34).cycle().take(length1).map(|x| x as f32).collect();
-        let input_data2: Vec<f32> = (1..=34).cycle().take(length2).map(|x| x as f32).collect();
+        let length = length1;
+        let input_data1: Vec<f32> = (1..=head_size)
+            .cycle()
+            .take(length1)
+            .map(|x| x as f32)
+            .collect();
+        let input_data2: Vec<f32> = (1..=head_size)
+            .cycle()
+            .take(length2)
+            .map(|x| x as f32)
+            .collect();
         let mut output_data: Vec<f32> = vec![0.0; length];
 
         let expected: Vec<f32> = vec![
@@ -349,38 +344,35 @@ mod test {
             1300.0, -55.0, 1512.0, -59.0, 1740.0, -63.0, 1984.0, -67.0, 2244.0,
         ];
 
-        let chunks = chunk_zipmap(
-            broadcast_shape,
-            input_data1.as_ptr(),
-            input_strides1,
-            input_data2.as_ptr(),
-            input_strides2,
-            output_data.as_mut_ptr(),
-            output_strides,
-        );
-
         let thread_num: usize = num_cpus::get();
-        let mut operator = Operator::ComplexZip(ComplexZipMap::<f32>::new(
-            head_size, head_num, batch_size, thread_num,
+        let mut operator = Operator::ComplexZipMap(ComplexZipMap::<f32>::new(
+            input_data1.as_ptr(),
+            input_data2.as_ptr(),
+            output_data.as_mut_ptr(),
+            // sequence_chunk_size,
+            batch_size,
+            head_num,
+            head_size,
+            false,
         ));
-        operator.set_zipmap_chunk(chunks);
 
         for i in 0..thread_num {
-            operator.run(batch_size, 1, i);
+            operator.run(0, sequence_chunk_size, batch_size, thread_num, i);
         }
 
         assert_eq!(output_data[3434..3468], expected);
-    } */
+    }
 
-    /*
     #[test]
     fn test_silu() {
+        let sequence_chunk_size = 8;
         let batch_size = 10;
-        let hidden_size = 19;
-        let shapes = vec![batch_size, hidden_size];
-        let input_strides1 = get_strides(&shapes);
-        let input_strides2 = input_strides1.clone();
-        let output_strides = input_strides1.clone();
+        // let hidden_size = 19;
+        let head_num = 1;
+        let head_size = 19;
+
+        let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
+
         let length = shapes.iter().product();
         let input_data1: Vec<f32> = vec![
             2.1671206951141357,
@@ -403,24 +395,24 @@ mod test {
             0.5145581364631653,
             0.6260590553283691,
         ]
-        .repeat(10);
-        let input_data2: [f32; 190] = [1.0; 190];
+        .repeat(sequence_chunk_size * batch_size);
+        // let input_data2: [f32; 190] = [1.0; 190];
+
+        let mut input_data2: Vec<f32> = vec![1.0; length];
         let mut output_data: Vec<f32> = vec![0.0; length];
-        let chunks = chunk_zipmap(
-            shapes,
-            input_data1.as_ptr(),
-            input_strides1,
-            input_data2.as_ptr(),
-            input_strides2,
-            output_data.as_mut_ptr(),
-            output_strides,
-        );
+
         let thread_num: usize = num_cpus::get();
-        let mut operator = Operator::SiluMulZipMap(SiluZipMap::new(hidden_size, thread_num));
-        operator.set_zipmap_chunk(chunks);
+        let mut operator = Operator::SiluMulZipMap(SiluMulZipMap::new(
+            input_data1.as_ptr(),
+            input_data2.as_ptr(),
+            output_data.as_mut_ptr(),
+            batch_size,
+            head_num,
+            head_size,
+        ));
 
         for i in 0..thread_num {
-            operator.run(batch_size, 1usize, i);
+            operator.run(0, sequence_chunk_size, batch_size, thread_num, i);
         }
         let result = vec![
             1.9444659948349,
@@ -443,9 +435,9 @@ mod test {
             0.32204875349998474,
             0.4079371392726898,
         ]
-        .repeat(10);
+        .repeat(sequence_chunk_size * batch_size);
         assert_ulps_eq!(output_data[..], result, max_ulps = 4);
-    } */
+    }
 
     /*
     #[test]
