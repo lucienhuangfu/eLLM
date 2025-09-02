@@ -18,7 +18,7 @@ pub struct MatMul<T> {
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
     output_ptr: MutPtr<T>,
-    sequence_length: usize,
+    // sequence_length: usize,
     output_to_kv: bool,
     pub params: MatMulParams,
     _marker: PhantomData<T>,
@@ -34,7 +34,7 @@ where
         ptr1: *const T,
         ptr2: *const T,
         output_ptr: *mut T,
-        sequence_length: usize,
+        // sequence_length: usize,
         output_to_kv: bool,
 
         // these are the parameters of the matrix multiplication, this matrix is a largest possible one
@@ -60,7 +60,7 @@ where
             ptr1: ConstPtr { ptr: ptr1 },
             ptr2: ConstPtr { ptr: ptr2 },
             output_ptr: MutPtr { ptr: output_ptr },
-            sequence_length: sequence_length,
+            // sequence_length: sequence_length,
             output_to_kv: output_to_kv,
             params: MatMulParams {
                 a_row,
@@ -215,7 +215,7 @@ mod tests {
     // use super::super::chunk_matmul::chunk_matmul;
 
     #[test]
-    fn test_f32_single() {
+    fn test_f32_chunk() {
         let sequence_chunk_size = 8;
         let batch_size = 128;
         let a_row = batch_size;
@@ -262,7 +262,7 @@ mod tests {
             a.as_ptr(),
             b.as_ptr(),
             c.as_mut_ptr(),
-            sequence_chunk_size,
+            // sequence_chunk_size,
             false,
             a_row,
             b_row,
