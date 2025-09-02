@@ -83,7 +83,6 @@ where
         }
     }
 
-
     pub fn rms(&self, weight: *const T, eps: T, tensor_name: String) -> Self {
         let output_tensor = Tensor::from_cache(
             self.shape.clone(),
@@ -126,7 +125,6 @@ where
             word_embedding,
             weight,
             eps,
-            // self.cpu_num,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -174,7 +172,6 @@ where
             self.shape[1],
             self.shape[2],
             self.shape[3],
-
         ));
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
@@ -221,11 +218,11 @@ where
             self.data,
             b_tensor.data,
             output_tensor.data,
-            sequence_length,
+            // sequence_length,
             self.shape[1],
             self.shape[2],
             self.shape[3],
-            output_to_kv
+            output_to_kv,
         ));
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
@@ -265,19 +262,14 @@ where
             params.a_row_step_micro,
             params.b_row_step_micro,
             sequence_length,
-            output_to_kv
+            output_to_kv,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
 
-    pub fn attention(
-        &self,
-        tensor2: &Tensor<T>,
-        tensor3: &Tensor<T>,
-        tensor_name: String,
-    ) -> Self {
+    pub fn attention(&self, tensor2: &Tensor<T>, tensor3: &Tensor<T>, tensor_name: String) -> Self {
         let output_shape = self.shape.clone();
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
@@ -286,20 +278,16 @@ where
             self.operator_queue.clone(),
         );
         let operator = Operator::AttentionMul(AttentionMul::new(
-        
-        attention_head_size,
-        attention_head_num,
-        
-        view_key_position_tensor.strides[2],
-        inverse_sqrt_head,
+            attention_head_size,
+            attention_head_num,
+            view_key_position_tensor.strides[2],
+            inverse_sqrt_head,
         ));
-
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
         //重点！
     }
-
 
     fn _view(&self, shape: Vec<usize>, strides: Vec<usize>) -> Self {
         // let size: usize = shape.iter().product();
@@ -527,7 +515,7 @@ unsafe impl<T: Copy + Default + Send + Sync> Sync for Tensor<T> {}
 #[cfg(test)]
 mod test {
     use approx::assert_ulps_eq;
-    use nom::sequence;
+    // use nom::sequence;
     use num_cpus;
     use std::sync::Arc;
     use std::sync::Barrier;
