@@ -73,10 +73,12 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
-        /* 
-        // [sequence, batch, head_num, head_size]
-        // [sequence, batch, share_num , attention_head_num, head_size]
-        
+         /* 
+        // q [sequence, batch, head_num, head_size]
+        // q [sequence_chunk_size, batch, kv_head_num, group_num, head_size] * k [sequence_length, batch_size, kv_head_num, head_size]
+        // permute [batch_size, kv_head_num, sequence_chunk_size, group_num, head_size] * [batch_size, sequence_length,  kv_head_num, head_size]
+        // -> [batch_size, sequence_length, kv_head_num, sequence_chunk_size, group_num, head_size]
+
         let stride = batch_size * self.attention_head_num;
         
         if let Some((begin, end)) = assign(position_interval * stride, cpu_num, thread_id) {
