@@ -15,12 +15,12 @@ use crate::init::matmul_params::MatMulParams;
 
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
+use super::super::compiler::mul::attention_mul::AttentionMul;
+use super::super::compiler::mul::mat_mul::MatMul;
 use super::super::compiler::operator::Operator;
 use super::super::compiler::zip_map::add_zip::AddZipMap;
 use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
 use super::super::compiler::zip_map::silu_mul_zip::SiluMulZipMap;
-use super::super::compiler::mul::mat_mul::MatMul;
-use super::super::compiler::mul::attention_mul::AttentionMul;
 use crate::compiler::zip_map::add_rms_zip::AddRMSZipMap;
 
 #[derive(Clone)]
@@ -52,8 +52,6 @@ where
         });
         v
     }
-
-
 
     pub fn from_cache(
         shape: Vec<usize>,
@@ -96,7 +94,7 @@ where
         output_tensor
     }
 
-    /* 
+    /*
     pub fn lookup_rms(
         &self,
         word_embedding: *const T,
@@ -247,7 +245,7 @@ where
             self.data,
             tensor2.data,
             output_tensor.data,
-              // sequence_length,
+            // sequence_length,
             output_to_kv,
             params.a_row,
             params.b_row,
@@ -257,14 +255,19 @@ where
             params.column_step_macro,
             params.a_row_step_micro,
             params.b_row_step_micro,
-          
         ));
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
 
-    pub fn attention(&self, k_tensor: &Tensor<T>, v_tensor: &Tensor<T>, inverse_sqrt_head: T, tensor_name: String) -> Self {
+    pub fn attention(
+        &self,
+        k_tensor: &Tensor<T>,
+        v_tensor: &Tensor<T>,
+        inverse_sqrt_head: T,
+        tensor_name: String,
+    ) -> Self {
         let output_shape = self.shape.clone();
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
@@ -282,7 +285,7 @@ where
             k_tensor.shape[2],
             self.shape[3],
             k_tensor.strides.clone(),
-            inverse_sqrt_head
+            inverse_sqrt_head,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -507,7 +510,6 @@ where
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }*/
-
 }
 
 unsafe impl<T: Copy + Default + Send + Sync> Send for Tensor<T> {}
@@ -520,30 +522,40 @@ mod test {
     use num_cpus;
     // use std::sync::Arc;
     // use std::sync::Barrier;
-    use std::thread;
     use std::collections::HashMap;
+    use std::thread;
 
     use super::*;
 
-
     #[test]
     fn test_add_zip() {
-        let shapes = vec![10, 18];
-        let input_strides1 = vec![18, 1];
-        let input_strides2 = vec![18, 1];
-        let output_strides = vec![18, 1];
+        let sequence_chunk_size = 1;
+        // let batch_size = 10; // 每次批处理 10 个元素
+        let batch_size = 10;
+        let head_num = 3;
+        let head_size = 6;
 
-        let length = shapes.iter().product(); // 总元素数量
-        let batch_size = 10; // 每次批处理 10 个元素
+        let hidden_size = head_num * head_size;
+
         let position_size = 0; // 起始位置，根据实际情况可以修改
 
-            // 创建模拟的输入和输出数据
-        //let input_data: Vec<f32> = (0..length).map(|x| x as f32).collect();
-        let input_data1: Vec<f32> = (0..=17).cycle().take(180).map(|x| x as f32).collect();
-        let input_data2:Vec<f32> =vec![1.0;length];
-        let results:Vec<f32>=(1..=18).cycle().take(180).map(|x| x as f32).collect();
+        let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
+        let length = shapes.iter().product(); // 总元素数量
+
+        // 创建模拟的输入和输出数据
+        let input_data1: Vec<f32> = (0..=(hidden_size - 1))
+            .cycle()
+            .take(length)
+            .map(|x| x as f32)
+            .collect();
+        let input_data2: Vec<f32> = vec![1.0; length];
+        let results: Vec<f32> = (1..=hidden_size)
+            .cycle()
+            .take(length)
+            .map(|x| x as f32)
+            .collect();
         //println!("{:?}", input_data2);
-        let mut output_data: Vec<f32> = vec![0.0; length];
+        // let mut output_data: Vec<f32> = vec![0.0; length];
         let mut cache: Cache<f32> = Cache::new(HashMap::new());
         let mut operator_queue: Vec<Operator<f32>> = Vec::new();
         let cache_rc = Rc::new(RefCell::new(cache));
@@ -569,15 +581,13 @@ mod test {
                 .data
                 .copy_from(input_data2.as_ptr(), input_data2.len());
         }
-            // 使用 chunk_map 函数创建块
+        // 使用 chunk_map 函数创建块
         // let chunks = chunk_zipmap(shapes,  input_data1.as_ptr(),input_strides1,input_data2.as_ptr(),input_strides2, output_data.as_mut_ptr(),output_strides);
-            // 使用这些块和长度初始化 ArgmaxMap
+        // 使用这些块和长度初始化 ArgmaxMap
         let thread_num: usize = num_cpus::get();
         // let mut operator = Operator::AddZipMap(AddZipMap::new(18, thread_num));
-        input_tensor.add(
+        let output_tensor = input_tensor.add(
             &input_tensor2,
-            
-            
             String::from("model.layers.0.self_attn.value_tensor"),
         );
         // input_tensor.operator_queue.borrow_mut()[0].set_zipmap_chunk(chunks);
@@ -588,54 +598,60 @@ mod test {
                 sequence_chunk_size,
                 batch_size,
                 thread_num,
-                i);
+                i,
+            );
         }
 
-            // 如需打印输出数据，请取消以下注释
-        assert_ulps_eq!(output_data[0..180], results[0..180], max_ulps=4);
-        println!("{:?}", output_data);
+        // 如需打印输出数据，请取消以下注释
+        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, results.len()) };
+        assert_ulps_eq!(output_slice[0..180], results[0..180], max_ulps = 4);
+        // println!("{:?}", output_tensor.data);
 
         // println!("{:?}", output);
     }
-    /* 
+
     #[test]
     fn test_silu() {
+        let sequence_chunk_size = 1;
         let batch_size = 10;
-        let hidden_size = 19;
-        let shapes = vec![batch_size, hidden_size];
-        let input_strides1 = get_strides(&shapes);
-        //println!("{:?}", input_strides1);
-        let input_strides2 = input_strides1.clone();
-        let output_strides = input_strides1.clone();
+        let head_num = 1;
+        let head_size = 19;
+
+        let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
         let length = shapes.iter().product();
-        let input_data1: Vec<f32> = vec![2.1671206951141357,
-        1.4490455389022827,
-        -2.002431631088257,
-        0.5662149786949158,
-        0.3909946382045746,
-        0.9437483549118042,
-        -0.37030690908432007,
-        0.7542704939842224,
-        0.5875813961029053,
-        1.6026240587234497,
-        2.2485475540161133,
-        -0.6622593402862549,
-        -0.0015666020335629582,
-        -0.5069465041160583,
-        -0.37254711985588074,
-        0.4420417249202728,
-        -0.9305257201194763,
-        0.5145581364631653,
-        0.6260590553283691
-        ].repeat(10);
-        let input_data2: [f32; 190] = [1.0; 190];
-        let mut output_data: Vec<f32> = vec![0.0; length];
-        let mut cache: Cache<f32> = Cache::new();
+
+        let input_data1: Vec<f32> = vec![
+            2.1671206951141357,
+            1.4490455389022827,
+            -2.002431631088257,
+            0.5662149786949158,
+            0.3909946382045746,
+            0.9437483549118042,
+            -0.37030690908432007,
+            0.7542704939842224,
+            0.5875813961029053,
+            1.6026240587234497,
+            2.2485475540161133,
+            -0.6622593402862549,
+            -0.0015666020335629582,
+            -0.5069465041160583,
+            -0.37254711985588074,
+            0.4420417249202728,
+            -0.9305257201194763,
+            0.5145581364631653,
+            0.6260590553283691,
+        ]
+        .repeat(10);
+
+        let input_data2: Vec<f32> = vec![1.0; length];
+
+        let mut cache: Cache<f32> = Cache::new(HashMap::new());
         let mut operator_queue: Vec<Operator<f32>> = Vec::new();
         let cache_rc = Rc::new(RefCell::new(cache));
+
         let input_tensor = Tensor::from_cache(
             shapes.clone(),
-            String::from("model.layers.0.self_attn.value_tensor"),
+            String::from("model.layers.0.self_attn.value_tensor1"),
             cache_rc.clone(),
             Rc::new(RefCell::new(operator_queue.clone())),
         );
@@ -644,9 +660,10 @@ mod test {
                 .data
                 .copy_from(input_data1.as_ptr(), input_data1.len());
         }
+
         let input_tensor2 = Tensor::from_cache(
             shapes.clone(),
-            String::from("model.layers.0.self_attn.value_tensor"),
+            String::from("model.layers.0.self_attn.value_tensor2"),
             cache_rc.clone(),
             Rc::new(RefCell::new(operator_queue)),
         );
@@ -655,44 +672,136 @@ mod test {
                 .data
                 .copy_from(input_data2.as_ptr(), input_data2.len());
         }
-        let chunks = chunk_zipmap(shapes, input_data1.as_ptr(), input_strides1, input_data2.as_ptr(), input_strides2, output_data.as_mut_ptr(), output_strides);
+
         let thread_num: usize = num_cpus::get();
-        let mut operator =Operator::SiluMulZipMap(SiluZipMap::new(hidden_size, thread_num));
-        input_tensor.zip_mapv(
+
+        let output_tensor = input_tensor.silu_mul(
             &input_tensor2,
-            operator,
-            false,
-            String::from("model.layers.0.self_attn.value_tensor"),
+            String::from("model.layers.0.self_attn.value_tensor_output"),
         );
-        input_tensor.operator_queue.borrow_mut()[0].set_zipmap_chunk(chunks);
 
         for i in 0..thread_num {
-            input_tensor.operator_queue.borrow_mut()[0].run(batch_size ,1usize,i);
+            input_tensor.operator_queue.borrow()[0].run(
+                0,
+                sequence_chunk_size,
+                batch_size,
+                thread_num,
+                i,
+            );
         }
-        let result = [1.9444659948349,
-        1.1735117435455322,
-        -0.23818494379520416,
-        0.36118248105049133,
-        0.23323695361614227,
-        0.6793630719184875,
-        -0.15125809609889984,
-        0.5129857659339905,
-        0.3777032196521759,
-        1.3339999914169312,
-        2.033867835998535,
-        -0.22532200813293457,
-        -0.0007826874498277903,
-        -0.1905660629272461,
-        -0.15197153389453888,
-        0.269090861082077,
-        -0.2631694972515106,
-        0.32204875349998474,
-        0.4079371392726898].repeat(10);
-        //println!("{:?}",result.len());
-        assert_ulps_eq!(output_data[..], result, max_ulps=4);
-        // println!("{:?}", output);
+
+        let result = [
+            1.9444659948349,
+            1.1735117435455322,
+            -0.23818494379520416,
+            0.36118248105049133,
+            0.23323695361614227,
+            0.6793630719184875,
+            -0.15125809609889984,
+            0.5129857659339905,
+            0.3777032196521759,
+            1.3339999914169312,
+            2.033867835998535,
+            -0.22532200813293457,
+            -0.0007826874498277903,
+            -0.1905660629272461,
+            -0.15197153389453888,
+            0.269090861082077,
+            -0.2631694972515106,
+            0.32204875349998474,
+            0.4079371392726898,
+        ]
+        .repeat(10);
+
+        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, result.len()) };
+        assert_ulps_eq!(output_slice[..], result[..], max_ulps = 4);
     }
 
+    #[test]
+    fn test_rms() {
+        let sequence_chunk_size = 1;
+        let batch_size = 10; // 每次批处理 10 个元素
+        let hidden_size = 18;
+        let shape = vec![sequence_chunk_size,batch_size, hidden_size];
+        // let strides = vec![hidden_size, 1]; // 对应的步长
+                                            // let length = shape.iter().product(); // 总元素数量
+
+        let position_index = 0; // 起始位置，根据实际情况可以修改
+        let cpu_num = num_cpus::get();
+        let length = shape.iter().product();
+        // 创建模拟的输入和输出数据
+        //let input_data: Vec<f32> = (0..length).map(|x| x as f32).collect();
+        let input_data: Vec<f32> = (1i32..=18i32).cycle().take(length).map(|x| x as f32).collect();
+
+        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
+        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
+        let mut output_data: Vec<f32> = vec![0.0; length];
+        let cache_rc = Rc::new(RefCell::new(cache));
+        let input_tensor = Tensor::from_cache(
+            shape.clone(),
+            String::from("model.input_tensor.weight"),
+            cache_rc.clone(),
+            Rc::new(RefCell::new(operator_queue)),
+        );
+
+        unsafe {
+            input_tensor
+                .data
+                .copy_from(input_data.as_ptr(), input_data.len());
+        }
+
+        let weight = vec![1.0f32; hidden_size];
+        let eps = 1e-6;
+
+        let output_tensor = input_tensor.rms(
+            weight.as_ptr(),
+            eps,
+            String::from("model.output_tensor.weight"),
+        );
+
+        let result = [
+            0.09238425642251968,
+            0.18476851284503937,
+            0.27715277671813965,
+            0.36953702569007874,
+            0.4619212746620178,
+            0.5543055534362793,
+            0.646689772605896,
+            0.7390740513801575,
+            0.831458330154419,
+            0.9238425493240356,
+            1.0162267684936523,
+            1.1086111068725586,
+            1.2009953260421753,
+            1.293379545211792,
+            1.3857638835906982,
+            1.478148102760315,
+            1.5705323219299316,
+            1.662916660308838,
+        ];
+
+        // 使用 chunk_map 函数创建块
+        //let chunks = chunk_map(shape, strides, input_data.as_ptr(), output_data.as_mut_ptr());
+        // 使用这些块和长度初始化 ArgmaxMap
+        //input_tensor.operator_queue.borrow_mut()[0].set_map_chunk(chunks);
+        let thread_num: usize = cpu_num;
+        for i in 0..thread_num {
+            input_tensor.operator_queue.borrow()[0].run(
+                0,
+                sequence_chunk_size,
+                batch_size,
+                thread_num,
+                i,
+            );
+        }
+
+        // 如需打印输出数据，请取消以下注释
+        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, length) };
+        assert_ulps_eq!(output_slice[18..36], result, max_ulps = 4);
+        //println!("{:?}", output_data);
+    }
+
+    /*
     #[test]
     fn test_complex_mul_with_broadcast() {
         let head_size = 34;
@@ -854,84 +963,12 @@ mod test {
 
 
 
+
+
+
+    */
+
     #[test]
-    fn test_rms_map() {
-        let batch_size = 10; // 每次批处理 10 个元素
-        let hidden_size = 18;
-        let shape = vec![batch_size, hidden_size];
-        let strides = vec![hidden_size, 1]; // 对应的步长
-                                            // let length = shape.iter().product(); // 总元素数量
-
-        let position_index = 0; // 起始位置，根据实际情况可以修改
-        let cpu_num = num_cpus::get();
-        let length = shape.iter().product();
-        // 创建模拟的输入和输出数据
-        //let input_data: Vec<f32> = (0..length).map(|x| x as f32).collect();
-        let mut input_data: Vec<f32> = (1..=18).cycle().take(180).map(|x| x as f32).collect();
-
-        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let mut output_data: Vec<f32> = vec![0.0; length];
-        let input_tensor = Tensor::from_cache(
-            shape.clone(),
-            String::from("model.input_tensor.weight"),
-            Rc::new(RefCell::new(cache)),
-            Rc::new(RefCell::new(operator_queue)),
-        );
-
-        unsafe {
-            input_tensor
-                .data
-                .copy_from(input_data.as_ptr(), input_data.len());
-        }
-
-        let weight = vec![1.0f32; hidden_size];
-        let eps = 1e-6;
-
-        let mut operator = RMSMap::new(hidden_size, weight.as_ptr(), eps, cpu_num);
-
-        // let mut output_data: Vec<f32> = vec![0.0; length];
-        let result = [
-            0.09238425642251968,
-            0.18476851284503937,
-            0.27715277671813965,
-            0.36953702569007874,
-            0.4619212746620178,
-            0.5543055534362793,
-            0.646689772605896,
-            0.7390740513801575,
-            0.831458330154419,
-            0.9238425493240356,
-            1.0162267684936523,
-            1.1086111068725586,
-            1.2009953260421753,
-            1.293379545211792,
-            1.3857638835906982,
-            1.478148102760315,
-            1.5705323219299316,
-            1.662916660308838,
-        ];
-
-        let output_tensor = input_tensor.mapv(
-            Operator::RMSMap(operator),
-            String::from("model.output_tensor.weight"),
-        );
-        // 使用 chunk_map 函数创建块
-        //let chunks = chunk_map(shape, strides, input_data.as_ptr(), output_data.as_mut_ptr());
-        // 使用这些块和长度初始化 ArgmaxMap
-        //input_tensor.operator_queue.borrow_mut()[0].set_map_chunk(chunks);
-        let thread_num: usize = cpu_num;
-        for i in 0..thread_num {
-            input_tensor.operator_queue.borrow()[0].run(batch_size, 0, i);
-        }
-
-        // 如需打印输出数据，请取消以下注释
-        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, length) };
-        assert_ulps_eq!(output_slice[18..36], result, max_ulps = 4);
-        //println!("{:?}", output_data);
-    }*/
-
-        #[test]
     fn test_permute() {
         let shape = vec![3, 4, 5];
         let tensor = Tensor::<f32>::from_cache(
