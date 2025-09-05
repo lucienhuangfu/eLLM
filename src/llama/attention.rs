@@ -119,15 +119,18 @@ where
                 .value
                 .forward(hidden_states, format!("{}.value_tensor", self.scope_name));
 
-            // [batch_size, hidden_size]
-            let query_tensor = self
-                .query
-                .forward(hidden_states, format!("{}.query_tensor", self.scope_name));
+
 
             // [batch_size, group_hidden_size]
             let key_tensor = self
                 .key
                 .forward(hidden_states, format!("{}.key_tensor", self.scope_name));
+
+                        // [batch_size, hidden_size]
+            let query_tensor = self
+                .query
+                .forward(hidden_states, format!("{}.query_tensor", self.scope_name));
+
 
             let view_query = query_tensor.view(vec![
                 query_tensor.shape[0],
