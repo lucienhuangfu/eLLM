@@ -44,7 +44,7 @@ pub struct Transformer<T> {
     pub cache: Rc<RefCell<Cache<T>>>,
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     scope_name: String,
-    cpu_num: usize,
+    // cpu_num: usize,
 }
 
 impl<T> Transformer<T>
@@ -116,6 +116,7 @@ where
             start_pos: 0,
             
             output_linear: Linear::<T>::new(
+                config.batch_size,
                 config.hidden_size,
                 config.vocab_size,
                 1,
@@ -168,10 +169,13 @@ where
 
         // hidden_states.last().unwrap().to_owned();
 
-        let norm_output = hidden_state.mapv(
-            Operator::RMSMap(RMSMap::new(self.config.hidden_size, self.norm_weight.data, self.rms_norm_eps, self.cpu_num)),
-            format!("{}.norm_hidden.output", self.scope_name),
+        let norm_output = hidden_state.rms(
+            self.norm_weight.data, self.rms_norm_eps,
+            format!("{}.norm_hidden.output", self.scope_name)
         );
+        
+        
+  
 
         let logits = self
             .output_linear
@@ -195,75 +199,7 @@ where
         // hidden_state
     }
 
-    pub fn start(&mut self) {
-        println!("start");
-        // let prompt_operator_num;
-        // let data = SyncUnsafeCell::new(DataReader::new(prompt_data));
-        let cpu_num = thread::available_parallelism().unwrap().get();
-        // let sync_operator_queue = Arc::new(SyncUnsafeCell::new(self.operator_queue.borrow().clone()));
-        // let sync_operator_queue = Arc::new(self.operator_queue);
-        let sync_operator_queue = Arc::new(self.operator_queue.borrow().clone());
-
-        let barrier = Arc::new(Barrier::new(cpu_num));
-
-        // let mut handles = Vec::with_capacity(cpu_num);
-        // let reader = SyncUnsafeCell::new(DataReader::new(prompt_data));
-        let core_ids = core_affinity::get_core_ids().unwrap();
-        for (i, core_id) in core_ids.into_iter().enumerate() {
-            println!("thread id {}", i);
-            // let _state = &state;
-            // let _prompt_begin = &prompt_begin;
-            // let _prompt_end = &prompt_end;
-            // let _generation_end = &generation_end;
-            // let _batch_size = &batch_size;
-            let b = Arc::clone(&barrier);
-            // let mut b = barrier .clone();
-            let queue = Arc::clone(&sync_operator_queue);
-
-            let start_pos = self.start_pos; // 显式捕获当前值
-            let handle = thread::spawn(move || {
-                
-                let thread_id = i;
-                core_affinity::set_for_current(core_id);
-                println!("{} start", thread_id);
-                // let mut counter = 0;
-
-                loop {
-                    unsafe {
-                        // println!("{} self.start_pos {}", thread_id, self.start_pos);
-                        /*
-                        let batch_size: usize = 1;
-                        let prompt_begin = 0;
-                        let prompt_end = 0;
-                        let generation_end = 128;
-
-                            let s = Instant::now();
-                            for position_index in prompt_end..generation_end {
-
-                                for operator in queue.iter() {
-                                    // println!("o index {}", o_index);
-                                    operator.run(batch_size, position_index, thread_id);
-                                    b.wait();
-                                }
-                                // println!("position {}", position_index);
-                            }
-                            let t = s.elapsed();
-                         */
-                        // break;
-                    }
-                }
-            });
-
-            std::mem::forget(handle);
-            // handles.push(handle);
-        }
-
-        /* 
-        for handle in handles {
-            handle.join().unwrap();
-        }*/
-    }
-
+  
     pub fn forward(&mut self, tokens: Vec<Vec<i32>>, start_pos: usize) -> Vec<Vec<f32>> {
         self.tokens = tokens;
         self.start_pos = start_pos;
