@@ -17,7 +17,6 @@ use super::super::ptensor::tensor::Tensor;
 
 
 
-
 #[derive(Clone)]
 pub struct Attention<T> {
     sequence_length: usize,
