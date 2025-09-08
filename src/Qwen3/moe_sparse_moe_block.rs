@@ -16,7 +16,7 @@ pub struct MoeSparseMoeBlock<T> {
     head_size: usize,
     num_experts: usize,
     top_k: usize,
-    norm_topk_prob: usize,
+    norm_topk_prob: bool,
     gate: Linear<T>,
     experts: Vec<Linear<T>>,
     scope_name: String,
@@ -79,35 +79,25 @@ where
         tensor_name: String,
         cpu_num: usize,
     ) -> Tensor<T> {
-        // println!("{:?} {:?}", self.w1.weight.shape ,hidden_states.shape);
-        let linear1 = self
-            .w1
-            .forward(hidden_states, format!("{}.linear1", self.scope_name));
-        // println!("{:?} {:?}", hidden_states.shape, self.w1.weight.shape);
-        let linear3 = self
-            .w3
-            .forward(hidden_states, format!("{}.linear3", self.scope_name));
-        // println!("{:?} {:?}", hidden_states.shape, self.w3.weight.shape);
 
-        let view_linear1 = linear1.view(vec![
-            linear1.shape[0],
-            linear1.shape[1],
-            linear1.shape[2] / (self.head_size * 2),
-            self.head_size * 2,
-        ]);
-        let view_linear3 = linear3.view(vec![
-            linear3.shape[0],
-            linear3.shape[1] / (self.head_size * 2),
-            self.head_size * 2,
-        ]);
+        let gate_output = self
+            .gate
+            .forward(hidden_states, format!("{}.gate_output", self.scope_name));
 
-        let nonlinear =
-            view_linear1.silu_mul(&view_linear3, format!("{}.nonlinear", self.scope_name));
+        let router_logits = self.gate(hidden_states);
 
-        let view_nonlinear = nonlinear.view(linear1.shape.clone());
-        let linear2 = self.w2.forward(&view_nonlinear, tensor_name);
-        // println!("{:?} {:?}", nonlinear.shape, self.w2.weight.shape);
-        linear2
+        let routing_weights = router_logits.softmax(-1, format!("{}.router_probs", self.scope_name));
+        let (topk_values, topk_indices) = routing_weights.top_k(
+            self.top_k,
+            -1,
+            format!("{}.topk_indices", self.scope_name),
+        );
+
+
+        
+
+
+        final_hidden_states, router_logits
     }
 }
 
