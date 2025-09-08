@@ -13,6 +13,7 @@ use crate::compiler::operator::Operator;
 
 #[derive(Clone)]
 pub struct MoeMLP<T> {
+    sequence_chunk_size: usize,
     head_size: usize,
     gate_proj: Linear<T>,
     up_proj: Linear<T>,
@@ -27,41 +28,41 @@ where
     T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
 {
     pub fn new(
-        dim: usize,
-        hidden_dim: usize,
+        sequence_chunk_size: usize,
         head_size: usize,
-        multiple_of: usize,
+        hidden_size: usize,
+        intermediate_size: usize,
+        // multiple_of: usize,
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
-        // println!("dim {} hidden_dim {}", dim, hidden_dim);
-        let hidden_dim1 = 2 * hidden_dim / 3;
-        let hidden_dim2 = multiple_of * ((hidden_dim1 + multiple_of - 1) / multiple_of);
+
         let scope_name = format!("{}.mlp", parent_scope_name);
         MoeMLP {
+            sequence_chunk_size: sequence_chunk_size,
             head_size: head_size,
+            gate_proj: Linear::new(
+                hidden_size,
+                intermediate_size,
+                sequence_chunk_size,
+                format!("{}.gate_proj", scope_name),
+                cache.clone(),
+                operator_queue.clone(),
+            ),
             up_proj: Linear::new(
-                dim,
-                hidden_dim2,
-                1,
+                hidden_size,
+                intermediate_size,
+                sequence_chunk_size,
                 format!("{}.up_proj", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             down_proj: Linear::new(
-                hidden_dim2,
-                dim,
-                1,
+                intermediate_size,
+                hidden_size,
+                sequence_chunk_size,
                 format!("{}.down_proj", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
-            ),
-            gate_proj: Linear::new(
-                dim,
-                hidden_dim2,
-                1,
-                format!("{}.gate_proj", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),

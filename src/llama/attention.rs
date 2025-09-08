@@ -1,4 +1,3 @@
-
 use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
@@ -7,16 +6,12 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-
 use super::super::memory::cache::Cache;
 use crate::compiler::mul::attention_mul::AttentionMul;
 use crate::compiler::operator::Operator;
 
 use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
-
-
-
 
 #[derive(Clone)]
 pub struct Attention<T> {
@@ -119,18 +114,15 @@ where
                 .value
                 .forward(hidden_states, format!("{}.value_tensor", self.scope_name));
 
-
-
             // [batch_size, group_hidden_size]
             let key_tensor = self
                 .key
                 .forward(hidden_states, format!("{}.key_tensor", self.scope_name));
 
-                        // [batch_size, hidden_size]
+            // [batch_size, hidden_size]
             let query_tensor = self
                 .query
                 .forward(hidden_states, format!("{}.query_tensor", self.scope_name));
-
 
             let view_query = query_tensor.view(vec![
                 query_tensor.shape[0],
@@ -176,12 +168,14 @@ where
             let context_tensor = query_position_tensor.attention(
                 &view_key_position_tensor,
                 &view_value_tensor2,
-     
                 format!("{}.context_tensor", self.scope_name),
             );
 
-            let mut view_context_tensor =
-                context_tensor.view(vec![context_tensor.shape[0], self.batch_size, self.hidden_size]);
+            let mut view_context_tensor = context_tensor.view(vec![
+                context_tensor.shape[0],
+                self.batch_size,
+                self.hidden_size,
+            ]);
 
             // [batch_size, hidden_size]
             let output_tensor = self.wo.forward(
@@ -201,14 +195,13 @@ mod test {
 
     #[test]
     fn test_self_attention() {
-
         let position_window_size = 4;
         let batch_size = 32;
         let hidden_size = 128;
         let num_attention_heads = 64;
         let num_kv_heads = 8;
         let sequence_length = 10;
- 
+
         let inverse_sqrt_head = 1.0 / (hidden_size as f32).sqrt();
         let attention_head_size: usize = hidden_size / num_attention_heads;
 
@@ -245,7 +238,10 @@ mod test {
         let output = self_attention.forward(&hidden_states, &position_embedding);
 
         // Add assertions to validate the output
-        assert_eq!(output.shape, vec![position_window_size, batch_size, hidden_size]);
+        assert_eq!(
+            output.shape,
+            vec![position_window_size, batch_size, hidden_size]
+        );
 
         // Execute the operator queue
         let thread_num: usize = num_cpus::get();

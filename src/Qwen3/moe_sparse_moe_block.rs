@@ -10,13 +10,15 @@ use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
 
-
 #[derive(Clone)]
 pub struct MoeSparseMoeBlock<T> {
+    sequence_chunk_size: usize,
     head_size: usize,
-    w1: Linear<T>,
-    w2: Linear<T>,
-    w3: Linear<T>,
+    num_experts: usize,
+    top_k: usize,
+    norm_topk_prob: usize,
+    gate: Linear<T>,
+    experts: Vec<Linear<T>>,
     scope_name: String,
     cache: Rc<RefCell<Cache<T>>>,
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
@@ -27,44 +29,44 @@ where
     T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
 {
     pub fn new(
-        dim: usize,
-        hidden_dim: usize,
-        head_size: usize,
-        // multiple_of: usize,
+        sequence_chunk_size: usize,
+        hidden_size: usize,
+        num_experts: usize,
+        top_k: usize,
+        norm_topk_prob: usize,
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
-        // println!("dim {} hidden_dim {}", dim, hidden_dim);
-        let hidden_dim1 = 2 * hidden_dim / 3;
-        let hidden_dim2 = multiple_of * ((hidden_dim1 + multiple_of - 1) / multiple_of);
-        let scope_name = format!("{}.mlp", parent_scope_name);
-        FeedForward {
-            head_size: head_size,
-            w1: Linear::new(
-                dim,
-                hidden_dim2,
-                1,
-                format!("{}.up_proj", scope_name),
+        let mut experts = Vec::with_capacity(num_experts);
+        for i in 0..num_experts {
+            let expert = MoeMLP::new(
+                sequence_chunk_size,
+                head_size,
+                hidden_size,
+                intermediate_size,
+                &scope_name,
+                cache.clone(),
+                operator_queue.clone(),
+            );
+            experts.push(expert);
+        }
+        let scope_name = format!("{}.moe", parent_scope_name);
+        MoeSparseMoeBlock {
+            sequence_chunk_size,
+            hidden_size,
+            num_experts,
+            top_k,
+            norm_topk_prob,
+            gate: Linear::new(
+                hidden_size,
+                num_experts,
+                sequence_chunk_size,
+                format!("{}.gate", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
-            w2: Linear::new(
-                hidden_dim2,
-                dim,
-                1,
-                format!("{}.down_proj", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
-            ),
-            w3: Linear::new(
-                dim,
-                hidden_dim2,
-                1,
-                format!("{}.gate_proj", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
-            ),
+            experts: experts,
             scope_name: scope_name,
             cache: cache,
             operator_queue: operator_queue,
@@ -99,10 +101,8 @@ where
             self.head_size * 2,
         ]);
 
-        let nonlinear = view_linear1.silu_mul(
-            &view_linear3,
-            format!("{}.nonlinear", self.scope_name),
-        );
+        let nonlinear =
+            view_linear1.silu_mul(&view_linear3, format!("{}.nonlinear", self.scope_name));
 
         let view_nonlinear = nonlinear.view(linear1.shape.clone());
         let linear2 = self.w2.forward(&view_nonlinear, tensor_name);
@@ -120,15 +120,13 @@ mod test {
 
     #[test]
     fn test_feedforward() {
-        
         let position_window_size = 4;
         let batch_size = 32;
         let head_size = 128;
 
-
         let hidden_size = 8192;
         let hidden_dim = 4 * hidden_size;
-        
+
         let position_index = 1;
 
         let multiple_of = 256;
@@ -185,7 +183,7 @@ mod test {
          */
     }
 
-    /* 
+    /*
     #[test]
     fn test_feedforward_f16() {
         let batch_size = 32;
