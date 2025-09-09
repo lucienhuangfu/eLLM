@@ -121,7 +121,7 @@ where
             let query_states = self
                 .q_proj
                 .forward(hidden_states, format!("{}.query_tensor", self.scope_name));
-                .forward(hidden_states, format!("{}.query_tensor", self.scope_name));
+                
 
             let view_query = query_states.view(vec![
                 query_states.shape[0],
@@ -162,7 +162,7 @@ where
             ]);
 
             // [batch_size, hidden_size]
-            let output_tensor = self.wo.forward(
+            let output_tensor = self.o_proj.forward(
                 &view_context_tensor,
                 format!("{}.output_tensor", self.scope_name),
             );
