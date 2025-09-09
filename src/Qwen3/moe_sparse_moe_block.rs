@@ -13,10 +13,7 @@ use crate::compiler::operator::Operator;
 #[derive(Clone)]
 pub struct MoeSparseMoeBlock<T> {
     sequence_chunk_size: usize,
-    head_size: usize,
-    num_experts: usize,
-    top_k: usize,
-    norm_topk_prob: bool,
+    batch_size: usize,
     gate: Linear<T>,
     experts: Vec<Linear<T>>,
     scope_name: String,

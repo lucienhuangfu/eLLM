@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
+use crate::kernel::generic::from_f32::FromF32;
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
@@ -13,10 +14,11 @@ use crate::compiler::operator::Operator;
 use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 
+use super::config::Config;
 #[derive(Clone)]
 pub struct Attention<T> {
-    sequence_length: usize,
-    batch_size: usize,
+    // sequence_length: usize,
+    // batch_size: usize,
     head_dim: usize,
     num_key_value_groups: usize,
     scaling: T,
@@ -34,70 +36,62 @@ pub struct Attention<T> {
 
 impl<T> Attention<T>
 where
-    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
+    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt + FromF32,
 {
     pub fn new(
-        sequence_chunk_size: usize,
-        batch_size: usize,
-        hidden_size: usize,
-        num_attention_heads: usize,
-        num_key_value_heads: usize,
+        config: &Config,
         layer_idx: usize,
-        attention_dropout: T,
-        is_causal: bool,
+        // sequence_chunk_size: usize,
+        // batch_size: usize,
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
-        let head_dim: usize = hidden_size / num_attention_heads;
-        let num_key_value_groups = num_attention_heads / num_key_value_heads;
-        let scaling = head_dim * *-0.5;
+        let head_dim: usize = config.head_dim;
+        let num_key_value_groups =  config.num_attention_heads / config.num_key_value_heads;
+        // T::sqrt(T::from_usize(config.attention_head_size )),
+        let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
+
         let scope_name = format!("{}.self_attn", parent_scope_name);
         Attention {
-            num_attention_heads: num_attention_heads,
-            num_key_value_heads: num_key_value_heads,
-            attention_head_size: attention_head_size,
-            all_head_size: all_head_size,
-            sequence_chunk_size: sequence_chunk_size,
+            head_dim: head_dim,
+            num_key_value_groups: num_key_value_groups,
             scaling: scaling,
-            attention_dropout: attention_dropout,
-            is_causal: is_causal,
+            attention_dropout: T::default(),
+            is_causal: false,
+            layer_idx: layer_idx,
             q_proj: Linear::new(
-                hidden_size,
-                num_attention_heads * head_dim,
+                config.hidden_size,
+                config.num_attention_heads * head_dim,
                 sequence_chunk_size,
                 format!("{}.q_proj", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             k_proj: Linear::new(
-                hidden_size,
-                num_key_value_groups * head_dim,
+                config.hidden_size,
+                config.num_key_value_heads * head_dim,
                 sequence_chunk_size,
                 format!("{}.k_proj", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             v_proj: Linear::new(
-                hidden_size,
-                num_key_value_groups * head_dim,
+                config.hidden_size,
+                config.num_key_value_heads * head_dim,
                 sequence_chunk_size,
                 format!("{}.v_proj", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             o_proj: Linear::new(
-                num_attention_heads * head_dim,
-                hidden_size,
+                config.num_attention_heads * head_dim,
+                config.hidden_size,
                 sequence_chunk_size,
                 format!("{}.o_proj", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
-            batch_size: batch_size,
-            hidden_size: hidden_size,
-            inverse_sqrt_head: inverse_sqrt_head,
-            cpu_num: cpu_num,
             cache: cache,
             operator_queue: operator_queue,
             scope_name: scope_name,
@@ -115,17 +109,18 @@ where
 
             // [sequence_chunk_size, batch_size, kv_hidden_size]
             let value_states = self
-                .value
+                .v_proj
                 .forward(hidden_states, format!("{}.value_tensor", self.scope_name));
 
             // [sequence_chunk_size, batch_size, kv_hidden_size]
             let key_states = self
-                .key
+                .k_proj
                 .forward(hidden_states, format!("{}.key_tensor", self.scope_name));
 
             // [sequence_chunk_size, batch_size, hidden_size]
             let query_states = self
-                .query
+                .q_proj
+                .forward(hidden_states, format!("{}.query_tensor", self.scope_name));
                 .forward(hidden_states, format!("{}.query_tensor", self.scope_name));
 
             let view_query = query_states.view(vec![
