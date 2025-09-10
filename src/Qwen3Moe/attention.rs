@@ -53,7 +53,7 @@ where
         let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
 
         let scope_name = format!("{}.self_attn", parent_scope_name);
-        Attention {
+        Self {
             head_dim: head_dim,
             num_key_value_groups: num_key_value_groups,
             scaling: scaling,

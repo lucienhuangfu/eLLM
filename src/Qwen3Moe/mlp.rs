@@ -12,7 +12,7 @@ use crate::compiler::operator::Operator;
 
 
 #[derive(Clone)]
-pub struct MoeMLP<T> {
+pub struct MLP<T> {
     sequence_chunk_size: usize,
     head_size: usize,
     gate_proj: Linear<T>,
@@ -23,7 +23,7 @@ pub struct MoeMLP<T> {
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
 }
 
-impl<T> MoeMLP<T>
+impl<T> MLP<T>
 where
     T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
 {
@@ -39,7 +39,7 @@ where
     ) -> Self {
 
         let scope_name = format!("{}.mlp", parent_scope_name);
-        MoeMLP {
+        Self {
             sequence_chunk_size: sequence_chunk_size,
             head_size: head_size,
             gate_proj: Linear::new(

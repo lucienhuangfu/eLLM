@@ -8,38 +8,36 @@ use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::from_f32::FromF32;
 
-use crate::init::config::Config;
+use super::config::Config;
 
 use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
-use super::feedforward::FeedForward;
-use super::attention::Attention;
+// use super::feedforward::FeedForward;
+use super::moe_attention::Attention;
 
 
 #[derive(Clone)]
-pub struct MoeDecoderLayer<'a, T> {
+pub struct DecoderLayer<'a, T> {
     sequence_length: usize,
     sequence_chunk_size: usize,
     batch_size: usize,
     hidden_size: usize,
     head_dim: usize,
-    input_layernorm: Tensor<T>,
-    post_attention_layernorm: Tensor<T>,
     rms_norm_eps: T,
-    // cpu_num: usize,
+    layer_idx: usize,
+    layernorm_weight: Tensor<T>,
     word_embedding: &'a Tensor<T>,
     position_embedding: &'a Tensor<T>,
-    
     self_attention: Attention<T>,
-    feedforward: FeedForward<T>,
-    layer_idx: usize,
+    // feedforward: FeedForward<T>,
+
     scope_name: String,
     cache: Rc<RefCell<Cache<T>>>,
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
 }
 
-impl<'a, T> TransformerBlock<'a, T> 
+impl<'a, T> DecoderLayer<'a, T> 
 where T: Copy 
     + Default 
     + Sub<Output = T>
@@ -53,57 +51,74 @@ where T: Copy
 {
     pub fn new(
         config: &Config,
+        layer_idx: usize,
         sequence_length: usize,
         sequence_chunk_size: usize,
         batch_size: usize,
         word_embedding: &'a Tensor<T>,
         position_embedding: &'a Tensor<T>,
-        index: usize,
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
-        let scope_name = format!("{}.layers.{}", parent_scope_name, index);
-        TransformerBlock {
+        let scope_name = format!("{}.layers.{}", parent_scope_name, layer_idx);
+
+        if config.num_experts > 0 && (layer_idx + 1) % config.decoder_sparse_step == 0 {
+            // MoE Layer
+            // feedforward = MoeSparseMoeBlock::new(
+            //     sequence_chunk_size,
+            //     config.hidden_size,
+            //     config.moe_intermediate_size,
+            //     config.num_experts,
+            //     config.num_experts_per_tok,
+            //     config.norm_topk_prob as usize,
+            //     &scope_name,
+            //     cache.clone(),
+            //     operator_queue.clone(),
+            // );
+        } else {
+            // Dense Layer
+            // feedforward = FeedForward::new(
+            //     sequence_chunk_size,
+            //     config.hidden_size,
+            //     config.intermediate_size,
+            //     &scope_name,
+            //     cache.clone(),
+            //     operator_queue.clone(),
+            // );
+        }
+
+
+
+        Self {
             sequence_length: config.max_position_embeddings,
             sequence_chunk_size: sequence_chunk_size,
             batch_size: batch_size,
             hidden_size: config.hidden_size,
             head_dim: config.head_dim,
-            rms_norm_eps: T::from_f32(rms_norm_eps),
-
+            rms_norm_eps: T::from_f32(config.rms_norm_eps),
+            layer_idx: layer_idx,
 
             self_attention: Attention::<T>::new(
-                sequence_length,
-                batch_size,
-                hidden_size,
-                num_attention_heads,
-                num_key_value_heads,
-                // config.max_position_embeddings,
-                // config.batch_size,
-                // T::sqrt(T::from_usize(config.attention_head_size )),
-                // cpu_num,
+                config,
+                layer_idx,
                 &scope_name,
                 cache.clone(),
                 operator_queue.clone(),
             ),
-
             // weight: allocate_f16(config.hidden_size),
-            layernorm: Tensor::zeros(
-                vec![1, head_size],
+            layernorm_weight: Tensor::zeros(
+                vec![1, config.head_dim],
                 format!("{}.layernorm.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
-
-            // cpu_num: cpu_num,
             word_embedding: word_embedding,
             position_embedding: position_embedding,
 
             cache: cache,
             operator_queue: operator_queue,
             scope_name: scope_name,
-            index: index,
         }
     }
 
@@ -114,19 +129,17 @@ where T: Copy
         tensor_name: String,
     ) -> Tensor<T> {
         // # Attention 层
-        let norm_hidden = if self.index != 0 {
+        let norm_hidden = if self.layer_idx != 0 {
             hidden_states.rms(
-                    self.input_layernorm.data,
+                    self.layernorm_weight.data,
                     self.rms_norm_eps,
                 format!("{}.norm_hidden", self.scope_name),
             )
         } else {
             hidden_states.lookup_rms(
                 self.word_embedding.data,
-                    self.input_layernorm.data,
-                    self.rms_norm_eps,
-                    
-             
+                self.layernorm_weight.data,
+                self.rms_norm_eps,
                 format!("{}.norm_hidden", self.scope_name),
             )
         };
@@ -139,7 +152,7 @@ where T: Copy
         );
         let attention_hidden2 = attention_hidden1.add_rms(
             hidden_states,
-            self.post_attention_layernorm.data,
+            self.layernorm_weight.data,
             self.rms_norm_eps,
             format!("{}.norm_hidden2", self.scope_name)
         );
@@ -150,12 +163,12 @@ where T: Copy
         );
 
         let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],
-            attention_hidden2.shape[1]/self.head_size , 
-            self.head_size]);
+            attention_hidden2.shape[1]/self.head_dim, 
+            self.head_dim]);
 
         let view_attention_hidden3 = attention_hidden3.view(vec![attention_hidden3.shape[0],
-            attention_hidden3.shape[1]/self.head_size , 
-            self.head_size]);
+            attention_hidden3.shape[1]/self.head_dim, 
+            self.head_dim]);
 
         // [batch_size, head_num, head_size]
         let out = view_attention_hidden2.add(
