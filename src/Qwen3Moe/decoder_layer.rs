@@ -30,7 +30,7 @@ pub struct DecoderLayer<'a, T> {
     word_embedding: &'a Tensor<T>,
     position_embedding: &'a Tensor<T>,
     self_attention: Attention<T>,
-    // feedforward: FeedForward<T>,
+    moe_layer: MoeLayer<T>,
 
     scope_name: String,
     cache: Rc<RefCell<Cache<T>>>,
@@ -63,32 +63,32 @@ where T: Copy
     ) -> Self {
         let scope_name = format!("{}.layers.{}", parent_scope_name, layer_idx);
 
-        if config.num_experts > 0 && (layer_idx + 1) % config.decoder_sparse_step == 0 {
-            // MoE Layer
-            // feedforward = MoeSparseMoeBlock::new(
-            //     sequence_chunk_size,
-            //     config.hidden_size,
-            //     config.moe_intermediate_size,
-            //     config.num_experts,
-            //     config.num_experts_per_tok,
-            //     config.norm_topk_prob as usize,
-            //     &scope_name,
-            //     cache.clone(),
-            //     operator_queue.clone(),
-            // );
+        let moe_layer = if config.num_experts > 0 && (layer_idx + 1) % config.decoder_sparse_step == 0 {
+            // sparse moe block
+            MoeLayer::new_sparse_moe(
+                sequence_chunk_size,
+                config.hidden_size,
+                config.num_experts,
+                config.num_experts_per_tok,
+                config.norm_topk_prob,
+                config.intermediate_size,
+                config.head_dim,
+                &scope_name,
+                cache.clone(),
+                operator_queue.clone(),
+            )
         } else {
-            // Dense Layer
-            // feedforward = FeedForward::new(
-            //     sequence_chunk_size,
-            //     config.hidden_size,
-            //     config.intermediate_size,
-            //     &scope_name,
-            //     cache.clone(),
-            //     operator_queue.clone(),
-            // );
-        }
-
-
+            // MLP Layer
+            MoeLayer::new_mlp(
+                sequence_chunk_size,
+                config.head_dim,
+                config.hidden_size,
+                config.intermediate_size,
+                &scope_name,
+                cache.clone(),
+                operator_queue.clone(),
+            )
+        };
 
         Self {
             sequence_length: config.max_position_embeddings,
@@ -106,6 +106,7 @@ where T: Copy
                 cache.clone(),
                 operator_queue.clone(),
             ),
+            moe_layer: moe_layer,
             // weight: allocate_f16(config.hidden_size),
             layernorm_weight: Tensor::zeros(
                 vec![1, config.head_dim],
@@ -157,9 +158,10 @@ where T: Copy
             format!("{}.norm_hidden2", self.scope_name)
         );
 
-        let attention_hidden3 = self.feedforward.forward(
+        let attention_hidden3 = self.moe_layer.forward(
             &attention_hidden2,
             format!("{}.attention_hidden3", self.scope_name),
+            // num_cpus::get(),
         );
 
         let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],

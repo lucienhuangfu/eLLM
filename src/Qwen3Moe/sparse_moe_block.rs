@@ -80,7 +80,6 @@ where
         &self,
         hidden_states: &Tensor<T>,
         tensor_name: String,
-        cpu_num: usize,
     ) -> Tensor<T> {
         let gate_output = self
             .gate

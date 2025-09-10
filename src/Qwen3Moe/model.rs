@@ -18,6 +18,8 @@ use crate::kernel::generic::from_f32::FromF32;
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+use super::config::Config;
+
 use crate::memory::cache;
 use super::super::compiler::operator::Operator;
 use super::super::compiler::map::rms_map::RMSMap;
@@ -26,25 +28,24 @@ use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::model_loader::SafeTensorsLoader;
 use super::transformer_block::TransformerBlock;
-use crate::init::config::Config;
+
 // use super::rope::precompute_freqs_cis;
 
 #[derive(Clone)]
 pub struct Model<T> {
-    config: Config,
+    // config: Config,
     // pub layer: Vec<Layer<T>>,
-    tokens: Vec<Vec<i32>>,
+    // tokens: Vec<Vec<i32>>,
+    rms_norm_eps: T,
     sequences: Vec<usize>,
-    start_pos: usize,
     word_embedding: Tensor<T>,
     position_embedding: Tensor<T>,
     norm_weight: Tensor<T>,
-    rms_norm_eps: T,
     output_linear: Linear<T>,
+    scope_name: String,
     pub cache: Rc<RefCell<Cache<T>>>,
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
-    scope_name: String,
-    // cpu_num: usize,
+
 }
 
 impl<T> Model<T>
@@ -62,7 +63,7 @@ where
         + Sync,
 {
     pub fn new(
-        config: Config,
+        config: &Config,
         // word_embedding: Tensor<T>,
         // position_embedding: Tensor<T>,
         // norm_weight: Tensor<T>,
@@ -108,13 +109,25 @@ where
             operator_queue.clone(),
         );
 
-        let module_vec: Vec<TransformerBlock<T>> = Vec::new();
+      
+        let mut layers: Vec<TransformerBlock<T>> = Vec::new();
+        for i in 0..config.num_hidden_layers {
+            layers.push(TransformerBlock::<T>::new(
+                &config,
+                i,
+                &self.word_embedding,
+                &self.position_embedding,
+                &self.scope_name,
+                self.cache.clone(),
+                self.operator_queue.clone(),
+            ));
+        }
+
+
         Self {
-            // layer: module_vec,
+            
             tokens: Vec::new(),
             sequences: vec![0; (config.max_position_embeddings + 1) * config.batch_size],
-            start_pos: 0,
-            
             output_linear: Linear::<T>::new(
                 config.batch_size,
                 config.hidden_size,
@@ -130,30 +143,16 @@ where
             norm_weight: norm_weight,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             config: config,
-            cpu_num: num_cpus::get(),
             scope_name: scope_name,
             cache: cache,
             operator_queue: operator_queue,
         }
     }
 
-    pub fn build(&mut self) {
+    pub fn forward(&mut self) {
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
-        let mut layer_vec: Vec<TransformerBlock<T>> = Vec::new();
 
-        for i in 0..self.config.num_hidden_layers {
-            layer_vec.push(TransformerBlock::<T>::new(
-                &self.config,
-                &self.word_embedding,
-                &self.position_embedding,
-                i,
-                self.cpu_num,
-                &self.scope_name,
-                self.cache.clone(),
-                self.operator_queue.clone(),
-            ));
-        }
 
         let mut hidden_state =
             Tensor::<T>::zeros(vec![self.config.batch_size, self.config.hidden_size], format!("{}.norm.weight", self.scope_name),self.cache.clone(), self.operator_queue.clone());
@@ -169,20 +168,18 @@ where
 
         // hidden_states.last().unwrap().to_owned();
 
-        let norm_output = hidden_state.rms(
+        let norm_state = hidden_state.rms(
             self.norm_weight.data, self.rms_norm_eps,
             format!("{}.norm_hidden.output", self.scope_name)
         );
         
         
   
-
+        /*
         let logits = self
             .output_linear
             .forward(&norm_output, format!("{}.lm_head.output", self.scope_name));
 
-        
-        /*
         unsafe {
             logits.reduce(
                 sequences.add(self.config.batch_size),
@@ -196,20 +193,15 @@ where
             );
         }*/
 
-        // hidden_state
+        norm_state
     }
 
   
-    pub fn forward(&mut self, tokens: Vec<Vec<i32>>, start_pos: usize) -> Vec<Vec<f32>> {
-        self.tokens = tokens;
-        self.start_pos = start_pos;
-        let t = Vec::<Vec<f32>>::new();
-        t
-    }
+
 }
 
-unsafe impl<T: Copy + Default + Send + Sync> Send for Transformer<T> {}
-unsafe impl<T: Copy + Default + Send + Sync> Sync for Transformer<T> {}
+// unsafe impl<T: Copy + Default + Send + Sync> Send for Transformer<T> {}
+// unsafe impl<T: Copy + Default + Send + Sync> Sync for Transformer<T> {}
 
 #[cfg(test)]
 mod test {
