@@ -30,7 +30,7 @@ use crate::init::config::Config;
 // use super::rope::precompute_freqs_cis;
 
 #[derive(Clone)]
-pub struct Transformer<T> {
+pub struct Model<T> {
     config: Config,
     // pub layer: Vec<Layer<T>>,
     tokens: Vec<Vec<i32>>,
@@ -47,7 +47,7 @@ pub struct Transformer<T> {
     // cpu_num: usize,
 }
 
-impl<T> Transformer<T>
+impl<T> Model<T>
 where
     T: Copy
         + Default
@@ -109,7 +109,7 @@ where
         );
 
         let module_vec: Vec<TransformerBlock<T>> = Vec::new();
-        Transformer {
+        Self {
             // layer: module_vec,
             tokens: Vec::new(),
             sequences: vec![0; (config.max_position_embeddings + 1) * config.batch_size],
