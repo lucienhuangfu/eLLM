@@ -68,12 +68,11 @@ where
         &self,
         hidden_states: &Tensor<T>,
         tensor_name: String,
-        cpu_num: usize,
     ) -> Tensor<T> {
         match self {
-            MoeLayer::MLP(mlp) => mlp.forward(hidden_states, tensor_name, cpu_num),
+            MoeLayer::MLP(mlp) => mlp.forward(hidden_states, tensor_name),
             MoeLayer::SparseMoe(sparse_moe) => {
-                sparse_moe.forward(hidden_states, tensor_name, cpu_num)
+                sparse_moe.forward(hidden_states, tensor_name)
             }
         }
     }

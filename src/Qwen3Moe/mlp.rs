@@ -76,7 +76,6 @@ where
         &self,
         hidden_states: &Tensor<T>,
         tensor_name: String,
-        cpu_num: usize,
     ) -> Tensor<T> {
         // println!("{:?} {:?}", self.gate_proj.weight.shape ,hidden_states.shape);
         let gate_product = self
