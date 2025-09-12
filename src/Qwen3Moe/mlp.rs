@@ -15,8 +15,8 @@ use crate::compiler::operator::Operator;
 pub struct MLP<T> {
     sequence_chunk_size: usize,
     head_size: usize,
-    gate_proj: Linear<T>,
-    up_proj: Linear<T>,
+    gate_weight: Tensor<T>,
+    up_weight: Tensor<T>,
     down_proj: Linear<T>,
     scope_name: String,
     cache: Rc<RefCell<Cache<T>>>,
@@ -32,7 +32,6 @@ where
         head_size: usize,
         hidden_size: usize,
         intermediate_size: usize,
-        // multiple_of: usize,
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
@@ -42,6 +41,20 @@ where
         Self {
             sequence_chunk_size: sequence_chunk_size,
             head_size: head_size,
+            gate_weight: Tensor<T>::zeros(
+                vec![hidden_size, intermediate_size],
+                format!("{}gate_proj.weight", scope_name),
+                cache.clone(),
+                operator_queue.clone(),
+            ),
+            up_weight: Tensor<T>::zeros(
+                vec![hidden_size, intermediate_size],
+                format!("{}.up_proj.weight", scope_name),
+                cache.clone(),
+                operator_queue.clone(),
+            ),
+
+            /* 
             gate_proj: Linear::new(
                 hidden_size,
                 intermediate_size,
@@ -57,7 +70,7 @@ where
                 format!("{}.up_proj", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
-            ),
+            ),*/
             down_proj: Linear::new(
                 intermediate_size,
                 hidden_size,
@@ -77,6 +90,9 @@ where
         hidden_states: &Tensor<T>,
         tensor_name: String,
     ) -> Tensor<T> {
+        
+        
+        /*
         // println!("{:?} {:?}", self.gate_proj.weight.shape ,hidden_states.shape);
         let gate_product = self
             .gate_proj
@@ -105,7 +121,26 @@ where
         );
 
         let view_nonlinear = nonlinear.view(up_product.shape.clone());
-        let down_product = self.down_proj.forward(&view_nonlinear, tensor_name);
+        */
+
+        let nonlinear_product = hidden_states.matmul_silu_mul_matmul(
+            &self.gate_weight,
+            &self.up_weight,
+            crate::ptensor::matmul::MatMulParams {
+                a_row: hidden_states.shape[1],
+                b_row: self.gate_weight.shape[0],
+                column: self.gate_weight.shape[1],
+                a_row_step_macro: 16,
+                b_row_step_macro: 16,
+                column_step_macro: 16,
+                a_row_step_micro: 8,
+                b_row_step_micro: 8,
+            },
+            format!("{}.nonlinear_part1", self.scope_name),
+        );
+
+
+        let down_product = self.down_proj.forward(&nonlinear_product, tensor_name);
         // println!("{:?} {:?}", nonlinear.shape, self.w2.weight.shape);
         down_product
     }

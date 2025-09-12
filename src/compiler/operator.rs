@@ -10,7 +10,7 @@ use super::map::rms_map::RMSMap;
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 use super::mul::attention_mul::AttentionMul;
-use super::mul::mat_mul::MatMul;
+use super::mul::matmul::MatMul;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
 use super::zip_map::add_zip::AddZipMap;
 use super::zip_map::complex_zip::ComplexZipMap;
