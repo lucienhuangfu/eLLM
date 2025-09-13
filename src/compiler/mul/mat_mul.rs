@@ -28,7 +28,7 @@ pub struct MatMul<T> {
 }
 impl<T> MatMul<T>
 where
-    T: Copy + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     pub fn new(
         ptr1: *const T,
@@ -78,31 +78,125 @@ where
 
     pub fn run(
         &self,
-        position_index: usize,
-        position_interval: usize,
-        batch_size: usize,
-        cpu_num: usize,
-        thread_id: usize,
+        _position_index: usize,    // 本版 seq_len=1，不用
+        _position_interval: usize, // 本版 seq_len=1，不用
+        batch_size: usize,         // 本次 M（行数）
+        cpu_num: usize,            // 线程总数
+        thread_id: usize,          // 本线程 id
     ) {
+        unsafe {
+            // ----- 维度 -----
+            let m = batch_size; // M
+            let n = self.params.b_row; // N
+            let k = self.params.column; // K
 
-        /*
-        let (mut a_chunk_num, remainder) = (self.params.a_row / self.params.a_row_step_macro, self.params.a_row % self.params.a_row_step_macro);
-        if remainder > 0 {
-            a_chunk_num += 1;
+            // ----- 三分块参数 -----
+            let mb = self.params.a_row_step_macro.max(1); // MB
+            let nb = self.params.b_row_step_macro.max(1); // NB
+            let kc = self.params.column_step_macro.max(1); // KC
+            let mr = self.params.a_row_step_micro.max(1); // MR (应=3)
+            let nr = self.params.b_row_step_micro.max(1); // NR (应=32)
+
+            // 整除假设：无需尾块分支
+            debug_assert!(m % mr == 0, "要求 M 能被 MR 整除");
+            debug_assert!(n % nr == 0, "要求 N 能被 NR 整除");
+            debug_assert!(k % kc == 0, "要求 K 能被 KC 整除");
+
+            // ----- 基址/行距（元素计）-----
+            // A: [M×K] 行主；B_orig: [K×N] 行主；C: [M×N] 行主
+            let a_base = self.ptr1.ptr;
+            let b_orig = self.ptr2.ptr; // 原始 B: [K×N] 行主
+            let c_base = self.output_ptr.ptr;
+            let lda = k; // A 每行跨度
+            let ldc = n; // C 每行跨度
+
+            // 转置B矩阵： [K×N] -> [N×K] 行主 =====
+            // b_nt[j, k] = b_orig[k, j]
+            let mut b_nt: Vec<T> = vec![T::default(); n * k];
+            for kk in 0..k {
+                let src_row = b_orig.add(kk * n); // b_orig[kk, 0]
+                for jj in 0..n {
+                    *b_nt.as_mut_ptr().add(jj * k + kk) = *src_row.add(jj);
+                }
+            }
+            let b_nt_ptr = b_nt.as_ptr(); // 转置后的基址（[N×K] 行主）
+            let ldb_row = k; // b_nt 的行距（=K）
+
+            // ===== ② 线程划分：按 (MB×NB) 宏块均分 =====
+            let tiles_m = (m + mb - 1) / mb;
+            let tiles_n = (n + nb - 1) / nb;
+            let total_tiles = tiles_m * tiles_n;
+
+            if let Some((tb, te)) = assign(total_tiles, cpu_num, thread_id) {// 目前还用的统一的assign 处理完之后根据连续性优化
+                // 线程私有 B 面板缓冲：KC×NR 因为对A 广播 B这边还是要打面板 即使提前转置
+                let mut b_panel: Vec<T> = vec![T::default(); kc * nr];
+
+                // 打包函数：把 b_nt[n0..n0+NR, k0..k0+KC] 打成 (KC×NR) 行主
+                #[inline(always)]
+                unsafe fn pack_b_panel<T: Copy>(
+                    b_nt: *const T, // [N×K] 行主
+                    ldb_row: usize, // = K
+                    n0: usize,      // 本 NR 块在 N 维起点
+                    k0: usize,      // 本 KC 块在 K 维起点
+                    kc: usize,      // KC
+                    nr: usize,      // NR
+                    out: *mut T,    // 输出面板
+                ) {
+                    for p in 0..kc {
+                        let src_col = k0 + p; // K 维
+                        let dst_row = out.add(p * nr); // 面板第 p 行
+                        for lane in 0..nr {
+                            let j = n0 + lane; // N 维
+                            let src = b_nt.add(j * ldb_row + src_col); // b_nt[j, src_col]
+                            *dst_row.add(lane) = *src;
+                        }
+                    }
+                }
+
+                for t in tb..te {
+                    let tm = t / tiles_n;
+                    let tn = t % tiles_n;
+                    let m0 = tm * mb;
+                    let n0 = tn * nb;
+
+                    let m_blk = (m - m0).min(mb);
+                    let n_blk = (n - n0).min(nb);
+                    debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
+
+                    // KC 循环（整除）
+                    let mut k0 = 0;
+                    while k0 < k {
+                        // NB 内分 NR 小块
+                        let mut nt = 0;
+                        while nt < n_blk {
+                            // 打一块 (KC×NR) 面板，复用给下面所有 MR 行组
+                            pack_b_panel::<T>(
+                                b_nt_ptr,
+                                ldb_row,
+                                n0 + nt,
+                                k0,
+                                kc,
+                                nr,
+                                b_panel.as_mut_ptr(),
+                            );
+
+                            // M 方向按 MR 行组：整块走微核
+                            let mut mi = 0;
+                            while mi < m_blk {
+                                let a_tile = a_base.add((m0 + mi) * lda + k0); // A[(m0+mi), k0]
+                                let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt)); // C[(m0+mi), (n0+nt)]
+                                                                                      // 微核：内部对 k in 0..KC 广播 A 的3个标量，load b_panel[k,*] 做 FMA，+= 写回 C
+                                self.compute(a_tile, b_panel.as_ptr(), c_tile);
+                                mi += mr;
+                            }
+
+                            nt += nr;
+                        }
+                        k0 += kc;
+                    }
+                }
+            }
         }
-        let b_chunk_num = self.params.b_row / self.params.b_row_step_macro;
-        if let Some((begin, end)) = assign(position_interval * a_chunk_num * b_chunk_num, cpu_num, thread_id)
-        {
-            //  [sequence_chunk_size, batch_size, hidden_size]
-            let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
-                          let ptr1 = if self.output_to_kv {
-        self.ptr1.ptr.add(position_begin * max_stride * self.head_size)
-                } else {
-                    self.ptr1.ptr
-                };
-            let mut input_ptr2 = self.ptr2.ptr;
-            let mut output_ptr = self.output_ptr.ptr;
-        }*/
     }
 }
 
@@ -208,418 +302,106 @@ impl MatlMulTrait<f32> for MatMul<f32> {
 }
 
 #[cfg(test)]
-mod tests {
+mod innteg_tests {
     use super::*;
-    // use std::thread;
+    use std::arch::is_x86_feature_detected;
+    use std::f16;
 
-    // use super::super::chunk_matmul::chunk_matmul;
-
-    #[test]
-    fn test_f32_chunk() {
-        let sequence_chunk_size = 8;
-        let batch_size = 128;
-        let a_row = batch_size;
-        let b_row = 256;
-        let column = 256;
-        let a_row_step_macro = 32;
-        let b_row_step_macro = 32;
-        let column_step_macro = 64;
-        let a_row_step_micro = 8;
-        let b_row_step_micro = 8;
-
-        let mut a = vec![0.0; a_row * column];
-        let b = vec![1.0; b_row * column];
-        // lay data into a portion of matrix a
-        // fill the first batch_size rows with 1
-        for i in 0..batch_size {
-            for j in 0..column {
-                a[i * column + j] = 1.0;
-            }
-        }
-        let mut c = vec![0.0; a_row * b_row];
-        let mut expected = vec![0.0; a_row * b_row];
-        // calculate expected using the naive method
-        for i in 0..batch_size {
-            for j in 0..b_row {
-                for k in 0..column {
-                    expected[i * b_row + j] += a[i * column + k] * b[j * column + k];
-                }
-            }
-        }
-
-        // initialize the params
-        let params: MatMulParams = MatMulParams {
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-        };
-        let mut operator = MatMul::<f32>::new(
-            a.as_ptr(),
-            b.as_ptr(),
-            c.as_mut_ptr(),
-            // sequence_chunk_size,
-            false,
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-        );
-        let thread_num: usize = num_cpus::get();
-
-        for i in 0..thread_num {
-            // println!("{}", i);
-            operator.run(0, sequence_chunk_size, batch_size, thread_num, i);
-        }
-
-
-        // assert_eq!(c, expected);
-
-        // print the result
-        for i in 0..a_row {
-            for j in 0..b_row {
-                //print!("{:?} ", c[i * b_row + j]);
-            }
-            //println!();
-        }
+    #[inline]
+    fn f16v(v: f32) -> f16 {
+        let h = half::f16::from_f32(v);
+        f16::from_bits(h.to_bits())
+    }
+    #[inline]
+    fn to_f32(x: f16) -> f32 {
+        let h = half::f16::from_bits(x.to_bits());
+        h.to_f32()
     }
 
-    /*
-    // test f32 runner
-    #[test]
-    fn test_f32_to_kv() {
-        let batch_size = 1;
-        let sequence_length = 8;
-        let position_index = 4;
-
-        let a_row = 128;
-        let b_row = 256;
-        let column = 256;
-        let a_row_step_macro = 32;
-        let b_row_step_macro = 32;
-        let column_step_macro = 64;
-        let a_row_step_micro = 8;
-        let b_row_step_micro = 8;
-
-        let mut a = vec![0.0; a_row * column];
-        let b = vec![1.0; b_row * column];
-        // lay data into a portion of matrix a
-        // fill the first batch_size rows with 1
-        for i in 0..batch_size {
-            for j in 0..column {
-                a[i * column + j] = 1.0;
-            }
-        }
-        let mut c = vec![0.0; sequence_length * a_row * b_row];
-        let mut expected = vec![0.0; sequence_length * a_row * b_row];
-        let offset = a_row * b_row * position_index;
-        // calculate expected using the naive method
-        for i in 0..batch_size {
-            for j in 0..b_row {
-                for k in 0..column {
-                    expected[i * b_row + j + offset] += a[i * column + k] * b[j * column + k];
-                }
-            }
-        }
-
-        // initialize the params
-        let params: MatMulParams = MatMulParams {
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-        };
-
-        // get the tasks
-        let chunks = chunk_matmul(a.as_ptr(), b.as_ptr(), c.as_mut_ptr(), &params);
-        // initialize the runner and multi-threaded run
-        // create as many threads as the logical cores in the machine
-        let thread_num: usize = num_cpus::get();
-        let barrier = Barrier::new(thread_num);
-        let barrier_arc = Arc::new(barrier);
-        let mut runner = MatMul::<f32>::new(
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-            sequence_length,
-            thread_num,
-            barrier_arc,
-        );
-        runner.set_chunk(chunks);
-        let runner_arc = Arc::new(runner);
-
-        thread::scope(|s| {
-            let mut handles = Vec::with_capacity(thread_num);
-            for thread_id in (0..thread_num) {
-                let _thread_id = thread_id;
-                let runner_arc_clone = Arc::clone(&runner_arc);
-
-                let handle = s.spawn(move || {
-                    runner_arc_clone.run(batch_size, position_index, _thread_id);
-                });
-                handles.push(handle);
-            }
-            for handle in handles {
-                handle.join().unwrap();
-            }
-        });
-        assert_eq!(c, expected);
-
-        // print the result
-        for i in 0..a_row {
-            for j in 0..b_row {
-                //print!("{:?} ", c[i * b_row + j]);
-            }
-            //println!();
-        }
-    }
-    */
-
-    /*
-    // Helper function to compare two f16 arrays with a tolerance
-    fn compare_f16_arrays(arr1: &[f16], arr2: &[f16], tolerance: f32, length: usize) -> bool {
-        // tell if the first length elements in both arrays are equal within the tolerance
-        /*if arr1.len() != arr2.len() {
-            println!("length not equal");
-            return false;
-        }*/
-        for i in 0..length {
-            // let diff = (f32::from(arr1[i]) - f32::from(arr2[i])).abs();
-            let diff = (arr1[i] - arr2[i]).abs();
-            if diff > tolerance {
-                //println!("diff: {}, a: {}, b: {}", diff, arr1[i], arr2[i]);
-                return false;
-            }
+    fn all_close_f16(a: &[f16], b: &[f16], tol: f32) -> bool {
+        if a.len() != b.len() { return false; }
+        for (x, y) in a.iter().zip(b.iter()) {
+            if (to_f32(*x) - to_f32(*y)).abs() > tol { return false; }
         }
         true
     }
 
-
-    // test f16 runner
+    /// 集成测试：run 内部完成 B 的预转置 + 外层打包 + 3x32 微核
+    /// 假设整除：M%MR=0, N%NR=0, K%KC=0
+    ///
+    /// A: [M×K] 行主（全 1）
+    /// B_orig: [K×N] 行主（全 1）  ← 注意：这里传原始布局
+    /// 期望：C = A×B = K（每个元素都等于 K）
     #[test]
-    fn test_f16_runner() {
-        let batch_size = 1;
-        let a_row = 128;
-        let b_row = 128;
-        let column = 128;
-        let a_row_step_macro = 16;
-        let b_row_step_macro = 16;
-        let column_step_macro = 16;
-        let a_row_step_micro = 8;
-        let b_row_step_micro = 8;
-
-        let mut a = vec![0.0; a_row * column];
-        let b = vec![1.0; b_row * column];
-        // lay data into a portion of matrix a
-        // fill the first batch_size rows with 1
-        for i in 0..batch_size*column {
-            a[i] = 1.0;
-        }
-        // print matrix a
-        //println!("matrix a: ");
-        for i in 0..a_row {
-            for j in 0..column {
-                //print!("{:?} ", a[i * column + j]);
-            }
-            //println!();
+    fn test_run_internal_transpose_f16_m6_n64_k64() {
+        // 微核依赖 avx512fp16；没有就跳过
+        if !is_x86_feature_detected!("avx512fp16") {
+            eprintln!("Skipping: CPU lacks avx512fp16");
+            return;
         }
 
-        let mut c = vec![0.0; a_row * b_row];
-        let mut expected = vec![0.0; a_row * b_row];
-        // calculate expected using the naive method
-        for i in 0..batch_size {
-            for j in 0..b_row {
-                for k in 0..column {
-                    expected[i * b_row + j] += a[i * column + k] * b[j * column + k];
-                }
-            }
+        unsafe {
+            // ---- 维度（整除） ----
+            let m = 6usize;   // M = batch_size
+            let n = 64usize;  // N = 输出列
+            let k = 64usize;  // K = hidden_size
+
+            // ---- 分块（整除） ----
+            let mb = 6usize;   // a_row_step_macro
+            let nb = 64usize;  // b_row_step_macro
+            let kc = 64usize;  // column_step_macro
+            let mr = 3usize;   // a_row_step_micro（微核行）
+            let nr = 32usize;  // b_row_step_micro（微核列）
+
+            // ---- 构造数据 ----
+            // A: [M×K] 行主，全 1
+            let a: Vec<f16> = (0..m*k).map(|_| f16v(1.0)).collect();
+            // B_orig: [K×N] 行主，全 1   ← 传入 run 的 “原始” B
+            let b_orig: Vec<f16> = (0..k*n).map(|_| f16v(1.0)).collect();
+            // C: [M×N] 行主，初始化为 0
+            let mut c: Vec<f16> = (0..m*n).map(|_| f16v(0.0)).collect();
+
+            // ---- 参数（为什么这样填）----
+            // a_row=m, b_row=n, column=k  对应本次 GEMM 的 M/N/K
+            // 宏核：MB/NB/KC；微核：MR=3/NR=32（和微核实现一致）
+            let params = MatMulParams {
+                a_row: m,
+                b_row: n,
+                column: k,
+                a_row_step_macro: mb,
+                b_row_step_macro: nb,
+                column_step_macro: kc,
+                a_row_step_micro: mr,
+                b_row_step_micro: nr,
+            };
+
+            // ---- 构造算子 ----
+            let op = MatMul::<f16>::new(
+                a.as_ptr(),          // A[M×K]
+                b_orig.as_ptr(),     // B_orig[K×N]（原始布局！）
+                c.as_mut_ptr(),      // C[M×N]
+                false,               // output_to_kv: 本测试不用
+                params.a_row,
+                params.b_row,
+                params.column,
+                params.a_row_step_macro,
+                params.b_row_step_macro,
+                params.column_step_macro,
+                params.a_row_step_micro,
+                params.b_row_step_micro,
+            );
+
+            // ---- 执行（单线程，简化路径）----
+            op.run(0, 1, m, 1, 0);
+
+            // ---- 验证：C 每个元素都应为 K ----
+            let expected: Vec<f16> = (0..m*n).map(|_| f16v(k as f32)).collect();
+            assert!(
+                all_close_f16(&c, &expected, 1e-3),
+                "C != {}, first few = {:?}",
+                k,
+                c.iter().take(8).map(|x| to_f32(*x)).collect::<Vec<_>>()
+            );
         }
-
-        // initialize the params
-        let params: MatMulParams = MatMulParams {
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-        };
-        // get the tasks
-        let chunks = chunk_matmul(
-            a.as_ptr(),
-            b.as_ptr(),
-            c.as_mut_ptr(),
-            &params,
-        );
-        // initialize the runner and multi-threaded run
-        // create as many threads as the logical cores in the machine
-        let thread_num: usize = num_cpus::get();
-        let barrier = Barrier::new(thread_num);
-        let barrier_arc = Arc::new(barrier);
-        let mut runner = MatMul::<f16>::new(
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-            //chunks,
-            1,
-            thread_num,
-            barrier_arc,
-            // place total thread number here
-        );
-        // let runner_arc = Arc::new(runner);
-        runner.set_chunk(chunks);
-        thread::scope(|s| {
-            let mut handles = Vec::with_capacity(thread_num);
-            for thread_id in (0..thread_num) {
-                let _thread_id = thread_id;
-                // let runner_arc_clone = Arc::clone(&runner_arc);
-                let _runner = &runner;
-                let handle = s.spawn(move || {
-                    _runner.run(batch_size, thread_num, _thread_id);
-                });
-                handles.push(handle);
-            }
-            for handle in handles {
-                handle.join().unwrap();
-            }
-        });
-        // print the result
-        for i in 0..batch_size {
-            for j in 0..b_row {
-                //print!("{:?} ", c[i * b_row + j]);
-            }
-            //println!();
-        }
-
-        assert!(compare_f16_arrays(&c, &expected, 1e-3, batch_size * b_row));
-
-
     }
-
-    // test f32 runner
-    #[test]
-    fn test_f32_runner() {
-        let batch_size = 30;
-        let a_row = 128;
-        let b_row = 256;
-        let column = 256;
-        let a_row_step_macro = 32;
-        let b_row_step_macro = 32;
-        let column_step_macro = 64;
-        let a_row_step_micro = 8;
-        let b_row_step_micro = 8;
-
-        let mut a = vec![0.0; a_row * column];
-        let b = vec![1.0; b_row * column];
-        // lay data into a portion of matrix a
-        // fill the first batch_size rows with 1
-        for i in 0..batch_size {
-            for j in 0..column {
-                a[i * column + j] = 1.0;
-            }
-        }
-        let mut c = vec![0.0; a_row * b_row];
-        let mut expected = vec![0.0; a_row * b_row];
-        // calculate expected using the naive method
-        for i in 0..batch_size {
-            for j in 0..b_row {
-                for k in 0..column {
-                    expected[i * b_row + j] += a[i * column + k] * b[j * column + k];
-                }
-            }
-        }
-
-        // initialize the params
-        let params: MatMulParams = MatMulParams {
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-        };
-        // get the tasks
-        let chunks = chunk_matmul(
-            a.as_ptr(),
-
-            b.as_ptr(),
-
-            c.as_mut_ptr(),
-
-            &params,
-        );
-        // initialize the runner and multi-threaded run
-        // create as many threads as the logical cores in the machine
-        let thread_num: usize = num_cpus::get();
-        let barrier = Barrier::new(thread_num);
-        let barrier_arc = Arc::new(barrier);
-        let mut runner = MatMul::<f32>::new(
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-            1,
-            thread_num,
-            barrier_arc,
-        );
-        runner.set_chunk(chunks);
-        let runner_arc = Arc::new(runner);
-
-        thread::scope(|s| {
-            let mut handles = Vec::with_capacity(thread_num);
-            for thread_id in (0..thread_num) {
-                let _thread_id = thread_id;
-                let runner_arc_clone = Arc::clone(&runner_arc);
-
-                let handle = s.spawn(move || {
-                    runner_arc_clone.run(batch_size, thread_num, _thread_id);
-                });
-                handles.push(handle);
-            }
-            for handle in handles {
-                handle.join().unwrap();
-            }
-        });
-        assert_eq!(c, expected);
-
-        // print the result
-        for i in 0..a_row {
-            for j in 0..b_row {
-                //print!("{:?} ", c[i * b_row + j]);
-            }
-            //println!();
-        }
-    } */
-
-
 }
