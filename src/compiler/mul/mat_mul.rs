@@ -78,11 +78,11 @@ where
 
     pub fn run(
         &self,
-        _position_index: usize,    // 本版 seq_len=1，不用
-        _position_interval: usize, // 本版 seq_len=1，不用
-        batch_size: usize,         // 本次 M（行数）
-        cpu_num: usize,            // 线程总数
-        thread_id: usize,          // 本线程 id
+        position_index: usize,    // 序列起点 s_begin
+        position_interval: usize, // 要处理的序列数（即 sequence_length 的这次切片）
+        batch_size: usize,        // M
+        cpu_num: usize,           // 线程总数
+        thread_id: usize,         // 本线程 id
     ) {
         unsafe {
             // ----- 维度 -----
@@ -94,8 +94,8 @@ where
             let mb = self.params.a_row_step_macro.max(1); // MB
             let nb = self.params.b_row_step_macro.max(1); // NB
             let kc = self.params.column_step_macro.max(1); // KC
-            let mr = self.params.a_row_step_micro.max(1); // MR (应=3)
-            let nr = self.params.b_row_step_micro.max(1); // NR (应=32)
+            let mr = self.params.a_row_step_micro.max(1); // MR (建议=3)
+            let nr = self.params.b_row_step_micro.max(1); // NR (建议=32)
 
             // 整除假设：无需尾块分支
             debug_assert!(m % mr == 0, "要求 M 能被 MR 整除");
@@ -103,14 +103,22 @@ where
             debug_assert!(k % kc == 0, "要求 K 能被 KC 整除");
 
             // ----- 基址/行距（元素计）-----
-            // A: [M×K] 行主；B_orig: [K×N] 行主；C: [M×N] 行主
+            // A: [S×M×K] 行主；B_orig: [K×N] 行主；C: [S×M×N] 行主
             let a_base = self.ptr1.ptr;
             let b_orig = self.ptr2.ptr; // 原始 B: [K×N] 行主
             let c_base = self.output_ptr.ptr;
             let lda = k; // A 每行跨度
             let ldc = n; // C 每行跨度
 
-            // 转置B矩阵： [K×N] -> [N×K] 行主 =====
+            // =====序列范围与 stride =====
+            let s_begin = position_index;
+            let s_end = position_index + position_interval;
+            let s_len = s_end - s_begin;
+
+            let a_seq_stride = m * k; // A[s+1] 相对 A[s] 的偏移
+            let c_seq_stride = m * n; // C[s+1] 相对 C[s] 的偏移
+
+            // ===== 每线程：把 B[K×N] → B_nt[N×K] 转置一次 =====
             // b_nt[j, k] = b_orig[k, j]
             let mut b_nt: Vec<T> = vec![T::default(); n * k];
             for kk in 0..k {
@@ -119,16 +127,16 @@ where
                     *b_nt.as_mut_ptr().add(jj * k + kk) = *src_row.add(jj);
                 }
             }
-            let b_nt_ptr = b_nt.as_ptr(); // 转置后的基址（[N×K] 行主）
+            let b_nt_ptr = b_nt.as_ptr(); // 转置后基址（[N×K] 行主）
             let ldb_row = k; // b_nt 的行距（=K）
 
-            // ===== ② 线程划分：按 (MB×NB) 宏块均分 =====
+            // ===== 任务切分：S × tiles_m × tiles_n =====
             let tiles_m = (m + mb - 1) / mb;
             let tiles_n = (n + nb - 1) / nb;
-            let total_tiles = tiles_m * tiles_n;
+            let tiles_sn = s_len * tiles_m * tiles_n;
 
-            if let Some((tb, te)) = assign(total_tiles, cpu_num, thread_id) {// 目前还用的统一的assign 处理完之后根据连续性优化
-                // 线程私有 B 面板缓冲：KC×NR 因为对A 广播 B这边还是要打面板 即使提前转置
+            if let Some((tb, te)) = assign(tiles_sn, cpu_num, thread_id) {
+                // 线程私有：KC×NR 面板缓存
                 let mut b_panel: Vec<T> = vec![T::default(); kc * nr];
 
                 // 打包函数：把 b_nt[n0..n0+NR, k0..k0+KC] 打成 (KC×NR) 行主
@@ -153,15 +161,26 @@ where
                     }
                 }
 
+                // 线性任务号 t ∈ [tb, te) → (s, tm, tn)
                 for t in tb..te {
-                    let tm = t / tiles_n;
-                    let tn = t % tiles_n;
+                    let t_in = t; // [0, s_len*tiles_m*tiles_n)
+                    let s_rel = t_in / (tiles_m * tiles_n);
+                    let rem = t_in % (tiles_m * tiles_n);
+                    let tm = rem / tiles_n;
+                    let tn = rem % tiles_n;
+
+                    let s = s_begin + s_rel;
                     let m0 = tm * mb;
                     let n0 = tn * nb;
 
+                    // 当前宏块尺寸（和整除假设一致，无 remainder）
                     let m_blk = (m - m0).min(mb);
                     let n_blk = (n - n0).min(nb);
                     debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
+
+                    // 本序列的 A/C 基址
+                    let a_base_s = a_base.add(s * a_seq_stride);
+                    let c_base_s = c_base.add(s * c_seq_stride);
 
                     // KC 循环（整除）
                     let mut k0 = 0;
@@ -183,9 +202,9 @@ where
                             // M 方向按 MR 行组：整块走微核
                             let mut mi = 0;
                             while mi < m_blk {
-                                let a_tile = a_base.add((m0 + mi) * lda + k0); // A[(m0+mi), k0]
-                                let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt)); // C[(m0+mi), (n0+nt)]
-                                                                                      // 微核：内部对 k in 0..KC 广播 A 的3个标量，load b_panel[k,*] 做 FMA，+= 写回 C
+                                let a_tile = a_base_s.add((m0 + mi) * lda + k0); // A[(s,m0+mi), k0]
+                                let c_tile = c_base_s.add((m0 + mi) * ldc + (n0 + nt)); // C[(s,m0+mi), (n0+nt)]
+                                                                                        // 微核：内部对 k in 0..KC 广播 A 的3个标量，load b_panel[k,*] 做 FMA，+= 写回 C
                                 self.compute(a_tile, b_panel.as_ptr(), c_tile);
                                 mi += mr;
                             }
@@ -319,9 +338,13 @@ mod innteg_tests {
     }
 
     fn all_close_f16(a: &[f16], b: &[f16], tol: f32) -> bool {
-        if a.len() != b.len() { return false; }
+        if a.len() != b.len() {
+            return false;
+        }
         for (x, y) in a.iter().zip(b.iter()) {
-            if (to_f32(*x) - to_f32(*y)).abs() > tol { return false; }
+            if (to_f32(*x) - to_f32(*y)).abs() > tol {
+                return false;
+            }
         }
         true
     }
@@ -342,24 +365,24 @@ mod innteg_tests {
 
         unsafe {
             // ---- 维度（整除） ----
-            let m = 6usize;   // M = batch_size
-            let n = 64usize;  // N = 输出列
-            let k = 64usize;  // K = hidden_size
+            let m = 6usize; // M = batch_size
+            let n = 64usize; // N = 输出列
+            let k = 64usize; // K = hidden_size
 
             // ---- 分块（整除） ----
-            let mb = 6usize;   // a_row_step_macro
-            let nb = 64usize;  // b_row_step_macro
-            let kc = 64usize;  // column_step_macro
-            let mr = 3usize;   // a_row_step_micro（微核行）
-            let nr = 32usize;  // b_row_step_micro（微核列）
+            let mb = 6usize; // a_row_step_macro
+            let nb = 64usize; // b_row_step_macro
+            let kc = 64usize; // column_step_macro
+            let mr = 3usize; // a_row_step_micro（微核行）
+            let nr = 32usize; // b_row_step_micro（微核列）
 
             // ---- 构造数据 ----
             // A: [M×K] 行主，全 1
-            let a: Vec<f16> = (0..m*k).map(|_| f16v(1.0)).collect();
+            let a: Vec<f16> = (0..m * k).map(|_| f16v(1.0)).collect();
             // B_orig: [K×N] 行主，全 1   ← 传入 run 的 “原始” B
-            let b_orig: Vec<f16> = (0..k*n).map(|_| f16v(1.0)).collect();
+            let b_orig: Vec<f16> = (0..k * n).map(|_| f16v(1.0)).collect();
             // C: [M×N] 行主，初始化为 0
-            let mut c: Vec<f16> = (0..m*n).map(|_| f16v(0.0)).collect();
+            let mut c: Vec<f16> = (0..m * n).map(|_| f16v(0.0)).collect();
 
             // ---- 参数（为什么这样填）----
             // a_row=m, b_row=n, column=k  对应本次 GEMM 的 M/N/K
@@ -377,10 +400,10 @@ mod innteg_tests {
 
             // ---- 构造算子 ----
             let op = MatMul::<f16>::new(
-                a.as_ptr(),          // A[M×K]
-                b_orig.as_ptr(),     // B_orig[K×N]（原始布局！）
-                c.as_mut_ptr(),      // C[M×N]
-                false,               // output_to_kv: 本测试不用
+                a.as_ptr(),      // A[M×K]
+                b_orig.as_ptr(), // B_orig[K×N]（原始布局！）
+                c.as_mut_ptr(),  // C[M×N]
+                false,           // output_to_kv: 本测试不用
                 params.a_row,
                 params.b_row,
                 params.column,
@@ -395,13 +418,156 @@ mod innteg_tests {
             op.run(0, 1, m, 1, 0);
 
             // ---- 验证：C 每个元素都应为 K ----
-            let expected: Vec<f16> = (0..m*n).map(|_| f16v(k as f32)).collect();
+            let expected: Vec<f16> = (0..m * n).map(|_| f16v(k as f32)).collect();
             assert!(
                 all_close_f16(&c, &expected, 1e-3),
                 "C != {}, first few = {:?}",
                 k,
                 c.iter().take(8).map(|x| to_f32(*x)).collect::<Vec<_>>()
             );
+        }
+    }
+
+    mod integ_tests_seq {
+        use super::*;
+        use std::arch::is_x86_feature_detected;
+        use std::f16;
+
+        #[inline]
+        fn f16v(v: f32) -> f16 {
+            let h = half::f16::from_f32(v);
+            f16::from_bits(h.to_bits())
+        }
+        #[inline]
+        fn to_f32(x: f16) -> f32 {
+            let h = half::f16::from_bits(x.to_bits());
+            h.to_f32()
+        }
+
+        fn all_close_f16(a: &[f16], b: &[f16], tol: f32) -> bool {
+            if a.len() != b.len() {
+                return false;
+            }
+            for (x, y) in a.iter().zip(b.iter()) {
+                if (to_f32(*x) - to_f32(*y)).abs() > tol {
+                    return false;
+                }
+            }
+            true
+        }
+
+        /// 集成测试（sequence > 1）：
+        /// - run 内部会把 B[K×N] 预转置为 B_nt[N×K]，然后做三分块 + 打 KC×NR 面板 + 3x32 微核；
+        /// - 假设整除：M%MR=0, N%NR=0, K%KC=0。
+        ///
+        /// 设置：
+        ///   S_total = 4；只处理 [position_index=1, position_interval=2] → 序列 s=1 和 s=2。
+        ///   M=6, N=64, K=64；MB=6, NB=64, KC=64；MR=3, NR=32。
+        /// 期望：
+        ///   C[s=1] 与 C[s=2] 的每个元素 == K；
+        ///   C[s=0] 与 C[s=3] 仍为 0。
+        #[test]
+        fn test_run_internal_transpose_f16_seqlen_gt1_slice() {
+            if !is_x86_feature_detected!("avx512fp16") {
+                eprintln!("Skipping: CPU lacks avx512fp16");
+                return;
+            }
+
+            unsafe {
+                // ---- 维度（整除） ----
+                let s_total = 4usize; // 总序列
+                let m = 6usize; // M = batch_size
+                let n = 64usize; // N = 输出列
+                let k = 64usize; // K = hidden_size
+
+                // ---- 分块（整除） ----
+                let mb = 6usize; // a_row_step_macro
+                let nb = 64usize; // b_row_step_macro
+                let kc = 64usize; // column_step_macro
+                let mr = 3usize; // a_row_step_micro（微核行）
+                let nr = 32usize; // b_row_step_micro（微核列）
+
+                // ---- 序列切片 ----
+                let position_index = 1usize; // 只处理 s=1 开始
+                let position_interval = 2usize; // 处理 s=1,2 两帧
+
+                // ---- 构造数据 ----
+                // A: [S×M×K] 行主，全 1
+                let a_len = s_total * m * k;
+                let a: Vec<f16> = (0..a_len).map(|_| f16v(1.0)).collect();
+
+                // B_orig: [K×N] 行主，全 1（run 内部会转置成 [N×K]）
+                let b_orig_len = k * n;
+                let b_orig: Vec<f16> = (0..b_orig_len).map(|_| f16v(1.0)).collect();
+
+                // C: [S×M×N] 行主，初始化为 0
+                let c_len = s_total * m * n;
+                let mut c: Vec<f16> = (0..c_len).map(|_| f16v(0.0)).collect();
+
+                // ---- 参数（M/N/K 与分块、微核）----
+                let params = MatMulParams {
+                    a_row: m,
+                    b_row: n,
+                    column: k,
+                    a_row_step_macro: mb,
+                    b_row_step_macro: nb,
+                    column_step_macro: kc,
+                    a_row_step_micro: mr,
+                    b_row_step_micro: nr,
+                };
+
+                // ---- 构造算子（ptr2 仍传原始 B[K×N]，run 里会转置）----
+                let op = MatMul::<f16>::new(
+                    a.as_ptr(),      // A[S×M×K]
+                    b_orig.as_ptr(), // B_orig[K×N]（原始布局！）
+                    c.as_mut_ptr(),  // C[S×M×N]
+                    false,           // output_to_kv: 本测试不用
+                    params.a_row,
+                    params.b_row,
+                    params.column,
+                    params.a_row_step_macro,
+                    params.b_row_step_macro,
+                    params.column_step_macro,
+                    params.a_row_step_micro,
+                    params.b_row_step_micro,
+                );
+
+                // ---- 执行（单线程，简化验证路径）----
+                op.run(position_index, position_interval, m, 1, 0);
+
+                // ---- 验证 ----
+                let a_seq_stride = m * k;
+                let c_seq_stride = m * n;
+
+                // helper：取某个序列的 C 视图切片
+                let view_c_seq = |s: usize| -> &[f16] {
+                    let off = s * c_seq_stride;
+                    &c[off..off + c_seq_stride]
+                };
+
+                // s=0 未处理，应该全 0
+                assert!(
+                    view_c_seq(0).iter().all(|&x| to_f32(x) == 0.0),
+                    "C[s=0] should remain zeros"
+                );
+
+                // s=1、s=2 被处理，应该全部等于 K
+                let expected_block: Vec<f16> = (0..(m * n)).map(|_| f16v(k as f32)).collect();
+                assert!(
+                    all_close_f16(view_c_seq(1), &expected_block, 1e-3),
+                    "C[s=1] != K"
+                );
+                assert!(
+                    all_close_f16(view_c_seq(2), &expected_block, 1e-3),
+                    "C[s=2] != K"
+                );
+
+                // s=3 未处理，应该全 0
+                assert!(
+                    view_c_seq(3).iter().all(|&x| to_f32(x) == 0.0),
+                    "C[s=3] should remain zeros"
+                );
+            }
         }
     }
 }
