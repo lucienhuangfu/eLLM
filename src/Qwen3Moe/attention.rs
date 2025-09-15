@@ -25,9 +25,9 @@ pub struct Attention<T> {
     attention_dropout: T,
     is_causal: bool,
     layer_idx: usize,
-    q_proj: Linear<T>,
-    k_proj: Linear<T>,
-    v_proj: Linear<T>,
+    q_weight: Tensor<T>,
+    k_weight: Tensor<T>,
+    v_weight: Tensor<T>,
     o_proj: Linear<T>,
     scope_name: String,
     cache: Rc<RefCell<Cache<T>>>,
@@ -106,6 +106,16 @@ where
     ) -> Tensor<T> {
         unsafe {
             // mul_rms_complex 合并operators
+
+            hidden_states.matmul_rms_complex(
+                &self.q_weight,
+                &self.k_weight,
+                &self.v_weight,
+                position_embedding,
+                self.scaling,
+                format!("{}.attention_tensor", self.scope_name),
+            );
+
 
             // [sequence_chunk_size, batch_size, kv_hidden_size]
             let value_states = self

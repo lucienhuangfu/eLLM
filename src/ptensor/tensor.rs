@@ -261,6 +261,65 @@ where
         output_tensor
     }
 
+    pub fn matmul3_rms_complex(
+        &self,
+        query_weight: &Tensor<T>,
+        key_weight: &Tensor<T>,
+        value_weight: &Tensor<T>,
+        position_embedding: &Tensor<T>,
+        sequence_length: usize,
+        params: MatMulParams,
+        tensor_name: String,
+    ) -> Self {
+
+        let query_states = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], query_weight.shape[0]],
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let key_states = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], key_weight.shape[0]],
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+
+        let value_states = Tensor::from_cache(
+            vec![sequence_length, self.shape[1], value_weight.shape[0]],
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::MatMul3(MatMul::new(
+            self.data,
+            query_weight.data,
+            query_states.data,
+            key_weight.data,
+            key_states.data,
+            value_weight.data,
+            value_states.data,
+            position_embedding.data,
+            a_row,
+                      column,
+    b_q_row,
+            b_k_row,
+            b_v_row,
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        (query_states, key_states, value_states)
+    }
+
+
     pub fn attention(
         &self,
         k_tensor: &Tensor<T>,
