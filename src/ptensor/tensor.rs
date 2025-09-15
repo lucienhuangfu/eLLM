@@ -17,6 +17,7 @@ use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::mul::attention_mul::AttentionMul;
 use super::super::compiler::mul::matmul::MatMul;
+use super::super::compiler::mul::matmul3::MatMul3;
 use super::super::compiler::operator::Operator;
 use super::super::compiler::zip_map::add_zip::AddZipMap;
 use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
@@ -268,10 +269,10 @@ where
         value_weight: &Tensor<T>,
         position_embedding: &Tensor<T>,
         sequence_length: usize,
+        head_dim: usize,
         params: MatMulParams,
         tensor_name: String,
     ) -> Self {
-
         let query_states = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], query_weight.shape[0]],
             tensor_name,
@@ -286,7 +287,6 @@ where
             self.operator_queue.clone(),
         );
 
-
         let value_states = Tensor::from_cache(
             vec![sequence_length, self.shape[1], value_weight.shape[0]],
             tensor_name,
@@ -294,7 +294,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMul3(MatMul::new(
+        let operator = Operator::MatMul3(MatMul3::new(
             self.data,
             query_weight.data,
             query_states.data,
@@ -303,11 +303,12 @@ where
             value_weight.data,
             value_states.data,
             position_embedding.data,
-            a_row,
-                      column,
-    b_q_row,
-            b_k_row,
-            b_v_row,
+            head_dim,
+            self.shape[2],
+            self.shape[3],
+            query_weight.shape[0],
+            key_weight.shape[0],
+            value_weight.shape[0],
             params.a_row_step_macro,
             params.b_row_step_macro,
             params.column_step_macro,
@@ -318,7 +319,6 @@ where
         self.operator_queue.borrow_mut().push(operator);
         (query_states, key_states, value_states)
     }
-
 
     pub fn attention(
         &self,
@@ -781,16 +781,20 @@ mod test {
         let sequence_chunk_size = 1;
         let batch_size = 10; // 每次批处理 10 个元素
         let hidden_size = 18;
-        let shape = vec![sequence_chunk_size,batch_size, hidden_size];
+        let shape = vec![sequence_chunk_size, batch_size, hidden_size];
         // let strides = vec![hidden_size, 1]; // 对应的步长
-                                            // let length = shape.iter().product(); // 总元素数量
+        // let length = shape.iter().product(); // 总元素数量
 
         let position_index = 0; // 起始位置，根据实际情况可以修改
         let cpu_num = num_cpus::get();
         let length = shape.iter().product();
         // 创建模拟的输入和输出数据
         //let input_data: Vec<f32> = (0..length).map(|x| x as f32).collect();
-        let input_data: Vec<f32> = (1i32..=18i32).cycle().take(length).map(|x| x as f32).collect();
+        let input_data: Vec<f32> = (1i32..=18i32)
+            .cycle()
+            .take(length)
+            .map(|x| x as f32)
+            .collect();
 
         let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
         let mut operator_queue: Vec<Operator<f32>> = Vec::new();
