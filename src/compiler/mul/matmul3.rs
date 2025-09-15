@@ -1,4 +1,3 @@
-
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
@@ -15,57 +14,62 @@ use super::mul_trait::MatMulTrait;
 // this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
 pub struct MatMul<T> {
-    ptr1: ConstPtr<T>,
-    ptr2: ConstPtr<T>,
-    output_ptr: MutPtr<T>,
-    // sequence_length: usize,
-    output_to_kv: bool,
+    hidden_ptr: ConstPtr<T>,
+    q_weight_ptr: ConstPtr<T>,
+    q_state_ptr: ConstPtr<T>,
+    k_weight_ptr: ConstPtr<T>,
+    k_state_ptr: ConstPtr<T>,
+    v_weight_ptr: ConstPtr<T>,
+    v_state_ptr: ConstPtr<T>,
+    a_h_row: usize,
+    col: usize,
+    b_q_row: usize,
+    b_k_row: usize,
+    b_v_row: usize,
     pub params: MatMulParams,
     _marker: PhantomData<T>,
-    // sequence_stride: usize,
-    // batch_size: usize,
-    // hidden_size: usize,
 }
 impl<T> MatMul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
     pub fn new(
-        ptr1: *const T,
-        ptr2: *const T,
-        output_ptr: *mut T,
-        // sequence_length: usize,
-        output_to_kv: bool,
-
-        // these are the parameters of the matrix multiplication, this matrix is a largest possible one
-        // for later matrix multiplication, the actual size of the matrix will be smaller
-        // so this is reserving enough spaces in memory, and later lay the data into a small portion of it
-        // and as we compute, we just access and calculate with the data in the small portion
-        // this is like we construct a big playground, and we only play in a small or big portion of it, depending on how many people there are
-        // so these dimensions are the dimensions of the largest possible matrix
-        a_row: usize,
-        b_row: usize,
-        column: usize,
-        // these are the sizes of the macro kernels
-        // how they are determined is not clear
+        hidden_ptr: *const T,
+        q_weight_ptr: *const T,
+        q_state_ptr: *const T,
+        k_weight_ptr: *const T,
+        k_state_ptr: *const T,
+        v_weight_ptr: *const T,
+        v_state_ptr: *const T,
+        a_h_row: usize,
+        col: usize,
+        b_q_row: usize,
+        b_k_row: usize,
+        b_v_row: usize,
         a_row_step_macro: usize,
         b_row_step_macro: usize,
         column_step_macro: usize,
-        // these are the sizes of the micro kernels
-        // how they are determined is not clear
         a_row_step_micro: usize,
         b_row_step_micro: usize,
     ) -> Self {
         Self {
-            ptr1: ConstPtr { ptr: ptr1 },
-            ptr2: ConstPtr { ptr: ptr2 },
-            output_ptr: MutPtr { ptr: output_ptr },
-            // sequence_length: sequence_length,
-            output_to_kv: output_to_kv,
+            hidden_ptr: ConstPtr { ptr: hidden_ptr },
+            q_weight_ptr: ConstPtr { ptr: q_weight_ptr },
+            q_state_ptr: ConstPtr { ptr: q_state_ptr },
+            k_weight_ptr: ConstPtr { ptr: k_weight_ptr },
+            k_state_ptr: ConstPtr { ptr: k_state_ptr },
+            v_weight_ptr: ConstPtr { ptr: v_weight_ptr },
+            v_state_ptr: ConstPtr { ptr: v_state_ptr },
+            a_h_row: a_h_row,
+            col: col,
+            b_q_row: b_q_row,
+            b_k_row: b_k_row,
+            b_v_row: b_v_row,
+
             params: MatMulParams {
-                a_row,
-                b_row,
-                column,
+                // a_row,
+                // b_row,
+                // column,
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,
@@ -85,24 +89,11 @@ where
         thread_id: usize,
     ) {
 
-        /*
-        let (mut a_chunk_num, remainder) = (self.params.a_row / self.params.a_row_step_macro, self.params.a_row % self.params.a_row_step_macro);
-        if remainder > 0 {
-            a_chunk_num += 1;
-        }
-        let b_chunk_num = self.params.b_row / self.params.b_row_step_macro;
-        if let Some((begin, end)) = assign(position_interval * a_chunk_num * b_chunk_num, cpu_num, thread_id)
-        {
-            //  [sequence_chunk_size, batch_size, hidden_size]
-            let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
-                          let ptr1 = if self.output_to_kv {
-        self.ptr1.ptr.add(position_begin * max_stride * self.head_size)
-                } else {
-                    self.ptr1.ptr
-                };
-            let mut input_ptr2 = self.ptr2.ptr;
-            let mut output_ptr = self.output_ptr.ptr;
-        }*/
+        // value: linear -> norm -> complex
+
+        // key: linear
+
+        // query: linear -> norm -> complex
     }
 }
 
@@ -279,7 +270,6 @@ mod tests {
             // println!("{}", i);
             operator.run(0, sequence_chunk_size, batch_size, thread_num, i);
         }
-
 
         // assert_eq!(c, expected);
 
@@ -620,6 +610,4 @@ mod tests {
             //println!();
         }
     } */
-
-
 }

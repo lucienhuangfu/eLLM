@@ -16,7 +16,7 @@ use super::mul_trait::MatMul3Trait;
 pub struct MatMul3<T> {
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
-    ptr3: ConstPtr<T>,
+    // ptr3: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     pub params: MatMulParams,
     _marker: PhantomData<T>,
@@ -28,7 +28,7 @@ where
     pub fn new(
         ptr1: *const T,
         ptr2: *const T,
-        ptr3: *const T,
+        // ptr3: *const T,
         output_ptr: *mut T,
         // sequence_length: usize,
         // output_to_kv: bool,
@@ -55,7 +55,7 @@ where
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             ptr2: ConstPtr { ptr: ptr2 },
-            ptr3: ConstPtr { ptr: ptr3 },
+            // ptr3: ConstPtr { ptr: ptr3 },
             output_ptr: MutPtr { ptr: output_ptr },
             // sequence_length: sequence_length,
             // output_to_kv: output_to_kv,
