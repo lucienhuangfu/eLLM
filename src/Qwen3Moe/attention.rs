@@ -106,32 +106,15 @@ where
     ) -> Tensor<T> {
         unsafe {
             // mul_rms_complex 合并operators
-
-            hidden_states.matmul_rms_complex(
+            // [sequence_chunk_size, batch_size, hidden_size]
+            // [sequence_chunk_size, batch_size, kv_hidden_size]
+            let (query_states, key_states, value_states) = hidden_states.matmul_rms_complex(
                 &self.q_weight,
                 &self.k_weight,
                 &self.v_weight,
                 position_embedding,
-                self.scaling,
-                format!("{}.attention_tensor", self.scope_name),
+                self.scope_name.clone()
             );
-
-
-            // [sequence_chunk_size, batch_size, kv_hidden_size]
-            let value_states = self
-                .v_proj
-                .forward(hidden_states, format!("{}.value_tensor", self.scope_name));
-
-            // [sequence_chunk_size, batch_size, kv_hidden_size]
-            let key_states = self
-                .k_proj
-                .forward(hidden_states, format!("{}.key_tensor", self.scope_name));
-
-            // [sequence_chunk_size, batch_size, hidden_size]
-            let query_states = self
-                .q_proj
-                .forward(hidden_states, format!("{}.query_tensor", self.scope_name));
-                
 
             let view_query = query_states.view(vec![
                 query_states.shape[0],

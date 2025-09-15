@@ -11,6 +11,7 @@ use super::map::rms_map::RMSMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 use super::mul::attention_mul::AttentionMul;
 use super::mul::matmul::MatMul;
+use super::mul::matmul3::MatMul3;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
 use super::zip_map::add_zip::AddZipMap;
 use super::zip_map::complex_zip::ComplexZipMap;
@@ -32,6 +33,7 @@ pub enum Operator<T> {
     SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
     MatMul(MatMul<T>),
+    MatMul3(MatMul3<T>),
 }
 
 impl<T> Operator<T>
