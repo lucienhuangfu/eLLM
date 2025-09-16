@@ -15,12 +15,15 @@ use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 
 use super::config::Config;
+
 #[derive(Clone)]
 pub struct Attention<T> {
     // sequence_length: usize,
     // batch_size: usize,
-    head_dim: usize,
+    num_attention_heads: usize,
+    num_key_value_heads: usize,
     num_key_value_groups: usize,
+    head_dim: usize,
     scaling: T,
     attention_dropout: T,
     is_causal: bool,
@@ -28,7 +31,7 @@ pub struct Attention<T> {
     q_weight: Tensor<T>,
     k_weight: Tensor<T>,
     v_weight: Tensor<T>,
-    o_proj: Linear<T>,
+    o_weight: Tensor<T>,
     scope_name: String,
     cache: Rc<RefCell<Cache<T>>>,
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
@@ -54,41 +57,36 @@ where
 
         let scope_name = format!("{}.self_attn", parent_scope_name);
         Self {
-            head_dim: head_dim,
+            num_attention_heads: config.num_attention_heads,
+            num_key_value_heads: config.num_key_value_heads,
             num_key_value_groups: num_key_value_groups,
+            head_dim: head_dim,
             scaling: scaling,
             attention_dropout: T::default(),
             is_causal: false,
             layer_idx: layer_idx,
-            q_proj: Linear::new(
-                config.hidden_size,
-                config.num_attention_heads * head_dim,
-                sequence_chunk_size,
-                format!("{}.q_proj", scope_name),
+            q_weight: Tensor::zeros(
+                vec![config.hidden_size,config.num_attention_heads * head_dim],
+                format!("{}.q_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
-            k_proj: Linear::new(
-                config.hidden_size,
-                config.num_key_value_heads * head_dim,
-                sequence_chunk_size,
-                format!("{}.k_proj", scope_name),
+            k_weight: Tensor::zeros(
+                vec![config.hidden_size, config.num_key_value_heads * head_dim],
+                format!("{}.k_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
-            v_proj: Linear::new(
-                config.hidden_size,
-                config.num_key_value_heads * head_dim,
-                sequence_chunk_size,
-                format!("{}.v_proj", scope_name),
+            v_weight: Tensor::zeros(
+                vec![config.hidden_size, config.num_key_value_heads * head_dim],
+                format!("{}.v_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
-            o_proj: Linear::new(
-                config.num_attention_heads * head_dim,
-                config.hidden_size,
-                sequence_chunk_size,
-                format!("{}.o_proj", scope_name),
+
+            o_weight: Tensor::zeros(
+                vec![config.num_attention_heads * head_dim, config.hidden_size],
+                format!("{}.o_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
@@ -101,6 +99,7 @@ where
     pub fn forward(
         &self,
         hidden_states: &Tensor<T>,
+        residual: &Tensor<T>,
         position_embedding: &Tensor<T>,
         // tensor_name: String,
     ) -> Tensor<T> {
@@ -116,9 +115,10 @@ where
                 self.scope_name.clone()
             );
 
+            /* 
             let view_query = query_states.view(vec![
                 query_states.shape[0],
-                self.batch_size,
+                query_states.shape[1],
                 self.num_attention_heads,
                 self.head_dim,
             ]);
@@ -127,38 +127,44 @@ where
                 key_tensor.shape[0],
                 self.batch_size,
                 self.num_kv_heads,
-                self.attention_head_size,
-            ]);
+                self.head_dim,
+            ]);*/
 
             //[batch_size, head_num, sequence_num,  head_size] < - [sequence_num, batch_size, head_num, head_size]
-            let mut view_key_position_tensor = key_position_tensor.permute(vec![1, 2, 0, 3]);
+            let mut view_key_position_tensor = key_states.permute(vec![1, 2, 0, 3]);
 
+            /*
             let mut view_value_tensor = value_tensor.view(vec![
                 self.sequence_length,
                 self.batch_size,
                 self.num_kv_heads,
-                self.attention_head_size,
-            ]);
-            let mut view_value_tensor2 = view_value_tensor.permute(vec![1, 2, 0, 3]);
+                self.head_dim,
+            ]); */
+
+            let mut view_value_tensor2 = value_states.permute(vec![1, 2, 0, 3]);
 
             // [position_window_size, batch_size, head_num, head_size] <- [position_window_size, batch_size, head_num, head_size] [batch_size, head_num, sequence_num, head_size] [batch_size, head_num, sequence_num, head_size]
-            let attn_output = query_position_tensor.attention(
+            let attn_output = query_states.attention(
                 &view_key_position_tensor,
                 &view_value_tensor2,
-                format!("{}.context_tensor", self.scope_name),
+                format!("{}.attn_output", self.scope_name),
             );
 
+            /*
             let mut view_context_tensor = context_tensor.view(vec![
                 context_tensor.shape[0],
                 self.batch_size,
                 self.hidden_size,
-            ]);
+            ]); */
 
             // [batch_size, hidden_size]
-            let output_tensor = self.o_proj.forward(
-                &view_context_tensor,
-                format!("{}.output_tensor", self.scope_name),
+            // matmul + add
+            let output_tensor = attn_output.matmul_add(
+                &self.o_weight,
+                &residual,
+                self.scope_name.clone(),
             );
+            
             // let output_tensor = self.wo.forward(&hidden_states, format!("{}.output_tensor", self.scope_name));
             output_tensor
         }
