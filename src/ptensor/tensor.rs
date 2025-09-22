@@ -15,7 +15,7 @@ use crate::init::matmul_params::MatMulParams;
 
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
-use super::super::compiler::mul::attention_mul::AttentionMul;
+use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::matmul::MatMul;
 use super::super::compiler::mul::matmul3::MatMul3;
 use super::super::compiler::operator::Operator;

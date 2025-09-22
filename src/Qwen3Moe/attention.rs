@@ -8,7 +8,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::memory::cache::Cache;
-use crate::compiler::mul::attention_mul::AttentionMul;
+use crate::compiler::mul::attention_mul_add::AttentionMul;
 use crate::compiler::operator::Operator;
 
 use super::super::ptensor::linear::Linear;
@@ -107,7 +107,7 @@ where
             // mul_rms_complex 合并operators
             // [sequence_chunk_size, batch_size, hidden_size]
             // [sequence_chunk_size, batch_size, kv_hidden_size]
-            let (query_states, key_states, value_states) = hidden_states.matmul_rms_complex(
+            let (query_states, key_states, value_states) = hidden_states.matmul3_rms_complex(
                 &self.q_weight,
                 &self.k_weight,
                 &self.v_weight,

@@ -9,7 +9,7 @@ use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
-use super::mul::attention_mul::AttentionMul;
+use super::mul::attention_mul_add::AttentionMulAdd;
 use super::mul::matmul::MatMul;
 use super::mul::matmul3::MatMul3;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
@@ -26,7 +26,7 @@ pub enum Operator<T> {
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
     // ArgmaxReduce(ArgmaxReduce<T>),
-    AttentionMul(AttentionMul<T>),
+    AttentionMulAdd(AttentionMulAdd<T>),
     ComplexZipMap(ComplexZipMap<T>),
     LookupRMSMap(LookupRMSMap<T>),
     RMSMap(RMSMap<T>),

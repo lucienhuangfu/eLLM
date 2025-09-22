@@ -14,7 +14,8 @@ use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
 // use super::feedforward::FeedForward;
-use super::moe_attention::Attention;
+use super::attention::Attention;
+use super::moe_layer::MoeLayer;
 
 
 #[derive(Clone)]
@@ -145,25 +146,28 @@ where T: Copy
             )
         };
 
-        let attention_hidden1 = self.self_attention.forward(
+        //  attention + add
+        let attention_hidden_states = self.self_attention.forward(
             &norm_hidden,
             self.position_embedding,
             // format!("{}.attention_hidden1", self.scope_name),
             // self.cpu_num,
         );
-        let attention_hidden2 = attention_hidden1.add_rms(
+        let norm_hidden_states = attention_hidden_states.rms(
             hidden_states,
             self.layernorm_weight.data,
             self.rms_norm_eps,
             format!("{}.norm_hidden2", self.scope_name)
         );
 
-        let attention_hidden3 = self.moe_layer.forward(
-            &attention_hidden2,
+        let output_hidden_states = self.moe_layer.forward(
+            &norm_hidden_states,
+            & attention_hidden_states,
             format!("{}.attention_hidden3", self.scope_name),
             // num_cpus::get(),
         );
 
+        /* 
         let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],
             attention_hidden2.shape[1]/self.head_dim, 
             self.head_dim]);
@@ -172,6 +176,7 @@ where T: Copy
             attention_hidden3.shape[1]/self.head_dim, 
             self.head_dim]);
 
+
         // [batch_size, head_num, head_size]
         let out = view_attention_hidden2.add(
             &view_attention_hidden3,
@@ -179,6 +184,9 @@ where T: Copy
         );
         
         out.view(attention_hidden2.shape.clone())
+        */
+        output_hidden_states
+
     }
 }
 

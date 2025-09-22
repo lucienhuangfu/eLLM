@@ -5,15 +5,16 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use super::super::super::init::send_sync_ptr::{ConstPtr, MutPtr};
 use super::super::super::kernel;
 
-use super::mul_trait::AttentionMulTrait;
+use super::mul_trait::AttentionMulAddTrait;
 use crate::compiler::assign::assign;
 
 
 #[derive(Clone)]
-pub struct AttentionMul<T> {
+pub struct AttentionMulAdd<T> {
     q_ptr: ConstPtr<T>,
     k_ptr: ConstPtr<T>,
     v_ptr: ConstPtr<T>,
+    residual_ptr: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     batch_size: usize,
     attention_head_num: usize,
@@ -26,7 +27,7 @@ pub struct AttentionMul<T> {
     // stride: usize,
 }
 
-impl<T> AttentionMul<T>
+impl<T> AttentionMulAdd<T>
 where
     T: Copy
         + Default
@@ -42,6 +43,7 @@ where
         q_ptr: *const T,
         k_ptr: *const T,
         v_ptr: *const T,
+        residual_ptr: *const T,
         output_ptr: *mut T,
         batch_size: usize,
         attention_head_num: usize,
@@ -55,6 +57,7 @@ where
             q_ptr: ConstPtr { ptr: q_ptr },
             k_ptr: ConstPtr { ptr: k_ptr },
             v_ptr: ConstPtr { ptr: v_ptr },
+            residual_ptr: ConstPtr { ptr: residual_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
             batch_size: batch_size,
             attention_head_num: attention_head_num,
@@ -155,7 +158,7 @@ where
     }
 }
 
-impl<T> AttentionMulTrait<T> for AttentionMul<T>
+impl<T> AttentionMulAddTrait<T> for AttentionMulAdd<T>
 where
     T: Copy
         + Default
@@ -169,16 +172,18 @@ where
 {
     default fn compute(
         &self,
-        input_ptr1: *const T,
-        input_ptr2: *const T,
-        input_ptr3: *const T,
+        q_ptr: *const T,
+        k_ptr: *const T,
+        v_ptr: *const T,
+        residual_ptr: *const T,
         output_ptr: *mut T,
         position: usize,
     ) {
         kernel::generic::flash_attention::flash_attention(
-            input_ptr1,
-            input_ptr2,
-            input_ptr3,
+            q_ptr,
+            k_ptr,
+            v_ptr,
+            residual_ptr,
             output_ptr,
             self.inverse_sqrt_head,
             self.head_size,
@@ -188,12 +193,13 @@ where
     }
 }
 
-impl AttentionMulTrait<f16> for AttentionMul<f16> {
+impl AttentionMulAddTrait<f16> for AttentionMulAdd<f16> {
     fn compute(
         &self,
-        input_ptr1: *const f16,
-        input_ptr2: *const f16,
-        input_ptr3: *const f16,
+        q_ptr: *const f16,
+        k_ptr: *const f16,
+        v_ptr: *const f16,
+        residual_ptr: *const f16,
         output_ptr: *mut f16,
         position: usize,
     ) {
@@ -223,19 +229,21 @@ impl AttentionMulTrait<f16> for AttentionMul<f16> {
     }
 }
 
-impl AttentionMulTrait<f32> for AttentionMul<f32> {
+impl AttentionMulAddTrait<f32> for AttentionMulAdd<f32> {
     fn compute(
         &self,
-        input_ptr1: *const f32,
-        input_ptr2: *const f32,
-        input_ptr3: *const f32,
+        q_ptr: *const f32,
+        k_ptr: *const f32,
+        v_ptr: *const f32,
+        residual_ptr: *const f32,
         output_ptr: *mut f32,
         position: usize,
     ) {
         kernel::generic::flash_attention::flash_attention(
-            input_ptr1,
-            input_ptr2,
-            input_ptr3,
+            q_ptr,
+            k_ptr,
+            v_ptr,
+            residual_ptr,
             output_ptr,
             self.inverse_sqrt_head,
             self.head_size,
