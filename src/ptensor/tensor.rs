@@ -15,7 +15,7 @@ use crate::init::matmul_params::MatMulParams;
 
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
-use super::super::compiler::mul::attention_mul_add::AttentionMul;
+// use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::matmul::MatMul;
 use super::super::compiler::mul::matmul3::MatMul3;
 use super::super::compiler::operator::Operator;
@@ -272,24 +272,24 @@ where
         head_dim: usize,
         params: MatMulParams,
         tensor_name: String,
-    ) -> Self {
+    ) -> (Self, Self, Self) {
         let query_states = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], query_weight.shape[0]],
-            tensor_name,
+            format!("{}.query_tensor", tensor_name.clone()),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
         let key_states = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], key_weight.shape[0]],
-            tensor_name,
+            format!("{}.key_tensor", tensor_name.clone()),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
         let value_states = Tensor::from_cache(
             vec![sequence_length, self.shape[1], value_weight.shape[0]],
-            tensor_name,
+            format!("{}.value_tensor", tensor_name.clone()),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
