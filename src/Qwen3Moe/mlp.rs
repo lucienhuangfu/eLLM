@@ -1,15 +1,15 @@
-use crate::kernel::generic::sigmoid::Sigmoid;
-use crate::kernel::generic::sqrt::Sqrt;
-use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
+use crate::kernel::generic::sigmoid::Sigmoid;
+use crate::kernel::generic::sqrt::Sqrt;
+use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+
 use super::super::memory::cache::Cache;
-use super::super::ptensor::linear::Linear;
+// use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
-
 
 #[derive(Clone)]
 pub struct MLP<T> {
@@ -17,7 +17,7 @@ pub struct MLP<T> {
     head_size: usize,
     gate_weight: Tensor<T>,
     up_weight: Tensor<T>,
-    down_proj: Linear<T>,
+    down_weight: Tensor<T>,
     scope_name: String,
     cache: Rc<RefCell<Cache<T>>>,
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
@@ -36,25 +36,31 @@ where
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
-
         let scope_name = format!("{}.mlp", parent_scope_name);
         Self {
             sequence_chunk_size: sequence_chunk_size,
             head_size: head_size,
-            gate_weight: Tensor<T>::zeros(
+            gate_weight: Tensor::zeros(
                 vec![hidden_size, intermediate_size],
                 format!("{}gate_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
-            up_weight: Tensor<T>::zeros(
+            up_weight: Tensor::zeros(
                 vec![hidden_size, intermediate_size],
                 format!("{}.up_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
 
-            /* 
+            down_weight: Tensor::zeros(
+                vec![hidden_size, intermediate_size],
+                format!("{}.down_proj.weight", scope_name),
+                cache.clone(),
+                operator_queue.clone(),
+            ),
+
+            /*
             gate_proj: Linear::new(
                 hidden_size,
                 intermediate_size,
@@ -70,7 +76,7 @@ where
                 format!("{}.up_proj", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
-            ),*/
+            ),
             down_proj: Linear::new(
                 intermediate_size,
                 hidden_size,
@@ -78,7 +84,7 @@ where
                 format!("{}.down_proj", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
-            ),
+            ),*/
             scope_name: scope_name,
             cache: cache,
             operator_queue: operator_queue,
@@ -88,10 +94,9 @@ where
     pub fn forward(
         &self,
         hidden_states: &Tensor<T>,
+        residual: &Tensor<T>,
         tensor_name: String,
     ) -> Tensor<T> {
-        
-        
         /*
         // println!("{:?} {:?}", self.gate_proj.weight.shape ,hidden_states.shape);
         let gate_product = self
@@ -126,10 +131,10 @@ where
         let nonlinear_product = hidden_states.matmul_silu_mul_matmul(
             &self.gate_weight,
             &self.up_weight,
+            // a_row: hidden_states.shape[1],
+            // b_row: self.gate_weight.shape[0],
+            // column: self.gate_weight.shape[1],
             crate::ptensor::matmul::MatMulParams {
-                a_row: hidden_states.shape[1],
-                b_row: self.gate_weight.shape[0],
-                column: self.gate_weight.shape[1],
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
@@ -139,8 +144,23 @@ where
             format!("{}.nonlinear_part1", self.scope_name),
         );
 
+        let down_product = nonlinear_product.matmul_add(
+            &self.down_weight,
+            residual,
+            // a_row: hidden_states.shape[1],
+            // b_row: self.gate_weight.shape[0],
+            // column: self.gate_weight.shape[1],
+            crate::ptensor::matmul::MatMulParams {
+                a_row_step_macro: 16,
+                b_row_step_macro: 16,
+                column_step_macro: 16,
+                a_row_step_micro: 8,
+                b_row_step_micro: 8,
+            },
+            format!("{}.nonlinear_part1", self.scope_name),
+        );
 
-        let down_product = self.down_proj.forward(&nonlinear_product, tensor_name);
+        // let down_product = self.down_proj.forward(&nonlinear_product, tensor_name);
         // println!("{:?} {:?}", nonlinear.shape, self.w2.weight.shape);
         down_product
     }
@@ -155,15 +175,13 @@ mod test {
 
     #[test]
     fn test_feedforward() {
-        
         let position_window_size = 4;
         let batch_size = 32;
         let head_size = 128;
 
-
         let hidden_size = 8192;
         let hidden_dim = 4 * hidden_size;
-        
+
         let position_index = 1;
 
         let multiple_of = 256;
@@ -220,7 +238,7 @@ mod test {
          */
     }
 
-    /* 
+    /*
     #[test]
     fn test_feedforward_f16() {
         let batch_size = 32;

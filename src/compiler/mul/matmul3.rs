@@ -98,9 +98,9 @@ where
         // norm的weight都是1，相当于没有weight,不需要乘以weight
         // c小块的列数需要是head_dim，以便处理norm
 
-        // value: linear -> norm -> complex
-
         // key: linear
+
+        // value: linear -> norm -> complex
 
         // query: linear -> norm -> complex
     }
