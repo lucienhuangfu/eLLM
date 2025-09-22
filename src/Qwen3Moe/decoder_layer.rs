@@ -127,34 +127,25 @@ where T: Copy
     pub fn forward(
         &self,
         hidden_states: &Tensor<T>,
-        sequences: *mut usize,
+        // sequences: *mut usize,
         tensor_name: String,
     ) -> Tensor<T> {
         // # Attention 层
-        let norm_hidden = if self.layer_idx != 0 {
-            hidden_states.rms(
-                    self.layernorm_weight.data,
-                    self.rms_norm_eps,
-                format!("{}.norm_hidden", self.scope_name),
-            )
-        } else {
-            hidden_states.lookup_rms(
-                self.word_embedding.data,
-                self.layernorm_weight.data,
-                self.rms_norm_eps,
-                format!("{}.norm_hidden", self.scope_name),
-            )
-        };
+        let norm_hidden = hidden_states.rms(
+            self.layernorm_weight.data,
+            self.rms_norm_eps,
+            format!("{}.norm_hidden", self.scope_name),
+        );
 
         //  attention + add
         let attention_hidden_states = self.self_attention.forward(
             &norm_hidden,
+            hidden_states,
             self.position_embedding,
             // format!("{}.attention_hidden1", self.scope_name),
             // self.cpu_num,
         );
         let norm_hidden_states = attention_hidden_states.rms(
-            hidden_states,
             self.layernorm_weight.data,
             self.rms_norm_eps,
             format!("{}.norm_hidden2", self.scope_name)
@@ -162,7 +153,7 @@ where T: Copy
 
         let output_hidden_states = self.moe_layer.forward(
             &norm_hidden_states,
-            & attention_hidden_states,
+            &attention_hidden_states,
             format!("{}.attention_hidden3", self.scope_name),
             // num_cpus::get(),
         );
