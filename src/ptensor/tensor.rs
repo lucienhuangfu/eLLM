@@ -5,6 +5,8 @@ use std::rc::Rc;
 
 // use num_traits::ops::inv;
 
+use safetensors::tensor;
+
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
@@ -261,6 +263,79 @@ where
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
+
+        pub fn matmul_silu_mul_matmul(
+        &self,
+        tensor2: &Tensor<T>,
+        tensor3: &Tensor<T>,
+        params: MatMulParams,
+        sequence_length: usize,
+        tensor_name: String,
+    ) -> Self {
+        let output_shape = vec![sequence_length, self.shape[1], tensor2.shape[0]];
+
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::MatMul(MatMul::new(
+            self.data,
+            tensor2.data,
+            output_tensor.data,
+            // sequence_length,
+            output_to_kv,
+            params.a_row,
+            params.b_row,
+            params.column,
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+    ) -> Self {
+        let output_shape = vec![sequence_length, self.shape[1], tensor2.shape[0]];
+
+        let output_to_kv = if self.shape[0] <= sequence_length {
+            false
+        } else {
+            true
+        };
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::MatMul(MatMul::new(
+            self.data,
+            tensor2.data,
+            output_tensor.data,
+            // sequence_length,
+            output_to_kv,
+            params.a_row,
+            params.b_row,
+            params.column,
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
 
     pub fn matmul3_rms_complex(
         &self,

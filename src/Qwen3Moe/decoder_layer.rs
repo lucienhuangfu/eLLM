@@ -131,11 +131,21 @@ where T: Copy
         tensor_name: String,
     ) -> Tensor<T> {
         // # Attention 层
-        let norm_hidden = hidden_states.rms(
-            self.layernorm_weight.data,
-            self.rms_norm_eps,
-            format!("{}.norm_hidden", self.scope_name),
-        );
+        let (hidden_states, norm_hidden) = if self.index != 0 {
+            let norm_hidden = hidden_states.rms(
+                    self.input_layernorm.data,
+                    self.rms_norm_eps,
+                format!("{}.norm_hidden", self.scope_name),
+            );
+            (hidden_states, norm_hidden)
+        } else {
+            hidden_states.lookup_rms(
+                self.word_embedding.data,
+                    self.input_layernorm.data,
+                    self.rms_norm_eps,
+                format!("{}.norm_hidden", self.scope_name),
+            )
+        };
 
         //  attention + add
         let attention_hidden_states = self.self_attention.forward(

@@ -14,7 +14,7 @@ use crate::compiler::operator::Operator;
 #[derive(Clone)]
 pub struct MLP<T> {
     sequence_chunk_size: usize,
-    head_size: usize,
+    // head_size: usize,
     gate_weight: Tensor<T>,
     up_weight: Tensor<T>,
     down_weight: Tensor<T>,
@@ -29,7 +29,7 @@ where
 {
     pub fn new(
         sequence_chunk_size: usize,
-        head_size: usize,
+        // head_size: usize,
         hidden_size: usize,
         intermediate_size: usize,
         parent_scope_name: &str,
@@ -39,7 +39,7 @@ where
         let scope_name = format!("{}.mlp", parent_scope_name);
         Self {
             sequence_chunk_size: sequence_chunk_size,
-            head_size: head_size,
+            // head_size: head_size,
             gate_weight: Tensor::zeros(
                 vec![hidden_size, intermediate_size],
                 format!("{}gate_proj.weight", scope_name),
@@ -59,32 +59,6 @@ where
                 cache.clone(),
                 operator_queue.clone(),
             ),
-
-            /*
-            gate_proj: Linear::new(
-                hidden_size,
-                intermediate_size,
-                sequence_chunk_size,
-                format!("{}.gate_proj", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
-            ),
-            up_proj: Linear::new(
-                hidden_size,
-                intermediate_size,
-                sequence_chunk_size,
-                format!("{}.up_proj", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
-            ),
-            down_proj: Linear::new(
-                intermediate_size,
-                hidden_size,
-                sequence_chunk_size,
-                format!("{}.down_proj", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
-            ),*/
             scope_name: scope_name,
             cache: cache,
             operator_queue: operator_queue,
