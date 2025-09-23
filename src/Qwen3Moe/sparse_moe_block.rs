@@ -32,11 +32,12 @@ where
     pub fn new(
         sequence_chunk_size: usize,
         hidden_size: usize,
+        intermediate_size: usize,
+        head_size: usize,
         num_experts: usize,
         top_k: usize,
         norm_topk_prob: usize,
-        intermediate_size: usize,
-        head_size: usize,
+
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,

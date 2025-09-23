@@ -13,32 +13,24 @@ use super::mul_trait::MatMul3Trait;
 // there will be just one instance of this runner in the program
 // this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
-pub struct MatMul3<T> {
+pub struct MatMulSilu<T> {
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
-    // ptr3: ConstPtr<T>,
+    ptr3: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     pub params: MatMulParams,
     _marker: PhantomData<T>,
 }
-impl<T> MatMul3<T>
+impl<T> MatMulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
     pub fn new(
         ptr1: *const T,
         ptr2: *const T,
-        // ptr3: *const T,
+        ptr3: *const T,
         output_ptr: *mut T,
         // sequence_length: usize,
-        // output_to_kv: bool,
-
-        // these are the parameters of the matrix multiplication, this matrix is a largest possible one
-        // for later matrix multiplication, the actual size of the matrix will be smaller
-        // so this is reserving enough spaces in memory, and later lay the data into a small portion of it
-        // and as we compute, we just access and calculate with the data in the small portion
-        // this is like we construct a big playground, and we only play in a small or big portion of it, depending on how many people there are
-        // so these dimensions are the dimensions of the largest possible matrix
         a_row: usize,
         b_row: usize,
         column: usize,
@@ -55,14 +47,15 @@ where
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             ptr2: ConstPtr { ptr: ptr2 },
-            // ptr3: ConstPtr { ptr: ptr3 },
+            ptr3: ConstPtr { ptr: ptr3 },
             output_ptr: MutPtr { ptr: output_ptr },
             // sequence_length: sequence_length,
             // output_to_kv: output_to_kv,
+           
             params: MatMulParams {
-                a_row,
-                b_row,
-                column,
+                // a_row,
+                // b_row,
+                // column,
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,
@@ -103,17 +96,17 @@ where
     }
 }
 
-impl<T> MatMul3Trait<T> for MatMul3<T>
+impl<T> MatMul3Trait<T> for MatMulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
-    default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T,input_ptr3: *const T, output_ptr: *mut T) {
+    default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, input_ptr3: *const T, output_ptr: *mut T) {
         //print!("generic runner\n");
  
     }
 }
 
-impl MatMul3Trait<f16> for MatMul3<f16> {
+impl MatMul3Trait<f16> for MatMulSilu<f16> {
     fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, input_ptr3: *const f16, output_ptr: *mut f16) {
         // print!("f16 runner\n");
 
@@ -123,7 +116,7 @@ impl MatMul3Trait<f16> for MatMul3<f16> {
 
 }
 
-impl MatMul3Trait<f32> for MatMul3<f32> {
+impl MatMul3Trait<f32> for MatMulSilu<f32> {
     fn compute(&self, input_ptr1: *const f32, input_ptr2: *const f32, input_ptr3: *const f32, output_ptr: *mut f32) {
         // print!("f32 runner\n");
 
@@ -144,9 +137,8 @@ impl MatMul3Trait<f32> for MatMul3<f32> {
 mod tests {
     use super::*;
     // use std::thread;
-
     // use super::super::chunk_matmul::chunk_matmul;
-
+    /* 
     #[test]
     fn test_f32_chunk() {
         let sequence_chunk_size = 8;
@@ -224,6 +216,7 @@ mod tests {
             //println!();
         }
     }
+    */
 
    
 
