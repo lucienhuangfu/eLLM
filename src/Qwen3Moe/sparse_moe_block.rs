@@ -62,15 +62,33 @@ where
             num_experts,
             top_k,
             norm_topk_prob,
-            gate: Linear::new(
-                hidden_size,
-                num_experts,
-                sequence_chunk_size,
-                format!("{}.gate", scope_name),
+            
+            gate_weight: Tensor::zeros(
+                vec![hidden_size, num_experts],
+                format!("{}.gate_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
-            experts: experts,
+
+            experts_gate_weight: Tensor::zeros(
+                vec![num_experts, hidden_size, intermediate_size],
+                format!("{}.experts_gate_proj.weight", scope_name),
+                cache.clone(),
+                operator_queue.clone(),
+            ),
+            experts_up_weight: Tensor::zeros(
+                vec![num_experts, hidden_size, intermediate_size],
+                format!("{}.experts_up_proj.weight", scope_name),
+                cache.clone(),
+                operator_queue.clone(),
+            ),
+
+            experts_down_weight: Tensor::zeros(
+                vec![num_experts, hidden_size, intermediate_size],
+                format!("{}.experts_down_proj.weight", scope_name),
+                cache.clone(),
+                operator_queue.clone(),
+            ),
             scope_name: scope_name,
             cache: cache,
             operator_queue: operator_queue,
@@ -92,7 +110,34 @@ where
 
         // TODO: Implement the rest of the sparse MoE logic
         // For now, just return the first expert's output
-        self.experts[0].forward(hidden_states, tensor_name, cpu_num)
+        // self.experts[0].forward(hidden_states, tensor_name, cpu_num)
+
+        let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
+            &self.experts_gate_weight,
+            &self.experts_up_weight,
+            &topk_indices,
+            &topk_values,
+            tensor_name,
+        );
+
+        let down_product = nonlinear_product.experts_matmul_accumulate_add(
+            &self.down_weight,
+            residual,
+            hidden_states.shape[1],
+            self.gate_weight.shape[0],
+            self.gate_weight.shape[1],
+            crate::ptensor::matmul::MatMulParams {
+                a_row_step_macro: 16,
+                b_row_step_macro: 16,
+                column_step_macro: 16,
+                a_row_step_micro: 8,
+                b_row_step_micro: 8,
+            },
+            &topk_indices,
+            &topk_values,
+            format!("{}.nonlinear_part1", self.scope_name),
+        );
+        down_product
     }
 }
 

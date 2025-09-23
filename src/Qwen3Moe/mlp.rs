@@ -105,9 +105,9 @@ where
         let nonlinear_product = hidden_states.matmul_silu_mul_matmul(
             &self.gate_weight,
             &self.up_weight,
-            // a_row: hidden_states.shape[1],
-            // b_row: self.gate_weight.shape[0],
-            // column: self.gate_weight.shape[1],
+            hidden_states.shape[1],
+            self.gate_weight.shape[0],
+            self.gate_weight.shape[1],
             crate::ptensor::matmul::MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
@@ -121,9 +121,9 @@ where
         let down_product = nonlinear_product.matmul_add(
             &self.down_weight,
             residual,
-            // a_row: hidden_states.shape[1],
-            // b_row: self.gate_weight.shape[0],
-            // column: self.gate_weight.shape[1],
+            hidden_states.shape[1],
+            self.gate_weight.shape[0],
+            self.gate_weight.shape[1],
             crate::ptensor::matmul::MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
