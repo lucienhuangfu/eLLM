@@ -5,6 +5,9 @@ use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
+crate::ptensor::matmul::MatMulParams
+
+
 use super::super::memory::cache::Cache;
 use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
@@ -13,13 +16,15 @@ use crate::compiler::operator::Operator;
 
 #[derive(Clone)]
 pub struct SparseMoeBlock<T> {
-    sequence_chunk_size: usize,
+    // sequence_chunk_size: usize,
     hidden_size: usize,
     num_experts: usize,
     top_k: usize,
-    norm_topk_prob: usize,
+    norm_topk_prob: bool,
     gate: Linear<T>,
-    experts: Vec<MLP<T>>,
+    experts_gate_weight: Tensor<T>,
+    experts_up_weight: Tensor<T>,
+    experts_down_weight: Tensor<T>,
     scope_name: String,
     cache: Rc<RefCell<Cache<T>>>,
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
@@ -30,46 +35,30 @@ where
     T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
 {
     pub fn new(
-        sequence_chunk_size: usize,
+        // sequence_chunk_size: usize,
         hidden_size: usize,
         intermediate_size: usize,
-        head_size: usize,
+        // head_size: usize,
         num_experts: usize,
         top_k: usize,
-        norm_topk_prob: usize,
-
+        norm_topk_prob: bool,
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let scope_name = format!("{}.moe", parent_scope_name);
-        let mut experts = Vec::with_capacity(num_experts);
-        for i in 0..num_experts {
-            let expert = MLP::new(
-                sequence_chunk_size,
-                head_size,
-                hidden_size,
-                intermediate_size,
-                &format!("{}.experts.{}", scope_name, i),
-                cache.clone(),
-                operator_queue.clone(),
-            );
-            experts.push(expert);
-        }
         Self {
-            sequence_chunk_size,
+            // sequence_chunk_size,
             hidden_size,
             num_experts,
             top_k,
             norm_topk_prob,
-            
             gate_weight: Tensor::zeros(
                 vec![hidden_size, num_experts],
                 format!("{}.gate_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
-
             experts_gate_weight: Tensor::zeros(
                 vec![num_experts, hidden_size, intermediate_size],
                 format!("{}.experts_gate_proj.weight", scope_name),
@@ -100,33 +89,35 @@ where
         hidden_states: &Tensor<T>,
         tensor_name: String,
     ) -> Tensor<T> {
-        let gate_output = self
+
+
+        let (gate_output, sum) = self
             .gate
-            .forward(hidden_states, format!("{}.gate_output", self.scope_name));
+            .matmul_topk(hidden_states, format!("{}.gate_output", self.scope_name));
 
-        let routing_weights = gate_output.softmax(-1, format!("{}.router_probs", self.scope_name));
-        let (topk_values, topk_indices) =
-            routing_weights.top_k(self.top_k, -1, format!("{}.topk_indices", self.scope_name));
-
+        let (topk_values, topk_indices) = gate_output.softmax_norm(format!("{}.router_probs", self.scope_name));
+        // let (topk_values, topk_indices) = routing_weights.top_k(self.top_k, format!("{}.topk_indices", self.scope_name));
         // TODO: Implement the rest of the sparse MoE logic
         // For now, just return the first expert's output
-        // self.experts[0].forward(hidden_states, tensor_name, cpu_num)
 
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
             &self.experts_up_weight,
+            MatMulParams {
+                a_row_step_macro: 16,
+                b_row_step_macro: 16,
+                column_step_macro: 16,
+                a_row_step_micro: 8,
+                b_row_step_micro: 8,
+            },
             &topk_indices,
-            &topk_values,
             tensor_name,
         );
 
-        let down_product = nonlinear_product.experts_matmul_accumulate_add(
+        let down_product = nonlinear_product.experts_matmul_merge_add(
             &self.down_weight,
             residual,
-            hidden_states.shape[1],
-            self.gate_weight.shape[0],
-            self.gate_weight.shape[1],
-            crate::ptensor::matmul::MatMulParams {
+            MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
