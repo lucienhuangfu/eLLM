@@ -19,5 +19,8 @@ pub trait AttentionMulAddTrait<T>
 
 pub trait MatMul3Trait<T> {
     fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, input_ptr3: *const T, output_ptr: *mut T);
-    // fn compute2(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T, length: usize);
+}
+
+pub trait MatMul4Trait<T> {
+    fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, input_ptr3: *const T, output_ptr: *mut T);
 }
