@@ -13,7 +13,7 @@ use crate::compiler::operator::Operator;
 
 #[derive(Clone)]
 pub struct MLP<T> {
-    sequence_chunk_size: usize,
+    // sequence_chunk_size: usize,
     // head_size: usize,
     gate_weight: Tensor<T>,
     up_weight: Tensor<T>,
@@ -28,7 +28,7 @@ where
     T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
 {
     pub fn new(
-        sequence_chunk_size: usize,
+        // sequence_chunk_size: usize,
         // head_size: usize,
         hidden_size: usize,
         intermediate_size: usize,
@@ -38,11 +38,11 @@ where
     ) -> Self {
         let scope_name = format!("{}.mlp", parent_scope_name);
         Self {
-            sequence_chunk_size: sequence_chunk_size,
+            // sequence_chunk_size: sequence_chunk_size,
             // head_size: head_size,
             gate_weight: Tensor::zeros(
                 vec![hidden_size, intermediate_size],
-                format!("{}gate_proj.weight", scope_name),
+                format!("{}.gate_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
@@ -54,7 +54,7 @@ where
             ),
 
             down_weight: Tensor::zeros(
-                vec![hidden_size, intermediate_size],
+                vec![intermediate_size, hidden_size],
                 format!("{}.down_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
@@ -71,36 +71,6 @@ where
         residual: &Tensor<T>,
         tensor_name: String,
     ) -> Tensor<T> {
-        /*
-        // println!("{:?} {:?}", self.gate_proj.weight.shape ,hidden_states.shape);
-        let gate_product = self
-            .gate_proj
-            .forward(hidden_states, format!("{}.linear1", self.scope_name));
-        // println!("{:?} {:?}", hidden_states.shape, self.gate_proj.weight.shape);
-        let up_product = self
-            .up_proj
-            .forward(hidden_states, format!("{}.linear3", self.scope_name));
-        // println!("{:?} {:?}", hidden_states.shape, self.down_proj.weight.shape);
-
-        let view_gate_product = gate_product.view(vec![
-            gate_product.shape[0],
-            gate_product.shape[1],
-            gate_product.shape[2] / self.head_size,
-            self.head_size ,
-        ]);
-        let view_up_product = up_product.view(vec![
-            up_product.shape[0],
-            up_product.shape[1] / self.head_size,
-            self.head_size,
-        ]);
-
-        let nonlinear = view_gate_product.silu_mul(
-            &view_up_product,
-            format!("{}.nonlinear", self.scope_name),
-        );
-
-        let view_nonlinear = nonlinear.view(up_product.shape.clone());
-        */
 
         let nonlinear_product = hidden_states.matmul_silu_mul_matmul(
             &self.gate_weight,
@@ -131,7 +101,7 @@ where
                 a_row_step_micro: 8,
                 b_row_step_micro: 8,
             },
-            format!("{}.nonlinear_part1", self.scope_name),
+            format!("{}.nonlinear_part2", self.scope_name),
         );
 
         // let down_product = self.down_proj.forward(&nonlinear_product, tensor_name);

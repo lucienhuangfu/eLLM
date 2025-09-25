@@ -34,8 +34,7 @@ where
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         MoeLayer::MLP(MLP::new(
-            sequence_chunk_size,
-            head_size,
+            
             hidden_size,
             intermediate_size,
             parent_scope_name,

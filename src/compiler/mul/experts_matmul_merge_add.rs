@@ -1,7 +1,3 @@
-
-use std::f16;
-use std::marker::PhantomData;
-use std::ops::{Add, Mul};
 use super::super::super::init::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
@@ -9,7 +5,9 @@ use super::super::super::init::{
 use super::super::super::kernel;
 use super::super::assign::assign;
 use super::mul_trait::MatMul3Trait;
-
+use std::f16;
+use std::marker::PhantomData;
+use std::ops::{Add, Mul};
 
 #[derive(Clone)]
 pub struct ExpertsMatMulMerge<T> {
@@ -17,12 +15,11 @@ pub struct ExpertsMatMulMerge<T> {
     ptr2: ConstPtr<T>,
     ptr3: ConstPtr<T>,
     output_ptr: MutPtr<T>,
-        a_row: usize,
-        b_row: usize,
-        column: usize,
+    a_row: usize,
+    b_row: usize,
+    column: usize,
     pub params: MatMulParams,
     _marker: PhantomData<T>,
-
 }
 impl<T> ExpertsMatMulMerge<T>
 where
@@ -108,7 +105,13 @@ where
 }
 
 impl MatMul3Trait<f16> for ExpertsMatMulMerge<f16> {
-    fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, input_ptr3: *const f16, output_ptr: *mut f16) {
+    fn compute(
+        &self,
+        input_ptr1: *const f16,
+        input_ptr2: *const f16,
+        input_ptr3: *const f16,
+        output_ptr: *mut f16,
+    ) {
         // print!("f16 runner\n");
 
         /*
@@ -128,13 +131,17 @@ impl MatMul3Trait<f16> for ExpertsMatMulMerge<f16> {
             output_ptr,
             &(self.params),
         ); */
-
     }
-
 }
 
 impl MatMul3Trait<f32> for ExpertsMatMulMerge<f32> {
-    fn compute(&self, input_ptr1: *const f32, input_ptr2: *const f32, input_ptr3: *const f32, output_ptr: *mut f32) {
+    fn compute(
+        &self,
+        input_ptr1: *const f32,
+        input_ptr2: *const f32,
+        input_ptr3: *const f32,
+        output_ptr: *mut f32,
+    ) {
         // print!("f32 runner\n");
 
         /*//implementation for f32 on platform with avx2
@@ -146,8 +153,6 @@ impl MatMul3Trait<f32> for ExpertsMatMulMerge<f32> {
         // #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]*/
         // generic_matmul_block(input_ptr1, input_ptr2, output_ptr, &(self.params));
     }
-
-
 }
 
 #[cfg(test)]
@@ -234,5 +239,4 @@ mod tests {
         }
     }
      */
-
 }
