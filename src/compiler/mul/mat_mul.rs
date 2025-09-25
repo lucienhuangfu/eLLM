@@ -25,11 +25,24 @@ pub struct MatMul<T> {
     // sequence_stride: usize,
     // batch_size: usize,
     // hidden_size: usize,
+
+    // 新增：构造期一次性转置好的 B_nt（形状 N×K，行主；行距=K）
+    b_nt: Option<Box<[T]>>,
 }
 impl<T> MatMul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
+    /// 构造参数含义：
+    /// - `ptr1`: 指向 A 的基指针（可能是 S×M×K）
+    /// - `ptr2`: 指向原始布局 B 的基指针（K×N，行主）
+    /// - `output_ptr`: 指向 C 的基指针（可能是 S×M×N）
+    /// - `output_to_kv`: 是否输出到 kv（本实现未使用，保留）
+    /// - `a_row`: 最大 M（A 行数 / C 行数）
+    /// - `b_row`: 最大 N（B 列数 / C 列数）
+    /// - `column`: 最大 K（A 列数 / B 行数）
+    /// - `a_row_step_macro`/`b_row_step_macro`/`column_step_macro`: 宏核 MB/NB/KC
+    /// - `a_row_step_micro`/`b_row_step_micro`: 微核 MR/NR（与微核契约一致，MR=3, NR=32）
     pub fn new(
         ptr1: *const T,
         ptr2: *const T,
@@ -56,6 +69,23 @@ where
         a_row_step_micro: usize,
         b_row_step_micro: usize,
     ) -> Self {
+        // --- 构造期一次性转置：把 B[K×N] → B_nt[N×K]（行主），行距 = K ---
+        let n = b_row;  // N
+        let k = column; // K
+        let b_nt_box: Box<[T]> = {
+            let mut v = vec![T::default(); n * k];
+            unsafe {
+                for kk in 0..k {
+                    let src_row = ptr2.add(kk * n); // B[kk, 0]
+                    for jj in 0..n {
+                        // B_nt[jj, kk] = B[kk, jj]
+                        *v.as_mut_ptr().add(jj * k + kk) = *src_row.add(jj);
+                    }
+                }
+            }
+            v.into_boxed_slice()
+        };
+
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             ptr2: ConstPtr { ptr: ptr2 },
@@ -73,6 +103,7 @@ where
                 b_row_step_micro,
             },
             _marker: PhantomData,
+            b_nt: Some(b_nt_box),
         }
     }
 
@@ -105,7 +136,7 @@ where
             // ----- 基址/行距（元素计）-----
             // A: [S×M×K] 行主；B_orig: [K×N] 行主；C: [S×M×N] 行主
             let a_base = self.ptr1.ptr;
-            let b_orig = self.ptr2.ptr; // 原始 B: [K×N] 行主
+            let _b_orig = self.ptr2.ptr; // 原始 B: [K×N] 行主（现在不在 run 里使用）
             let c_base = self.output_ptr.ptr;
             let lda = k; // A 每行跨度
             let ldc = n; // C 每行跨度
@@ -118,17 +149,14 @@ where
             let a_seq_stride = m * k; // A[s+1] 相对 A[s] 的偏移
             let c_seq_stride = m * n; // C[s+1] 相对 C[s] 的偏移
 
-            // ===== 每线程：把 B[K×N] → B_nt[N×K] 转置一次 =====
-            // b_nt[j, k] = b_orig[k, j]
-            let mut b_nt: Vec<T> = vec![T::default(); n * k];
-            for kk in 0..k {
-                let src_row = b_orig.add(kk * n); // b_orig[kk, 0]
-                for jj in 0..n {
-                    *b_nt.as_mut_ptr().add(jj * k + kk) = *src_row.add(jj);
-                }
-            }
-            let b_nt_ptr = b_nt.as_ptr(); // 转置后基址（[N×K] 行主）
-            let ldb_row = k; // b_nt 的行距（=K）
+            // ===== 使用构造期转置的 B_nt（N×K，行主；行距=K）=====
+            let (b_nt_ptr, ldb_row) = {
+                let bnt = self
+                    .b_nt
+                    .as_ref()
+                    .expect("B_nt not initialized in MatMul::new");
+                (bnt.as_ptr(), k)
+            };
 
             // ===== 任务切分：S × tiles_m × tiles_n =====
             let tiles_m = (m + mb - 1) / mb;
@@ -204,7 +232,7 @@ where
                             while mi < m_blk {
                                 let a_tile = a_base_s.add((m0 + mi) * lda + k0); // A[(s,m0+mi), k0]
                                 let c_tile = c_base_s.add((m0 + mi) * ldc + (n0 + nt)); // C[(s,m0+mi), (n0+nt)]
-                                                                                        // 微核：内部对 k in 0..KC 广播 A 的3个标量，load b_panel[k,*] 做 FMA，+= 写回 C
+                                // 微核：内部对 k in 0..KC 广播 A 的3个标量，load b_panel[k,*] 做 FMA，+= 写回 C
                                 self.compute(a_tile, b_panel.as_ptr(), c_tile);
                                 mi += mr;
                             }
@@ -349,11 +377,11 @@ mod innteg_tests {
         true
     }
 
-    /// 集成测试：run 内部完成 B 的预转置 + 外层打包 + 3x32 微核
+    /// 集成测试：run 内部使用构造期预转置好的 B_nt + 外层打包 + 3x32 微核
     /// 假设整除：M%MR=0, N%NR=0, K%KC=0
     ///
     /// A: [M×K] 行主（全 1）
-    /// B_orig: [K×N] 行主（全 1）  ← 注意：这里传原始布局
+    /// B_orig: [K×N] 行主（全 1），构造期已转置为 B_nt[N×K]
     /// 期望：C = A×B = K（每个元素都等于 K）
     #[test]
     fn test_run_internal_transpose_f16_m6_n64_k64() {
@@ -379,7 +407,7 @@ mod innteg_tests {
             // ---- 构造数据 ----
             // A: [M×K] 行主，全 1
             let a: Vec<f16> = (0..m * k).map(|_| f16v(1.0)).collect();
-            // B_orig: [K×N] 行主，全 1   ← 传入 run 的 “原始” B
+            // B_orig: [K×N] 行主，全 1   ← 传入构造函数（构造期转置）
             let b_orig: Vec<f16> = (0..k * n).map(|_| f16v(1.0)).collect();
             // C: [M×N] 行主，初始化为 0
             let mut c: Vec<f16> = (0..m * n).map(|_| f16v(0.0)).collect();
@@ -401,7 +429,7 @@ mod innteg_tests {
             // ---- 构造算子 ----
             let op = MatMul::<f16>::new(
                 a.as_ptr(),      // A[M×K]
-                b_orig.as_ptr(), // B_orig[K×N]（原始布局！）
+                b_orig.as_ptr(), // B_orig[K×N]（原始布局！构造期转置）
                 c.as_mut_ptr(),  // C[M×N]
                 false,           // output_to_kv: 本测试不用
                 params.a_row,
@@ -457,7 +485,7 @@ mod innteg_tests {
         }
 
         /// 集成测试（sequence > 1）：
-        /// - run 内部会把 B[K×N] 预转置为 B_nt[N×K]，然后做三分块 + 打 KC×NR 面板 + 3x32 微核；
+        /// - 构造期把 B[K×N] 预转置为 B_nt[N×K]，run 里做三分块 + 打 KC×NR 面板 + 3x32 微核；
         /// - 假设整除：M%MR=0, N%NR=0, K%KC=0。
         ///
         /// 设置：
@@ -496,7 +524,7 @@ mod innteg_tests {
                 let a_len = s_total * m * k;
                 let a: Vec<f16> = (0..a_len).map(|_| f16v(1.0)).collect();
 
-                // B_orig: [K×N] 行主，全 1（run 内部会转置成 [N×K]）
+                // B_orig: [K×N] 行主，全 1（构造期已转置成 [N×K]）
                 let b_orig_len = k * n;
                 let b_orig: Vec<f16> = (0..b_orig_len).map(|_| f16v(1.0)).collect();
 
@@ -516,7 +544,7 @@ mod innteg_tests {
                     b_row_step_micro: nr,
                 };
 
-                // ---- 构造算子（ptr2 仍传原始 B[K×N]，run 里会转置）----
+                // ---- 构造算子（ptr2 仍传原始 B[K×N]，构造期会转置）----
                 let op = MatMul::<f16>::new(
                     a.as_ptr(),      // A[S×M×K]
                     b_orig.as_ptr(), // B_orig[K×N]（原始布局！）
@@ -536,7 +564,6 @@ mod innteg_tests {
                 op.run(position_index, position_interval, m, 1, 0);
 
                 // ---- 验证 ----
-                let a_seq_stride = m * k;
                 let c_seq_stride = m * n;
 
                 // helper：取某个序列的 C 视图切片
