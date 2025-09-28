@@ -1,7 +1,7 @@
+
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
-// use std::sync::{Arc, Barrier};
 
 use super::super::super::init::{
     matmul_params::MatMulParams,
@@ -9,7 +9,7 @@ use super::super::super::init::{
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::MatlMulTrait;
+use super::mul_trait::MatMulTrait;
 
 // there will be just one instance of this runner in the program
 // this runner will be shared by many threads that together compute the matrix multiplication
@@ -247,7 +247,7 @@ where
     }
 }
 
-impl<T> MatlMulTrait<T> for MatMul<T>
+impl<T> MatMulTrait<T> for MatMul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -272,7 +272,7 @@ where
     }
 }
 
-impl MatlMulTrait<f16> for MatMul<f16> {
+impl MatMulTrait<f16> for MatMul<f16> {
     fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
         // print!("f16 runner\n");
 
@@ -314,7 +314,7 @@ impl MatlMulTrait<f16> for MatMul<f16> {
     }
 }
 
-impl MatlMulTrait<f32> for MatMul<f32> {
+impl MatMulTrait<f32> for MatMul<f32> {
     fn compute(&self, input_ptr1: *const f32, input_ptr2: *const f32, output_ptr: *mut f32) {
         // print!("f32 runner\n");
 
