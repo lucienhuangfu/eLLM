@@ -5,6 +5,8 @@ use std::rc::Rc;
 
 // use num_traits::ops::inv;
 
+use safetensors::tensor;
+
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
@@ -15,8 +17,9 @@ use crate::init::matmul_params::MatMulParams;
 
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
-use super::super::compiler::mul::attention_mul::AttentionMul;
-use super::super::compiler::mul::mat_mul::MatMul;
+// use super::super::compiler::mul::attention_mul_add::AttentionMul;
+use super::super::compiler::mul::matmul::MatMul;
+use super::super::compiler::mul::matmul3::MatMul3;
 use super::super::compiler::operator::Operator;
 use super::super::compiler::zip_map::add_zip::AddZipMap;
 use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
@@ -259,6 +262,137 @@ where
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
+    }
+
+        pub fn matmul_silu_mul_matmul(
+        &self,
+        tensor2: &Tensor<T>,
+        tensor3: &Tensor<T>,
+        params: MatMulParams,
+        sequence_length: usize,
+        tensor_name: String,
+    ) -> Self {
+        let output_shape = vec![sequence_length, self.shape[1], tensor2.shape[0]];
+
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::MatMul(MatMul::new(
+            self.data,
+            tensor2.data,
+            output_tensor.data,
+            // sequence_length,
+            output_to_kv,
+            params.a_row,
+            params.b_row,
+            params.column,
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+    ) -> Self {
+        let output_shape = vec![sequence_length, self.shape[1], tensor2.shape[0]];
+
+        let output_to_kv = if self.shape[0] <= sequence_length {
+            false
+        } else {
+            true
+        };
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::MatMul(MatMul::new(
+            self.data,
+            tensor2.data,
+            output_tensor.data,
+            // sequence_length,
+            output_to_kv,
+            params.a_row,
+            params.b_row,
+            params.column,
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+
+    pub fn matmul3_rms_complex(
+        &self,
+        query_weight: &Tensor<T>,
+        key_weight: &Tensor<T>,
+        value_weight: &Tensor<T>,
+        position_embedding: &Tensor<T>,
+        sequence_length: usize,
+        head_dim: usize,
+        params: MatMulParams,
+        tensor_name: String,
+    ) -> (Self, Self, Self) {
+        let query_states = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], query_weight.shape[0]],
+            format!("{}.query_tensor", tensor_name.clone()),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let key_states = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], key_weight.shape[0]],
+            format!("{}.key_tensor", tensor_name.clone()),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let value_states = Tensor::from_cache(
+            vec![sequence_length, self.shape[1], value_weight.shape[0]],
+            format!("{}.value_tensor", tensor_name.clone()),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::MatMul3(MatMul3::new(
+            self.data,
+            query_weight.data,
+            query_states.data,
+            key_weight.data,
+            key_states.data,
+            value_weight.data,
+            value_states.data,
+            position_embedding.data,
+            head_dim,
+            self.shape[2],
+            self.shape[3],
+            query_weight.shape[0],
+            key_weight.shape[0],
+            value_weight.shape[0],
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        (query_states, key_states, value_states)
     }
 
     pub fn attention(
@@ -722,16 +856,20 @@ mod test {
         let sequence_chunk_size = 1;
         let batch_size = 10; // 每次批处理 10 个元素
         let hidden_size = 18;
-        let shape = vec![sequence_chunk_size,batch_size, hidden_size];
+        let shape = vec![sequence_chunk_size, batch_size, hidden_size];
         // let strides = vec![hidden_size, 1]; // 对应的步长
-                                            // let length = shape.iter().product(); // 总元素数量
+        // let length = shape.iter().product(); // 总元素数量
 
         let position_index = 0; // 起始位置，根据实际情况可以修改
         let cpu_num = num_cpus::get();
         let length = shape.iter().product();
         // 创建模拟的输入和输出数据
         //let input_data: Vec<f32> = (0..length).map(|x| x as f32).collect();
-        let input_data: Vec<f32> = (1i32..=18i32).cycle().take(length).map(|x| x as f32).collect();
+        let input_data: Vec<f32> = (1i32..=18i32)
+            .cycle()
+            .take(length)
+            .map(|x| x as f32)
+            .collect();
 
         let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
         let mut operator_queue: Vec<Operator<f32>> = Vec::new();
