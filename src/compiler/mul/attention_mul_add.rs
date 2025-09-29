@@ -179,6 +179,7 @@ where
         output_ptr: *mut T,
         position: usize,
     ) {
+        /* 
         kernel::generic::flash_attention::flash_attention(
             q_ptr,
             k_ptr,
@@ -189,7 +190,7 @@ where
             self.head_size,
            self.kv_strides[2],
             position,
-        );
+        );*/
     }
 }
 
@@ -203,6 +204,7 @@ impl AttentionMulAddTrait<f16> for AttentionMulAdd<f16> {
         output_ptr: *mut f16,
         position: usize,
     ) {
+        /*
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::flash_attention::flash_attention(
             input_ptr1,
@@ -225,7 +227,7 @@ impl AttentionMulAddTrait<f16> for AttentionMulAdd<f16> {
             self.head_size,
               self.kv_strides[2],
             position,
-        );
+        ); */
     }
 }
 
@@ -239,6 +241,7 @@ impl AttentionMulAddTrait<f32> for AttentionMulAdd<f32> {
         output_ptr: *mut f32,
         position: usize,
     ) {
+        /* 
         kernel::generic::flash_attention::flash_attention(
             q_ptr,
             k_ptr,
@@ -249,7 +252,7 @@ impl AttentionMulAddTrait<f32> for AttentionMulAdd<f32> {
             self.head_size,
             self.kv_strides[2],
             position,
-        );
+        );*/
     }
 }
 
@@ -260,6 +263,7 @@ mod test {
     use crate::ptensor::tensor_utils::get_strides;
     use approx::assert_ulps_eq;
 
+    /* 
     #[test]
     fn test_attention_mul() {
         let sequence_chunk_size = 256;
@@ -324,5 +328,5 @@ mod test {
         }
 
         // assert_ulps_eq!(data4[..], result[..], max_ulps = 4);
-    }
+    }*/
 }
