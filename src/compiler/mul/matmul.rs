@@ -61,11 +61,12 @@ where
             ptr2: ConstPtr { ptr: ptr2 },
             output_ptr: MutPtr { ptr: output_ptr },
             // sequence_length: sequence_length,
+            a_row,
+            b_row,
+            column,
             output_to_kv: output_to_kv,
             params: MatMulParams {
-                a_row,
-                b_row,
-                column,
+
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,

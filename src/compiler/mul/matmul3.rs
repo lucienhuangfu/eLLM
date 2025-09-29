@@ -74,9 +74,6 @@ where
             b_k_row: b_k_row,
             b_v_row: b_v_row,
             params: MatMulParams {
-                // a_row,
-                // b_row,
-                // column,
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,
@@ -98,9 +95,9 @@ where
         // norm的weight都是1，相当于没有weight,不需要乘以weight
         // c小块的列数需要是head_dim，以便处理norm
 
-        // key: linear
+        // value: linear
 
-        // value: linear -> norm -> complex
+        // key: linear -> norm -> complex
 
         // query: linear -> norm -> complex
     }
