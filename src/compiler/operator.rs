@@ -11,11 +11,12 @@ use super::map::rms_map::RMSMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 use super::mul::attention_mul_add::AttentionMulAdd;
 use super::mul::experts_matmul_merge_add::ExpertsMatMulMergeAdd;
-use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSiluMulMatMul;
+use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
 use super::mul::matmul::MatMul;
 use super::mul::matmul3::MatMul3;
 use super::mul::matmul_add::MatMulAdd;
-use super::mul::matmul_silu_mul_matmul::MatMulSiluMulMatMul;
+use super::mul::matmul_silu_mul_matmul::MatMulSilu;
+use super::mul::matmul_topk::MatMulTopK;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
 use super::zip_map::add_zip::AddZipMap;
 use super::zip_map::complex_zip::ComplexZipMap;
@@ -39,9 +40,10 @@ pub enum Operator<T> {
     MatMul(MatMul<T>),
     MatMulAdd(MatMulAdd<T>),
     MatMul3(MatMul3<T>),
-    MatMulSiluMulMatMul(MatMulSiluMulMatMul<T>),
+    MatMulSiluMulMatMul(MatMulSilu<T>),
+    MatMulTopK(MatMulTopK<T>),
     ExpertsMatMulMergeAdd(ExpertsMatMulMergeAdd<T>),
-    ExpertsMatMulSiluMulMatMul(ExpertsMatMulSiluMulMatMul<T>),
+    ExpertsMatMulSiluMulMatMul(ExpertsMatMulSilu<T>),
 }
 
 impl<T> Operator<T>
@@ -57,7 +59,6 @@ where
         thread_id: usize,
     ) {
         match self {
- 
             Self::AttentionMulAdd(operator) => {
                 operator.run(
                     position_index,
@@ -139,6 +140,15 @@ where
                     thread_id,
                 );
             }
+            Self::MatMulTopK(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
             Self::ExpertsMatMulMergeAdd(operator) => {
                 operator.run(
                     position_index,
@@ -159,7 +169,7 @@ where
             }
 
             /*
-            
+
             Self::ArgmaxReduce(operator) => {
                 operator.run(batch_size, position_index, thread_id);
             },
@@ -171,10 +181,6 @@ where
         }
     }
 }
-
-
-
-
 
 #[cfg(test)]
 mod test {

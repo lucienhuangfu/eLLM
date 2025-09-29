@@ -8,7 +8,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::memory::cache::Cache;
-use crate::compiler::mul::attention_mul_add::AttentionMul;
+use crate::compiler::mul::attention_mul_add::AttentionMulAdd;
 use crate::compiler::operator::Operator;
 
 use super::super::ptensor::linear::Linear;
