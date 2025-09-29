@@ -5,11 +5,10 @@ use std::rc::Rc;
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
-use crate::ptensor::matmul::MatMulParams
 
-
+use super::super::init::matmul_params::MatMulParams;
 use super::super::memory::cache::Cache;
-use super::super::ptensor::linear::Linear;
+// use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 // use super::mlp::MLP;
 use crate::compiler::operator::Operator;

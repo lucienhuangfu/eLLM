@@ -70,9 +70,7 @@ where T: Copy
         let b_row_step_micro = 8;
 
         let params: MatMulParams = MatMulParams {
-            a_row,
-            b_row,
-            column,
+
             a_row_step_macro,
             b_row_step_macro,
             column_step_macro,

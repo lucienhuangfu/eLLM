@@ -1,11 +1,26 @@
 pub trait MatMulTrait<T> {
     fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T);
-    fn compute2(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T, length: usize);
+    fn compute2(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        output_ptr: *mut T,
+        length: usize,
+    );
 }
 
-pub trait AttentionMulAddTrait<T> 
-// where T: Copy + Default + Add<Output = T> + Sub<Output = T> + Mul<Output = T> + Div<Output = T> + PartialOrd + NegInfinity + Exp,
-{
+pub trait MatMulTopKTrait<T> {
+    fn compute(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        output_ptr: *mut T,
+        sum_ptr: *mut T,
+        max_ptr: *mut T,
+    );
+}
+
+pub trait AttentionMulAddTrait<T> {
     fn compute(
         &self,
         q_ptr1: *const T,
@@ -18,9 +33,21 @@ pub trait AttentionMulAddTrait<T>
 }
 
 pub trait MatMul3Trait<T> {
-    fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, input_ptr3: *const T, output_ptr: *mut T);
+    fn compute(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        input_ptr3: *const T,
+        output_ptr: *mut T,
+    );
 }
 
 pub trait MatMul4Trait<T> {
-    fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, input_ptr3: *const T, output_ptr: *mut T);
+    fn compute(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        input_ptr3: *const T,
+        output_ptr: *mut T,
+    );
 }
