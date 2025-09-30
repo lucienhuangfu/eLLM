@@ -1,33 +1,33 @@
+use core_affinity;
 use std::cell::RefCell;
+use std::cell::SyncUnsafeCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
+use std::sync::Barrier;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Instant;
-use std::sync::Barrier;
-use core_affinity;
-use std::cell::SyncUnsafeCell;
 
 // use serde::{Deserialize, Serialize};
 // use hurdles::Barrier;
 // use super::barrier::Barrier;
 // use serde::{Deserialize, Serialize};
 
-
+use super::config::Config;
 use crate::kernel::generic::from_f32::FromF32;
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
-use super::config::Config;
 
-use crate::memory::cache;
-use super::super::compiler::operator::Operator;
 use super::super::compiler::map::rms_map::RMSMap;
+use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
+use super::super::init::matmul_params::MatMulParams;
+use super::super::memory::model_loader::SafeTensorsLoader;
 use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
-use super::model_loader::SafeTensorsLoader;
-use super::transformer_block::TransformerBlock;
+use super::decoder_layer::DecoderLayer;
+
 
 // use super::rope::precompute_freqs_cis;
 
@@ -40,12 +40,11 @@ pub struct Model<T> {
     sequences: Vec<usize>,
     word_embedding: Tensor<T>,
     position_embedding: Tensor<T>,
-    norm_weight: Tensor<T>,
-    output_linear: Linear<T>,
+    // norm_weight: Tensor<T>,
+    lm_head_weight: Tensor<T>,
     scope_name: String,
     pub cache: Rc<RefCell<Cache<T>>>,
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
-
 }
 
 impl<T> Model<T>
@@ -81,7 +80,7 @@ where
         let cache = Rc::new(RefCell::new(Cache::new(tensors)));
 
         let operator_queue: Rc<RefCell<Vec<Operator<T>>>> = Rc::new(RefCell::new(Vec::new()));
-        
+
         // Create default tensors
         let word_embedding = Tensor::zeros(
             vec![config.vocab_size, config.hidden_size],
@@ -109,10 +108,9 @@ where
             operator_queue.clone(),
         );
 
-      
-        let mut layers: Vec<TransformerBlock<T>> = Vec::new();
+        let mut layers: Vec<DecoderLayer<T>> = Vec::new();
         for i in 0..config.num_hidden_layers {
-            layers.push(TransformerBlock::<T>::new(
+            layers.push(DecoderLayer::<T>::new(
                 &config,
                 i,
                 &self.word_embedding,
@@ -123,9 +121,7 @@ where
             ));
         }
 
-
         Self {
-            
             tokens: Vec::new(),
             sequences: vec![0; (config.max_position_embeddings + 1) * config.batch_size],
             output_linear: Linear::<T>::new(
@@ -135,9 +131,9 @@ where
                 1,
                 format!("lm_head"),
                 cache.clone(),
-                operator_queue.clone()
+                operator_queue.clone(),
             ),
-            
+
             position_embedding: position_embedding,
             word_embedding: word_embedding,
             norm_weight: norm_weight,
@@ -153,51 +149,45 @@ where
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
+        let mut hidden_state = Tensor::<T>::zeros(
+            vec![self.config.batch_size, self.config.hidden_size],
+            format!("{}.norm.weight", self.scope_name),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
 
-        let mut hidden_state =
-            Tensor::<T>::zeros(vec![self.config.batch_size, self.config.hidden_size], format!("{}.norm.weight", self.scope_name),self.cache.clone(), self.operator_queue.clone());
-        for (i, layer_module) in layer_vec.iter().enumerate() {
+        for (i, layer_module) in self.layer_vec.iter().enumerate() {
             hidden_state = layer_module.forward(
                 &hidden_state,
-            self.sequences.as_mut_ptr(),
+                self.sequences.as_mut_ptr(),
                 format!("{}.hidden_states.{}", self.scope_name, i),
             );
             // all_hidden_states.push(hidden_states);
         }
 
-
-        // hidden_states.last().unwrap().to_owned();
-
         let norm_state = hidden_state.rms(
-            self.norm_weight.data, self.rms_norm_eps,
-            format!("{}.norm_hidden.output", self.scope_name)
+            self.rms_norm_eps,
+            format!("{}.norm_hidden.output", self.scope_name),
         );
-        
-        
-  
-        /*
-        let logits = self
-            .output_linear
-            .forward(&norm_output, format!("{}.lm_head.output", self.scope_name));
 
-        unsafe {
-            logits.reduce(
-                sequences.add(self.config.batch_size),
-                self.config.max_position_embeddings,
-                Operator::ArgmaxReduce(ArgmaxReduce::new(
-                    self.config.hidden_size,
-                    self.config.batch_size,
-                    self.cpu_num,
-                )),
-                format!("{}.argmax.weight", self.scope_name),
-            );
-        }*/
+        let (topk_indices, topk_values) = norm_state.matmul_topk(
+            &self.lm_head_weight,
 
-        norm_state
+            MatMulParams {
+                a_row_step_macro: 16,
+                b_row_step_macro: 16,
+                column_step_macro: 16,
+                a_row_step_micro: 8,
+                b_row_step_micro: 8,
+            },
+            format!("{}.lm_head.output", self.scope_name),
+        );
+
+        let (topk_indice, topk_value) =
+            topk_indices.softmax(topk_values, format!("{}.softmax.output", self.scope_name));
+
+        (topk_indice, topk_value)
     }
-
-  
-
 }
 
 // unsafe impl<T: Copy + Default + Send + Sync> Send for Transformer<T> {}
@@ -216,40 +206,38 @@ mod test {
     use crate::memory::cache::Cache;
     use crate::ptensor::tensor::Tensor;
 
-       #[test]
-       fn test_model_forward() {
-           // let cpu_num =  thread::available_parallelism().unwrap().get();
-           let mut config: Config = Config::new();
-           config.load_model_config(r"models/Llama-2-7b-hf/config.json");
-           config.load_compile_config(r"models/Llama-2-7b-hf.json");
+    #[test]
+    fn test_model_forward() {
+        // let cpu_num =  thread::available_parallelism().unwrap().get();
+        let mut config: Config = Config::new();
+        config.load_model_config(r"models/Llama-2-7b-hf/config.json");
+        config.load_compile_config(r"models/Llama-2-7b-hf.json");
 
-           let mut model = Transformer::<f32>::new(
-               config.clone(),
-               // word_embedding,
-               // position_embedding,
-               // norm_weight,
-               // cpu_num,
-               // cache.clone(),
-               // operator_queue.clone(),
-           );
+        let mut model = Transformer::<f32>::new(
+            config.clone(),
+            // word_embedding,
+            // position_embedding,
+            // norm_weight,
+            // cpu_num,
+            // cache.clone(),
+            // operator_queue.clone(),
+        );
 
-           // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-           // let mut sequences = allocate_init::<usize>((config.max_position_embeddings + 1)*config.batch_size, 0);
-           let output_tensor = unsafe {
-               model.build()
-           };
-           /*
-           let thread_num: usize = num_cpus::get();
-           for operator in output_tensor.operator_queue.borrow().iter() {
-               for i in 0..thread_num {
-                   operator.run(1, 0, i);
-               }
-           }
-            */
-           // Add assertions to verify the output_tensor
-           // For example:
-           // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
-       }
+        // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
+        // let mut sequences = allocate_init::<usize>((config.max_position_embeddings + 1)*config.batch_size, 0);
+        let output_tensor = unsafe { model.build() };
+        /*
+        let thread_num: usize = num_cpus::get();
+        for operator in output_tensor.operator_queue.borrow().iter() {
+            for i in 0..thread_num {
+                operator.run(1, 0, i);
+            }
+        }
+         */
+        // Add assertions to verify the output_tensor
+        // For example:
+        // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
+    }
 
     /*
        #[test]

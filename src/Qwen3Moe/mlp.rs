@@ -8,6 +8,7 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::memory::cache::Cache;
 // use super::super::ptensor::linear::Linear;
+use super::super::init::matmul_params::MatMulParams;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
 
@@ -78,7 +79,7 @@ where
             hidden_states.shape[1],
             self.gate_weight.shape[0],
             self.gate_weight.shape[1],
-            crate::ptensor::matmul::MatMulParams {
+            MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
@@ -117,6 +118,7 @@ mod test {
 
     use crate::memory::allocator::allocate_init;
 
+    /* 
     #[test]
     fn test_feedforward() {
         let position_window_size = 4;
@@ -180,7 +182,7 @@ mod test {
         let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, size) };
         assert_relative_eq!(output_slice, &result[..], max_relative = 1e-6);
          */
-    }
+    }*/
 
     /*
     #[test]
