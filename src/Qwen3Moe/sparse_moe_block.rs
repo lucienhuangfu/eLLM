@@ -83,17 +83,19 @@ where
     pub fn forward(
         &self,
         hidden_states: &Tensor<T>,
+        residual: &Tensor<T>,
         tensor_name: String,
     ) -> Tensor<T> {
 
 
-        let (gate_output, sum) = hidden_states.matmul_topk(self.gate_weight, format!("{}.gate_output", self.scope_name));
+        let (gate_output, sum_tensor, max_tensor) = hidden_states.matmul_topk(self.gate_weight, format!("{}.gate_output", self.scope_name));
 
-        let (topk_values, topk_indices) = gate_output.softmax_norm(format!("{}.router_probs", self.scope_name));
+        let (topk_indices, topk_values) = gate_output.experts_softmax_norm(&sum_tensor, &max_tensor, format!("{}.router_probs", self.scope_name));
         
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
             &self.experts_up_weight,
+            &topk_indices,
             MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
@@ -101,12 +103,14 @@ where
                 a_row_step_micro: 8,
                 b_row_step_micro: 8,
             },
-            &topk_indices,
+            
             format!("{}.gate_up", self.scope_name),
         );
 
         let down_product = nonlinear_product.experts_matmul_merge_add(
             &self.experts_down_weight,
+                      &topk_indices,
+            &topk_values,
             residual,
             MatMulParams {
                 a_row_step_macro: 16,
@@ -115,8 +119,6 @@ where
                 a_row_step_micro: 8,
                 b_row_step_micro: 8,
             },
-            &topk_indices,
-            &topk_values,
             format!("{}.down", self.scope_name),
         );
         down_product

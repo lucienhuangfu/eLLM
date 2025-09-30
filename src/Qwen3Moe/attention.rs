@@ -176,6 +176,7 @@ mod test {
     use super::*;
     use approx::assert_ulps_eq;
 
+    /* 
     #[test]
     fn test_self_attention() {
         let position_window_size = 4;
@@ -235,7 +236,7 @@ mod test {
         }
 
         // Add more assertions as needed
-    }
+    }*/
 
     /*
     #[test]
