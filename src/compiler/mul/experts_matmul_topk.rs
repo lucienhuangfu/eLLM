@@ -1,3 +1,4 @@
+
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
@@ -19,9 +20,6 @@ pub struct MatMulTopK<T> {
     output_ptr: MutPtr<T>,
     sum_ptr: MutPtr<T>,
     max_ptr: MutPtr<T>,
-    a_row: usize,
-    b_row: usize,
-    column: usize,
     pub params: MatMulParams,
     _marker: PhantomData<T>,
 }
@@ -72,9 +70,10 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
-        // 任务数远大于核数，每个核分配多个任务，但是只写一份结果
-        //  c小块的列数最小16，写满avx512寄存器,, 只存8个
-        // output [sequence_chunk_size, batch_size, thread_num, topk_size]
+        // 任务数小于核数，每个核分配一个任务，写一份结果
+        //  c小块的列数最小16，写满avx512寄存器, 只存8个
+        // output [sequence_chunk_size, batch_size, task_num, topk_size]
+
         /*
         let (mut a_chunk_num, remainder) = (self.params.a_row / self.params.a_row_step_macro, self.params.a_row % self.params.a_row_step_macro);
         if remainder > 0 {
@@ -100,15 +99,8 @@ impl<T> MatMulTopKTrait<T> for MatMulTopK<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
-    default fn compute(
-        &self,
-        input_ptr1: *const T,
-        input_ptr2: *const T,
-        output_ptr: *mut T,
-        sum_ptr: *mut T,
-        max_ptr: *mut T,
-    ) {
-        /*
+    default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T, sum_ptr: *mut T, max_ptr: *mut T ) {
+        /* 
         //print!("generic runner\n");
         kernel::generic::matmul_block::matmul_block(
             input_ptr1,
@@ -117,17 +109,11 @@ where
             &(self.params),
         );*/
     }
+
 }
 
 impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
-    fn compute(
-        &self,
-        input_ptr1: *const f16,
-        input_ptr2: *const f16,
-        output_ptr: *mut f16,
-        sum_ptr: *mut f16,
-        max_ptr: *mut f16,
-    ) {
+    fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16, sum_ptr: *mut f16, max_ptr: *mut f16) {
         /*
         // print!("f16 runner\n");
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
@@ -147,17 +133,12 @@ impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
             &(self.params),
         ); */
     }
+
+
 }
 
-impl MatMulTopKTrait<f32> for MatMulTopK<f32> {
-    fn compute(
-        &self,
-        input_ptr1: *const f32,
-        input_ptr2: *const f32,
-        output_ptr: *mut f32,
-        sum_ptr: *mut f32,
-        max_ptr: *mut f32,
-    ) {
+impl MatMulopKTrait<f32> for MatMulTopK<f32> {
+    fn compute(&self, input_ptr1: *const f32, input_ptr2: *const f32, output_ptr: *mut f32, sum_ptr: *mut f32, max_ptr: *mut f32) {
         // print!("f32 runner\n");
 
         /*//implementation for f32 on platform with avx2
@@ -169,6 +150,8 @@ impl MatMulTopKTrait<f32> for MatMulTopK<f32> {
         // #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]*/
         // generic_matmul_block(input_ptr1, input_ptr2, output_ptr, &(self.params));
     }
+
+
 }
 
 #[cfg(test)]
@@ -176,6 +159,7 @@ mod tests {
     use super::*;
     // use std::thread;
 
+    
     /*
     #[test]
     fn test_f32_chunk() {
@@ -583,4 +567,6 @@ mod tests {
             //println!();
         }
     } */
+
+
 }
