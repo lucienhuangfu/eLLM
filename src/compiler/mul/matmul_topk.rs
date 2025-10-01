@@ -16,9 +16,9 @@ use super::mul_trait::MatMulTopKTrait;
 pub struct MatMulTopK<T> {
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
-    output_ptr: MutPtr<T>,
+    indice_ptr: MutPtr<T>,
+    value_ptr: MutPtr<T>,
     sum_ptr: MutPtr<T>,
-    max_ptr: MutPtr<T>,
     a_row: usize,
     b_row: usize,
     column: usize,
@@ -32,9 +32,9 @@ where
     pub fn new(
         ptr1: *const T,
         ptr2: *const T,
-        output_ptr: *mut T,
+        indice_ptr: *mut T,
+        value_ptr: *mut T,
         sum_ptr: *mut T,
-        max_ptr: *mut T,
         a_row: usize,
         b_row: usize,
         column: usize,
@@ -47,9 +47,9 @@ where
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             ptr2: ConstPtr { ptr: ptr2 },
-            output_ptr: MutPtr { ptr: output_ptr },
+            indice_ptr: MutPtr { ptr: indice_ptr },
+            value_ptr: MutPtr { ptr: value_ptr },
             sum_ptr: MutPtr { ptr: sum_ptr },
-            max_ptr: MutPtr { ptr: max_ptr },
             a_row,
             b_row,
             column,
@@ -104,9 +104,10 @@ where
         &self,
         input_ptr1: *const T,
         input_ptr2: *const T,
-        output_ptr: *mut T,
+        indice_ptr: *mut T,
+        value_ptr: *mut T,
         sum_ptr: *mut T,
-        max_ptr: *mut T,
+       
     ) {
         /*
         //print!("generic runner\n");
@@ -124,9 +125,10 @@ impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
         &self,
         input_ptr1: *const f16,
         input_ptr2: *const f16,
-        output_ptr: *mut f16,
+        indice_ptr: *mut f16,
+        value_ptr: *mut f16,
         sum_ptr: *mut f16,
-        max_ptr: *mut f16,
+
     ) {
         /*
         // print!("f16 runner\n");
@@ -154,9 +156,9 @@ impl MatMulTopKTrait<f32> for MatMulTopK<f32> {
         &self,
         input_ptr1: *const f32,
         input_ptr2: *const f32,
-        output_ptr: *mut f32,
+        indice_ptr: *mut f32,
+        value_ptr: *mut f32,
         sum_ptr: *mut f32,
-        max_ptr: *mut f32,
     ) {
         // print!("f32 runner\n");
 
