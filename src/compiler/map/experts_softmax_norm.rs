@@ -10,9 +10,8 @@ use crate::kernel::generic::sqrt::Sqrt;
 #[derive(Clone)]
 pub struct ExpertsSoftmaxNorm<T> {
     ptr1: ConstPtr<T>,
-    sum_ptr: ConstPtr<T>,
-    max_ptr: ConstPtr<T>,
-    output_ptr: MutPtr<T>,
+    indice_ptr: MutPtr<T>,
+    value_ptr: MutPtr<T>,
     batch_size: usize,
     topk_size: usize,
 }
@@ -20,21 +19,20 @@ pub struct ExpertsSoftmaxNorm<T> {
 impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
     pub fn new(
         ptr1: *const T,
-        sum_ptr: *const T,
-        output_ptr: *mut T,
-        max_ptr: *const T,
+        indice_ptr: *mut T,
+        value_ptr: *mut T,
         batch_size: usize,
         topk_size: usize,
     ) -> Self {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
-            sum_ptr: ConstPtr { ptr: sum_ptr },
-            max_ptr: ConstPtr { ptr: max_ptr },
-            output_ptr: MutPtr { ptr: output_ptr },
+            indice_ptr: MutPtr { ptr: indice_ptr },
+            value_ptr: MutPtr { ptr: value_ptr },
             batch_size,
             topk_size,
         }
     }
+
 
     pub fn run(
         &self,
@@ -69,7 +67,7 @@ impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
 }
 
 impl<T: Sqrt> SoftmaxTrait<T> for ExpertsSoftmaxNorm<T> {
-    default fn compute(&self, input_ptr: *const T, sum_ptr: *const T, max_ptr: *const T, output_ptr: *mut T, length: usize) {
+    default fn compute(&self, input_ptr: *const T, indice_ptr: *mut T, value_ptr: *mut T, length: usize) {
         /* 
         kernel::generic::softmax::softmax(
             input_ptr,
@@ -82,7 +80,7 @@ impl<T: Sqrt> SoftmaxTrait<T> for ExpertsSoftmaxNorm<T> {
 }
 
 impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
-    fn compute(&self, input_ptr: *const f16, sum_ptr: *const f16, max_ptr: *const f16, output_ptr: *mut f16, length: usize) {
+    fn compute(&self, input_ptr: *const f16, indice_ptr: *mut f16, value_ptr: *mut f16, length: usize) {
         /* 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::softmax::softmax(
@@ -105,7 +103,7 @@ impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
 }
 
 impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
-    fn compute(&self, input_ptr: *const f32, sum_ptr: *const f32, max_ptr: *const f32, output_ptr: *mut f32, length: usize) {
+    fn compute(&self, input_ptr: *const f32, indice_ptr: *mut f32, value_ptr: *mut f32, length: usize) {
         /*
         kernel::generic::softmax::softmax(
             input_ptr,
@@ -117,6 +115,7 @@ impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
     }
 }
 
+/*
 impl SoftmaxTrait<f64> for ExpertsSoftmaxNorm<f64> {
     fn compute(&self, input_ptr: *const f64, sum_ptr: *const f64, max_ptr: *const f64, output_ptr: *mut f64, length: usize) {
         kernel::generic::softmax::softmax(
@@ -127,7 +126,7 @@ impl SoftmaxTrait<f64> for ExpertsSoftmaxNorm<f64> {
             length,
         );
     }
-}
+} */
 
 #[cfg(test)]
 mod test {

@@ -72,13 +72,9 @@ where
         residual: &Tensor<T>,
         tensor_name: String,
     ) -> Tensor<T> {
-
         let nonlinear_product = hidden_states.matmul_silu_mul_matmul(
             &self.gate_weight,
             &self.up_weight,
-            hidden_states.shape[1],
-            self.gate_weight.shape[0],
-            self.gate_weight.shape[1],
             MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
@@ -92,10 +88,7 @@ where
         let down_product = nonlinear_product.matmul_add(
             &self.down_weight,
             residual,
-            hidden_states.shape[1],
-            self.gate_weight.shape[0],
-            self.gate_weight.shape[1],
-            crate::ptensor::matmul::MatMulParams {
+            MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
@@ -118,7 +111,7 @@ mod test {
 
     use crate::memory::allocator::allocate_init;
 
-    /* 
+    /*
     #[test]
     fn test_feedforward() {
         let position_window_size = 4;
