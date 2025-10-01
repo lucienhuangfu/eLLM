@@ -250,6 +250,7 @@ where
                         let tiles_m = (m + mb - 1) / mb;
                         let tiles_n = (n + nb - 1) / nb;
 
+
                         for tm in 0..tiles_m {
                             for tn in 0..tiles_n {
                                 let m0 = tm * mb;
@@ -258,6 +259,7 @@ where
                                 let m_blk = (m - m0).min(mb);
                                 let n_blk = (n - n0).min(nb);
                                 debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
+
 
                                 let mut k0 = 0;
                                 while k0 < k {

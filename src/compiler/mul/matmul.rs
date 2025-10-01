@@ -20,6 +20,7 @@ pub struct MatMul<T> {
     pub output_ptr: MutPtr<T>,   // C[S×M×N] 首地址
     pub output_to_kv: bool,      // 保持兼容
     /// 注意：`params` 仅承载 **step 形状**（MB/NB/KC/MR/NR）
+
     pub params: MatMulParams,
     pub _marker: PhantomData<T>,
 
@@ -69,6 +70,7 @@ where
             output_ptr: MutPtr { ptr: output_ptr },
             output_to_kv,
             params,
+
             _marker: PhantomData,
             m_max,
             n_max,
@@ -308,6 +310,7 @@ mod innteg_tests {
     fn all_close(a: &[f16], b: &[f16], tol: f32) -> bool {
         a.len() == b.len() && a.iter().zip(b).all(|(x,y)| (to_f32(*x)-to_f32(*y)).abs() <= tol)
     }
+
 
     /// 单序列整除路径：验证 run + compute（compute 内部组装调用 param）
     #[test]

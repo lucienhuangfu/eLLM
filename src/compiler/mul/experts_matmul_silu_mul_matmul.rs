@@ -74,6 +74,7 @@ where
     ) {
 
         // 跟mlp类似
+        // ptr2 [sequence_chunk_size, batch_size, num_experts, intermediate_size]
         // output [sequence_chunk_size, batch_size, num_experts_per_tok, intermediate_size]
     }
 }
