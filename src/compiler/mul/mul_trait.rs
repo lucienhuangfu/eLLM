@@ -14,9 +14,9 @@ pub trait MatMulTopKTrait<T> {
         &self,
         input_ptr1: *const T,
         input_ptr2: *const T,
-        output_ptr: *mut T,
+        indice_ptr: *mut T,
+        value_ptr: *mut T,
         sum_ptr: *mut T,
-        max_ptr: *mut T,
     );
 }
 

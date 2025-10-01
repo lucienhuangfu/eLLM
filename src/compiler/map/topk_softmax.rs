@@ -8,28 +8,28 @@ use crate::kernel::generic::from_usize::FromUsize;
 use crate::kernel::generic::sqrt::Sqrt;
 
 #[derive(Clone)]
-pub struct Softmax<T> {
-    ptr1: ConstPtr<T>,
+pub struct TopKSoftmax<T> {
+    indice_ptr: ConstPtr<T>,
+    value_ptr: ConstPtr<T>,
     sum_ptr: ConstPtr<T>,
-    max_ptr: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     batch_size: usize,
     topk_size: usize,
 }
 
-impl<T: Sqrt> Softmax<T> {
+impl<T: Sqrt> TopKSoftmax<T> {
     pub fn new(
-        ptr1: *const T,
+        indice_ptr: *const T,
+        value_ptr: *const T,
         sum_ptr: *const T,
         output_ptr: *mut T,
-        max_ptr: *const T,
         batch_size: usize,
         topk_size: usize,
     ) -> Self {
         Self {
-            ptr1: ConstPtr { ptr: ptr1 },
+            indice_ptr: ConstPtr { ptr: indice_ptr },
+            value_ptr: ConstPtr { ptr: value_ptr },
             sum_ptr: ConstPtr { ptr: sum_ptr },
-            max_ptr: ConstPtr { ptr: max_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
             batch_size,
             topk_size,
@@ -69,7 +69,7 @@ impl<T: Sqrt> Softmax<T> {
 }
 
 impl<T: Sqrt> SoftmaxTrait<T> for Softmax<T> {
-    default fn compute(&self, input_ptr: *const T, sum_ptr: *const T, max_ptr: *const T, output_ptr: *mut T, length: usize) {
+    default fn compute(&self, indice_ptr: *const T, value_ptr: *const T, sum_ptr: *const T, output_ptr: *mut T, length: usize) {
         /* 
         kernel::generic::softmax::softmax(
             input_ptr,
@@ -81,8 +81,8 @@ impl<T: Sqrt> SoftmaxTrait<T> for Softmax<T> {
     }
 }
 
-impl SoftmaxTrait<f16> for Softmax<f16> {
-    fn compute(&self, input_ptr: *const f16, sum_ptr: *const f16, max_ptr: *const f16, output_ptr: *mut f16, length: usize) {
+impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
+    fn compute(&self, indice_ptr: *const f16, value_ptr: *const f16, sum_ptr: *const f16, output_ptr: *mut f16, length: usize) {
         /* 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::softmax::softmax(
@@ -104,8 +104,8 @@ impl SoftmaxTrait<f16> for Softmax<f16> {
     }
 }
 
-impl SoftmaxTrait<f32> for Softmax<f32> {
-    fn compute(&self, input_ptr: *const f32, sum_ptr: *const f32, max_ptr: *const f32, output_ptr: *mut f32, length: usize) {
+impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
+    fn compute(&self, indice_ptr: *const f32, value_ptr: *const f32, sum_ptr: *const f32, output_ptr: *mut f32, length: usize) {
         /*
         kernel::generic::softmax::softmax(
             input_ptr,
@@ -117,15 +117,16 @@ impl SoftmaxTrait<f32> for Softmax<f32> {
     }
 }
 
-impl SoftmaxTrait<f64> for Softmax<f64> {
-    fn compute(&self, input_ptr: *const f64, sum_ptr: *const f64, max_ptr: *const f64, output_ptr: *mut f64, length: usize) {
+impl TopKSoftmaxTrait<f64> for TopKSoftmax<f64> {
+    fn compute(&self, indice_ptr: *const f64, value_ptr: *const f64, sum_ptr: *const f64, output_ptr: *mut f64, length: usize) {
+        /*
         kernel::generic::softmax::softmax(
             input_ptr,
             sum_ptr.ptr,
             max_ptr.ptr,
             output_ptr,
             length,
-        );
+        ); */
     }
 }
 

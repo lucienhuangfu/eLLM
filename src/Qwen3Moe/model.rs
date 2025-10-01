@@ -170,7 +170,7 @@ where
             format!("{}.norm_hidden.output", self.scope_name),
         );
 
-        let (topk_indices, topk_values) = norm_state.matmul_topk(
+        let (indice_tensor, value_tensor, sum_tensor) = norm_state.matmul_topk(
             &self.lm_head_weight,
 
             MatMulParams {
@@ -184,7 +184,7 @@ where
         );
 
         let (topk_indice, topk_value) =
-            topk_indices.softmax(topk_values, format!("{}.softmax.output", self.scope_name));
+            indice_tensor.topk_softmax(value_tensor, sum_tensor, format!("{}.softmax.output", self.scope_name));
 
         (topk_indice, topk_value)
     }

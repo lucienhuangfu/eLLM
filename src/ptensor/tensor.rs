@@ -301,7 +301,7 @@ where
         tensor2: &Tensor<T>,
         tensor3: &Tensor<T>,
         params: MatMulParams,
-        sequence_length: usize,
+        // sequence_length: usize,
         tensor_name: String,
     ) -> Self {
         let output_shape = vec![sequence_length, self.shape[1], tensor2.shape[0]];
@@ -318,7 +318,6 @@ where
             tensor2.data,
             tensor3.data,
             output_tensor.data,
-            output_to_kv,
             params.a_row,
             params.b_row,
             params.column,
@@ -340,7 +339,16 @@ where
         params: MatMulParams,
         tensor_name: String,
     ) -> Self {
-        let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[1]];
+
+        // hidden_tensor [sequence_chunk_size, batch_size, hidden_size]
+        // tensor2 [intermediate_size, hidden_size]
+        // output [sequence_chunk_size, batch_size, intermediate_size]
+
+        let a_row = self.shape[1];
+        let b_row = tensor2.shape[0];
+        let column = self.shape[2];
+
+        let output_shape = vec![self.shape[0], a_row, b_row];
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
@@ -349,15 +357,14 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMulSilu(MatMulSilu::new(
+        let operator = Operator::MatMulSiluMulMatMul(MatMulSilu::new(
             self.data,
             tensor2.data,
             tensor3.data,
-            tensor4.data,
             output_tensor.data,
-            params.a_row,
-            params.b_row,
-            params.column,
+            a_row,
+            b_row,
+            column,
             params.a_row_step_macro,
             params.b_row_step_macro,
             params.column_step_macro,
@@ -373,14 +380,24 @@ where
         &self,
         tensor2: &Tensor<T>,
         params: MatMulParams,
-        sequence_length: usize,
+        thread_num: usize,
         tensor_name: String,
-        sum_tensor_name: String,
-        max_tensor_name: String,
     ) -> (Self, Self, Self) {
-        let output_shape = vec![sequence_length, self.shape[1], tensor2.shape[0]];
+        let a_row = self.shape[1];
+        let b_row = tensor2.shape[1];
+        let column = self.shape[2];
 
-        let output_tensor = Tensor::from_cache(
+        let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
+
+        let indice_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+
+        let value_tensor = Tensor::from_cache(
             output_shape.clone(),
             tensor_name,
             self.cache.clone(),
@@ -388,28 +405,23 @@ where
         );
 
         let sum_tensor = Tensor::from_cache(
-            vec![sequence_length, self.shape[1]],
-            sum_tensor_name,
+            vec![self.shape[0], self.shape[1], thread_num],
+            tensor_name,
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
-        let max_tensor = Tensor::from_cache(
-            vec![sequence_length, self.shape[1]],
-            max_tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
+
 
         let operator = Operator::MatMulTopK(MatMulTopK::new(
             self.data,
             tensor2.data,
-            output_tensor.data,
+            indice_tensor.data,
+            value_tensor.data,
             sum_tensor.data,
-            max_tensor.data,
-            params.a_row,
-            params.b_row,
-            params.column,
+            a_row,
+            b_row,
+            column,
             params.a_row_step_macro,
             params.b_row_step_macro,
             params.column_step_macro,
@@ -418,7 +430,7 @@ where
         ));
 
         self.operator_queue.borrow_mut().push(operator);
-        (output_tensor, sum_tensor, max_tensor)
+        (indice_tensor, value_tensor, sum_tensor)
     }
 
     pub fn permute(&self, dims: Vec<usize>) -> Self {
