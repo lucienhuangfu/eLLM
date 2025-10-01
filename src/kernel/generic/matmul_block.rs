@@ -1,189 +1,128 @@
 use super::super::super::init::matmul_params::MatMulParams;
-// use num_traits::Float;
 use std::ops::{Add, Mul};
 
+/// 通用微核（与 AVX-512 版本对齐的“广播式”语义）
+///
+/// 计算一个  (MR = param.a_row_step_micro) × (NR = param.b_row_step_micro)  的 C 子块：
+///
+///  - A_tile:  [MR x Kc]，行主，行距 = `lda = param.a_row_step_macro`
+///  - B_panel: [Kc x NR]，行主打包，行距 = `NR = param.b_row_step_micro`
+///  - C_tile:  [MR x NR]，行主，行距 = `ldc = param.b_row_step_macro`
+///  - Kc = `param.column_step_macro`
+///
+/// 注意：这里的 `b` 必须是 **打包面板**（Kc×NR，行主），与 AVX-512 微核一致。
 pub fn matmul_block<T>(a: *const T, b: *const T, c: *mut T, param: &MatMulParams)
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
-    for i in 0..param.a_row_step_micro {
-        for j in 0..param.b_row_step_micro {
-            for k in 0..param.column_step_macro {
-                unsafe {
-                    /*assert!(
-                        i * column + k < param.a_row * param.column,
-                        "a index out of bound"
-                    );
-                    assert!(
-                        j * column + k < param.b_row * param.column,
-                        "b index out of bound"
-                    );
-                    assert!(
-                        i * c_column + j < param.a_row * param.b_row,
-                        "c index out of bound"
-                    );*/
-                    let a_value = *a.offset((i * param.column + k) as isize);
-                    let b_value = *b.offset((j * param.column + k) as isize);
-                    let c_value = *c.offset((i * param.b_row + j) as isize);
-                    *c.offset((i * param.b_row + j) as isize) = c_value + (a_value * b_value);
-                }
+    let mr = param.a_row_step_micro;     // 行数
+    let nr = param.b_row_step_micro;     // 列数
+    let kc = param.column_step_macro;    // K 面板长度
+
+    let lda = param.a_row_step_macro;    // A 行距（元素计）
+    let ldc = param.b_row_step_macro;    // C 行距（元素计）
+
+    // B_panel 的行距就是 NR（行主打包；每行存 NR 个元素）
+    let ldb_panel = nr;
+
+    for i in 0..mr {
+        for j in 0..nr {
+            // 读 C[i,j] 作为累加起点（保持 += 语义）
+            let mut acc = unsafe { *c.add((i * ldc + j) as usize) };
+            for k in 0..kc {
+                // A[i,k]
+                let a_value = unsafe { *a.add((i * lda + k) as usize) };
+                // B_panel[k,j]  —— 行主面板，偏移 = k * NR + j
+                let b_value = unsafe { *b.add((k * ldb_panel + j) as usize) };
+                acc = acc + (a_value * b_value);
             }
+            // 回写 C[i,j]
+            unsafe { *c.add((i * ldc + j) as usize) = acc };
         }
     }
 }
 
-//test whether this organization can distribute the implementation of matmul_block to different platform
 #[cfg(test)]
 mod tests {
     use super::*;
-    // use std::f16;
-    /*
-    // Helper function to compare two f16 arrays with a tolerance
-    fn compare_f16_arrays(arr1: &[f16], arr2: &[f16], tolerance: f32) -> bool {
-        if arr1.len() != arr2.len() {
-            return false;
-        }
-        for (a, b) in arr1.iter().zip(arr2.iter()) {
-            let diff = (f32::from(*a) - f32::from(*b)).abs();
-            if diff > tolerance {
-                return false;
-            }
-        }
-        true
-    }
 
+    /// f32：MR=3, NR=2, Kc=3，A/B 都是 1 → C 全部等于 Kc
     #[test]
-    fn test_f16_general() {
-        // a is     a 3 * 3 matrix, data type is f16, all elements are 1, stored in row-major order
-        // b is     a 2 * 3 matrix, data type is f16, all elements are 1, stored in row-major order
-        // expected a 3 * 2 matrix, data type is f16, all elements are 3, stored in row-major order
-        // c is     a 3 * 2 matrix, data type is f16, all elements are 0, stored in row-major order
-        let a_row = 3;
-        let b_row = 2;
-        let column = 3;
-        let param = MatMulParams{
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro: 3,
-            b_row_step_macro: 2,
-            column_step_macro: 3,
-            a_row_step_micro: 3,
-            b_row_step_micro: 2,
-        };
+    fn test_f32_panel_microkernel_like() {
+        // 参数：MR, NR, Kc
+        let mr = 3usize;
+        let nr = 2usize;
+        let kc = 3usize;
 
-        let a = vec![1.0); a_row * column];
-        let b = vec![1.0); b_row * column];
-        let expected = vec![3.0); a_row * b_row];
-        let mut c = vec![0.0); a_row * b_row];
+        // 行距：这里构造紧致 tile/panel，取 lda=Kc，ldc=NR
+        let lda = kc;
+        let ldc = nr;
 
-        // prepare arguments for _matmul_block
-        let a_ptr = a.as_ptr();
-        let b_ptr = b.as_ptr();
-        let c_ptr = c.as_mut_ptr();
-
-        // call _matmul_block
-        matmul_block(a_ptr, b_ptr, c_ptr, &param);
-        // print out c
-        for i in 0..a_row {
-            for j in 0..b_row {
-                let index = i * b_row + j;
-                println!("c[{}, {}] = {}", i, j, c[index]);
-            }
-        }
-        // Compare c with the expected result using a tolerance
-        let tolerance = 0.001;
-        assert!(
-            compare_f16_arrays(&c, &expected, tolerance),
-            "Matrices are not equal"
-        );
-    } */
-
-    //test for f32 avx2
-    #[test]
-    fn test_f32_general() {
-        // a is     a 3 * 3 matrix, data type is f32, all elements are 1, stored in row-major order
-        // b is     a 2 * 3 matrix, data type is f32, all elements are 1, stored in row-major order
-        // expected a 3 * 2 matrix, data type is f32, all elements are 3, stored in row-major order
-        // c is     a 3 * 2 matrix, data type is f32, all elements are 0, stored in row-major order
-        let a_row = 3;
-        let b_row = 2;
-        let column = 3;
+        // 仅 5 字段（把 lda/ldc/kc 映射进去）
         let param = MatMulParams {
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro: 3,
-            b_row_step_macro: 2,
-            column_step_macro: 3,
-            a_row_step_micro: 3,
-            b_row_step_micro: 2,
+            a_row_step_macro: lda,    // ← lda
+            b_row_step_macro: ldc,    // ← ldc
+            column_step_macro: kc,    // ← kc
+            a_row_step_micro: mr,     // ← MR
+            b_row_step_micro: nr,     // ← NR
         };
 
-        let a = vec![1.0f32; a_row * column];
-        let b = vec![1.0f32; b_row * column];
-        let expected = vec![3.0f32; a_row * b_row];
-        let mut c = vec![0.0f32; a_row * b_row];
+        // A_tile: [MR x Kc]，全 1
+        let a: Vec<f32> = vec![1.0; mr * kc];
+        // B_panel: [Kc x NR]，行主，行距=NR，全 1
+        let b_panel: Vec<f32> = vec![1.0; kc * nr];
+        // C_tile: [MR x NR]，行主，初始 0
+        let mut c: Vec<f32> = vec![0.0; mr * ldc];
 
-        // prepare arguments for _matmul_block
-        let a_ptr = a.as_ptr();
-        let b_ptr = b.as_ptr();
-        let c_ptr = c.as_mut_ptr();
+        // 调用
+        matmul_block(a.as_ptr(), b_panel.as_ptr(), c.as_mut_ptr(), &param);
 
-        // call _matmul_block
-        matmul_block(a_ptr, b_ptr, c_ptr, &param);
-        // c should be equal to expected
-        // Compare c with the expected result using a tolerance
-        let tolerance = 0.001;
+        // 期望全部为 kc
+        let expected: Vec<f32> = vec![kc as f32; mr * ldc];
+        let tol = 1e-6f32;
         assert!(
             c.iter()
                 .zip(expected.iter())
-                .all(|(a, b)| (a - b).abs() < tolerance),
-            "Matrices are not equal"
+                .all(|(x, y)| (*x - *y).abs() < tol),
+            "f32 panel microkernel expected all {}: got {:?}",
+            kc,
+            &c[..]
         );
     }
 
-    //test for f64 general
+    /// f64：MR=3, NR=2, Kc=3，同上
     #[test]
-    fn test_f64_general() {
-        // a is     a 3 * 3 matrix, data type is f64, all elements are 1, stored in row-major order
-        // b is     a 2 * 3 matrix, data type is f64, all elements are 1, stored in row-major order
-        // expected a 3 * 2 matrix, data type is f64, all elements are 3, stored in row-major order
-        // c is     a 3 * 2 matrix, data type is f64, all elements are 0, stored in row-major order
-        let a_row = 3;
-        let b_row = 2;
-        let column = 3;
+    fn test_f64_panel_microkernel_like() {
+        let mr = 3usize;
+        let nr = 2usize;
+        let kc = 3usize;
+
+        let lda = kc;
+        let ldc = nr;
+
         let param = MatMulParams {
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro: 3,
-            b_row_step_macro: 2,
-            column_step_macro: 3,
-            a_row_step_micro: 3,
-            b_row_step_micro: 2,
+            a_row_step_macro: lda,
+            b_row_step_macro: ldc,
+            column_step_macro: kc,
+            a_row_step_micro: mr,
+            b_row_step_micro: nr,
         };
 
-        let a = vec![1.0f64; a_row * column];
-        let b = vec![1.0f64; b_row * column];
-        let expected = vec![3.0f64; a_row * b_row];
-        let mut c = vec![0.0f64; a_row * b_row];
+        let a: Vec<f64> = vec![1.0; mr * kc];
+        let b_panel: Vec<f64> = vec![1.0; kc * nr];
+        let mut c: Vec<f64> = vec![0.0; mr * ldc];
 
-        // prepare arguments for _matmul_block
-        let a_ptr = a.as_ptr();
-        let b_ptr = b.as_ptr();
-        let c_ptr = c.as_mut_ptr();
+        matmul_block(a.as_ptr(), b_panel.as_ptr(), c.as_mut_ptr(), &param);
 
-        // call _matmul_block
-        matmul_block(a_ptr, b_ptr, c_ptr, &param);
-        // c should be equal to expected
-        // Compare c with the expected result using a tolerance
-        let tolerance = 0.001;
+        let expected: Vec<f64> = vec![kc as f64; mr * ldc];
+        let tol = 1e-9f64;
         assert!(
             c.iter()
                 .zip(expected.iter())
-                .all(|(a, b)| (a - b).abs() < tolerance),
-            "Matrices are not equal"
+                .all(|(x, y)| (*x - *y).abs() < tol),
+            "f64 panel microkernel expected all {}: got {:?}",
+            kc,
+            &c[..]
         );
     }
 }
