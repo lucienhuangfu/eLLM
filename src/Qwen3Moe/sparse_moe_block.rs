@@ -88,9 +88,9 @@ where
     ) -> Tensor<T> {
 
 
-        let (gate_output, sum_tensor, max_tensor) = hidden_states.matmul_topk(self.gate_weight, format!("{}.gate_output", self.scope_name));
+        let gate_output = hidden_states.matmul(self.gate_weight, format!("{}.gate_output", self.scope_name));
 
-        let (topk_indices, topk_values) = gate_output.experts_softmax_norm(&sum_tensor, &max_tensor, format!("{}.router_probs", self.scope_name));
+        let (topk_indices, topk_values) = gate_output.experts_softmax_norm( format!("{}.router_probs", self.scope_name));
         
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,

@@ -1,6 +1,6 @@
 use std::f16;
 
-use super::map_trait::SoftmaxTrait;
+use super::map_trait::TopKSoftmaxTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
@@ -9,28 +9,31 @@ use crate::kernel::generic::sqrt::Sqrt;
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {
-    indice_ptr: ConstPtr<T>,
-    value_ptr: ConstPtr<T>,
-    sum_ptr: ConstPtr<T>,
-    output_ptr: MutPtr<T>,
+    indices_ptr: ConstPtr<T>,
+    values_ptr: ConstPtr<T>,
+    sums_ptr: ConstPtr<T>,
+    indice_ptr: MutPtr<T>,
+    value_ptr: MutPtr<T>,
     batch_size: usize,
     topk_size: usize,
 }
 
 impl<T: Sqrt> TopKSoftmax<T> {
     pub fn new(
-        indice_ptr: *const T,
-        value_ptr: *const T,
-        sum_ptr: *const T,
-        output_ptr: *mut T,
+        indices_ptr: *const T,
+        values_ptr: *const T,
+        sums_ptr: *const T,
+        indice_ptr: *mut T,
+        value_ptr: *mut T,
         batch_size: usize,
         topk_size: usize,
     ) -> Self {
         Self {
-            indice_ptr: ConstPtr { ptr: indice_ptr },
-            value_ptr: ConstPtr { ptr: value_ptr },
-            sum_ptr: ConstPtr { ptr: sum_ptr },
-            output_ptr: MutPtr { ptr: output_ptr },
+            indices_ptr: ConstPtr { ptr: indices_ptr },
+            values_ptr: ConstPtr { ptr: values_ptr },
+            sums_ptr: ConstPtr { ptr: sums_ptr },
+            indice_ptr: MutPtr { ptr: indice_ptr },
+            value_ptr: MutPtr { ptr: value_ptr },
             batch_size,
             topk_size,
         }
@@ -68,8 +71,8 @@ impl<T: Sqrt> TopKSoftmax<T> {
     }
 }
 
-impl<T: Sqrt> SoftmaxTrait<T> for Softmax<T> {
-    default fn compute(&self, indice_ptr: *const T, value_ptr: *const T, sum_ptr: *const T, output_ptr: *mut T, length: usize) {
+impl<T: Sqrt> TopKSoftmaxTrait<T> for TopKSoftmax<T> {
+    default fn compute(&self, indices_ptr: *const T, values_ptr: *const T, sums_ptr: *const T, indice_ptr: *mut T, value_ptr: *mut T, length: usize) {
         /* 
         kernel::generic::softmax::softmax(
             input_ptr,
@@ -82,7 +85,7 @@ impl<T: Sqrt> SoftmaxTrait<T> for Softmax<T> {
 }
 
 impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
-    fn compute(&self, indice_ptr: *const f16, value_ptr: *const f16, sum_ptr: *const f16, output_ptr: *mut f16, length: usize) {
+    fn compute(&self, indices_ptr: *const f16, values_ptr: *const f16, sums_ptr: *const f16, indice_ptr: *mut f16, value_ptr: *mut f16, length: usize) {
         /* 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::softmax::softmax(
@@ -105,7 +108,7 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
 }
 
 impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
-    fn compute(&self, indice_ptr: *const f32, value_ptr: *const f32, sum_ptr: *const f32, output_ptr: *mut f32, length: usize) {
+    fn compute(&self, indices_ptr: *const f32, values_ptr: *const f32, sums_ptr: *const f32, indice_ptr: *mut f32, value_ptr: *mut f32, length: usize) {
         /*
         kernel::generic::softmax::softmax(
             input_ptr,
@@ -116,7 +119,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
         ); */
     }
 }
-
+/* 
 impl TopKSoftmaxTrait<f64> for TopKSoftmax<f64> {
     fn compute(&self, indice_ptr: *const f64, value_ptr: *const f64, sum_ptr: *const f64, output_ptr: *mut f64, length: usize) {
         /*
@@ -128,15 +131,13 @@ impl TopKSoftmaxTrait<f64> for TopKSoftmax<f64> {
             length,
         ); */
     }
-}
+}*/
 
 #[cfg(test)]
 mod test {
     use approx::assert_ulps_eq;
     use num_cpus;
     // use std::ptr;
-
-    // use super::super::chunk_map::chunk_map;
     // use crate::memory::allocator::allocate_init;
     use super::*;
 
