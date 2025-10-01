@@ -3,10 +3,6 @@ use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
-// use num_traits::ops::inv;
-
-use safetensors::tensor;
-
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
@@ -18,8 +14,14 @@ use crate::init::matmul_params::MatMulParams;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
+use super::super::compiler::mul::attention_mul_add::AttentionMulAdd;
+use super::super::compiler::mul::experts_matmul_merge_add::ExpertsMatMulMergeAdd;
+use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
 use super::super::compiler::mul::matmul::MatMul;
 use super::super::compiler::mul::matmul3::MatMul3;
+use super::super::compiler::mul::matmul_add::MatMulAdd;
+use super::super::compiler::mul::matmul_silu_mul_matmul::MatMulSilu;
+use super::super::compiler::mul::matmul_topk::MatMulTopK;
 use super::super::compiler::operator::Operator;
 use super::super::compiler::zip_map::add_zip::AddZipMap;
 use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
@@ -42,89 +44,24 @@ impl<T> Tensor<T>
 where
     T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
 {
-    pub fn zeros(
-        shape: Vec<usize>,
-        tensor_name: String,
-        cache: Rc<RefCell<Cache<T>>>,
-        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
-    ) -> Self {
-        let length: usize = shape.iter().product();
-        let v = Self::from_cache(shape, tensor_name, cache, operator_queue);
-        (0..length).for_each(|x| unsafe {
-            *v.data.add(x) = T::default();
-        });
-        v
-    }
-
-    pub fn from_cache(
-        shape: Vec<usize>,
-        tensor_name: String,
-        cache: Rc<RefCell<Cache<T>>>,
-        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
-    ) -> Self {
-        let length: usize = shape.iter().product();
-
-        let data = cache.borrow_mut().get(&tensor_name, length);
-
-        let strides = get_strides(&shape);
-        Tensor {
-            data: data,
-            shape: shape.clone(),
-            strides: strides,
-            tensor_name: tensor_name,
-            cache: cache.clone(),
-            operator_queue: operator_queue.clone(),
-        }
-    }
-
-    pub fn rms(&self, weight: *const T, eps: T, tensor_name: String) -> Self {
+    pub fn add(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
         let output_tensor = Tensor::from_cache(
             self.shape.clone(),
             tensor_name,
             self.cache.clone(),
             self.operator_queue.clone(),
         );
-
-        let operator = Operator::RMSMap(RMSMap::new(
+        let operator = Operator::AddZipMap(AddZipMap::new(
             self.data,
+            b_tensor.data,
             output_tensor.data,
             self.shape[1],
             self.shape[2],
-            weight,
-            eps,
+            self.shape[3],
         ));
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
-
-    /*
-    pub fn lookup_rms(
-        &self,
-        word_embedding: *const T,
-        weight: *const T,
-        eps: T,
-        tensor_name: String,
-    ) -> Self {
-        let output_tensor = Tensor::from_cache(
-            self.shape.clone(),
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-
-        let operator = Operator::LookupRMSMap(LookupRMSMap::new(
-            self.data,
-            output_tensor.data,
-            self.shape[1],
-            self.shape[2],
-            word_embedding,
-            weight,
-            eps,
-        ));
-
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
-    }*/
 
     pub fn add_rms(
         &self,
@@ -153,40 +90,38 @@ where
         output_tensor
     }
 
-    pub fn silu_mul(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
+    pub fn attention_mul_add(
+        &self,
+        k_tensor: &Tensor<T>,
+        v_tensor: &Tensor<T>,
+        bias_tensor: Option<&Tensor<T>>,
+        inverse_sqrt_head: T,
+        tensor_name: String,
+    ) -> Self {
+        let output_shape = self.shape.clone();
         let output_tensor = Tensor::from_cache(
-            self.shape.clone(),
+            output_shape.clone(),
             tensor_name,
             self.cache.clone(),
             self.operator_queue.clone(),
         );
-        let operator = Operator::SiluMulZipMap(SiluMulZipMap::new(
-            self.data,
-            b_tensor.data,
-            output_tensor.data,
-            self.shape[1],
-            self.shape[2],
-            self.shape[3],
-        ));
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
-    }
 
-    pub fn add(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
-        let output_tensor = Tensor::from_cache(
-            self.shape.clone(),
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-        let operator = Operator::AddZipMap(AddZipMap::new(
+        let bias_ptr = bias_tensor.map(|t| t.data).unwrap_or(std::ptr::null());
+
+        let operator = Operator::AttentionMulAdd(AttentionMulAdd::new(
             self.data,
-            b_tensor.data,
+            k_tensor.data,
+            v_tensor.data,
+            bias_ptr,
             output_tensor.data,
             self.shape[1],
             self.shape[2],
+            k_tensor.shape[2],
             self.shape[3],
+            k_tensor.strides.clone(),
+            inverse_sqrt_head,
         ));
+
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
@@ -223,6 +158,105 @@ where
         output_tensor
     }
 
+    pub fn experts_matmul_merge_add(
+        &self,
+        down_weights: &Tensor<T>,
+        residual: &Tensor<T>,
+        params: MatMulParams,
+        tensor_name: String,
+    ) -> Self {
+
+        // down_weights [num_experts, hidden_size, intermediate_size]
+        // output [sequence_chunk_size, batch_size, hidden_size]
+        let output_shape = vec![self.shape[0], self.shape[1], down_weights.shape[1]];
+
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::ExpertsMatMulMergeAdd(ExpertsMatMulMergeAdd::new(
+            self.data,
+            down_weights.data,
+            residual.data,
+            output_tensor.data,
+            self.shape[1],
+            down_weights.shape[1],
+            self.shape[2],
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+    pub fn experts_matmul_silu_mul_matmul(
+        &self,
+        gate_weights: &Tensor<T>,
+        up_weights: &Tensor<T>,
+        topk: &Tensor<T>,
+        params: MatMulParams,
+        tensor_name: String,
+    ) -> Self {
+
+        // gate_weights [num_experts, intermediate_size, hidden_size]
+        // output [sequence_chunk_size, batch_size, intermediate_size]
+        let output_shape = vec![self.shape[0], self.shape[1], gate_weights.shape[1]];
+
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::ExpertsMatMulSiluMulMatMul(ExpertsMatMulSilu::new(
+            self.data,
+            gate_weights.data,
+            up_weights.data,
+            topk.data,
+            output_tensor.data,
+            self.shape[1], 
+            gate_weights.shape[1],
+            self.shape[2],
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+    pub fn from_cache(
+        shape: Vec<usize>,
+        tensor_name: String,
+        cache: Rc<RefCell<Cache<T>>>,
+        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+    ) -> Self {
+        let length: usize = shape.iter().product();
+
+        let data = cache.borrow_mut().get(&tensor_name, length);
+
+        let strides = get_strides(&shape);
+        Tensor {
+            data: data,
+            shape: shape.clone(),
+            strides: strides,
+            tensor_name: tensor_name,
+            cache: cache.clone(),
+            operator_queue: operator_queue.clone(),
+        }
+    }
+
     pub fn matmul(
         &self,
         tensor2: &Tensor<T>,
@@ -250,9 +284,7 @@ where
             output_tensor.data,
             // sequence_length,
             output_to_kv,
-            params.a_row,
-            params.b_row,
-            params.column,
+            self.shape[1], tensor2.shape[0], self.shape[2],
             params.a_row_step_macro,
             params.b_row_step_macro,
             params.column_step_macro,
@@ -264,12 +296,12 @@ where
         output_tensor
     }
 
-        pub fn matmul_silu_mul_matmul(
+    pub fn matmul_add(
         &self,
         tensor2: &Tensor<T>,
         tensor3: &Tensor<T>,
         params: MatMulParams,
-        sequence_length: usize,
+        // sequence_length: usize,
         tensor_name: String,
     ) -> Self {
         let output_shape = vec![sequence_length, self.shape[1], tensor2.shape[0]];
@@ -281,12 +313,11 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMul(MatMul::new(
+        let operator = Operator::MatMulAdd(MatMulAdd::new(
             self.data,
             tensor2.data,
+            tensor3.data,
             output_tensor.data,
-            // sequence_length,
-            output_to_kv,
             params.a_row,
             params.b_row,
             params.column,
@@ -301,89 +332,39 @@ where
         output_tensor
     }
 
-    ) -> Self {
-        let output_shape = vec![sequence_length, self.shape[1], tensor2.shape[0]];
-
-        let output_to_kv = if self.shape[0] <= sequence_length {
-            false
-        } else {
-            true
-        };
-        let output_tensor = Tensor::from_cache(
-            output_shape.clone(),
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-
-        let operator = Operator::MatMul(MatMul::new(
-            self.data,
-            tensor2.data,
-            output_tensor.data,
-            // sequence_length,
-            output_to_kv,
-            params.a_row,
-            params.b_row,
-            params.column,
-            params.a_row_step_macro,
-            params.b_row_step_macro,
-            params.column_step_macro,
-            params.a_row_step_micro,
-            params.b_row_step_micro,
-        ));
-
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
-    }
-
-
-    pub fn matmul3_rms_complex(
+    pub fn matmul_silu_mul_matmul(
         &self,
-        query_weight: &Tensor<T>,
-        key_weight: &Tensor<T>,
-        value_weight: &Tensor<T>,
-        position_embedding: &Tensor<T>,
-        sequence_length: usize,
-        head_dim: usize,
+        tensor2: &Tensor<T>,
+        tensor3: &Tensor<T>,
         params: MatMulParams,
         tensor_name: String,
-    ) -> (Self, Self, Self) {
-        let query_states = Tensor::from_cache(
-            vec![self.shape[0], self.shape[1], query_weight.shape[0]],
-            format!("{}.query_tensor", tensor_name.clone()),
+    ) -> Self {
+
+        // hidden_tensor [sequence_chunk_size, batch_size, hidden_size]
+        // tensor2 [intermediate_size, hidden_size]
+        // output [sequence_chunk_size, batch_size, intermediate_size]
+
+        let a_row = self.shape[1];
+        let b_row = tensor2.shape[0];
+        let column = self.shape[2];
+
+        let output_shape = vec![self.shape[0], a_row, b_row];
+
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            tensor_name,
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
-        let key_states = Tensor::from_cache(
-            vec![self.shape[0], self.shape[1], key_weight.shape[0]],
-            format!("{}.key_tensor", tensor_name.clone()),
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-
-        let value_states = Tensor::from_cache(
-            vec![sequence_length, self.shape[1], value_weight.shape[0]],
-            format!("{}.value_tensor", tensor_name.clone()),
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-
-        let operator = Operator::MatMul3(MatMul3::new(
+        let operator = Operator::MatMulSiluMulMatMul(MatMulSilu::new(
             self.data,
-            query_weight.data,
-            query_states.data,
-            key_weight.data,
-            key_states.data,
-            value_weight.data,
-            value_states.data,
-            position_embedding.data,
-            head_dim,
-            self.shape[2],
-            self.shape[3],
-            query_weight.shape[0],
-            key_weight.shape[0],
-            value_weight.shape[0],
+            tensor2.data,
+            tensor3.data,
+            output_tensor.data,
+            a_row,
+            b_row,
+            column,
             params.a_row_step_macro,
             params.b_row_step_macro,
             params.column_step_macro,
@@ -392,56 +373,64 @@ where
         ));
 
         self.operator_queue.borrow_mut().push(operator);
-        (query_states, key_states, value_states)
+        output_tensor
     }
 
-    pub fn attention(
+    pub fn matmul_topk(
         &self,
-        k_tensor: &Tensor<T>,
-        v_tensor: &Tensor<T>,
-        inverse_sqrt_head: T,
+        tensor2: &Tensor<T>,
+        params: MatMulParams,
+        thread_num: usize,
         tensor_name: String,
-    ) -> Self {
-        let output_shape = self.shape.clone();
-        let output_tensor = Tensor::from_cache(
+    ) -> (Self, Self, Self) {
+        let a_row = self.shape[1];
+        let b_row = tensor2.shape[1];
+        let column = self.shape[2];
+
+        let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
+
+        let indice_tensor = Tensor::from_cache(
             output_shape.clone(),
             tensor_name,
             self.cache.clone(),
             self.operator_queue.clone(),
         );
-        let operator = Operator::AttentionMul(AttentionMul::new(
+
+
+        let value_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let sum_tensor = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], thread_num],
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+
+
+        let operator = Operator::MatMulTopK(MatMulTopK::new(
             self.data,
-            k_tensor.data,
-            v_tensor.data,
-            output_tensor.data,
-            self.shape[1],
-            self.shape[2],
-            k_tensor.shape[2],
-            self.shape[3],
-            k_tensor.strides.clone(),
-            inverse_sqrt_head,
+            tensor2.data,
+            indice_tensor.data,
+            value_tensor.data,
+            sum_tensor.data,
+            a_row,
+            b_row,
+            column,
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
-        output_tensor
-        //重点！
-    }
-
-    fn _view(&self, shape: Vec<usize>, strides: Vec<usize>) -> Self {
-        // let size: usize = shape.iter().product();
-        Tensor {
-            data: self.data,
-            shape: shape.clone(),
-            strides: strides,
-            tensor_name: self.tensor_name.clone(),
-            cache: self.cache.clone(),
-            operator_queue: self.operator_queue.clone(),
-        }
-    }
-
-    pub fn view(&self, shape: Vec<usize>) -> Self {
-        let strides = get_strides(&shape);
-        self._view(shape, strides)
+        (indice_tensor, value_tensor, sum_tensor)
     }
 
     pub fn permute(&self, dims: Vec<usize>) -> Self {
@@ -468,6 +457,45 @@ where
         }
     }
 
+    pub fn rms(&self, weight: *const T, eps: T, tensor_name: String) -> Self {
+        let output_tensor = Tensor::from_cache(
+            self.shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::RMSMap(RMSMap::new(
+            self.data,
+            output_tensor.data,
+            self.shape[1],
+            self.shape[2],
+            weight,
+            eps,
+        ));
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+    pub fn silu_mul(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
+        let output_tensor = Tensor::from_cache(
+            self.shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+        let operator = Operator::SiluMulZipMap(SiluMulZipMap::new(
+            self.data,
+            b_tensor.data,
+            output_tensor.data,
+            self.shape[1],
+            self.shape[2],
+            self.shape[3],
+        ));
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
     pub fn transpose(&mut self, index1: usize, index2: usize) -> Self {
         let mut dims: Vec<usize> = (0..self.shape.len()).collect();
         dims.swap(index1, index2);
@@ -475,21 +503,67 @@ where
         self.permute(dims)
     }
 
-    /*
-    pub fn from_vec(mut array: Vec<T>, shape: Vec<usize>, tensor_name: String) -> Self {
-        let length: usize = shape.iter().product();
-        // let data = cache.get(&tensor_name, length);
+    pub fn view(&self, shape: Vec<usize>) -> Self {
         let strides = get_strides(&shape);
+        self._view(shape, strides)
+    }
+
+    pub fn zeros(
+        shape: Vec<usize>,
+        tensor_name: String,
+        cache: Rc<RefCell<Cache<T>>>,
+        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+    ) -> Self {
+        let length: usize = shape.iter().product();
+        let v = Self::from_cache(shape, tensor_name, cache, operator_queue);
+        (0..length).for_each(|x| unsafe {
+            *v.data.add(x) = T::default();
+        });
+        v
+    }
+
+    fn _view(&self, shape: Vec<usize>, strides: Vec<usize>) -> Self {
+        // let size: usize = shape.iter().product();
         Tensor {
-            data: array.as_mut_ptr(),
+            data: self.data,
             shape: shape.clone(),
             strides: strides,
-            tensor_name: tensor_name,
+            tensor_name: self.tensor_name.clone(),
+            cache: self.cache.clone(),
+            operator_queue: self.operator_queue.clone(),
         }
-    } */
+    }
 
     /*
-        pub fn reduce(
+    pub fn lookup_rms(
+        &self,
+        word_embedding: *const T,
+        weight: *const T,
+        eps: T,
+        tensor_name: String,
+    ) -> Self {
+        let output_tensor = Tensor::from_cache(
+            self.shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::LookupRMSMap(LookupRMSMap::new(
+            self.data,
+            output_tensor.data,
+            self.shape[1],
+            self.shape[2],
+            word_embedding,
+            weight,
+            eps,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+    pub fn reduce(
         &self,
         sequences: *mut usize,
         sequence_length: usize,
@@ -527,7 +601,7 @@ where
         self.operator_queue.borrow_mut().push(operator);
         // output_tensor
     }
-        pub fn mapv(
+    pub fn mapv(
         &self,
         mut operator: Operator<T>,
         tensor_name: String,
@@ -644,6 +718,7 @@ where
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }*/
+
 }
 
 unsafe impl<T: Copy + Default + Send + Sync> Send for Tensor<T> {}

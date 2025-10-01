@@ -153,7 +153,7 @@ impl MatMul3Trait<f16> for MatMulAdd<f16> {
 }
 
 impl MatMul3Trait<f32> for  MatMulAdd<f32> {
-    fn compute(&self, input_ptr1: *const f32, input_ptr2: *const f32, output_ptr: *mut f32) {
+    fn compute(&self, input_ptr1: *const f32, input_ptr2: *const f32, input_ptr3: *const f32, output_ptr: *mut f32) {
         // print!("f32 runner\n");
 
         /*//implementation for f32 on platform with avx2
