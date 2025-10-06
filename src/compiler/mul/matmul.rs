@@ -1,3 +1,5 @@
+// === runner/matmul.rs ===
+#![allow(non_snake_case)]
 
 use std::f16;
 use std::marker::PhantomData;
@@ -11,75 +13,73 @@ use super::super::super::kernel;
 use super::super::assign::assign;
 use super::mul_trait::MatMulTrait;
 
-// there will be just one instance of this runner in the program
-// this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
 pub struct MatMul<T> {
-    ptr1: ConstPtr<T>,
-    ptr2: ConstPtr<T>,
-    output_ptr: MutPtr<T>,
-    // sequence_length: usize,
-    a_row: usize,
-    b_row: usize,
-    column: usize,
-    output_to_kv: bool,
+    pub ptr1: ConstPtr<T>,       // A[S×M×K] 首地址
+    pub ptr2: ConstPtr<T>,       // B[K×N]   首地址（保留原始指针）
+    pub output_ptr: MutPtr<T>,   // C[S×M×N] 首地址
+    pub output_to_kv: bool,      // 保持兼容
+    /// 注意：`params` 仅承载 **step 形状**（MB/NB/KC/MR/NR）
+
     pub params: MatMulParams,
-    _marker: PhantomData<T>,
-    // sequence_stride: usize,
-    // batch_size: usize,
-    // hidden_size: usize,
+    pub _marker: PhantomData<T>,
+
+    // 保存“最大维度” M/N/K（替代旧 params.a_row/b_row/column）
+    pub m_max: usize,
+    pub n_max: usize,
+    pub k_max: usize,
+
+    // 构造期转置得到的 B_nt（N×K，行主；行距=K）
+    pub b_nt: Option<Box<[T]>>,
 }
+
 impl<T> MatMul<T>
 where
-    T: Copy + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
-    pub fn new(
+    /// 构造函数：在此完成 **一次性** B[K×N] → B_nt[N×K] 的全量转置
+    ///
+    /// Safety：假定传入裸指针的可读写范围满足后续访问
+    pub unsafe fn new(
         ptr1: *const T,
         ptr2: *const T,
         output_ptr: *mut T,
-        // sequence_length: usize,
         output_to_kv: bool,
-
-        // these are the parameters of the matrix multiplication, this matrix is a largest possible one
-        // for later matrix multiplication, the actual size of the matrix will be smaller
-        // so this is reserving enough spaces in memory, and later lay the data into a small portion of it
-        // and as we compute, we just access and calculate with the data in the small portion
-        // this is like we construct a big playground, and we only play in a small or big portion of it, depending on how many people there are
-        // so these dimensions are the dimensions of the largest possible matrix
-        a_row: usize,
-        b_row: usize,
-        column: usize,
-        // these are the sizes of the macro kernels
-        // how they are determined is not clear
-        a_row_step_macro: usize,
-        b_row_step_macro: usize,
-        column_step_macro: usize,
-        // these are the sizes of the micro kernels
-        // how they are determined is not clear
-        a_row_step_micro: usize,
-        b_row_step_micro: usize,
+        params: MatMulParams,
+        m_max: usize,
+        n_max: usize,
+        k_max: usize,
     ) -> Self {
+        // 直接在 new() 内完成转置，避免任何线程或 run() 内重复
+        let mut b_nt_vec: Vec<T> = vec![T::default(); n_max * k_max];
+        let b_nt_ptr = b_nt_vec.as_mut_ptr();
+
+        // 原始 B 为 K×N（行主，行距 = N）
+        // 目标 B_nt 为 N×K（行主，行距 = K）
+        for kk in 0..k_max {
+            let b_row = ptr2.add(kk * n_max); // B[kk, 0]
+            for jj in 0..n_max {
+                // B_nt[jj, kk] = B[kk, jj]
+                *b_nt_ptr.add(jj * k_max + kk) = *b_row.add(jj);
+            }
+        }
+
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             ptr2: ConstPtr { ptr: ptr2 },
             output_ptr: MutPtr { ptr: output_ptr },
-            // sequence_length: sequence_length,
-            a_row,
-            b_row,
-            column,
-            output_to_kv: output_to_kv,
-            params: MatMulParams {
+            output_to_kv,
+            params,
 
-                a_row_step_macro,
-                b_row_step_macro,
-                column_step_macro,
-                a_row_step_micro,
-                b_row_step_micro,
-            },
             _marker: PhantomData,
+            m_max,
+            n_max,
+            k_max,
+            b_nt: Some(b_nt_vec.into_boxed_slice()),
         }
     }
 
+    /// 执行：S×M×N 的三分块调度 + 线程私有 KC×NR 面板（仅 packing，不做转置）
     pub fn run(
         &self,
         position_index: usize,
@@ -88,39 +88,146 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
+        unsafe {
+            // ===== 维度 =====
+            let m = batch_size;     // 本次 M
+            let n = self.n_max;     // N
+            let k = self.k_max;     // K
 
-        /*
-        let (mut a_chunk_num, remainder) = (self.params.a_row / self.params.a_row_step_macro, self.params.a_row % self.params.a_row_step_macro);
-        if remainder > 0 {
-            a_chunk_num += 1;
+            // ===== 分块参数（来自 params，仅形状）=====
+            let mb = self.params.a_row_step_macro.max(1);
+            let nb = self.params.b_row_step_macro.max(1);
+            let kc = self.params.column_step_macro.max(1);
+            let mr = self.params.a_row_step_micro.max(1);
+            let nr = self.params.b_row_step_micro.max(1);
+
+            debug_assert!(m % mr == 0);
+            debug_assert!(n % nr == 0);
+            debug_assert!(k % kc == 0);
+
+            // ===== 基址与行距（元素计）=====
+            let a_base = self.ptr1.ptr;       // A[S×M×K]
+            let c_base = self.output_ptr.ptr; // C[S×M×N]
+            let lda = k; // A 每行跨度
+            let ldc = n; // C 每行跨度
+
+            // ===== 序列范围 =====
+            let s_begin = position_index;
+            let s_end = position_index + position_interval;
+            let s_len = s_end - s_begin;
+            let a_seq_stride = m * k;
+            let c_seq_stride = m * n;
+
+            // ===== 使用构造期转置的 B_nt（N×K，行主；行距=K）=====
+            let (b_nt_ptr, ldb_row) = {
+                let bnt = self.b_nt.as_ref().expect("B_nt not initialized");
+                (bnt.as_ptr(), k)
+            };
+
+            // ===== 任务切分：S × tiles_m × tiles_n =====
+            let tiles_m = (m + mb - 1) / mb;
+            let tiles_n = (n + nb - 1) / nb;
+            let tiles_sn = s_len * tiles_m * tiles_n;
+
+            if let Some((tb, te)) = assign(tiles_sn, cpu_num, thread_id) {
+                // 线程私有 KC×NR 面板（packing；不是转置）
+                let mut b_panel: Vec<T> = vec![T::default(); kc * nr];
+
+                #[inline(always)]
+                unsafe fn pack_b_panel<T: Copy>(
+                    b_nt: *const T, // [N×K] 行主
+                    ldb_row: usize, // = K
+                    n0: usize,      // N 起点
+                    k0: usize,      // K 起点
+                    kc: usize,
+                    nr: usize,
+                    out: *mut T,    // 输出：KC×NR 行主
+                ) {
+                    // 从 B_nt 的 (n0..n0+nr, k0..k0+kc) 抽取到连续的 KC×NR 面板
+                    for p in 0..kc {
+                        let src_col = k0 + p;
+                        let dst_row = out.add(p * nr);
+                        for lane in 0..nr {
+                            let j = n0 + lane;
+                            let src = b_nt.add(j * ldb_row + src_col); // b_nt[j, src_col]
+                            *dst_row.add(lane) = *src;
+                        }
+                    }
+                }
+
+                for t in tb..te {
+                    let s_rel = t / (tiles_m * tiles_n);
+                    let rem   = t % (tiles_m * tiles_n);
+                    let tm    = rem / tiles_n;
+                    let tn    = rem % tiles_n;
+
+                    let s  = s_begin + s_rel;
+                    let m0 = tm * mb;
+                    let n0 = tn * nb;
+
+                    let m_blk = (m - m0).min(mb);
+                    let n_blk = (n - n0).min(nb);
+                    debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
+
+                    let a_base_s = a_base.add(s * a_seq_stride);
+                    let c_base_s = c_base.add(s * c_seq_stride);
+
+                    // Kc 循环
+                    let mut k0 = 0;
+                    while k0 < k {
+                        // NB 内分 NR 小块
+                        let mut nt = 0;
+                        while nt < n_blk {
+                            // 打一块 KC×NR 面板（仅当前块所需）
+                            pack_b_panel::<T>(
+                                b_nt_ptr, ldb_row,
+                                n0 + nt, k0,
+                                kc, nr,
+                                b_panel.as_mut_ptr(),
+                            );
+
+                            // M 方向按 MR 行组走微核（保持 compute 调用）
+                            let mut mi = 0;
+                            while mi < m_blk {
+                                let a_tile = a_base_s.add((m0 + mi) * lda + k0);
+                                let c_tile = c_base_s.add((m0 + mi) * ldc + (n0 + nt));
+
+                                // 只调用 compute；真实 lda/ldc/kc/mr/nr 在 compute 内组装
+                                self.compute(a_tile, b_panel.as_ptr(), c_tile);
+
+                                mi += mr;
+                            }
+                            nt += nr;
+                        }
+                        k0 += kc;
+                    }
+                }
+            }
         }
-        let b_chunk_num = self.params.b_row / self.params.b_row_step_macro;
-        if let Some((begin, end)) = assign(position_interval * a_chunk_num * b_chunk_num, cpu_num, thread_id)
-        {
-            //  [sequence_chunk_size, batch_size, hidden_size]
-            let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
-                          let ptr1 = if self.output_to_kv {
-        self.ptr1.ptr.add(position_begin * max_stride * self.head_size)
-                } else {
-                    self.ptr1.ptr
-                };
-            let mut input_ptr2 = self.ptr2.ptr;
-            let mut output_ptr = self.output_ptr.ptr;
-        }*/
     }
 }
+
+/* ------------------ 下面是 compute/compute2 的实现（仅此处改“调用 param”） ------------------ */
 
 impl<T> MatMulTrait<T> for MatMul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
+    /// generic 版本：在这里组装“调用 param”
     default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T) {
-        //print!("generic runner\n");
+        let call_param = MatMulParams {
+            a_row_step_macro: self.k_max,                     // lda = K
+            b_row_step_macro: self.n_max,                     // ldc = N
+            column_step_macro: self.params.column_step_macro, // kc
+            a_row_step_micro: self.params.a_row_step_micro,   // mr
+            b_row_step_micro: self.params.b_row_step_micro,   // nr
+        };
+
         kernel::generic::matmul_block::matmul_block(
             input_ptr1,
             input_ptr2,
             output_ptr,
-            &(self.params),
+            &call_param,
         );
     }
 
@@ -136,24 +243,32 @@ where
 }
 
 impl MatMulTrait<f16> for MatMul<f16> {
+    /// f16 专用：同样在这里组装“调用 param”，而不是用 self.params 直接透传
     fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
-        // print!("f16 runner\n");
+        let call_param = MatMulParams {
+            a_row_step_macro: self.k_max,                     // lda = K
+            b_row_step_macro: self.n_max,                     // ldc = N
+            column_step_macro: self.params.column_step_macro, // kc
+            a_row_step_micro: self.params.a_row_step_micro,   // mr (=3)
+            b_row_step_micro: self.params.b_row_step_micro,   // nr (=32)
+        };
 
+        // 平台选择：有 AVX512-FP16 则走 3x32 广播微核，否则 generic
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
             kernel::x86_64::f16_512::matmul_block::matmul_block(
                 input_ptr1,
                 input_ptr2,
                 output_ptr,
-                &self.params,
+                &call_param,
             );
-        };
+        }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::generic::matmul_block::matmul_block(
             input_ptr1,
             input_ptr2,
             output_ptr,
-            &(self.params),
+            &call_param,
         );
     }
 
@@ -164,466 +279,122 @@ impl MatMulTrait<f16> for MatMul<f16> {
         output_ptr: *mut f16,
         length: usize,
     ) {
-        // print!("f16 runner\n");
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
             kernel::x86_64::f16_512::dot_product::dot_product(
                 input_ptr1, input_ptr2, output_ptr, length,
             );
-        };
+        }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::generic::dot_product::dot_product(input_ptr1, input_ptr2, output_ptr, length);
     }
 }
 
 impl MatMulTrait<f32> for MatMul<f32> {
-    fn compute(&self, input_ptr1: *const f32, input_ptr2: *const f32, output_ptr: *mut f32) {
-        // print!("f32 runner\n");
-
-        /*//implementation for f32 on platform with avx2
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-        unsafe {
-            SIMD_f32_256_matmul_block(a, b, c, param, a_row_l, b_row_l, column_l);
-        };
-        // generic implementation for f32
-        // #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]*/
-        // generic_matmul_block(input_ptr1, input_ptr2, output_ptr, &(self.params));
-    }
-
+    fn compute(&self, _a: *const f32, _b: *const f32, _c: *mut f32) { /* TODO */ }
     fn compute2(
-        &self,
-        input_ptr1: *const f32,
-        input_ptr2: *const f32,
-        output_ptr: *mut f32,
-        length: usize,
-    ) {
-        // print!("f32 runner\n");
-
-        /*//implementation for f32 on platform with avx2
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-        unsafe {
-            SIMD_f32_256_matmul_block(a, b, c, param, a_row_l, b_row_l, column_l);
-        };
-        // generic implementation for f32
-        // #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]*/
-        kernel::generic::dot_product::dot_product(input_ptr1, input_ptr2, output_ptr, length);
-    }
+        &self, a: *const f32, b: *const f32, c: *mut f32, length: usize,
+    ) { kernel::generic::dot_product::dot_product(a, b, c, length); }
 }
 
+/* ---------------------------------- 测试 ---------------------------------- */
+
 #[cfg(test)]
-mod tests {
+mod innteg_tests {
     use super::*;
-    // use std::thread;
+    use std::arch::is_x86_feature_detected;
+    use std::f16;
 
-    
-    /*
-    #[test]
-    fn test_f32_chunk() {
-        let sequence_chunk_size = 8;
-        let batch_size = 128;
-        let a_row = batch_size;
-        let b_row = 256;
-        let column = 256;
-        let a_row_step_macro = 32;
-        let b_row_step_macro = 32;
-        let column_step_macro = 64;
-        let a_row_step_micro = 8;
-        let b_row_step_micro = 8;
-
-        let mut a = vec![0.0; a_row * column];
-        let b = vec![1.0; b_row * column];
-        // lay data into a portion of matrix a
-        // fill the first batch_size rows with 1
-        for i in 0..batch_size {
-            for j in 0..column {
-                a[i * column + j] = 1.0;
-            }
-        }
-        let mut c = vec![0.0; a_row * b_row];
-        let mut expected = vec![0.0; a_row * b_row];
-        // calculate expected using the naive method
-        for i in 0..batch_size {
-            for j in 0..b_row {
-                for k in 0..column {
-                    expected[i * b_row + j] += a[i * column + k] * b[j * column + k];
-                }
-            }
-        }
-
-        // initialize the params
-        let params: MatMulParams = MatMulParams {
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-        };
-        let mut operator = MatMul::<f32>::new(
-            a.as_ptr(),
-            b.as_ptr(),
-            c.as_mut_ptr(),
-            // sequence_chunk_size,
-            false,
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-        );
-        let thread_num: usize = num_cpus::get();
-
-        for i in 0..thread_num {
-            // println!("{}", i);
-            operator.run(0, sequence_chunk_size, batch_size, thread_num, i);
-        }
-
-
-        // assert_eq!(c, expected);
-
-        // print the result
-        for i in 0..a_row {
-            for j in 0..b_row {
-                //print!("{:?} ", c[i * b_row + j]);
-            }
-            //println!();
-        }
-    } */
-
-    /*
-    // test f32 runner
-    #[test]
-    fn test_f32_to_kv() {
-        let batch_size = 1;
-        let sequence_length = 8;
-        let position_index = 4;
-
-        let a_row = 128;
-        let b_row = 256;
-        let column = 256;
-        let a_row_step_macro = 32;
-        let b_row_step_macro = 32;
-        let column_step_macro = 64;
-        let a_row_step_micro = 8;
-        let b_row_step_micro = 8;
-
-        let mut a = vec![0.0; a_row * column];
-        let b = vec![1.0; b_row * column];
-        // lay data into a portion of matrix a
-        // fill the first batch_size rows with 1
-        for i in 0..batch_size {
-            for j in 0..column {
-                a[i * column + j] = 1.0;
-            }
-        }
-        let mut c = vec![0.0; sequence_length * a_row * b_row];
-        let mut expected = vec![0.0; sequence_length * a_row * b_row];
-        let offset = a_row * b_row * position_index;
-        // calculate expected using the naive method
-        for i in 0..batch_size {
-            for j in 0..b_row {
-                for k in 0..column {
-                    expected[i * b_row + j + offset] += a[i * column + k] * b[j * column + k];
-                }
-            }
-        }
-
-        // initialize the params
-        let params: MatMulParams = MatMulParams {
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-        };
-
-        // get the tasks
-        let chunks = chunk_matmul(a.as_ptr(), b.as_ptr(), c.as_mut_ptr(), &params);
-        // initialize the runner and multi-threaded run
-        // create as many threads as the logical cores in the machine
-        let thread_num: usize = num_cpus::get();
-        let barrier = Barrier::new(thread_num);
-        let barrier_arc = Arc::new(barrier);
-        let mut runner = MatMul::<f32>::new(
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-            sequence_length,
-            thread_num,
-            barrier_arc,
-        );
-        runner.set_chunk(chunks);
-        let runner_arc = Arc::new(runner);
-
-        thread::scope(|s| {
-            let mut handles = Vec::with_capacity(thread_num);
-            for thread_id in (0..thread_num) {
-                let _thread_id = thread_id;
-                let runner_arc_clone = Arc::clone(&runner_arc);
-
-                let handle = s.spawn(move || {
-                    runner_arc_clone.run(batch_size, position_index, _thread_id);
-                });
-                handles.push(handle);
-            }
-            for handle in handles {
-                handle.join().unwrap();
-            }
-        });
-        assert_eq!(c, expected);
-
-        // print the result
-        for i in 0..a_row {
-            for j in 0..b_row {
-                //print!("{:?} ", c[i * b_row + j]);
-            }
-            //println!();
-        }
-    }
-    */
-
-    /*
-    // Helper function to compare two f16 arrays with a tolerance
-    fn compare_f16_arrays(arr1: &[f16], arr2: &[f16], tolerance: f32, length: usize) -> bool {
-        // tell if the first length elements in both arrays are equal within the tolerance
-        /*if arr1.len() != arr2.len() {
-            println!("length not equal");
-            return false;
-        }*/
-        for i in 0..length {
-            // let diff = (f32::from(arr1[i]) - f32::from(arr2[i])).abs();
-            let diff = (arr1[i] - arr2[i]).abs();
-            if diff > tolerance {
-                //println!("diff: {}, a: {}, b: {}", diff, arr1[i], arr2[i]);
-                return false;
-            }
-        }
-        true
+    #[inline] fn f16v(v: f32) -> f16 { let h = half::f16::from_f32(v); f16::from_bits(h.to_bits()) }
+    #[inline] fn to_f32(x: f16) -> f32 { half::f16::from_bits(x.to_bits()).to_f32() }
+    fn all_close(a: &[f16], b: &[f16], tol: f32) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(x,y)| (to_f32(*x)-to_f32(*y)).abs() <= tol)
     }
 
 
-    // test f16 runner
+    /// 单序列整除路径：验证 run + compute（compute 内部组装调用 param）
     #[test]
-    fn test_f16_runner() {
-        let batch_size = 1;
-        let a_row = 128;
-        let b_row = 128;
-        let column = 128;
-        let a_row_step_macro = 16;
-        let b_row_step_macro = 16;
-        let column_step_macro = 16;
-        let a_row_step_micro = 8;
-        let b_row_step_micro = 8;
+    fn test_run_internal_transpose_f16_m6_n64_k64() {
+        if !is_x86_feature_detected!("avx512fp16") { eprintln!("Skipping avx512fp16"); return; }
+        unsafe {
+            let m=6usize; let n=64usize; let k=64usize;
+            let mb=6usize; let nb=64usize; let kc=64usize;
+            let mr=3usize; let nr=32usize;
 
-        let mut a = vec![0.0; a_row * column];
-        let b = vec![1.0; b_row * column];
-        // lay data into a portion of matrix a
-        // fill the first batch_size rows with 1
-        for i in 0..batch_size*column {
-            a[i] = 1.0;
+            let a: Vec<f16> = (0..m*k).map(|_| f16v(1.0)).collect();
+            let b_orig: Vec<f16> = (0..k*n).map(|_| f16v(1.0)).collect();
+            let mut c: Vec<f16> = (0..m*n).map(|_| f16v(0.0)).collect();
+
+            let params = MatMulParams {
+                a_row_step_macro: mb,
+                b_row_step_macro: nb,
+                column_step_macro: kc,
+                a_row_step_micro: mr,
+                b_row_step_micro: nr,
+            };
+
+            // 用 new()，构造期一次性转置 B -> B_nt（不使用 Arc）
+            let op = MatMul::<f16>::new(
+                a.as_ptr(),
+                b_orig.as_ptr(),
+                c.as_mut_ptr(),
+                false,
+                params,
+                m, n, k,
+            );
+
+            op.run(0, 1, m, 1, 0);
+
+            let expected: Vec<f16> = (0..m*n).map(|_| f16v(k as f32)).collect();
+            assert!(all_close(&c, &expected, 1e-3));
         }
-        // print matrix a
-        //println!("matrix a: ");
-        for i in 0..a_row {
-            for j in 0..column {
-                //print!("{:?} ", a[i * column + j]);
-            }
-            //println!();
-        }
-
-        let mut c = vec![0.0; a_row * b_row];
-        let mut expected = vec![0.0; a_row * b_row];
-        // calculate expected using the naive method
-        for i in 0..batch_size {
-            for j in 0..b_row {
-                for k in 0..column {
-                    expected[i * b_row + j] += a[i * column + k] * b[j * column + k];
-                }
-            }
-        }
-
-        // initialize the params
-        let params: MatMulParams = MatMulParams {
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-        };
-        // get the tasks
-        let chunks = chunk_matmul(
-            a.as_ptr(),
-            b.as_ptr(),
-            c.as_mut_ptr(),
-            &params,
-        );
-        // initialize the runner and multi-threaded run
-        // create as many threads as the logical cores in the machine
-        let thread_num: usize = num_cpus::get();
-        let barrier = Barrier::new(thread_num);
-        let barrier_arc = Arc::new(barrier);
-        let mut runner = MatMul::<f16>::new(
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-            //chunks,
-            1,
-            thread_num,
-            barrier_arc,
-            // place total thread number here
-        );
-        // let runner_arc = Arc::new(runner);
-        runner.set_chunk(chunks);
-        thread::scope(|s| {
-            let mut handles = Vec::with_capacity(thread_num);
-            for thread_id in (0..thread_num) {
-                let _thread_id = thread_id;
-                // let runner_arc_clone = Arc::clone(&runner_arc);
-                let _runner = &runner;
-                let handle = s.spawn(move || {
-                    _runner.run(batch_size, thread_num, _thread_id);
-                });
-                handles.push(handle);
-            }
-            for handle in handles {
-                handle.join().unwrap();
-            }
-        });
-        // print the result
-        for i in 0..batch_size {
-            for j in 0..b_row {
-                //print!("{:?} ", c[i * b_row + j]);
-            }
-            //println!();
-        }
-
-        assert!(compare_f16_arrays(&c, &expected, 1e-3, batch_size * b_row));
-
-
     }
 
-    // test f32 runner
+    /// 多序列切片：只处理 s=1,2
     #[test]
-    fn test_f32_runner() {
-        let batch_size = 30;
-        let a_row = 128;
-        let b_row = 256;
-        let column = 256;
-        let a_row_step_macro = 32;
-        let b_row_step_macro = 32;
-        let column_step_macro = 64;
-        let a_row_step_micro = 8;
-        let b_row_step_micro = 8;
+    fn test_run_internal_transpose_f16_seqlen_gt1_slice() {
+        if !is_x86_feature_detected!("avx512fp16") { eprintln!("Skipping avx512fp16"); return; }
+        unsafe {
+            let s_total=4usize;
+            let m=6usize; let n=64usize; let k=64usize;
+            let mb=6usize; let nb=64usize; let kc=64usize;
+            let mr=3usize; let nr=32usize;
 
-        let mut a = vec![0.0; a_row * column];
-        let b = vec![1.0; b_row * column];
-        // lay data into a portion of matrix a
-        // fill the first batch_size rows with 1
-        for i in 0..batch_size {
-            for j in 0..column {
-                a[i * column + j] = 1.0;
-            }
+            let a_len = s_total*m*k;
+            let a: Vec<f16> = (0..a_len).map(|_| f16v(1.0)).collect();
+            let b_orig: Vec<f16> = (0..k*n).map(|_| f16v(1.0)).collect();
+            let mut c: Vec<f16> = (0..s_total*m*n).map(|_| f16v(0.0)).collect();
+
+            let params = MatMulParams {
+                a_row_step_macro: mb,
+                b_row_step_macro: nb,
+                column_step_macro: kc,
+                a_row_step_micro: mr,
+                b_row_step_micro: nr,
+            };
+
+            let op = MatMul::<f16>::new(
+                a.as_ptr(),
+                b_orig.as_ptr(),
+                c.as_mut_ptr(),
+                false,
+                params,
+                m, n, k,
+            );
+
+            // 只处理 s=1,2
+            op.run(1, 2, m, 1, 0);
+
+            let c_seq_stride = m*n;
+            let view = |s: usize| -> &[f16] { let off=s*c_seq_stride; &c[off..off+c_seq_stride] };
+
+            let expected: Vec<f16> = (0..m*n).map(|_| f16v(k as f32)).collect();
+            // s=0、3 未处理
+            assert!(view(0).iter().all(|&x| to_f32(x) == 0.0));
+            assert!(view(3).iter().all(|&x| to_f32(x) == 0.0));
+            // s=1、2 处理为 K
+            assert!(all_close(view(1), &expected, 1e-3));
+            assert!(all_close(view(2), &expected, 1e-3));
         }
-        let mut c = vec![0.0; a_row * b_row];
-        let mut expected = vec![0.0; a_row * b_row];
-        // calculate expected using the naive method
-        for i in 0..batch_size {
-            for j in 0..b_row {
-                for k in 0..column {
-                    expected[i * b_row + j] += a[i * column + k] * b[j * column + k];
-                }
-            }
-        }
-
-        // initialize the params
-        let params: MatMulParams = MatMulParams {
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-        };
-        // get the tasks
-        let chunks = chunk_matmul(
-            a.as_ptr(),
-
-            b.as_ptr(),
-
-            c.as_mut_ptr(),
-
-            &params,
-        );
-        // initialize the runner and multi-threaded run
-        // create as many threads as the logical cores in the machine
-        let thread_num: usize = num_cpus::get();
-        let barrier = Barrier::new(thread_num);
-        let barrier_arc = Arc::new(barrier);
-        let mut runner = MatMul::<f32>::new(
-            a_row,
-            b_row,
-            column,
-            a_row_step_macro,
-            b_row_step_macro,
-            column_step_macro,
-            a_row_step_micro,
-            b_row_step_micro,
-            1,
-            thread_num,
-            barrier_arc,
-        );
-        runner.set_chunk(chunks);
-        let runner_arc = Arc::new(runner);
-
-        thread::scope(|s| {
-            let mut handles = Vec::with_capacity(thread_num);
-            for thread_id in (0..thread_num) {
-                let _thread_id = thread_id;
-                let runner_arc_clone = Arc::clone(&runner_arc);
-
-                let handle = s.spawn(move || {
-                    runner_arc_clone.run(batch_size, thread_num, _thread_id);
-                });
-                handles.push(handle);
-            }
-            for handle in handles {
-                handle.join().unwrap();
-            }
-        });
-        assert_eq!(c, expected);
-
-        // print the result
-        for i in 0..a_row {
-            for j in 0..b_row {
-                //print!("{:?} ", c[i * b_row + j]);
-            }
-            //println!();
-        }
-    } */
-
-
+    }
 }
