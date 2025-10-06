@@ -86,9 +86,9 @@ where
         residual: &Tensor<T>,
         tensor_name: String,
     ) -> Tensor<T> {
-
-
-        let gate_output = hidden_states.matmul(&self.gate_weight, MatMulParams {
+        let gate_output = hidden_states.matmul(
+            &self.gate_weight,
+            MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
@@ -96,13 +96,12 @@ where
                 b_row_step_micro: 8,
             },
             hidden_states.shape[0],
-            self.scope_name.clone()
+            self.scope_name.clone(),
         );
 
-        let (topk_indices, topk_values) = gate_output.experts_softmax_norm( 
-            self.top_k,
-            format!("{}.router_probs", self.scope_name));
-        
+        let (topk_indices, topk_values) = gate_output
+            .experts_softmax_norm(self.top_k, format!("{}.router_probs", self.scope_name));
+
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
             &self.experts_up_weight,
@@ -114,7 +113,6 @@ where
                 a_row_step_micro: 8,
                 b_row_step_micro: 8,
             },
-            
             format!("{}.gate_up", self.scope_name),
         );
 
@@ -197,6 +195,5 @@ mod test {
                 operator.run(1, 0, i);
             }
         }
-    } */ 
-
+    } */
 }

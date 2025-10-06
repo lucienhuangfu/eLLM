@@ -6,11 +6,9 @@ use super::super::super::init::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
-use super::mul_trait::MatMul3Trait;
 use super::super::super::kernel;
 use super::super::assign::assign;
-
-
+use super::mul_trait::MatMul5Trait;
 
 #[derive(Clone)]
 pub struct ExpertsMatMulMergeAdd<T> {
@@ -97,13 +95,20 @@ where
     }
 }
 
-impl<T> MatMul3Trait<T> for ExpertsMatMulMergeAdd<T>
+impl<T> MatMul5Trait<T> for ExpertsMatMulMergeAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
-  
-    default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, input_ptr3: *const T, output_ptr: *mut T) {
-          /*
+    default fn compute(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        input_ptr3: *const T,
+        input_ptr4: *const T,
+        input_ptr5: *const T,
+        output_ptr: *mut T,
+    ) {
+        /*
         //print!("generic runner\n");
         kernel::generic::matmul_block::matmul_block(
             input_ptr1,
@@ -111,15 +116,17 @@ where
             output_ptr,
             &(self.params),
         );*/
-    } 
+    }
 }
 
-impl MatMul3Trait<f16> for ExpertsMatMulMergeAdd<f16> {
+impl MatMul5Trait<f16> for ExpertsMatMulMergeAdd<f16> {
     fn compute(
         &self,
         input_ptr1: *const f16,
         input_ptr2: *const f16,
         input_ptr3: *const f16,
+        input_ptr4: *const f16,
+        input_ptr5: *const f16,
         output_ptr: *mut f16,
     ) {
         // print!("f16 runner\n");
@@ -144,12 +151,14 @@ impl MatMul3Trait<f16> for ExpertsMatMulMergeAdd<f16> {
     }
 }
 
-impl MatMul3Trait<f32> for ExpertsMatMulMergeAdd<f32> {
+impl MatMul5Trait<f32> for ExpertsMatMulMergeAdd<f32> {
     fn compute(
         &self,
         input_ptr1: *const f32,
         input_ptr2: *const f32,
         input_ptr3: *const f32,
+        input_ptr4: *const f32,
+        input_ptr5: *const f32,
         output_ptr: *mut f32,
     ) {
         // print!("f32 runner\n");

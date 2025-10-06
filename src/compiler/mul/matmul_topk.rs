@@ -107,7 +107,6 @@ where
         indice_ptr: *mut T,
         value_ptr: *mut T,
         sum_ptr: *mut T,
-       
     ) {
         /*
         //print!("generic runner\n");
@@ -128,7 +127,6 @@ impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
         indice_ptr: *mut f16,
         value_ptr: *mut f16,
         sum_ptr: *mut f16,
-
     ) {
         /*
         // print!("f16 runner\n");

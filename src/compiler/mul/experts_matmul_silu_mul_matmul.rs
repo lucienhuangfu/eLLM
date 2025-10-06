@@ -83,37 +83,27 @@ impl<T> MatMul4Trait<T> for ExpertsMatMulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
-    default fn compute(
-        &self,
-        input_ptr1: *const T,
-        input_ptr2: *const T,
-        input_ptr3: *const T,
-        output_ptr: *mut T,
-    ) {
+    default fn compute1(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T) {
+        //print!("generic runner\n");
+    }
+
+    default fn compute2(&self, output_ptr: *mut T, input_ptr1: *const T) {
         //print!("generic runner\n");
     }
 }
 
 impl MatMul4Trait<f16> for ExpertsMatMulSilu<f16> {
-    fn compute(
-        &self,
-        input_ptr1: *const f16,
-        input_ptr2: *const f16,
-        input_ptr3: *const f16,
-        output_ptr: *mut f16,
-    ) {
+    fn compute1(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
+        // print!("f16 runner\n");
+    }
+
+    fn compute2(&self, output_ptr: *mut f16, input_ptr1: *const f16) {
         // print!("f16 runner\n");
     }
 }
 
 impl MatMul4Trait<f32> for ExpertsMatMulSilu<f32> {
-    fn compute(
-        &self,
-        input_ptr1: *const f32,
-        input_ptr2: *const f32,
-        input_ptr3: *const f32,
-        output_ptr: *mut f32,
-    ) {
+    fn compute1(&self, input_ptr1: *const f32, input_ptr2: *const f32, output_ptr: *mut f32) {
         // print!("f32 runner\n");
 
         /*//implementation for f32 on platform with avx2
@@ -124,6 +114,10 @@ impl MatMul4Trait<f32> for ExpertsMatMulSilu<f32> {
         // generic implementation for f32
         // #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]*/
         // generic_matmul_block(input_ptr1, input_ptr2, output_ptr, &(self.params));
+    }
+
+    fn compute2(&self, output_ptr: *mut f32, input_ptr1: *const f32) {
+        // print!("f16 runner\n");
     }
 }
 
