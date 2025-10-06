@@ -1,4 +1,3 @@
-
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
@@ -9,7 +8,7 @@ use super::super::super::init::{
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::MatMul3Trait;
+use super::mul_trait::MatMulAddTrait;
 
 // there will be just one instance of this runner in the program
 // this runner will be shared by many threads that together compute the matrix multiplication
@@ -64,7 +63,7 @@ where
             ptr3: ConstPtr { ptr: ptr3 },
             output_ptr: MutPtr { ptr: output_ptr },
             // sequence_length: sequence_length,
-            output_to_kv: output_to_kv,
+            // output_to_kv: output_to_kv,
             params: MatMulParams {
                 // a_row,
                 // b_row,
@@ -109,11 +108,17 @@ where
     }
 }
 
-impl<T> MatMul3Trait<T> for MatMulAdd<T>
+impl<T> MatMulAddTrait<T> for MatMulAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
-    default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, input_ptr3: *const T, output_ptr: *mut T) {
+    default fn compute(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        input_ptr3: *const T,
+        output_ptr: *mut T,
+    ) {
         //print!("generic runner\n");
         /*
         kernel::generic::matmul_block::matmul_block(
@@ -123,12 +128,17 @@ where
             &(self.params),
         );
          */
-
     }
 }
 
-impl MatMul3Trait<f16> for MatMulAdd<f16> {
-    fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, input_ptr3: *const f16, output_ptr: *mut f16) {
+impl MatMulAddTrait<f16> for MatMulAdd<f16> {
+    fn compute(
+        &self,
+        input_ptr1: *const f16,
+        input_ptr2: *const f16,
+        input_ptr3: *const f16,
+        output_ptr: *mut f16,
+    ) {
         // print!("f16 runner\n");
         /*
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
@@ -148,12 +158,17 @@ impl MatMul3Trait<f16> for MatMulAdd<f16> {
             &(self.params),
         );
         */
-
     }
 }
 
-impl MatMul3Trait<f32> for  MatMulAdd<f32> {
-    fn compute(&self, input_ptr1: *const f32, input_ptr2: *const f32, input_ptr3: *const f32, output_ptr: *mut f32) {
+impl MatMulAddTrait<f32> for MatMulAdd<f32> {
+    fn compute(
+        &self,
+        input_ptr1: *const f32,
+        input_ptr2: *const f32,
+        input_ptr3: *const f32,
+        output_ptr: *mut f32,
+    ) {
         // print!("f32 runner\n");
 
         /*//implementation for f32 on platform with avx2
@@ -165,7 +180,6 @@ impl MatMul3Trait<f32> for  MatMulAdd<f32> {
         // #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]*/
         // generic_matmul_block(input_ptr1, input_ptr2, output_ptr, &(self.params));
     }
-
 }
 
 #[cfg(test)]
@@ -252,5 +266,4 @@ mod tests {
         }
     }
     */
-
 }

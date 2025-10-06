@@ -42,7 +42,7 @@ pub struct MatMulSilu<T> {
 
     // 构造期转置缓存：N×K，行主，行距=K
     pub wgate_nt: Option<Box<[T]>>,
-    pub wup_nt:   Option<Box<[T]>>,
+    pub wup_nt: Option<Box<[T]>>,
 }
 
 impl<T> MatMulSilu<T>
@@ -55,12 +55,18 @@ where
         wgate_ptr: *const T,
         wup_ptr: *const T,
         out_ptr: *mut T,
-        m_max: usize, n_max: usize, k_max: usize,
-        mb: usize, nb: usize, kc: usize, mr: usize, nr: usize,
+        m_max: usize,
+        n_max: usize,
+        k_max: usize,
+        mb: usize,
+        nb: usize,
+        kc: usize,
+        mr: usize,
+        nr: usize,
     ) -> Self {
         // 构造期一次性转置，避免 run() 或多线程重复转置
         let wgate_nt = unsafe { make_b_nt::<T>(wgate_ptr, n_max, k_max) };
-        let wup_nt   = unsafe { make_b_nt::<T>(wup_ptr,   n_max, k_max) };
+        let wup_nt = unsafe { make_b_nt::<T>(wup_ptr, n_max, k_max) };
 
         Self {
             ptr1: ConstPtr { ptr: a_ptr },
@@ -74,18 +80,23 @@ where
                 a_row_step_micro: mr,
                 b_row_step_micro: nr,
             },
-            m_max, n_max, k_max,
+            m_max,
+            n_max,
+            k_max,
             _marker: PhantomData,
             wgate_nt: Some(wgate_nt),
-            wup_nt:   Some(wup_nt),
+            wup_nt: Some(wup_nt),
         }
     }
 
     #[inline(always)]
     unsafe fn pack_panel<U: Copy>(
-        b_nt: *const U, ldb_row: usize,
-        n0: usize, k0: usize,
-        kc: usize, nr: usize,
+        b_nt: *const U,
+        ldb_row: usize,
+        n0: usize,
+        k0: usize,
+        kc: usize,
+        nr: usize,
         out: *mut U, // 输出 KC×NR 行主，每行 NR 连续
     ) {
         for p in 0..kc {
@@ -102,7 +113,14 @@ where
     /// 执行：按 tiles_m × tiles_n 分块；每微块（MR×NR=3×32）：
     /// - 循环 K 方向，反复打 KC×NR 面板并调用 compute1 累加到 gate_acc/up_acc
     /// - 整个 K 完成后，compute2 把 SiLU(gate) ⊙ up 写回 C
-    pub fn run(&self, batch_size: usize, cpu_num: usize, thread_id: usize) {
+    pub fn run(
+        &self,
+        position_index: usize,
+        position_interval: usize,
+        batch_size: usize,
+        cpu_num: usize,
+        thread_id: usize,
+    ) {
         unsafe {
             // 维度
             let m = batch_size;
@@ -119,14 +137,14 @@ where
             debug_assert!(m % mr == 0 && n % nr == 0 && k % kc == 0);
 
             // 基址/行距
-            let a_base = self.ptr1.ptr;       // A
+            let a_base = self.ptr1.ptr; // A
             let c_base = self.output_ptr.ptr; // C
             let lda = k; // A 行距
             let ldc = n; // C 行距
 
             // 转置缓存
             let wgate_nt = self.wgate_nt.as_ref().expect("wgate_nt not initialized");
-            let wup_nt   = self.wup_nt  .as_ref().expect("wup_nt not initialized");
+            let wup_nt = self.wup_nt.as_ref().expect("wup_nt not initialized");
             let (wgate_nt_ptr, wup_nt_ptr, ldb_row) = (wgate_nt.as_ptr(), wup_nt.as_ptr(), k);
 
             // 瓦片计数
@@ -136,11 +154,11 @@ where
             if let Some((tb, te)) = assign(tiles_m * tiles_n, cpu_num, thread_id) {
                 // 线程私有 KC×NR 面板
                 let mut gate_panel: Vec<T> = vec![T::default(); kc * nr];
-                let mut up_panel:   Vec<T> = vec![T::default(); kc * nr];
+                let mut up_panel: Vec<T> = vec![T::default(); kc * nr];
 
                 // 微块累加缓冲：固定 MR×NR（3×32）
                 let mut gate_acc: Vec<T> = vec![T::default(); mr * nr];
-                let mut up_acc:   Vec<T> = vec![T::default(); mr * nr];
+                let mut up_acc: Vec<T> = vec![T::default(); mr * nr];
 
                 for t in tb..te {
                     let tm = t / tiles_n;
@@ -159,21 +177,33 @@ where
                         let mut mi = 0;
                         while mi < m_blk {
                             // 清零微块累加缓冲
-                            for x in gate_acc.iter_mut() { *x = T::default(); }
-                            for x in up_acc.iter_mut()   { *x = T::default(); }
+                            for x in gate_acc.iter_mut() {
+                                *x = T::default();
+                            }
+                            for x in up_acc.iter_mut() {
+                                *x = T::default();
+                            }
 
                             // K 方向按 kc 面板累加
                             let mut k0 = 0;
                             while k0 < k {
                                 // 打 gate / up 的 KC×NR 面板
                                 Self::pack_panel::<T>(
-                                    wgate_nt_ptr, ldb_row,
-                                    n0 + nt, k0, kc, nr,
+                                    wgate_nt_ptr,
+                                    ldb_row,
+                                    n0 + nt,
+                                    k0,
+                                    kc,
+                                    nr,
                                     gate_panel.as_mut_ptr(),
                                 );
                                 Self::pack_panel::<T>(
-                                    wup_nt_ptr, ldb_row,
-                                    n0 + nt, k0, kc, nr,
+                                    wup_nt_ptr,
+                                    ldb_row,
+                                    n0 + nt,
+                                    k0,
+                                    kc,
+                                    nr,
                                     up_panel.as_mut_ptr(),
                                 );
 
@@ -195,11 +225,7 @@ where
 
                             // —— finalize：SiLU(gate) ⊙ up → C —— //
                             let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
-                            self.compute2(
-                                gate_acc.as_ptr(),
-                                up_acc.as_ptr(),
-                                c_tile,
-                            );
+                            self.compute2(gate_acc.as_ptr(), up_acc.as_ptr(), c_tile);
 
                             mi += mr;
                         }
@@ -228,12 +254,7 @@ where
         // 默认空实现（初始版本只提供 f16 专用实现）
     }
 
-    default fn compute2(
-        &self,
-        _gate_acc: *const T,
-        _up_acc: *const T,
-        _c_tile: *mut T,
-    ) {
+    default fn compute2(&self, _gate_acc: *const T, _up_acc: *const T, _c_tile: *mut T) {
         // 默认空实现
     }
 }
@@ -256,17 +277,22 @@ impl MatMul3Trait<f16> for MatMulSilu<f16> {
         // - kc = self.params.column_step_macro
         // - mr/nr 来自 params
         let call_param = MatMulParams {
-            a_row_step_macro: self.k_max,                    // lda (=K)
-            b_row_step_macro: self.params.b_row_step_micro,  // ldc_acc (=NR=32)
-            column_step_macro: self.params.column_step_macro,// kc
-            a_row_step_micro: self.params.a_row_step_micro,  // mr (=3)
-            b_row_step_micro: self.params.b_row_step_micro,  // nr (=32)
+            a_row_step_macro: self.k_max,                     // lda (=K)
+            b_row_step_macro: self.params.b_row_step_micro,   // ldc_acc (=NR=32)
+            column_step_macro: self.params.column_step_macro, // kc
+            a_row_step_micro: self.params.a_row_step_micro,   // mr (=3)
+            b_row_step_micro: self.params.b_row_step_micro,   // nr (=32)
         };
 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
             kernel::x86_64::f16_512::fused_gate_up_silu_mul_block::fused_update_gate_up_acc_block(
-                a_tile, gate_panel, up_panel, gate_acc, up_acc, &call_param,
+                a_tile,
+                gate_panel,
+                up_panel,
+                gate_acc,
+                up_acc,
+                &call_param,
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
@@ -276,21 +302,16 @@ impl MatMul3Trait<f16> for MatMulSilu<f16> {
     }
 
     /// finalize：C = SiLU(gate_acc) ⊙ up_acc
-    fn compute2(
-        &self,
-        gate_acc: *const f16,
-        up_acc: *const f16,
-        c_tile: *mut f16,
-    ) {
+    fn compute2(&self, gate_acc: *const f16, up_acc: *const f16, c_tile: *mut f16) {
         // 调用期参数映射（finalize 阶段）：
         // - ldc_out = N           -> b_row_step_macro = self.n_max
         // - mr/nr 来自 params
         let call_param = MatMulParams {
-            a_row_step_macro: self.k_max,                    // unused here
-            b_row_step_macro: self.n_max,                    // ldc_out (=N)
-            column_step_macro: self.params.column_step_macro,// unused here
-            a_row_step_micro: self.params.a_row_step_micro,  // mr
-            b_row_step_micro: self.params.b_row_step_micro,  // nr
+            a_row_step_macro: self.k_max,                     // unused here
+            b_row_step_macro: self.n_max,                     // ldc_out (=N)
+            column_step_macro: self.params.column_step_macro, // unused here
+            a_row_step_micro: self.params.a_row_step_micro,   // mr
+            b_row_step_micro: self.params.b_row_step_micro,   // nr
         };
 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]

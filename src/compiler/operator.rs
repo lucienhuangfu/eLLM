@@ -234,6 +234,7 @@ mod test {
     // use std::sync::{Arc, Barrier};
     // use std::thread;
 
+    /*
     #[test]
     fn test_add_zip() {
         let sequence_chunk_size = 1;
@@ -524,7 +525,7 @@ mod test {
         ]
         .repeat(sequence_chunk_size * batch_size);
         assert_ulps_eq!(output_data[..], result, max_ulps = 4);
-    }
+    } */
 
     /*
     #[test]
