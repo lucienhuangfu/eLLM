@@ -5,8 +5,10 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
+use super::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
+use super::map::topk_softmax::TopKSoftmax;
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 use super::mul::attention_mul_add::AttentionMulAdd;
@@ -33,17 +35,19 @@ pub enum Operator<T> {
     // ArgmaxReduce(ArgmaxReduce<T>),
     AttentionMulAdd(AttentionMulAdd<T>),
     ComplexZipMap(ComplexZipMap<T>),
+    ExpertsMatMulMergeAdd(ExpertsMatMulMergeAdd<T>),
+    ExpertsMatMulSiluMulMatMul(ExpertsMatMulSilu<T>),
+    ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
     LookupRMSMap(LookupRMSMap<T>),
+    MatMul(MatMul<T>),
+    MatMul3(MatMul3<T>),
+    MatMulAdd(MatMulAdd<T>),
+    MatMulSiluMulMatMul(MatMulSilu<T>),
+    MatMulTopK(MatMulTopK<T>),
     RMSMap(RMSMap<T>),
     SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
-    MatMul(MatMul<T>),
-    MatMulAdd(MatMulAdd<T>),
-    MatMul3(MatMul3<T>),
-    MatMulSiluMulMatMul(MatMulSilu<T>),
-    MatMulTopK(MatMulTopK<T>),
-    ExpertsMatMulMergeAdd(ExpertsMatMulMergeAdd<T>),
-    ExpertsMatMulSiluMulMatMul(ExpertsMatMulSilu<T>),
+    TopKSoftmax(TopKSoftmax<T>),
 }
 
 impl<T> Operator<T>
@@ -59,6 +63,24 @@ where
         thread_id: usize,
     ) {
         match self {
+            Self::AddRMSZipMap(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::AddZipMap(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
             Self::AttentionMulAdd(operator) => {
                 operator.run(
                     position_index,
@@ -77,25 +99,34 @@ where
                     thread_id,
                 );
             }
+            Self::ExpertsMatMulMergeAdd(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::ExpertsMatMulSiluMulMatMul(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::ExpertsSoftmaxNorm(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
             Self::LookupRMSMap(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
-            }
-            Self::RMSMap(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
-            }
-            Self::SiluMulZipMap(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -113,7 +144,7 @@ where
                     thread_id,
                 );
             }
-            Self::MatMulAdd(operator) => {
+            Self::MatMul3(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -122,7 +153,7 @@ where
                     thread_id,
                 );
             }
-            Self::MatMul3(operator) => {
+            Self::MatMulAdd(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -149,7 +180,7 @@ where
                     thread_id,
                 );
             }
-            Self::ExpertsMatMulMergeAdd(operator) => {
+            Self::RMSMap(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -158,7 +189,16 @@ where
                     thread_id,
                 );
             }
-            Self::ExpertsMatMulSiluMulMatMul(operator) => {
+            Self::SiluMulZipMap(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::TopKSoftmax(operator) => {
                 operator.run(
                     position_index,
                     position_interval,

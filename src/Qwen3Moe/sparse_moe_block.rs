@@ -8,10 +8,10 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::init::matmul_params::MatMulParams;
 use super::super::memory::cache::Cache;
-// use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
-// use super::mlp::MLP;
 use crate::compiler::operator::Operator;
+// use super::mlp::MLP;
+// use super::super::ptensor::linear::Linear;
 
 #[derive(Clone)]
 pub struct SparseMoeBlock<T> {
@@ -88,9 +88,20 @@ where
     ) -> Tensor<T> {
 
 
-        let gate_output = hidden_states.matmul(self.gate_weight, format!("{}.gate_output", self.scope_name));
+        let gate_output = hidden_states.matmul(&self.gate_weight, MatMulParams {
+                a_row_step_macro: 16,
+                b_row_step_macro: 16,
+                column_step_macro: 16,
+                a_row_step_micro: 8,
+                b_row_step_micro: 8,
+            },
+            hidden_states.shape[0],
+            self.scope_name.clone()
+        );
 
-        let (topk_indices, topk_values) = gate_output.experts_softmax_norm( format!("{}.router_probs", self.scope_name));
+        let (topk_indices, topk_values) = gate_output.experts_softmax_norm( 
+            self.top_k,
+            format!("{}.router_probs", self.scope_name));
         
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
@@ -109,7 +120,7 @@ where
 
         let down_product = nonlinear_product.experts_matmul_merge_add(
             &self.experts_down_weight,
-                      &topk_indices,
+            &topk_indices,
             &topk_values,
             residual,
             MatMulParams {
