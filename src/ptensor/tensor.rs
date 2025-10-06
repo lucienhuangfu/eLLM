@@ -11,8 +11,10 @@ use super::super::memory::cache::Cache;
 use super::tensor_utils::get_strides;
 use crate::init::matmul_params::MatMulParams;
 
+use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
+use super::super::compiler::map::topk_softmax::TopKSoftmax;
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::attention_mul_add::AttentionMulAdd;
 use super::super::compiler::mul::experts_matmul_merge_add::ExpertsMatMulMergeAdd;
@@ -94,32 +96,30 @@ where
         &self,
         k_tensor: &Tensor<T>,
         v_tensor: &Tensor<T>,
-        bias_tensor: Option<&Tensor<T>>,
+        residual: &Tensor<T>,
         inverse_sqrt_head: T,
-        tensor_name: String,
+        scope_name: String,
     ) -> Self {
         let output_shape = self.shape.clone();
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
-            tensor_name,
+            format!("{}.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
-
-        let bias_ptr = bias_tensor.map(|t| t.data).unwrap_or(std::ptr::null());
 
         let operator = Operator::AttentionMulAdd(AttentionMulAdd::new(
             self.data,
             k_tensor.data,
             v_tensor.data,
-            bias_ptr,
+            residual.data,
             output_tensor.data,
             self.shape[1],
             self.shape[2],
             k_tensor.shape[2],
             self.shape[3],
             k_tensor.strides.clone(),
-            inverse_sqrt_head,
+            inverse_sqrt_head   
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -161,18 +161,19 @@ where
     pub fn experts_matmul_merge_add(
         &self,
         down_weights: &Tensor<T>,
+        topk_indice: &Tensor<T>,
+        topk_values: &Tensor<T>,
         residual: &Tensor<T>,
         params: MatMulParams,
-        tensor_name: String,
+        scope_name: String,
     ) -> Self {
-
         // down_weights [num_experts, hidden_size, intermediate_size]
         // output [sequence_chunk_size, batch_size, hidden_size]
         let output_shape = vec![self.shape[0], self.shape[1], down_weights.shape[1]];
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
-            tensor_name,
+            format!("{}.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
@@ -180,6 +181,8 @@ where
         let operator = Operator::ExpertsMatMulMergeAdd(ExpertsMatMulMergeAdd::new(
             self.data,
             down_weights.data,
+            topk_indice.data,
+            topk_values.data,
             residual.data,
             output_tensor.data,
             self.shape[1],
@@ -204,7 +207,6 @@ where
         params: MatMulParams,
         tensor_name: String,
     ) -> Self {
-
         // gate_weights [num_experts, intermediate_size, hidden_size]
         // output [sequence_chunk_size, batch_size, intermediate_size]
         let output_shape = vec![self.shape[0], self.shape[1], gate_weights.shape[1]];
@@ -222,7 +224,7 @@ where
             up_weights.data,
             topk.data,
             output_tensor.data,
-            self.shape[1], 
+            self.shape[1],
             gate_weights.shape[1],
             self.shape[2],
             params.a_row_step_macro,
@@ -236,6 +238,38 @@ where
         output_tensor
     }
 
+    pub fn experts_softmax_norm(
+        &self,
+        topk_size: usize,
+        scope_name: String,
+
+    ) -> (Self, Self) {
+        let indice_tensor = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], topk_size],
+            format!("{}.indice", scope_name),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let value_tensor = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], topk_size],
+            format!("{}.value", scope_name),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
+            self.data,
+            indice_tensor.data,
+            value_tensor.data,
+            self.shape[1],
+            topk_size,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        (indice_tensor, value_tensor)
+    }
+
     pub fn from_cache(
         shape: Vec<usize>,
         tensor_name: String,
@@ -243,9 +277,7 @@ where
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let length: usize = shape.iter().product();
-
         let data = cache.borrow_mut().get(&tensor_name, length);
-
         let strides = get_strides(&shape);
         Tensor {
             data: data,
@@ -264,7 +296,7 @@ where
         sequence_length: usize,
         tensor_name: String,
     ) -> Self {
-        let output_shape = vec![sequence_length, self.shape[1], tensor2.shape[0]];
+        let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
 
         let output_to_kv = if self.shape[0] <= sequence_length {
             false
@@ -282,9 +314,10 @@ where
             self.data,
             tensor2.data,
             output_tensor.data,
-            // sequence_length,
             output_to_kv,
-            self.shape[1], tensor2.shape[0], self.shape[2],
+            self.shape[1],
+            tensor2.shape[0],
+            self.shape[2],
             params.a_row_step_macro,
             params.b_row_step_macro,
             params.column_step_macro,
@@ -301,10 +334,13 @@ where
         tensor2: &Tensor<T>,
         tensor3: &Tensor<T>,
         params: MatMulParams,
-        // sequence_length: usize,
         tensor_name: String,
     ) -> Self {
-        let output_shape = vec![sequence_length, self.shape[1], tensor2.shape[0]];
+        let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
+
+        let a_row = self.shape[1];
+        let b_row = tensor2.shape[0];
+        let column = self.shape[2];
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
@@ -318,9 +354,9 @@ where
             tensor2.data,
             tensor3.data,
             output_tensor.data,
-            params.a_row,
-            params.b_row,
-            params.column,
+            a_row,
+            b_row,
+            column,
             params.a_row_step_macro,
             params.b_row_step_macro,
             params.column_step_macro,
@@ -339,7 +375,6 @@ where
         params: MatMulParams,
         tensor_name: String,
     ) -> Self {
-
         // hidden_tensor [sequence_chunk_size, batch_size, hidden_size]
         // tensor2 [intermediate_size, hidden_size]
         // output [sequence_chunk_size, batch_size, intermediate_size]
@@ -381,7 +416,7 @@ where
         tensor2: &Tensor<T>,
         params: MatMulParams,
         thread_num: usize,
-        tensor_name: String,
+        scope_name: String,
     ) -> (Self, Self, Self) {
         let a_row = self.shape[1];
         let b_row = tensor2.shape[1];
@@ -391,27 +426,24 @@ where
 
         let indice_tensor = Tensor::from_cache(
             output_shape.clone(),
-            tensor_name,
+            format!("{}.indices", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
-
         let value_tensor = Tensor::from_cache(
             output_shape.clone(),
-            tensor_name,
+            format!("{}.values", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
         let sum_tensor = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], thread_num],
-            tensor_name,
+            format!("{}.sums", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
-
-
 
         let operator = Operator::MatMulTopK(MatMulTopK::new(
             self.data,
@@ -457,10 +489,10 @@ where
         }
     }
 
-    pub fn rms(&self, weight: *const T, eps: T, tensor_name: String) -> Self {
+    pub fn rms(&self, weight: *const T, eps: T, scope_name: String) -> Self {
         let output_tensor = Tensor::from_cache(
             self.shape.clone(),
-            tensor_name,
+            format!("{}.rms_output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
@@ -494,6 +526,43 @@ where
         ));
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
+    }
+
+    pub fn topk_softmax(
+        &self,
+        indices_tensor: &Tensor<T>,
+        values_tensor: &Tensor<T>,
+        sums_tensor: &Tensor<T>,
+        indice_tensor_name: String,
+        value_tensor_name: String,
+        topk_size: usize,
+    ) -> (Self, Self) {
+        let indice_tensor = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], topk_size],
+            indice_tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let value_tensor = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], topk_size],
+            value_tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::TopKSoftmax(TopKSoftmax::new(
+            indices_tensor.data,
+            values_tensor.data,
+            sums_tensor.data,
+            indice_tensor.data,
+            value_tensor.data,
+            self.shape[1],
+            topk_size,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        (indice_tensor, value_tensor)
     }
 
     pub fn transpose(&mut self, index1: usize, index2: usize) -> Self {
@@ -718,7 +787,6 @@ where
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }*/
-
 }
 
 unsafe impl<T: Copy + Default + Send + Sync> Send for Tensor<T> {}

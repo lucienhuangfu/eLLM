@@ -20,7 +20,7 @@ pub struct MatMulAdd<T> {
     ptr3: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     // sequence_length: usize,
-    output_to_kv: bool,
+    // output_to_kv: bool,
     pub params: MatMulParams,
     _marker: PhantomData<T>,
     // sequence_stride: usize,
@@ -36,7 +36,7 @@ where
         ptr2: *const T,
         ptr3: *const T,
         output_ptr: *mut T,
-        output_to_kv: bool,
+        // output_to_kv: bool,
         // sequence_length: usize,
 
         // these are the parameters of the matrix multiplication, this matrix is a largest possible one

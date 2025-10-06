@@ -28,7 +28,6 @@ use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
 
-
 // use super::rope::precompute_freqs_cis;
 
 #[derive(Clone)]
