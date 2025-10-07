@@ -15,7 +15,7 @@ pub struct LookupRMSMap<T> {
     max_batch_size: usize,
     hidden_size: usize,
     word_embedding: ConstPtr<T>,
-    weight: ConstPtr<T>,
+    // weight: ConstPtr<T>,
     eps: T,
     // cpu_num: usize,
 }
@@ -28,7 +28,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
         max_batch_size: usize,
         hidden_size: usize,
         word_embedding: *const T,
-        weight: *const T,
+        // weight: *const T,
         eps: T,
         // cpu_num: usize,
     ) -> Self {
@@ -38,7 +38,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
             output_ptr: MutPtr { ptr: output_ptr },
             max_batch_size,
             hidden_size,
-            weight: ConstPtr { ptr: weight },
+            // weight: ConstPtr { ptr: weight },
             word_embedding: ConstPtr {
                 ptr: word_embedding,
             },
@@ -47,12 +47,6 @@ impl<T: Sqrt> LookupRMSMap<T> {
             // cpu_num,
         }
     }
-
-    /*
-    // Set the chunks for the map
-    pub fn set_chunk(&mut self, chunks: Vec<(ConstPtr<T>, MutPtr<T>)>) {
-        self.chunks = chunks;
-    } */
 
     // Run the map for a given batch size, position interval, and thread ID
     pub fn run(
@@ -107,7 +101,7 @@ impl<T: Sqrt> MapTrait<T> for LookupRMSMap<T> {
             input_ptr,
             output_ptr,
             length,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
     }
@@ -130,7 +124,6 @@ impl MapTrait<f16> for LookupRMSMap<f16> {
             input_ptr,
             output_ptr,
             length,
-            self.weight.ptr,
             self.eps,
         );
     }
@@ -143,7 +136,7 @@ impl MapTrait<f32> for LookupRMSMap<f32> {
             input_ptr,
             output_ptr,
             length,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
     }
@@ -203,7 +196,7 @@ mod test {
             batch_size,
             hidden_size,
             word_embedding.as_ptr(),
-            weight.as_ptr(),
+            // weight.as_ptr(),
             eps
             // cpu_num,
         );

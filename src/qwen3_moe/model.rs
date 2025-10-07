@@ -62,21 +62,19 @@ where
 {
     pub fn new(
         config: &Config,
-        // word_embedding: Tensor<T>,
-        // position_embedding: Tensor<T>,
-        // norm_weight: Tensor<T>,
-        // cpu_num: usize,
-        // cache: Rc<RefCell<Cache<T>>>,
-        // operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+        sequence_length: usize,
+        sequence_chunk_size: usize,
+        batch_size: usize
+
     ) -> Self {
         let scope_name = String::from("model");
 
         // let torch_file = String::from("D:/llama-3-chinese-8b-instruct-v3");
         // let loader = SafeTensorsLoader::new(&torch_file).unwrap();
         // let tensors = loader.load_all_weights_f16().unwrap();
-        let tensors = std::collections::HashMap::new();
+        let parameter_tensors = std::collections::HashMap::new();
 
-        let cache = Rc::new(RefCell::new(Cache::new(tensors)));
+        let cache = Rc::new(RefCell::new(Cache::new(parameter_tensors)));
 
         let operator_queue: Rc<RefCell<Vec<Operator<T>>>> = Rc::new(RefCell::new(Vec::new()));
 
@@ -93,7 +91,7 @@ where
                 config.max_position_embeddings,
                 1,
                 1,
-                config.hidden_size / config.num_attention_heads,
+                config.head_dim
             ],
             String::from("model.position_embedding.weight"),
             cache.clone(),
@@ -112,16 +110,19 @@ where
             layers.push(DecoderLayer::<T>::new(
                 &config,
                 i,
-                &self.word_embedding,
-                &self.position_embedding,
-                &self.scope_name,
-                self.cache.clone(),
-                self.operator_queue.clone(),
+                sequence_length,
+                sequence_chunk_size,
+                batch_size,
+                &word_embedding,
+                &position_embedding,
+                & scope_name,
+                cache.clone(),
+                operator_queue.clone(),
             ));
         }
 
         Self {
-            tokens: Vec::new(),
+            // tokens: Vec::new(),
             sequences: vec![0; (config.max_position_embeddings + 1) * config.batch_size],
             output_linear: Linear::<T>::new(
                 config.batch_size,
@@ -135,7 +136,6 @@ where
 
             position_embedding: position_embedding,
             word_embedding: word_embedding,
-            norm_weight: norm_weight,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             config: config,
             scope_name: scope_name,

@@ -1,9 +1,9 @@
 // use crate::kernel::generic::from_usize::FromUsize;
 use crate::kernel::generic::sqrt::Sqrt;
-use std::ops::{Add, Div, Mul};
+// use std::ops::{Add, Div, Mul};
 use std::ptr;
 
-pub fn rms_norm<T>(input_ptr: *const T, output_ptr: *mut T, length: usize, weight: *const T, eps: T)
+pub fn rms_norm<T>(input_ptr: *const T, output_ptr: *mut T, length: usize, eps: T)
 where
     T: Sqrt,
 {
@@ -17,10 +17,10 @@ where
             sum / T::from_usize(length)
         };
         let rrms = T::from_usize(1) / (variance.sqrt() + eps);
-        for (vptr, gptr, optr) in
-            (0..length).map(|x| (input_ptr.add(x), weight.add(x), output_ptr.add(x)))
+        for (vptr, optr) in
+            (0..length).map(|x| (input_ptr.add(x), output_ptr.add(x)))
         {
-            ptr::write(optr, *vptr * rrms * *gptr);
+            ptr::write(optr, *vptr * rrms);
         }
     }
 }
@@ -30,7 +30,7 @@ pub fn add_rms_norm<T>(
     input_ptr2: *const T,
     output_ptr: *mut T,
     length: usize,
-    weight: *const T,
+    // weight: *const T,
     eps: T,
 ) where
     T: Sqrt,
@@ -42,7 +42,7 @@ pub fn add_rms_norm<T>(
             let y = *input1 + *input2;
             ptr::write(output, y);
         }
-        rms_norm(output_ptr, output_ptr, length, weight, eps);
+        rms_norm(output_ptr, output_ptr, length, eps);
     }
 }
 
@@ -60,7 +60,7 @@ mod tests {
             v1.as_ptr(),
             output.as_mut_ptr(),
             v1.len(),
-            weight.as_ptr(),
+            // weight.as_ptr(),
             1e-6,
         );
         let result = [
@@ -98,7 +98,7 @@ mod tests {
             v2.as_ptr(),
             output.as_mut_ptr(),
             v1.len(),
-            weight.as_ptr(),
+            // weight.as_ptr(),
             1e-6,
         );
         let result = [
