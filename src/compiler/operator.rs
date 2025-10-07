@@ -11,7 +11,7 @@ use super::map::rms_map::RMSMap;
 use super::map::topk_softmax::TopKSoftmax;
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
-use super::mul::attention_mul_add::AttentionMulAdd;
+use super::mul::attention_add::AttentionAdd;
 use super::mul::experts_matmul_merge_add::ExpertsMatMulMergeAdd;
 use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
 use super::mul::matmul::MatMul;
@@ -33,7 +33,7 @@ pub enum Operator<T> {
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
     // ArgmaxReduce(ArgmaxReduce<T>),
-    AttentionMulAdd(AttentionMulAdd<T>),
+    AttentionAdd(AttentionAdd<T>),
     ComplexZipMap(ComplexZipMap<T>),
     ExpertsMatMulMergeAdd(ExpertsMatMulMergeAdd<T>),
     ExpertsMatMulSiluMulMatMul(ExpertsMatMulSilu<T>),
@@ -81,7 +81,7 @@ where
                     thread_id,
                 );
             }
-            Self::AttentionMulAdd(operator) => {
+            Self::AttentionAdd(operator) => {
                 operator.run(
                     position_index,
                     position_interval,

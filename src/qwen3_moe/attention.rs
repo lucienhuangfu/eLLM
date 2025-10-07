@@ -8,10 +8,10 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::memory::cache::Cache;
-use crate::compiler::mul::attention_mul_add::AttentionMulAdd;
+// use crate::compiler::mul::attention_add::AttentionAdd;
+use super::super::init::matmul_params::MatMulParams;
 use crate::compiler::operator::Operator;
-
-use super::super::ptensor::linear::Linear;
+// use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 
 use super::config::Config;
@@ -39,7 +39,15 @@ pub struct Attention<T> {
 
 impl<T> Attention<T>
 where
-    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt + FromF32,
+    T: Copy
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid<T>
+        + Sqrt
+        + FromF32,
 {
     pub fn new(
         config: &Config,
@@ -51,7 +59,7 @@ where
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let head_dim: usize = config.head_dim;
-        let num_key_value_groups =  config.num_attention_heads / config.num_key_value_heads;
+        let num_key_value_groups = config.num_attention_heads / config.num_key_value_heads;
         // T::sqrt(T::from_usize(config.attention_head_size )),
         let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
 
@@ -66,7 +74,7 @@ where
             is_causal: false,
             layer_idx: layer_idx,
             q_weight: Tensor::zeros(
-                vec![config.hidden_size,config.num_attention_heads * head_dim],
+                vec![config.hidden_size, config.num_attention_heads * head_dim],
                 format!("{}.q_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
@@ -107,15 +115,23 @@ where
             // mul_rms_complex 合并operators
             // [sequence_chunk_size, batch_size, hidden_size]
             // [sequence_chunk_size, batch_size, kv_hidden_size]
-            let (query_states, key_states, value_states) = hidden_states.matmul3_rms_complex(
+            let (query_states, key_states, value_states) = hidden_states.matmul3(
                 &self.q_weight,
                 &self.k_weight,
                 &self.v_weight,
                 position_embedding,
-                self.scope_name.clone()
+                self.head_dim,
+                MatMulParams {
+                    a_row_step_macro: 16,
+                    b_row_step_macro: 16,
+                    column_step_macro: 16,
+                    a_row_step_micro: 8,
+                    b_row_step_micro: 8,
+                },
+                self.scope_name.clone(),
             );
 
-            /* 
+            /*
             let view_query = query_states.view(vec![
                 query_states.shape[0],
                 query_states.shape[1],
@@ -144,9 +160,11 @@ where
             let mut view_value_tensor2 = value_states.permute(vec![1, 2, 0, 3]);
 
             // [position_window_size, batch_size, head_num, head_size] <- [position_window_size, batch_size, head_num, head_size] [batch_size, head_num, sequence_num, head_size] [batch_size, head_num, sequence_num, head_size]
-            let attn_output = query_states.attention(
+            let attn_output = query_states.attention_add(
                 &view_key_position_tensor,
                 &view_value_tensor2,
+                residual,
+                self.scaling,
                 format!("{}.attn_output", self.scope_name),
             );
 
@@ -162,9 +180,16 @@ where
             let output_tensor = attn_output.matmul_add(
                 &self.o_weight,
                 &residual,
+                MatMulParams {
+                    a_row_step_macro: 16,
+                    b_row_step_macro: 16,
+                    column_step_macro: 16,
+                    a_row_step_micro: 8,
+                    b_row_step_micro: 8,
+                },
                 self.scope_name.clone(),
             );
-            
+
             // let output_tensor = self.wo.forward(&hidden_states, format!("{}.output_tensor", self.scope_name));
             output_tensor
         }
@@ -176,7 +201,7 @@ mod test {
     use super::*;
     use approx::assert_ulps_eq;
 
-    /* 
+    /*
     #[test]
     fn test_self_attention() {
         let position_window_size = 4;

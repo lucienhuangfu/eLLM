@@ -32,7 +32,8 @@ pub struct MatMul3<T> {
     head_dim: usize, // =128（必须偶数）
     a_h_row: usize,  // M
     col: usize,      // K
-    n_proj: usize,   // N（Wq/Wk/Wv 相同；N%128==0）
+    b_q_row: usize,  // N (Wq 同形)
+    b_kv_row: usize, // N (Wk/Wv 同形)
 
     // 分块（仅承载 MB/NB/KC/MR/NR）
     pub params: MatMulParams,
@@ -63,7 +64,8 @@ where
         head_dim: usize,
         a_h_row: usize, // M
         col: usize,     // K
-        n_proj: usize,  // N (Wq/Wk/Wv 同形)
+        b_q_row: usize,  // N 
+        b_kv_row: usize, // N
         a_row_step_macro: usize,
         b_row_step_macro: usize,
         column_step_macro: usize,
@@ -78,11 +80,14 @@ where
             k_state_ptr: MutPtr { ptr: k_state_ptr },
             v_weight_ptr: ConstPtr { ptr: v_weight_ptr },
             v_state_ptr: MutPtr { ptr: v_state_ptr },
-            position_embedding_ptr: ConstPtr { ptr: position_embedding_ptr },
+            position_embedding_ptr: ConstPtr {
+                ptr: position_embedding_ptr,
+            },
             head_dim,
             a_h_row,
             col,
-            n_proj,
+            b_q_row,
+            b_kv_row,
             params: MatMulParams {
                 a_row_step_macro,
                 b_row_step_macro,
@@ -114,7 +119,7 @@ where
             // 维度
             let m = batch_size;
             let k = self.col;
-            let n = self.n_proj;
+            let n = self.b_q_row;
 
             // 分块
             let mb = self.params.a_row_step_macro.max(1);
@@ -137,9 +142,12 @@ where
             let wk = self.k_weight_ptr.ptr;
             let wv = self.v_weight_ptr.ptr;
 
-            let cq_base = self.q_state_ptr.ptr; let ldq = n;
-            let ck_base = self.k_state_ptr.ptr; let ldk = n;
-            let cv_base = self.v_state_ptr.ptr; let ldv = n;
+            let cq_base = self.q_state_ptr.ptr;
+            let ldq = n;
+            let ck_base = self.k_state_ptr.ptr;
+            let ldk = n;
+            let cv_base = self.v_state_ptr.ptr;
+            let ldv = n;
 
             // RoPE 预表（交错），行距=head_dim=128
             let rope_tab = self.position_embedding_ptr.ptr;
@@ -147,8 +155,8 @@ where
 
             // 序列范围
             let s_begin = position_index;
-            let s_end   = position_index + position_interval;
-            let s_len   = s_end - s_begin;
+            let s_end = position_index + position_interval;
+            let s_len = s_end - s_begin;
 
             // 把 S 维切片给线程
             if let Some((tb, te)) = assign(s_len, cpu_num, thread_id) {
@@ -179,9 +187,9 @@ where
                                     while nt < n_blk {
                                         let mut mi = 0;
                                         while mi < m_blk {
-                                            let a_tile = a_s.add((m0 + mi) * lda + k0);           // 3×kc
-                                            let c_tile = c_s.add((m0 + mi) * ldq + (n0 + nt));    // 3×128
-                                            let b_row  = wq.add(k0 * ldq + (n0 + nt));            // B[k0, n0+nt]
+                                            let a_tile = a_s.add((m0 + mi) * lda + k0); // 3×kc
+                                            let c_tile = c_s.add((m0 + mi) * ldq + (n0 + nt)); // 3×128
+                                            let b_row = wq.add(k0 * ldq + (n0 + nt)); // B[k0, n0+nt]
 
                                             // 3×128 累加
                                             self.compute1(a_tile, b_row, c_tile);
@@ -225,7 +233,7 @@ where
                                         while mi < m_blk {
                                             let a_tile = a_s.add((m0 + mi) * lda + k0);
                                             let c_tile = c_s.add((m0 + mi) * ldk + (n0 + nt));
-                                            let b_row  = wk.add(k0 * ldk + (n0 + nt));
+                                            let b_row = wk.add(k0 * ldk + (n0 + nt));
 
                                             self.compute1(a_tile, b_row, c_tile);
 
@@ -250,7 +258,6 @@ where
                         let tiles_m = (m + mb - 1) / mb;
                         let tiles_n = (n + nb - 1) / nb;
 
-
                         for tm in 0..tiles_m {
                             for tn in 0..tiles_n {
                                 let m0 = tm * mb;
@@ -260,7 +267,6 @@ where
                                 let n_blk = (n - n0).min(nb);
                                 debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
 
-
                                 let mut k0 = 0;
                                 while k0 < k {
                                     let mut nt = 0;
@@ -269,7 +275,7 @@ where
                                         while mi < m_blk {
                                             let a_tile = a_s.add((m0 + mi) * lda + k0);
                                             let c_tile = c_s.add((m0 + mi) * ldv + (n0 + nt));
-                                            let b_row  = wv.add(k0 * ldv + (n0 + nt));
+                                            let b_row = wv.add(k0 * ldv + (n0 + nt));
 
                                             self.compute1(a_tile, b_row, c_tile);
                                             // V 不做 finalize
@@ -314,7 +320,10 @@ impl MatMul4Trait<f16> for MatMul3<f16> {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
             crate::kernel::x86_64::f16_512::matmul_rms_complex::matmul_update_inplace_3x128_accum(
-                a, b_row, c, &call_param,
+                a,
+                b_row,
+                c,
+                &call_param,
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
