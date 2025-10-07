@@ -10,13 +10,14 @@
 #![allow(incomplete_features)]
 #![allow(unused_parens)]
 
-pub mod init;
-pub mod memory;
-pub mod kernel;
 pub mod compiler;
+pub mod init;
+pub mod kernel;
+// pub mod llama;
+pub mod memory;
 pub mod ptensor;
 pub mod qwen3_moe;
-
+// pub mod runtime;
 
 /*
 // Python 绑定模块
@@ -39,7 +40,7 @@ pub mod runtime;
 pub mod serving;
 */
 
-/* 
+/*
 #[macro_use]
 extern crate log;
 #[macro_use]

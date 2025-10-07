@@ -85,7 +85,7 @@ where
             output_tensor.data,
             self.shape[1],
             self.shape[2],
-            weight,
+            // weight,
             eps,
         ));
         self.operator_queue.borrow_mut().push(operator);
@@ -543,7 +543,7 @@ where
         }
     }
 
-    pub fn rms(&self, weight: *const T, eps: T, scope_name: String) -> Self {
+    pub fn rms(&self, eps: T, scope_name: String) -> Self {
         let output_tensor = Tensor::from_cache(
             self.shape.clone(),
             format!("{}.rms_output", scope_name),
@@ -556,7 +556,6 @@ where
             output_tensor.data,
             self.shape[1],
             self.shape[2],
-            weight,
             eps,
         ));
         self.operator_queue.borrow_mut().push(operator);

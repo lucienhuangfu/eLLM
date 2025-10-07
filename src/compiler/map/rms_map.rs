@@ -9,14 +9,11 @@ use crate::kernel::generic::sqrt::Sqrt;
 
 #[derive(Clone)]
 pub struct RMSMap<T> {
-    // chunks: Vec<(ConstPtr<T>, MutPtr<T>)>,
     ptr1: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     max_batch_size: usize,
     hidden_size: usize,
-    weight: ConstPtr<T>,
     eps: T,
-    // cpu_num: usize,
 }
 
 impl<T: Sqrt> RMSMap<T> {
@@ -25,26 +22,17 @@ impl<T: Sqrt> RMSMap<T> {
         output_ptr: *mut T,
         max_batch_size: usize,
         hidden_size: usize,
-        weight: *const T,
         eps: T,
-        // cpu_num: usize,
     ) -> Self {
         Self {
-            // chunks: vec![],
             ptr1: ConstPtr { ptr: ptr1 },
             output_ptr: MutPtr { ptr: output_ptr },
             max_batch_size,
             hidden_size,
-            weight: ConstPtr { ptr: weight },
             eps: eps,
-            // cpu_num: cpu_num,
         }
     }
 
-    /*
-    pub fn set_chunk(&mut self, chunks: Vec<(ConstPtr<T>, MutPtr<T>)>) {
-        self.chunks = chunks;
-    } */
 
     pub fn run(
         &self,
@@ -83,7 +71,7 @@ impl<T: Sqrt> MapTrait<T> for RMSMap<T> {
             input_ptr,
             output_ptr,
             length,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
     }
@@ -96,7 +84,7 @@ impl MapTrait<f16> for RMSMap<f16> {
             input_ptr,
             output_ptr,
             length,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
 
@@ -105,7 +93,7 @@ impl MapTrait<f16> for RMSMap<f16> {
             input_ptr,
             output_ptr,
             length,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
     }
@@ -117,7 +105,7 @@ impl MapTrait<f32> for RMSMap<f32> {
             input_ptr,
             output_ptr,
             length,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
     }
@@ -129,7 +117,7 @@ impl MapTrait<f64> for RMSMap<f64> {
             input_ptr,
             output_ptr,
             length,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
     }
@@ -183,7 +171,7 @@ mod test {
             output_data.as_mut_ptr(),
             batch_size,
             hidden_size,
-            weight.as_ptr(),
+            // weight.as_ptr(),
             eps,
             // cpu_num,
         );
