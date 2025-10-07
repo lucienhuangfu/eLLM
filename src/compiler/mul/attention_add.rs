@@ -1,16 +1,15 @@
 use std::f16;
 use std::ops::{Add, Div, Mul, Sub};
 
-use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use super::super::super::init::send_sync_ptr::{ConstPtr, MutPtr};
 use super::super::super::kernel;
+use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::mul_trait::AttentionMulAddTrait;
+use super::mul_trait::AttentionAddTrait;
 use crate::compiler::assign::assign;
 
-
 #[derive(Clone)]
-pub struct AttentionMulAdd<T> {
+pub struct AttentionAdd<T> {
     q_ptr: ConstPtr<T>,
     k_ptr: ConstPtr<T>,
     v_ptr: ConstPtr<T>,
@@ -27,7 +26,7 @@ pub struct AttentionMulAdd<T> {
     // stride: usize,
 }
 
-impl<T> AttentionMulAdd<T>
+impl<T> AttentionAdd<T>
 where
     T: Copy
         + Default
@@ -51,7 +50,6 @@ where
         head_size: usize,
         kv_strides: Vec<usize>,
         inverse_sqrt_head: T,
-     
     ) -> Self {
         Self {
             q_ptr: ConstPtr { ptr: q_ptr },
@@ -76,14 +74,14 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
-         /* 
+        /*
         // q [sequence, batch, head_num, head_size]
         // q [sequence_chunk_size, batch, kv_head_num, group_num, head_size] * k [sequence_length, batch_size, kv_head_num, head_size]
         // permute [batch_size, kv_head_num, sequence_chunk_size, group_num, head_size] * [batch_size, sequence_length,  kv_head_num, head_size]
         // -> [batch_size, sequence_length, kv_head_num, sequence_chunk_size, group_num, head_size]
 
         let stride = batch_size * self.attention_head_num;
-        
+
         if let Some((begin, end)) = assign(position_interval * stride, cpu_num, thread_id) {
             let max_stride = self.batch_size * self.attention_head_num;
             // 从begin得到对应的坐标
@@ -158,7 +156,7 @@ where
     }
 }
 
-impl<T> AttentionMulAddTrait<T> for AttentionMulAdd<T>
+impl<T> AttentionAddTrait<T> for AttentionAdd<T>
 where
     T: Copy
         + Default
@@ -179,7 +177,7 @@ where
         output_ptr: *mut T,
         position: usize,
     ) {
-        /* 
+        /*
         kernel::generic::flash_attention::flash_attention(
             q_ptr,
             k_ptr,
@@ -194,7 +192,7 @@ where
     }
 }
 
-impl AttentionMulAddTrait<f16> for AttentionMulAdd<f16> {
+impl AttentionAddTrait<f16> for AttentionAdd<f16> {
     fn compute(
         &self,
         q_ptr: *const f16,
@@ -231,7 +229,7 @@ impl AttentionMulAddTrait<f16> for AttentionMulAdd<f16> {
     }
 }
 
-impl AttentionMulAddTrait<f32> for AttentionMulAdd<f32> {
+impl AttentionAddTrait<f32> for AttentionAdd<f32> {
     fn compute(
         &self,
         q_ptr: *const f32,
@@ -241,7 +239,7 @@ impl AttentionMulAddTrait<f32> for AttentionMulAdd<f32> {
         output_ptr: *mut f32,
         position: usize,
     ) {
-        /* 
+        /*
         kernel::generic::flash_attention::flash_attention(
             q_ptr,
             k_ptr,
@@ -263,7 +261,7 @@ mod test {
     use crate::ptensor::tensor_utils::get_strides;
     use approx::assert_ulps_eq;
 
-    /* 
+    /*
     #[test]
     fn test_attention_mul() {
         let sequence_chunk_size = 256;

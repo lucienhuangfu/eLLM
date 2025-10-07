@@ -25,8 +25,6 @@ where
     T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
 {
     pub fn new_mlp(
-        sequence_chunk_size: usize,
-        head_size: usize,
         hidden_size: usize,
         intermediate_size: usize,
         parent_scope_name: &str,
@@ -44,18 +42,19 @@ where
     }
 
     pub fn new_sparse_moe(
-        sequence_chunk_size: usize,
+        // sequence_chunk_size: usize,
         hidden_size: usize,
+        intermediate_size: usize,
         num_experts: usize,
         top_k: usize,
-        norm_topk_prob: usize,
+        norm_topk_prob: bool,
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         MoeLayer::SparseMoe(SparseMoeBlock::new(
-            sequence_chunk_size,
             hidden_size,
+            intermediate_size,
             num_experts,
             top_k,
             norm_topk_prob,

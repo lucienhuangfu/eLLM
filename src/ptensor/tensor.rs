@@ -16,7 +16,7 @@ use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
-use super::super::compiler::mul::attention_mul_add::AttentionMulAdd;
+use super::super::compiler::mul::attention_add::AttentionAdd;
 use super::super::compiler::mul::experts_matmul_merge_add::ExpertsMatMulMergeAdd;
 use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
 use super::super::compiler::mul::matmul::MatMul;
@@ -92,7 +92,7 @@ where
         output_tensor
     }
 
-    pub fn attention_mul_add(
+    pub fn attention_add(
         &self,
         k_tensor: &Tensor<T>,
         v_tensor: &Tensor<T>,
@@ -108,7 +108,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::AttentionMulAdd(AttentionMulAdd::new(
+        let operator = Operator::AttentionAdd(AttentionAdd::new(
             self.data,
             k_tensor.data,
             v_tensor.data,
@@ -359,6 +359,67 @@ where
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
+    }
+
+    pub fn matmul3(
+        &self,
+        q_weight: &Tensor<T>,
+        k_weight: &Tensor<T>,
+        v_weight: &Tensor<T>,
+        position_embedding: &Tensor<T>,
+        head_dim: usize,
+        params: MatMulParams,
+        scope_name: String,
+    ) -> (Self, Self, Self) {
+        // let head_dim = 128; // Fixed head dimension
+        let a_h_row = self.shape[1];
+        let col = self.shape[2];
+        // let b_row = q_weight.shape[1];
+
+        let q_state = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], q_weight.shape[0]],
+            format!("{}.q_state", scope_name),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let k_state = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], k_weight.shape[0]],
+            format!("{}.k_state", scope_name),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let v_state = Tensor::from_cache(
+            vec![self.shape[0], self.shape[1], v_weight.shape[0]],
+            format!("{}.v_state", scope_name),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::MatMul3(MatMul3::new(
+            self.data,
+            q_weight.data,
+            q_state.data,
+            k_weight.data,
+            k_state.data,
+            v_weight.data,
+            v_state.data,
+            position_embedding.data,
+            head_dim,
+            a_h_row,
+            col,
+            q_weight.shape[0],
+            k_weight.shape[0],
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        (q_state, k_state, v_state)
     }
 
     pub fn matmul_silu_mul_matmul(
