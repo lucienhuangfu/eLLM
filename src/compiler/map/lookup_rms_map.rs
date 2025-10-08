@@ -42,7 +42,6 @@ impl<T: Sqrt> LookupRMSMap<T> {
             word_embedding: ConstPtr {
                 ptr: word_embedding,
             },
-
             eps,
             // cpu_num,
         }

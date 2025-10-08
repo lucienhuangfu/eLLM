@@ -134,13 +134,13 @@ where T: Copy
             );
             (hidden_states, norm_hidden)
         } else {
-            /*
+            
             hidden_states.lookup_rms(
                 self.word_embedding.data,
                     self.input_layernorm.data,
                     self.rms_norm_eps,
                 format!("{}.norm_hidden", self.scope_name),
-            ) */
+            );
            (hidden_states, hidden_states.clone())
         };
 

@@ -33,14 +33,16 @@ use super::decoder_layer::DecoderLayer;
 #[derive(Clone)]
 pub struct Model<T> {
     // config: Config,
-    // pub layer: Vec<Layer<T>>,
-    // tokens: Vec<Vec<i32>>,
-    rms_norm_eps: T,
+
     sequences: Vec<usize>,
     word_embedding: Tensor<T>,
     position_embedding: Tensor<T>,
-    // norm_weight: Tensor<T>,
     lm_head_weight: Tensor<T>,
+    pub layers: Vec<DecoderLayer<T>>,
+    rms_norm_eps: T,
+    pub sequence_chunk_size: usize,
+    pub batch_size: usize,
+    pub hidden_size: usize,
     scope_name: String,
     pub cache: Rc<RefCell<Cache<T>>>,
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
@@ -98,13 +100,6 @@ where
             operator_queue.clone(),
         );
 
-        let norm_weight = Tensor::zeros(
-            vec![1, config.hidden_size],
-            String::from("model.norm.weight"),
-            cache.clone(),
-            operator_queue.clone(),
-        );
-
         let mut layers: Vec<DecoderLayer<T>> = Vec::new();
         for i in 0..config.num_hidden_layers {
             layers.push(DecoderLayer::<T>::new(
@@ -122,14 +117,13 @@ where
         }
 
         Self {
-            // tokens: Vec::new(),
-            sequences: vec![0; (config.max_position_embeddings + 1) * config.batch_size],
-            output_linear: Linear::<T>::new(
-                config.batch_size,
-                config.hidden_size,
-                config.vocab_size,
-                1,
-                format!("lm_head"),
+            sequences: vec![0; (config.max_position_embeddings + 1) * batch_size],
+            lm_head_weight: Tensor::zeros(
+                vec![
+                    config.hidden_size,
+                    config.vocab_size,
+                ],
+                String::from("lm_head.weight"),
                 cache.clone(),
                 operator_queue.clone(),
             ),
@@ -137,7 +131,9 @@ where
             position_embedding: position_embedding,
             word_embedding: word_embedding,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
-            config: config,
+            layers: layers,
+
+
             scope_name: scope_name,
             cache: cache,
             operator_queue: operator_queue,
@@ -149,13 +145,13 @@ where
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
         let mut hidden_state = Tensor::<T>::zeros(
-            vec![self.config.batch_size, self.config.hidden_size],
+            vec![self.batch_size, self.hidden_size],
             format!("{}.norm.weight", self.scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
-        for (i, layer_module) in self.layer_vec.iter().enumerate() {
+        for (i, layer_module) in self.layers.iter().enumerate() {
             hidden_state = layer_module.forward(
                 &hidden_state,
                 self.sequences.as_mut_ptr(),
