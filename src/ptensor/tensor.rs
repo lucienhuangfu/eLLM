@@ -656,11 +656,11 @@ where
         }
     }
 
-    /*
+/* 
     pub fn lookup_rms(
         &self,
         word_embedding: *const T,
-        weight: *const T,
+        // weight: *const T,
         eps: T,
         tensor_name: String,
     ) -> Self {
@@ -677,14 +677,14 @@ where
             self.shape[1],
             self.shape[2],
             word_embedding,
-            weight,
+            // weight,
             eps,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
-
+    
     pub fn reduce(
         &self,
         sequences: *mut usize,
