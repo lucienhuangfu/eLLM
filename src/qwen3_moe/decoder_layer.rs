@@ -1,12 +1,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 // use serde::{Deserialize, Serialize};
-use std::ops::{Add, Sub, Div, Mul, AddAssign, Neg };
+use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
-use crate::kernel::generic::sqrt::Sqrt;
-use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
-use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::from_f32::FromF32;
+use crate::kernel::generic::sigmoid::Sigmoid;
+use crate::kernel::generic::sqrt::Sqrt;
+use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::config::Config;
 
@@ -16,7 +16,6 @@ use super::super::ptensor::tensor::Tensor;
 // use super::feedforward::FeedForward;
 use super::attention::Attention;
 use super::moe_layer::MoeLayer;
-
 
 #[derive(Clone)]
 pub struct DecoderLayer<'a, T> {
@@ -38,17 +37,17 @@ pub struct DecoderLayer<'a, T> {
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
 }
 
-impl<'a, T> DecoderLayer<'a, T> 
-where T: Copy 
-    + Default 
-    + Sub<Output = T>
-    + Neg<Output = T>
-    + Exp
-    + NegInfinity
-    + Sigmoid<T>
-    + Sqrt
-    + FromF32
-
+impl<'a, T> DecoderLayer<'a, T>
+where
+    T: Copy
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid<T>
+        + Sqrt
+        + FromF32,
 {
     pub fn new(
         config: &Config,
@@ -64,28 +63,29 @@ where T: Copy
     ) -> Self {
         let scope_name = format!("{}.layers.{}", parent_scope_name, layer_idx);
 
-        let moe_layer = if config.num_experts > 0 && (layer_idx + 1) % config.decoder_sparse_step == 0 {
-            // sparse moe block
-            MoeLayer::new_sparse_moe(
-                config.hidden_size,
-                config.intermediate_size,
-                config.num_experts,
-                config.num_experts_per_tok,
-                config.norm_topk_prob,
-                &scope_name,
-                cache.clone(),
-                operator_queue.clone(),
-            )
-        } else {
-            // MLP Layer
-            MoeLayer::new_mlp(
-                config.hidden_size,
-                config.intermediate_size,
-                &scope_name,
-                cache.clone(),
-                operator_queue.clone(),
-            )
-        };
+        let moe_layer =
+            if config.num_experts > 0 && (layer_idx + 1) % config.decoder_sparse_step == 0 {
+                // sparse moe block
+                MoeLayer::new_sparse_moe(
+                    config.hidden_size,
+                    config.intermediate_size,
+                    config.num_experts,
+                    config.num_experts_per_tok,
+                    config.norm_topk_prob,
+                    &scope_name,
+                    cache.clone(),
+                    operator_queue.clone(),
+                )
+            } else {
+                // MLP Layer
+                MoeLayer::new_mlp(
+                    config.hidden_size,
+                    config.intermediate_size,
+                    &scope_name,
+                    cache.clone(),
+                    operator_queue.clone(),
+                )
+            };
 
         Self {
             sequence_length: config.max_position_embeddings,
@@ -123,25 +123,28 @@ where T: Copy
     pub fn forward(
         &self,
         hidden_states: &Tensor<T>,
+        input_sequences: &Tensor<usize>,
         // sequences: *mut usize,
         tensor_name: String,
     ) -> Tensor<T> {
         // # Attention 层
         let (hidden_states, norm_hidden) = if self.layer_idx != 0 {
             let norm_hidden = hidden_states.rms(
-                    self.rms_norm_eps,
+                self.rms_norm_eps,
                 format!("{}.norm_hidden", self.scope_name),
             );
             (hidden_states, norm_hidden)
         } else {
-            
-            hidden_states.lookup_rms(
-                self.word_embedding.data,
-                    self.input_layernorm.data,
-                    self.rms_norm_eps,
-                format!("{}.norm_hidden", self.scope_name),
+            Tensor::<T>::lookup_rms(
+                &input_sequences,
+                self.word_embedding,
+                self.rms_norm_eps,
+                self.sequence_chunk_size,
+                self.scope_name.clone(),
+                self.cache.clone(),
+                self.operator_queue.clone(),
             );
-           (hidden_states, hidden_states.clone())
+            (hidden_states, hidden_states.clone())
         };
 
         //  attention + add
@@ -155,7 +158,7 @@ where T: Copy
         let norm_hidden_states = attention_hidden_states.rms(
             // self.layernorm_weight.data,
             self.rms_norm_eps,
-            format!("{}.norm_hidden2", self.scope_name)
+            format!("{}.norm_hidden2", self.scope_name),
         );
 
         let output_hidden_states = self.moe_layer.forward(
@@ -165,13 +168,13 @@ where T: Copy
             // num_cpus::get(),
         );
 
-        /* 
+        /*
         let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],
-            attention_hidden2.shape[1]/self.head_dim, 
+            attention_hidden2.shape[1]/self.head_dim,
             self.head_dim]);
 
         let view_attention_hidden3 = attention_hidden3.view(vec![attention_hidden3.shape[0],
-            attention_hidden3.shape[1]/self.head_dim, 
+            attention_hidden3.shape[1]/self.head_dim,
             self.head_dim]);
 
 
@@ -180,17 +183,16 @@ where T: Copy
             &view_attention_hidden3,
             format!("{}.output", self.scope_name),
         );
-        
+
         out.view(attention_hidden2.shape.clone())
         */
         output_hidden_states
-
     }
 }
 
 #[cfg(test)]
 mod test {
-    /* 
+    /*
     use super::*;
     use std::slice;
     use approx::assert_relative_eq;
@@ -219,13 +221,13 @@ mod test {
         let word_embedding = Tensor::zeros(vec![4096, hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
         let position_embedding = Tensor::zeros(vec![max_position_embeddings, 1, 1, attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
 
-        let layer = TransformerBlock::<f32>::new(&config, 
-            &word_embedding, 
-            &position_embedding, 
-            0, 
-            cpu_num, 
-            "model", 
-            cache.clone(), 
+        let layer = TransformerBlock::<f32>::new(&config,
+            &word_embedding,
+            &position_embedding,
+            0,
+            cpu_num,
+            "model",
+            cache.clone(),
             operator_queue.clone());
 
         let shape = vec![batch_size, hidden_size];
@@ -259,7 +261,7 @@ mod test {
          */
     }
 
-     
+
     #[test]
     fn test_layer_f16() {
         let cpu_num = num_cpus::get();
@@ -284,13 +286,13 @@ mod test {
         let word_embedding = Tensor::zeros(vec![4096, hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
         let position_embedding = Tensor::zeros(vec![max_position_embeddings, 1, 1, attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
 
-        let layer = TransformerBlock::<f16>::new(&config, 
-            &word_embedding, 
-            &position_embedding, 
-            0, 
-            cpu_num, 
-            "model", 
-            cache.clone(), 
+        let layer = TransformerBlock::<f16>::new(&config,
+            &word_embedding,
+            &position_embedding,
+            0,
+            cpu_num,
+            "model",
+            cache.clone(),
             operator_queue.clone());
 
         let shape = vec![batch_size, hidden_size];
@@ -323,5 +325,4 @@ mod test {
         assert_relative_eq!(output_slice, &result[..], max_relative = 1e-6);
          */
     } */
-
 }

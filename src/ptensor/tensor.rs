@@ -656,35 +656,52 @@ where
         }
     }
 
-/* 
     pub fn lookup_rms(
-        &self,
-        word_embedding: *const T,
-        // weight: *const T,
+        input_sequences: &Tensor<usize>,
+        word_embedding: &Tensor<T>,
         eps: T,
-        tensor_name: String,
-    ) -> Self {
-        let output_tensor = Tensor::from_cache(
-            self.shape.clone(),
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
+        sequence_chunk_size: usize,
+        scope_name: String,
+        cache: Rc<RefCell<Cache<T>>>,
+        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+    ) -> (Self, Self) {
+        let output_hidden_tensor = Tensor::from_cache(
+            vec![
+                sequence_chunk_size,
+                input_sequences.shape[1],
+                word_embedding.shape[1],
+            ],
+            format!("{}.output_hidden", scope_name),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        let output_normal_tensor = Tensor::from_cache(
+            vec![
+                sequence_chunk_size,
+                input_sequences.shape[1],
+                word_embedding.shape[1],
+            ],
+            format!("{}.output_normal", scope_name),
+            cache.clone(),
+            operator_queue.clone(),
         );
 
         let operator = Operator::LookupRMSMap(LookupRMSMap::new(
-            self.data,
-            output_tensor.data,
-            self.shape[1],
-            self.shape[2],
-            word_embedding,
-            // weight,
+            input_sequences.data,
+            word_embedding.data,
+            output_hidden_tensor.data,
+            output_normal_tensor.data,
+            input_sequences.shape[1],
+            word_embedding.shape[1],
             eps,
         ));
 
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
+        operator_queue.borrow_mut().push(operator);
+        (output_hidden_tensor, output_normal_tensor)
     }
-    
+
+    /*
     pub fn reduce(
         &self,
         sequences: *mut usize,
