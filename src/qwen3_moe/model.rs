@@ -1,4 +1,5 @@
 use core_affinity;
+use nom::sequence;
 use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
@@ -21,8 +22,8 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::operator::Operator;
-use super::super::memory::cache::Cache;
 use super::super::init::matmul_params::MatMulParams;
+use super::super::memory::cache::Cache;
 use super::super::memory::model_loader::SafeTensorsLoader;
 use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
@@ -34,15 +35,16 @@ use super::decoder_layer::DecoderLayer;
 pub struct Model<T> {
     // config: Config,
 
-    sequences: Vec<usize>,
-    word_embedding: Tensor<T>,
-    position_embedding: Tensor<T>,
+    // sequences: Vec<usize>,
+    word_embedding: Rc<Tensor<T>>,
+    position_embedding: Rc<Tensor<T>>,
     lm_head_weight: Tensor<T>,
     pub layers: Vec<DecoderLayer<T>>,
     rms_norm_eps: T,
     pub sequence_chunk_size: usize,
     pub batch_size: usize,
     pub hidden_size: usize,
+    pub topk_size: usize,
     scope_name: String,
     pub cache: Rc<RefCell<Cache<T>>>,
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
@@ -64,10 +66,10 @@ where
 {
     pub fn new(
         config: &Config,
+        
         sequence_length: usize,
         sequence_chunk_size: usize,
-        batch_size: usize
-
+        batch_size: usize,
     ) -> Self {
         let scope_name = String::from("model");
 
@@ -81,24 +83,19 @@ where
         let operator_queue: Rc<RefCell<Vec<Operator<T>>>> = Rc::new(RefCell::new(Vec::new()));
 
         // Create default tensors
-        let word_embedding = Tensor::zeros(
+        let word_embedding = Rc::new(Tensor::zeros(
             vec![config.vocab_size, config.hidden_size],
             String::from("model.embed_tokens.weight"),
             cache.clone(),
             operator_queue.clone(),
-        );
+        ));
 
-        let position_embedding = Tensor::zeros(
-            vec![
-                config.max_position_embeddings,
-                1,
-                1,
-                config.head_dim
-            ],
+        let position_embedding = Rc::new(Tensor::zeros(
+            vec![config.max_position_embeddings, 1, 1, config.head_dim],
             String::from("model.position_embedding.weight"),
             cache.clone(),
             operator_queue.clone(),
-        );
+        ));
 
         let mut layers: Vec<DecoderLayer<T>> = Vec::new();
         for i in 0..config.num_hidden_layers {
@@ -108,39 +105,37 @@ where
                 sequence_length,
                 sequence_chunk_size,
                 batch_size,
-                &word_embedding,
-                &position_embedding,
-                & scope_name,
+                word_embedding.clone(),
+                position_embedding.clone(),
+                &scope_name.clone(),
                 cache.clone(),
                 operator_queue.clone(),
             ));
         }
 
         Self {
-            sequences: vec![0; (config.max_position_embeddings + 1) * batch_size],
+            // sequences: vec![0; (config.max_position_embeddings + 1) * batch_size],
+            word_embedding: word_embedding.clone(),
+            position_embedding: position_embedding.clone(),
             lm_head_weight: Tensor::zeros(
-                vec![
-                    config.hidden_size,
-                    config.vocab_size,
-                ],
+                vec![config.hidden_size, config.vocab_size],
                 String::from("lm_head.weight"),
                 cache.clone(),
                 operator_queue.clone(),
-            ),
-
-            position_embedding: position_embedding,
-            word_embedding: word_embedding,
-            rms_norm_eps: T::from_f32(config.rms_norm_eps),
+            ),            
             layers: layers,
-
-
+            batch_size: batch_size,
+            hidden_size: config.hidden_size,
+            sequence_chunk_size: sequence_chunk_size,
+            topk_size: config.num_experts_per_tok,
+            rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
             cache: cache,
             operator_queue: operator_queue,
         }
     }
 
-    pub fn forward(&mut self) {
+    pub fn forward(&mut self, sequence_tensor: &Tensor<usize>,) -> (Tensor<usize>, Tensor<T>) {
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
@@ -154,7 +149,7 @@ where
         for (i, layer_module) in self.layers.iter().enumerate() {
             hidden_state = layer_module.forward(
                 &hidden_state,
-                self.sequences.as_mut_ptr(),
+                sequence_tensor,
                 format!("{}.hidden_states.{}", self.scope_name, i),
             );
             // all_hidden_states.push(hidden_states);
@@ -167,7 +162,6 @@ where
 
         let (indices_tensor, values_tensor, sum_tensor) = norm_state.matmul_topk(
             &self.lm_head_weight,
-
             MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
@@ -175,11 +169,16 @@ where
                 a_row_step_micro: 8,
                 b_row_step_micro: 8,
             },
+            8,
             format!("{}.lm_head.output", self.scope_name),
         );
 
-        let (topk_indice, topk_value) =
-            indices_tensor.topk_softmax(values_tensor, &sum_tensor, format!("{}.softmax.output", self.scope_name));
+        let (topk_indice, topk_value) = indices_tensor.topk_softmax(
+            &values_tensor,
+            &sum_tensor,
+            self.topk_size,
+            format!("{}.softmax.output", self.scope_name),
+        );
 
         (topk_indice, topk_value)
     }
