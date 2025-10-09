@@ -41,13 +41,35 @@ pub struct Tensor<T> {
     // pub size: usize,
     // pub is_contiguous: bool,
 }
+// Provide a minimal impl for Tensor<usize> to allow from_cache to be called
+impl Tensor<usize> {
+    pub fn from_cache(
+        shape: Vec<usize>,
+        tensor_name: String,
+        cache: Rc<RefCell<Cache<usize>>>,
+        operator_queue: Rc<RefCell<Vec<Operator<usize>>>>,
+    ) -> Self {
+        let length: usize = shape.iter().product();
+        let data = cache.borrow_mut().get(&tensor_name, length);
+        let strides = get_strides(&shape);
+        Tensor {
+            data: data,
+            shape: shape.clone(),
+            strides: strides,
+            tensor_name: tensor_name,
+            cache: cache.clone(),
+            operator_queue: operator_queue.clone(),
+        }
+    }
+}
+
 
 impl<T> Tensor<T>
 where
     T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
 {
     pub fn add(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = <Tensor<T>>::from_cache(
             self.shape.clone(),
             tensor_name,
             self.cache.clone(),
@@ -64,6 +86,7 @@ where
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
+
 
     pub fn add_rms(
         &self,
@@ -471,21 +494,21 @@ where
         params: MatMulParams,
         thread_num: usize,
         scope_name: String,
-    ) -> (Self, Self, Self) {
+    ) -> (Tensor<usize>, Self, Self) {
         let a_row = self.shape[1];
         let b_row = tensor2.shape[1];
         let column = self.shape[2];
 
         let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
 
-        let indice_tensor = Tensor::from_cache(
+        let indice_tensor = Tensor::<usize>::from_cache(
             output_shape.clone(),
             format!("{}.indices", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
-        let value_tensor = Tensor::from_cache(
+        let value_tensor = Tensor::<T>::from_cache(
             output_shape.clone(),
             format!("{}.values", scope_name),
             self.cache.clone(),
@@ -544,7 +567,7 @@ where
     }
 
     pub fn rms(&self, eps: T, scope_name: String) -> Self {
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = Tensor::<T>::from_cache(
             self.shape.clone(),
             format!("{}.rms_output", scope_name),
             self.cache.clone(),
@@ -563,7 +586,7 @@ where
     }
 
     pub fn silu_mul(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = Tensor::<T>::from_cache(
             self.shape.clone(),
             tensor_name,
             self.cache.clone(),
@@ -583,29 +606,30 @@ where
 
     pub fn topk_softmax(
         &self,
-        indices_tensor: &Tensor<T>,
+        // indices_tensor: &Tensor<T>,
         values_tensor: &Tensor<T>,
         sums_tensor: &Tensor<T>,
-        indice_tensor_name: String,
-        value_tensor_name: String,
         topk_size: usize,
+        scope_name: String,
+        // value_tensor_name: String,
     ) -> (Self, Self) {
         let indice_tensor = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], topk_size],
-            indice_tensor_name,
+            format!("{}.output_indice", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
         let value_tensor = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], topk_size],
-            value_tensor_name,
+            format!("{}.output_value", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
         let operator = Operator::TopKSoftmax(TopKSoftmax::new(
-            indices_tensor.data,
+            //indices_tensor.data,
+            self.data,
             values_tensor.data,
             sums_tensor.data,
             indice_tensor.data,

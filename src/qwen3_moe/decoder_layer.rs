@@ -18,7 +18,7 @@ use super::attention::Attention;
 use super::moe_layer::MoeLayer;
 
 #[derive(Clone)]
-pub struct DecoderLayer<'a, T> {
+pub struct DecoderLayer<T> {
     sequence_length: usize,
     sequence_chunk_size: usize,
     batch_size: usize,
@@ -26,8 +26,8 @@ pub struct DecoderLayer<'a, T> {
     head_dim: usize,
     rms_norm_eps: T,
     layer_idx: usize,
-    word_embedding: &'a Tensor<T>,
-    position_embedding: &'a Tensor<T>,
+    word_embedding: Rc<Tensor<T>>,
+    position_embedding: Rc<Tensor<T>>,
     self_attention: Attention<T>,
     moe_layer: MoeLayer<T>,
     scope_name: String,
@@ -35,7 +35,7 @@ pub struct DecoderLayer<'a, T> {
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
 }
 
-impl<'a, T> DecoderLayer<'a, T>
+impl<T> DecoderLayer<T>
 where
     T: Copy
         + Default
@@ -53,8 +53,8 @@ where
         sequence_length: usize,
         sequence_chunk_size: usize,
         batch_size: usize,
-        word_embedding: &'a Tensor<T>,
-        position_embedding: &'a Tensor<T>,
+        word_embedding: Rc<Tensor<T>>,
+        position_embedding: Rc<Tensor<T>>,
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
@@ -93,7 +93,6 @@ where
             head_dim: config.head_dim,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             layer_idx: layer_idx,
-
             self_attention: Attention::<T>::new(
                 config,
                 layer_idx,
@@ -127,7 +126,7 @@ where
         } else {
             Tensor::<T>::lookup_rms(
                 &input_sequences,
-                self.word_embedding,
+                &*self.word_embedding,
                 self.rms_norm_eps,
                 self.sequence_chunk_size,
                 self.scope_name.clone(),
@@ -141,7 +140,7 @@ where
         let attention_hidden_states = self.self_attention.forward(
             &norm_hidden,
             hidden_states,
-            self.position_embedding,
+            &*self.position_embedding,
             // format!("{}.attention_hidden1", self.scope_name),
             // self.cpu_num,
         );
