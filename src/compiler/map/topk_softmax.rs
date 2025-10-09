@@ -9,10 +9,10 @@ use crate::kernel::generic::sqrt::Sqrt;
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {
-    indices_ptr: ConstPtr<T>,
+    indices_ptr: ConstPtr<usize>,
     values_ptr: ConstPtr<T>,
     sums_ptr: ConstPtr<T>,
-    indice_ptr: MutPtr<T>,
+    indice_ptr: MutPtr<usize>,
     value_ptr: MutPtr<T>,
     batch_size: usize,
     topk_size: usize,
@@ -20,10 +20,10 @@ pub struct TopKSoftmax<T> {
 
 impl<T: Sqrt> TopKSoftmax<T> {
     pub fn new(
-        indices_ptr: *const T,
+        indices_ptr: *const usize,
         values_ptr: *const T,
         sums_ptr: *const T,
-        indice_ptr: *mut T,
+        indice_ptr: *mut usize,
         value_ptr: *mut T,
         batch_size: usize,
         topk_size: usize,

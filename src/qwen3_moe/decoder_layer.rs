@@ -112,7 +112,7 @@ where
     pub fn forward(
         &self,
         hidden_states: &Tensor<T>,
-        input_sequences: &Tensor<usize>,
+        input_sequences: *mut usize,
         // sequences: *mut usize,
         tensor_name: String,
     ) -> Tensor<T> {
@@ -124,9 +124,10 @@ where
             );
             (hidden_states, norm_hidden)
         } else {
-            Tensor::<T>::lookup_rms(
-                &input_sequences,
+            Tensor::lookup_rms(
+                input_sequences,
                 &*self.word_embedding,
+                self.batch_size,
                 self.rms_norm_eps,
                 self.sequence_chunk_size,
                 self.scope_name.clone(),

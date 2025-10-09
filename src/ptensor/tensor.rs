@@ -8,6 +8,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::memory::cache::Cache;
+use super::super::memory::allocator::allocate_init;
 use super::tensor_utils::get_strides;
 use crate::init::matmul_params::MatMulParams;
 
@@ -41,28 +42,6 @@ pub struct Tensor<T> {
     // pub size: usize,
     // pub is_contiguous: bool,
 }
-// Provide a minimal impl for Tensor<usize> to allow from_cache to be called
-impl Tensor<usize> {
-    pub fn from_cache(
-        shape: Vec<usize>,
-        tensor_name: String,
-        cache: Rc<RefCell<Cache<usize>>>,
-        operator_queue: Rc<RefCell<Vec<Operator<usize>>>>,
-    ) -> Self {
-        let length: usize = shape.iter().product();
-        let data = cache.borrow_mut().get(&tensor_name, length);
-        let strides = get_strides(&shape);
-        Tensor {
-            data: data,
-            shape: shape.clone(),
-            strides: strides,
-            tensor_name: tensor_name,
-            cache: cache.clone(),
-            operator_queue: operator_queue.clone(),
-        }
-    }
-}
-
 
 impl<T> Tensor<T>
 where
@@ -494,19 +473,23 @@ where
         params: MatMulParams,
         thread_num: usize,
         scope_name: String,
-    ) -> (Tensor<usize>, Self, Self) {
+    ) -> (*const usize, Self, Self) {
         let a_row = self.shape[1];
         let b_row = tensor2.shape[1];
         let column = self.shape[2];
 
         let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
 
-        let indice_tensor = Tensor::<usize>::from_cache(
+        /*
+        let indice_tensor = Tensor::from_cache(
             output_shape.clone(),
             format!("{}.indices", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
-        );
+        ); */
+
+        let indice_ptr = allocate_init(output_shape.iter().product(), 0usize);
+        //  = self.cache.borrow_mut().get(&format!("{}.indices", scope_name), output_shape.iter().product());
 
         let value_tensor = Tensor::<T>::from_cache(
             output_shape.clone(),
@@ -525,7 +508,7 @@ where
         let operator = Operator::MatMulTopK(MatMulTopK::new(
             self.data,
             tensor2.data,
-            indice_tensor.data,
+            indice_ptr,
             value_tensor.data,
             sum_tensor.data,
             a_row,
@@ -539,7 +522,7 @@ where
         ));
 
         self.operator_queue.borrow_mut().push(operator);
-        (indice_tensor, value_tensor, sum_tensor)
+        (indice_ptr, value_tensor, sum_tensor)
     }
 
     pub fn permute(&self, dims: Vec<usize>) -> Self {
@@ -606,19 +589,23 @@ where
 
     pub fn topk_softmax(
         &self,
-        // indices_tensor: &Tensor<T>,
-        values_tensor: &Tensor<T>,
+        indices_ptr: *const usize,
+        // values_tensor: &Tensor<T>,
         sums_tensor: &Tensor<T>,
         topk_size: usize,
         scope_name: String,
         // value_tensor_name: String,
-    ) -> (Self, Self) {
+    ) -> (*const usize, Self) {
+        /* 
         let indice_tensor = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], topk_size],
             format!("{}.output_indice", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
-        );
+        );*/
+
+        let output_shape = vec![self.shape[0], self.shape[1], topk_size];
+        let indice_ptr = allocate_init(output_shape.iter().product(), 0usize);
 
         let value_tensor = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], topk_size],
@@ -627,19 +614,22 @@ where
             self.operator_queue.clone(),
         );
 
+        
+
         let operator = Operator::TopKSoftmax(TopKSoftmax::new(
             //indices_tensor.data,
+            indices_ptr,
             self.data,
-            values_tensor.data,
+            // values_tensor.data,
             sums_tensor.data,
-            indice_tensor.data,
+            indice_ptr,
             value_tensor.data,
             self.shape[1],
             topk_size,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
-        (indice_tensor, value_tensor)
+        (indice_ptr, value_tensor)
     }
 
     pub fn transpose(&mut self, index1: usize, index2: usize) -> Self {
@@ -681,8 +671,9 @@ where
     }
 
     pub fn lookup_rms(
-        input_sequences: &Tensor<usize>,
+        input_sequences: *mut usize,
         word_embedding: &Tensor<T>,
+        batch_size: usize,
         eps: T,
         sequence_chunk_size: usize,
         scope_name: String,
@@ -692,7 +683,7 @@ where
         let output_hidden_tensor = Tensor::from_cache(
             vec![
                 sequence_chunk_size,
-                input_sequences.shape[1],
+                batch_size,
                 word_embedding.shape[1],
             ],
             format!("{}.output_hidden", scope_name),
@@ -703,7 +694,7 @@ where
         let output_normal_tensor = Tensor::from_cache(
             vec![
                 sequence_chunk_size,
-                input_sequences.shape[1],
+                batch_size,
                 word_embedding.shape[1],
             ],
             format!("{}.output_normal", scope_name),
@@ -712,11 +703,11 @@ where
         );
 
         let operator = Operator::LookupRMSMap(LookupRMSMap::new(
-            input_sequences.data,
+            input_sequences,
             word_embedding.data,
             output_hidden_tensor.data,
             output_normal_tensor.data,
-            input_sequences.shape[1],
+            batch_size,
             word_embedding.shape[1],
             eps,
         ));

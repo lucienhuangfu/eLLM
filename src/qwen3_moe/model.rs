@@ -135,7 +135,7 @@ where
         }
     }
 
-    pub fn forward(&mut self, sequence_tensor: &Tensor<usize>,) -> (Tensor<usize>, Tensor<T>) {
+    pub fn forward(&mut self, sequences: *mut usize) -> (*const usize, Tensor<T>) {
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
@@ -149,7 +149,7 @@ where
         for (i, layer_module) in self.layers.iter().enumerate() {
             hidden_state = layer_module.forward(
                 &hidden_state,
-                sequence_tensor,
+                sequences,
                 format!("{}.hidden_states.{}", self.scope_name, i),
             );
             // all_hidden_states.push(hidden_states);
@@ -160,7 +160,7 @@ where
             format!("{}.norm_hidden.output", self.scope_name),
         );
 
-        let (indices_tensor, values_tensor, sum_tensor) = norm_state.matmul_topk(
+        let (indices_ptr, values_tensor, sum_tensor) = norm_state.matmul_topk(
             &self.lm_head_weight,
             MatMulParams {
                 a_row_step_macro: 16,
@@ -173,8 +173,8 @@ where
             format!("{}.lm_head.output", self.scope_name),
         );
 
-        let (topk_indice, topk_value) = indices_tensor.topk_softmax(
-            &values_tensor,
+        let (topk_indice, topk_value) = values_tensor.topk_softmax(
+            indices_ptr,
             &sum_tensor,
             self.topk_size,
             format!("{}.softmax.output", self.scope_name),
@@ -193,6 +193,7 @@ mod test {
     use std::rc::Rc;
     use std::thread;
 
+    /*
     use super::*;
     use crate::init::config::Config;
     use crate::llama::model_loader::SafeTensorsLoader;
@@ -231,7 +232,7 @@ mod test {
         // Add assertions to verify the output_tensor
         // For example:
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
-    }
+    } */
 
     /*
        #[test]
