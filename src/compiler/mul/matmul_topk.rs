@@ -16,7 +16,7 @@ use super::mul_trait::MatMulTopKTrait;
 pub struct MatMulTopK<T> {
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
-    indice_ptr: MutPtr<T>,
+    indice_ptr: MutPtr<usize>,
     value_ptr: MutPtr<T>,
     sum_ptr: MutPtr<T>,
     a_row: usize,
@@ -32,7 +32,7 @@ where
     pub fn new(
         ptr1: *const T,
         ptr2: *const T,
-        indice_ptr: *mut T,
+        indice_ptr: *mut usize,
         value_ptr: *mut T,
         sum_ptr: *mut T,
         a_row: usize,
