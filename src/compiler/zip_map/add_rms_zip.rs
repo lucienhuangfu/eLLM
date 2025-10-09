@@ -15,7 +15,7 @@ pub struct AddRMSZipMap<T> {
     output_ptr: MutPtr<T>,
     max_batch_size: usize,
     hidden_size: usize,
-    weight: ConstPtr<T>,
+    // weight: ConstPtr<T>,
     eps: T,
     // cpu_num: usize,
 }
@@ -30,7 +30,7 @@ where
         output_ptr: *mut T,
         max_batch_size: usize,
         hidden_size: usize,
-        weight: *const T,
+        // weight: *const T,
         eps: T,
         // cpu_num: usize,
     ) -> Self {
@@ -41,7 +41,7 @@ where
             output_ptr: MutPtr { ptr: output_ptr },
             max_batch_size,
             hidden_size,
-            weight: ConstPtr { ptr: weight },
+            // weight: ConstPtr { ptr: weight },
             eps: eps,
             // cpu_num: cpu_num,
         }
@@ -98,7 +98,7 @@ where
             input_ptr2,
             output_ptr,
             self.hidden_size,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
     }
@@ -112,7 +112,7 @@ impl ZipMapTrait<f16> for AddRMSZipMap<f16> {
             input_ptr2,
             output_ptr,
             self.hidden_size,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
 
@@ -122,7 +122,7 @@ impl ZipMapTrait<f16> for AddRMSZipMap<f16> {
             input_ptr2,
             output_ptr,
             self.hidden_size,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
     }
@@ -135,7 +135,7 @@ impl ZipMapTrait<f32> for AddRMSZipMap<f32> {
             input_ptr2,
             output_ptr,
             self.hidden_size,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
     }
@@ -201,7 +201,7 @@ mod test {
             output_data.as_mut_ptr(),
             batch_size,
             hidden_size,
-            weight.as_ptr(),
+            //weight.as_ptr(),
             eps,
             // thread_num,
         );

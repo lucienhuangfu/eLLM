@@ -59,7 +59,7 @@ where T: Copy
     }
 
     pub fn forward(&self, input: &Tensor<T>, tensor_name: String) -> Tensor<T> {
-        //[position_window_size, batch_size , hidden_size]   <- [position_window_size, batch_size, hidden_size]   [ hidden_size, hidden_size]
+        // [position_window_size, batch_size , hidden_size]   <- [position_window_size, batch_size, hidden_size]   [ hidden_size, hidden_size]
         let a_row = input.shape[1];
         let b_row =  self.weight.shape[0];
         let column = self.weight.shape[1];
@@ -70,9 +70,7 @@ where T: Copy
         let b_row_step_micro = 8;
 
         let params: MatMulParams = MatMulParams {
-            a_row,
-            b_row,
-            column,
+
             a_row_step_macro,
             b_row_step_macro,
             column_step_macro,

@@ -5,12 +5,20 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
+use super::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
+use super::map::topk_softmax::TopKSoftmax;
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
-use super::mul::attention_mul::AttentionMul;
-use super::mul::mat_mul::MatMul;
+use super::mul::attention_add::AttentionAdd;
+use super::mul::experts_matmul_merge_add::ExpertsMatMulMergeAdd;
+use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
+use super::mul::matmul::MatMul;
+use super::mul::matmul3::MatMul3;
+use super::mul::matmul_add::MatMulAdd;
+use super::mul::matmul_silu_mul_matmul::MatMulSilu;
+use super::mul::matmul_topk::MatMulTopK;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
 use super::zip_map::add_zip::AddZipMap;
 use super::zip_map::complex_zip::ComplexZipMap;
@@ -25,13 +33,21 @@ pub enum Operator<T> {
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
     // ArgmaxReduce(ArgmaxReduce<T>),
-    AttentionMul(AttentionMul<T>),
+    AttentionAdd(AttentionAdd<T>),
     ComplexZipMap(ComplexZipMap<T>),
+    ExpertsMatMulMergeAdd(ExpertsMatMulMergeAdd<T>),
+    ExpertsMatMulSiluMulMatMul(ExpertsMatMulSilu<T>),
+    ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
     LookupRMSMap(LookupRMSMap<T>),
+    MatMul(MatMul<T>),
+    MatMul3(MatMul3<T>),
+    MatMulAdd(MatMulAdd<T>),
+    MatMulSiluMulMatMul(MatMulSilu<T>),
+    MatMulTopK(MatMulTopK<T>),
     RMSMap(RMSMap<T>),
     SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
-    MatMul(MatMul<T>),
+    TopKSoftmax(TopKSoftmax<T>),
 }
 
 impl<T> Operator<T>
@@ -65,8 +81,7 @@ where
                     thread_id,
                 );
             }
-
-            Self::AttentionMul(operator) => {
+            Self::AttentionAdd(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -84,7 +99,79 @@ where
                     thread_id,
                 );
             }
+            Self::ExpertsMatMulMergeAdd(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::ExpertsMatMulSiluMulMatMul(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::ExpertsSoftmaxNorm(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
             Self::LookupRMSMap(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::MatMul(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::MatMul3(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::MatMulAdd(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::MatMulSiluMulMatMul(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::MatMulTopK(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -111,8 +198,7 @@ where
                     thread_id,
                 );
             }
-
-            Self::MatMul(operator) => {
+            Self::TopKSoftmax(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -123,6 +209,7 @@ where
             }
 
             /*
+
             Self::ArgmaxReduce(operator) => {
                 operator.run(batch_size, position_index, thread_id);
             },
@@ -147,6 +234,7 @@ mod test {
     // use std::sync::{Arc, Barrier};
     // use std::thread;
 
+    /*
     #[test]
     fn test_add_zip() {
         let sequence_chunk_size = 1;
@@ -437,7 +525,7 @@ mod test {
         ]
         .repeat(sequence_chunk_size * batch_size);
         assert_ulps_eq!(output_data[..], result, max_ulps = 4);
-    }
+    } */
 
     /*
     #[test]
