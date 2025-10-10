@@ -72,7 +72,7 @@ impl<T: Sqrt> TopKSoftmax<T> {
 }
 
 impl<T: Sqrt> TopKSoftmaxTrait<T> for TopKSoftmax<T> {
-    default fn compute(&self, indices_ptr: *const T, values_ptr: *const T, sums_ptr: *const T, indice_ptr: *mut T, value_ptr: *mut T, length: usize) {
+    default fn compute(&self, indices_ptr: *const usize, values_ptr: *const T, sums_ptr: *const T, indice_ptr: *mut usize, value_ptr: *mut T, length: usize) {
         /* 
         kernel::generic::softmax::softmax(
             input_ptr,
@@ -85,7 +85,7 @@ impl<T: Sqrt> TopKSoftmaxTrait<T> for TopKSoftmax<T> {
 }
 
 impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
-    fn compute(&self, indices_ptr: *const f16, values_ptr: *const f16, sums_ptr: *const f16, indice_ptr: *mut f16, value_ptr: *mut f16, length: usize) {
+    fn compute(&self, indices_ptr: *const usize, values_ptr: *const f16, sums_ptr: *const f16, indice_ptr: *mut usize, value_ptr: *mut f16, length: usize) {
         /* 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::softmax::softmax(
@@ -108,7 +108,7 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
 }
 
 impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
-    fn compute(&self, indices_ptr: *const f32, values_ptr: *const f32, sums_ptr: *const f32, indice_ptr: *mut f32, value_ptr: *mut f32, length: usize) {
+    fn compute(&self, indices_ptr: *const usize, values_ptr: *const f32, sums_ptr: *const f32, indice_ptr: *mut usize, value_ptr: *mut f32, length: usize) {
         /*
         kernel::generic::softmax::softmax(
             input_ptr,
@@ -119,19 +119,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
         ); */
     }
 }
-/* 
-impl TopKSoftmaxTrait<f64> for TopKSoftmax<f64> {
-    fn compute(&self, indice_ptr: *const f64, value_ptr: *const f64, sum_ptr: *const f64, output_ptr: *mut f64, length: usize) {
-        /*
-        kernel::generic::softmax::softmax(
-            input_ptr,
-            sum_ptr.ptr,
-            max_ptr.ptr,
-            output_ptr,
-            length,
-        ); */
-    }
-}*/
+
 
 #[cfg(test)]
 mod test {
