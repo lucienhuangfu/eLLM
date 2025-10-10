@@ -12,7 +12,7 @@ use super::super::memory::allocator::allocate_init;
 use super::tensor_utils::get_strides;
 use crate::init::matmul_params::MatMulParams;
 
-use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
+use super::super::compiler::map::experts_topk_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
