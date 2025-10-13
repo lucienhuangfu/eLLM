@@ -14,11 +14,17 @@ use super::mul_trait::MatMul4Trait;
 // this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
 pub struct ExpertsMatMulSilu<T> {
-    ptr1: ConstPtr<T>,
-    ptr2: ConstPtr<T>,
-    ptr3: ConstPtr<T>,
-    ptr4: ConstPtr<T>,
+    input_ptr: ConstPtr<T>,
+    gate_weight_ptr: ConstPtr<T>,
+    up_weight_ptr: ConstPtr<T>,
+    // 先不考虑sequence_chunk维度
+    // [num_experts,  batch_size(行号)]
+    // batch_size
+    sorted_ids_ptr: ConstPtr<T>,
+    // [num_experts, batch_size, intermediate_size]
     output_ptr: MutPtr<T>,
+    // [block_size, hidden_size]
+    macro_block: MutPtr<T>,
     a_row: usize,
     b_row: usize,
     column: usize,
@@ -30,9 +36,9 @@ where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
     pub fn new(
-        ptr1: *const T,
-        ptr2: *const T,
-        ptr3: *const T,
+        input_ptr: *const T,
+        gate_weight_ptr: *const T,
+        up_weight_ptr: *const T,
         ptr4: *const T,
         output_ptr: *mut T,
         a_row: usize,
@@ -45,9 +51,9 @@ where
         b_row_step_micro: usize,
     ) -> Self {
         Self {
-            ptr1: ConstPtr { ptr: ptr1 },
-            ptr2: ConstPtr { ptr: ptr2 },
-            ptr3: ConstPtr { ptr: ptr3 },
+            input_ptr: ConstPtr { ptr: ptr1 },
+            gate_weight_ptr: ConstPtr { ptr: ptr2 },
+            up_weight_ptr: ConstPtr { ptr: ptr3 },
             ptr4: ConstPtr { ptr: ptr4 },
             output_ptr: MutPtr { ptr: output_ptr },
             a_row: a_row,
