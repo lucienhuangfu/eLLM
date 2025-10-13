@@ -44,11 +44,11 @@ impl<T: Sqrt> TopKSoftmax<T> {
         position_begin: usize,
         position_interval: usize,
         batch_size: usize,
-        cpu_num: usize,
+        thread_num: usize,
         thread_id: usize,
     ) {
         /*
-        if let Some((begin, end)) = assign(batch_size * position_interval, cpu_num, thread_id)
+        if let Some((begin, end)) = assign(batch_size * position_interval, thread_num, thread_id)
         {
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
             let mut ptr1 = self.ptr1.ptr;

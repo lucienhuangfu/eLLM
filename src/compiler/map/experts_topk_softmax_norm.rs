@@ -5,15 +5,15 @@ use super::map_trait::SoftmaxTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::generic;
-use crate::kernel::generic::exp::Exp;
-use crate::kernel::generic::from_usize::FromUsize;
-use crate::kernel::generic::sqrt::Sqrt;
+use crate::kernel::generic::{exp::Exp,sqrt::Sqrt };
+// use crate::kernel::generic::from_usize::FromUsize;
 
 #[derive(Clone)]
 pub struct ExpertsSoftmaxNorm<T> {
     // [sequence_length, batch_size, num_experts]
     ptr1: ConstPtr<T>,
-    indice_ptr: MutPtr<T>,
+    // [sequence_length, batch_size, num_experts_topk]
+    indice_ptr: MutPtr<usize>,
     value_ptr: MutPtr<T>,
     batch_size: usize,
     num_experts: usize,
@@ -23,7 +23,7 @@ pub struct ExpertsSoftmaxNorm<T> {
 impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
     pub fn new(
         ptr1: *const T,
-        indice_ptr: *mut T,
+        indice_ptr: *mut usize,
         value_ptr: *mut T,
         batch_size: usize,
         num_experts: usize,
@@ -38,7 +38,9 @@ impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
             topk_size,
         }
     }
+}
 
+impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftmaxNorm<T> {
     pub fn run(
         &self,
         position_begin: usize,
@@ -57,13 +59,12 @@ impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
             for _ in begin..end {
                 let index = row_index * self.batch_size + col_index;
                 unsafe {
-                    // let (a, b) = self.chunks.get_unchecked(index);
-                    let p = index * self.num_experts;
-
+                    let p1 = index * self.num_experts;
+                    let p2 = index * self.topk_size;
                     self.compute(
-                        ptr1.add(p),
-                        indice_ptr.add(p),
-                        value_ptr.add(p),
+                        ptr1.add(p1),
+                        indice_ptr.add(p2),
+                        value_ptr.add(p2),
                         self.num_experts,
                     );
                 }
