@@ -10,13 +10,13 @@ use super::super::super::kernel;
 use super::super::assign::assign;
 use super::mul_trait::MatMul5Trait;
 
+// merge num_experts_per_tok个expert的结果
+// 加上残差
+
 #[derive(Clone)]
 pub struct ExpertsMatMulMergeAdd<T> {
-    ptr1: ConstPtr<T>,
-    ptr2: ConstPtr<T>,
-    ptr3: ConstPtr<T>,
-    ptr4: ConstPtr<T>,
-    ptr5: ConstPtr<T>,
+    input_ptr: ConstPtr<T>,
+    residual_ptr: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     a_row: usize,
     b_row: usize,
@@ -29,11 +29,8 @@ where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
     pub fn new(
-        ptr1: *const T,
-        ptr2: *const T,
-        ptr3: *const T,
-        ptr4: *const T,
-        ptr5: *const T,
+        input_ptr: *const T, // TODO: Fix parameter name - should match struct field
+        residual_ptr: *const T,
         output_ptr: *mut T,
         a_row: usize,
         b_row: usize,
@@ -44,12 +41,12 @@ where
         a_row_step_micro: usize,
         b_row_step_micro: usize,
     ) -> Self {
+        // TODO: Create new instance with proper field initialization
+        // Initialize all struct fields with corresponding parameters
+        // Create ConstPtr and MutPtr wrappers for the raw pointers
         Self {
-            ptr1: ConstPtr { ptr: ptr1 },
-            ptr2: ConstPtr { ptr: ptr2 },
-            ptr3: ConstPtr { ptr: ptr3 },
-            ptr4: ConstPtr { ptr: ptr4 },
-            ptr5: ConstPtr { ptr: ptr5 },
+            input_ptr: ConstPtr { ptr: input_ptr },
+            residual_ptr: ConstPtr { ptr: residual_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
             a_row,
             b_row,
@@ -73,25 +70,25 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
+        // TODO: Implement parallel matrix multiplication with expert merging
+        // 1. Calculate chunk dimensions based on macro step sizes
+        // 2. Determine work distribution for current thread
+        // 3. Iterate through assigned chunks
+        // 4. For each chunk, perform matrix multiplication of experts
+        // 5. Merge results from multiple experts
+        // 6. Add residual connection to final output
 
-        /*
-        let (mut a_chunk_num, remainder) = (self.params.a_row / self.params.a_row_step_macro, self.params.a_row % self.params.a_row_step_macro);
-        if remainder > 0 {
-            a_chunk_num += 1;
-        }
-        let b_chunk_num = self.params.b_row / self.params.b_row_step_macro;
-        if let Some((begin, end)) = assign(position_interval * a_chunk_num * b_chunk_num, cpu_num, thread_id)
-        {
-            //  [sequence_chunk_size, batch_size, hidden_size]
-            let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
-                          let ptr1 = if self.output_to_kv {
-        self.ptr1.ptr.add(position_begin * max_stride * self.head_size)
-                } else {
-                    self.ptr1.ptr
-                };
-            let mut input_ptr2 = self.ptr2.ptr;
-            let mut output_ptr = self.output_ptr.ptr;
-        }*/
+        // Calculate total number of chunks for work distribution
+        let total_chunks = (self.a_row + self.params.a_row_step_macro - 1)
+            / self.params.a_row_step_macro
+            * (self.b_row + self.params.b_row_step_macro - 1)
+            / self.params.b_row_step_macro;
+
+        // TODO: Use assign function to get work range for this thread
+        // if let Some((begin, end)) = assign(total_chunks, cpu_num, thread_id) {
+        //     // Process chunks from begin to end
+        //     // Each chunk processes a_row_step_macro x b_row_step_macro block
+        // }
     }
 }
 
@@ -101,21 +98,25 @@ where
 {
     default fn compute(
         &self,
-        input_ptr1: *const T,
-        input_ptr2: *const T,
-        input_ptr3: *const T,
-        input_ptr4: *const T,
-        input_ptr5: *const T,
-        output_ptr: *mut T,
+        input_ptr1: *const T, // First expert weights
+        input_ptr2: *const T, // Second expert weights
+        input_ptr3: *const T, // Third expert weights
+        input_ptr4: *const T, // Fourth expert weights
+        input_ptr5: *const T, // Fifth expert weights
+        output_ptr: *mut T,   // Output buffer for merged results
     ) {
-        /*
-        //print!("generic runner\n");
-        kernel::generic::matmul_block::matmul_block(
-            input_ptr1,
-            input_ptr2,
-            output_ptr,
-            &(self.params),
-        );*/
+        // TODO: Generic implementation for merging 5 experts
+        // 1. Perform matrix multiplication for each expert
+        // 2. Apply expert routing weights/gates
+        // 3. Sum weighted expert outputs
+        // 4. Add residual connection from input
+
+        // Use generic kernel for matrix multiplication
+        // kernel::generic::matmul_5experts_merge::compute(
+        //     input_ptr1, input_ptr2, input_ptr3, input_ptr4, input_ptr5,
+        //     self.input_ptr.ptr, self.residual_ptr.ptr, output_ptr,
+        //     &self.params
+        // );
     }
 }
 
@@ -129,25 +130,20 @@ impl MatMul5Trait<f16> for ExpertsMatMulMergeAdd<f16> {
         input_ptr5: *const f16,
         output_ptr: *mut f16,
     ) {
-        // print!("f16 runner\n");
+        // TODO: Optimized f16 implementation using SIMD when available
+        // Use AVX512FP16 instructions on x86_64 if available
 
-        /*
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            kernel::x86_64::f16_512::matmul_block::matmul_block(
-                input_ptr1,
-                input_ptr2,
-                output_ptr,
-                &self.params,
-            );
-        };
+            // TODO: Call optimized AVX512FP16 kernel for 5-expert merge
+            // kernel::x86_64::f16_512::experts_merge_add::compute_5experts(...)
+        }
+
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        kernel::generic::matmul_block::matmul_block(
-            input_ptr1,
-            input_ptr2,
-            output_ptr,
-            &(self.params),
-        ); */
+        {
+            // TODO: Fallback to generic implementation
+            // Call generic compute method as fallback
+        }
     }
 }
 
@@ -161,16 +157,24 @@ impl MatMul5Trait<f32> for ExpertsMatMulMergeAdd<f32> {
         input_ptr5: *const f32,
         output_ptr: *mut f32,
     ) {
-        // print!("f32 runner\n");
+        // TODO: Optimized f32 implementation using AVX2 when available
+        // Merge outputs from 5 experts with proper weighting
 
-        /*//implementation for f32 on platform with avx2
         #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
         unsafe {
-            SIMD_f32_256_matmul_block(a, b, c, param, a_row_l, b_row_l, column_l);
-        };
-        // generic implementation for f32
-        // #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]*/
-        // generic_matmul_block(input_ptr1, input_ptr2, output_ptr, &(self.params));
+            // TODO: Use SIMD instructions for parallel computation
+            // kernel::x86_64::f32_256::experts_merge_add::compute_5experts(
+            //     input_ptr1, input_ptr2, input_ptr3, input_ptr4, input_ptr5,
+            //     self.input_ptr.ptr, self.residual_ptr.ptr, output_ptr,
+            //     &self.params
+            // );
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+        {
+            // TODO: Generic f32 implementation
+            // Use generic matrix multiplication with expert merging
+        }
     }
 }
 
