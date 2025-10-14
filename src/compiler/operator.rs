@@ -12,7 +12,7 @@ use super::map::topk_softmax::TopKSoftmax;
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 use super::mul::attention_add::AttentionAdd;
-use super::mul::experts_matmul_merge_add::ExpertsMatMulMergeAdd;
+use super::mul::experts_merge_add::ExpertsMatMulMergeAdd;
 use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
 use super::mul::matmul::MatMul;
 use super::mul::matmul3::MatMul3;

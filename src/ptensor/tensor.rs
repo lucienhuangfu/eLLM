@@ -18,7 +18,7 @@ use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::attention_add::AttentionAdd;
-use super::super::compiler::mul::experts_matmul_merge_add::ExpertsMatMulMergeAdd;
+use super::super::compiler::mul::experts_merge_add::ExpertsMatMulMergeAdd;
 use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
 use super::super::compiler::mul::matmul::MatMul;
 use super::super::compiler::mul::matmul3::MatMul3;
