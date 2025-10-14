@@ -3,28 +3,28 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatMulParams,
+    matmul_params::MatmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::MatMul5Trait;
+use super::mul_trait::Matmul5Trait;
 
 // merge num_experts_per_tok个expert的结果
 // 加上残差
 
 #[derive(Clone)]
-pub struct ExpertsMatMulMergeAdd<T> {
+pub struct ExpertsMergeAdd<T> {
     input_ptr: ConstPtr<T>,
     residual_ptr: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     a_row: usize,
     b_row: usize,
     column: usize,
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     _marker: PhantomData<T>,
 }
-impl<T> ExpertsMatMulMergeAdd<T>
+impl<T> ExpertsMergeAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -51,7 +51,7 @@ where
             a_row,
             b_row,
             column,
-            params: MatMulParams {
+            params: MatmulParams {
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,
@@ -92,7 +92,7 @@ where
     }
 }
 
-impl<T> MatMul5Trait<T> for ExpertsMatMulMergeAdd<T>
+impl<T> Matmul5Trait<T> for ExpertsMergeAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -120,7 +120,7 @@ where
     }
 }
 
-impl MatMul5Trait<f16> for ExpertsMatMulMergeAdd<f16> {
+impl Matmul5Trait<f16> for ExpertsMergeAdd<f16> {
     fn compute(
         &self,
         input_ptr1: *const f16,
@@ -147,7 +147,7 @@ impl MatMul5Trait<f16> for ExpertsMatMulMergeAdd<f16> {
     }
 }
 
-impl MatMul5Trait<f32> for ExpertsMatMulMergeAdd<f32> {
+impl Matmul5Trait<f32> for ExpertsMergeAdd<f32> {
     fn compute(
         &self,
         input_ptr1: *const f32,
@@ -218,7 +218,7 @@ mod tests {
         }
 
         // initialize the params
-        let params: MatMulParams = MatMulParams {
+        let params: matmulParams = matmulParams {
             a_row,
             b_row,
             column,
@@ -228,7 +228,7 @@ mod tests {
             a_row_step_micro,
             b_row_step_micro,
         };
-        let mut operator = MatMul::<f32>::new(
+        let mut operator = matmul::<f32>::new(
             a.as_ptr(),
             b.as_ptr(),
             c.as_mut_ptr(),

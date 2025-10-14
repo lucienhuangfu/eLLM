@@ -3,31 +3,31 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
+    matmul_params::MatmulParams,
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::MatMul5Trait;
+use super::mul_trait::Matmul2Trait;
 
-
-// 完成down projection的matmul
+// 完成down projection的Matmul
 // 乘以weight
 // 然后根据sorted_ids把结果放到对应的位置 [num_experts_per_tok, batch_size, hidden_size]
 
 #[derive(Clone)]
-pub struct ExpertsMatMul<T> {
+pub struct ExpertsMatmulMul<T> {
     input_ptr: ConstPtr<T>,
     down_weight_ptr: ConstPtr<T>,
-    sorted_ids: Vec<(usize, Vec<T>)>,
+    // [(expert_id, [(token_id, weight)])]
+    sorted_ids: Vec<(usize, Vec<(usize, T)>)>,
     output_ptr: MutPtr<T>,
     a_row: usize,
     b_row: usize,
     column: usize,
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     _marker: PhantomData<T>,
 }
-impl<T> ExpertsMatMul<T>
+impl<T> ExpertsMatmulMul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -46,16 +46,14 @@ where
         b_row_step_micro: usize,
     ) -> Self {
         Self {
-            ptr1: ConstPtr { ptr: ptr1 },
-            ptr2: ConstPtr { ptr: ptr2 },
-            ptr3: ConstPtr { ptr: ptr3 },
-            ptr4: ConstPtr { ptr: ptr4 },
-            ptr5: ConstPtr { ptr: ptr5 },
+            input_ptr: ConstPtr { ptr: input_ptr },
+            down_weight_ptr: ConstPtr { ptr: down_weight_ptr },
+            sorted_ids,
             output_ptr: MutPtr { ptr: output_ptr },
             a_row,
             b_row,
             column,
-            params: MatMulParams {
+            params: MatmulParams {
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,
@@ -71,7 +69,7 @@ where
         position_index: usize,
         position_interval: usize,
         batch_size: usize,
-        cpu_num: usize,
+        thread_num: usize,
         thread_id: usize,
     ) {
 
@@ -96,22 +94,20 @@ where
     }
 }
 
-impl<T> MatMul5Trait<T> for ExpertsMatMulMergeAdd<T>
+impl<T> Matmul2Trait<T> for ExpertsMatmulMul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
     default fn compute(
         &self,
-        input_ptr1: *const T,
-        input_ptr2: *const T,
-        input_ptr3: *const T,
-        input_ptr4: *const T,
-        input_ptr5: *const T,
+        input_ptr: *const T,
+        down_weight_ptr: *const T,
         output_ptr: *mut T,
+        weight: T,
     ) {
         /*
         //print!("generic runner\n");
-        kernel::generic::matmul_block::matmul_block(
+        kernel::generic::Matmul_block::matmul_block(
             input_ptr1,
             input_ptr2,
             output_ptr,
@@ -120,15 +116,13 @@ where
     }
 }
 
-impl MatMul5Trait<f16> for ExpertsMatMulMergeAdd<f16> {
+impl Matmul2Trait<f16> for ExpertsMatmulMul<f16> {
     fn compute(
         &self,
-        input_ptr1: *const f16,
-        input_ptr2: *const f16,
-        input_ptr3: *const f16,
-        input_ptr4: *const f16,
-        input_ptr5: *const f16,
+        input_ptr: *const f16,
+        down_weight_ptr: *const f16,
         output_ptr: *mut f16,
+        weight: f16,
     ) {
         // print!("f16 runner\n");
 
@@ -152,15 +146,13 @@ impl MatMul5Trait<f16> for ExpertsMatMulMergeAdd<f16> {
     }
 }
 
-impl MatMul5Trait<f32> for ExpertsMatMulMergeAdd<f32> {
+impl Matmul2Trait<f32> for ExpertsMatmulMul<f32> {
     fn compute(
         &self,
-        input_ptr1: *const f32,
-        input_ptr2: *const f32,
-        input_ptr3: *const f32,
-        input_ptr4: *const f32,
-        input_ptr5: *const f32,
+        input_ptr: *const f32,
+        down_weight_ptr: *const f32,
         output_ptr: *mut f32,
+        weight: f32,
     ) {
         // print!("f32 runner\n");
 
@@ -215,7 +207,7 @@ mod tests {
         }
 
         // initialize the params
-        let params: MatMulParams = MatMulParams {
+        let params: matmulParams = matmulParams {
             a_row,
             b_row,
             column,
@@ -225,7 +217,7 @@ mod tests {
             a_row_step_micro,
             b_row_step_micro,
         };
-        let mut operator = MatMul::<f32>::new(
+        let mut operator = matmul::<f32>::new(
             a.as_ptr(),
             b.as_ptr(),
             c.as_mut_ptr(),

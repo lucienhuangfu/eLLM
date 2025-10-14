@@ -10,7 +10,7 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use super::super::memory::cache::Cache;
 use super::super::memory::allocator::allocate_init;
 use super::tensor_utils::get_strides;
-use crate::init::matmul_params::MatMulParams;
+use crate::init::matmul_params::matmulParams;
 
 use super::super::compiler::map::experts_topk_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
@@ -18,13 +18,13 @@ use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::attention_add::AttentionAdd;
-use super::super::compiler::mul::experts_merge_add::ExpertsMatMulMergeAdd;
-use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
-use super::super::compiler::mul::matmul::MatMul;
-use super::super::compiler::mul::matmul3::MatMul3;
-use super::super::compiler::mul::matmul_add::MatMulAdd;
-use super::super::compiler::mul::matmul_silu_mul_matmul::MatMulSilu;
-use super::super::compiler::mul::matmul_topk::MatMulTopK;
+use super::super::compiler::mul::experts_merge_add::ExpertsmatmulMergeAdd;
+use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsmatmulSilu;
+use super::super::compiler::mul::matmul::matmul;
+use super::super::compiler::mul::matmul3::matmul3;
+use super::super::compiler::mul::matmul_add::matmulAdd;
+use super::super::compiler::mul::matmul_silu_mul_matmul::matmulSilu;
+use super::super::compiler::mul::matmul_topk::matmulTopK;
 use super::super::compiler::operator::Operator;
 use super::super::compiler::zip_map::add_zip::AddZipMap;
 use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
@@ -166,7 +166,7 @@ where
         topk_indice: &Tensor<T>,
         topk_value: &Tensor<T>,
         residual: &Tensor<T>,
-        params: MatMulParams,
+        params: matmulParams,
         scope_name: String,
     ) -> Self {
         // down_weights [num_experts, hidden_size, intermediate_size]
@@ -180,7 +180,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::ExpertsMatMulMergeAdd(ExpertsMatMulMergeAdd::new(
+        let operator = Operator::ExpertsmatmulMergeAdd(ExpertsmatmulMergeAdd::new(
             self.data,
             down_weights.data,
             topk_indice.data,
@@ -206,7 +206,7 @@ where
         gate_weights: &Tensor<T>,
         up_weights: &Tensor<T>,
         topk: &Tensor<T>,
-        params: MatMulParams,
+        params: matmulParams,
         tensor_name: String,
     ) -> Self {
         // gate_weights [num_experts, intermediate_size, hidden_size]
@@ -220,7 +220,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::ExpertsMatMulSiluMulMatMul(ExpertsMatMulSilu::new(
+        let operator = Operator::ExpertsmatmulSiluMulmatmul(ExpertsmatmulSilu::new(
             self.data,
             gate_weights.data,
             up_weights.data,
@@ -289,7 +289,7 @@ where
     pub fn matmul(
         &self,
         tensor2: &Tensor<T>,
-        params: MatMulParams,
+        params: matmulParams,
         sequence_length: usize,
         tensor_name: String,
     ) -> Self {
@@ -308,7 +308,7 @@ where
         );
 
         let operator = unsafe {
-            Operator::MatMul(MatMul::new(
+            Operator::matmul(matmul::new(
                 self.data,
                 tensor2.data,
                 output_tensor.data,
@@ -328,7 +328,7 @@ where
         &self,
         tensor2: &Tensor<T>,
         tensor3: &Tensor<T>,
-        params: MatMulParams,
+        params: matmulParams,
         tensor_name: String,
     ) -> Self {
         let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
@@ -344,7 +344,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMulAdd(MatMulAdd::new(
+        let operator = Operator::matmulAdd(matmulAdd::new(
             self.data,
             tensor2.data,
             tensor3.data,
@@ -370,7 +370,7 @@ where
         v_weight: &Tensor<T>,
         position_embedding: &Tensor<T>,
         head_dim: usize,
-        params: MatMulParams,
+        params: matmulParams,
         scope_name: String,
     ) -> (Self, Self, Self) {
         // let head_dim = 128; // Fixed head dimension
@@ -399,7 +399,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMul3(MatMul3::new(
+        let operator = Operator::matmul3(matmul3::new(
             self.data,
             q_weight.data,
             q_state.data,
@@ -428,7 +428,7 @@ where
         &self,
         tensor2: &Tensor<T>,
         tensor3: &Tensor<T>,
-        params: MatMulParams,
+        params: matmulParams,
         tensor_name: String,
     ) -> Self {
         // hidden_tensor [sequence_chunk_size, batch_size, hidden_size]
@@ -448,7 +448,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMulSiluMulMatMul(MatMulSilu::new(
+        let operator = Operator::matmulSiluMulmatmul(matmulSilu::new(
             self.data,
             tensor2.data,
             tensor3.data,
@@ -470,7 +470,7 @@ where
     pub fn matmul_topk(
         &self,
         tensor2: &Tensor<T>,
-        params: MatMulParams,
+        params: matmulParams,
         thread_num: usize,
         scope_name: String,
     ) -> (*const usize, Self, Self) {
@@ -505,7 +505,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMulTopK(MatMulTopK::new(
+        let operator = Operator::matmulTopK(matmulTopK::new(
             self.data,
             tensor2.data,
             indice_ptr,
@@ -1492,7 +1492,7 @@ mod test {
             tensor2.data.copy_from(data2.as_ptr(), data2.len());
         }
 
-        let params = MatMulParams {
+        let params = matmulParams {
             a_row: batch_size,
             b_row: hidden_size,
             column: hidden_size,
@@ -1505,7 +1505,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         let barrier = Barrier::new(thread_num);
         let barrier_arc = Arc::new(barrier);
-        let operator = Operator::MatMul(MatMul::<f32>::new(
+        let operator = Operator::matmul(matmul::<f32>::new(
             batch_size,
             hidden_size,
             hidden_size,
@@ -1584,7 +1584,7 @@ mod test {
             tensor2.data.copy_from(data2.as_ptr(), data2.len());
         }
 
-        let params = MatMulParams {
+        let params = matmulParams {
             a_row: batch_size,
             b_row: hidden_size,
             column: hidden_size,
@@ -1597,7 +1597,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         let barrier = Barrier::new(thread_num);
         let barrier_arc = Arc::new(barrier);
-        let operator = Operator::MatMul(MatMul::<f32>::new(
+        let operator = Operator::matmul(matmul::<f32>::new(
             batch_size,
             hidden_size,
             hidden_size,

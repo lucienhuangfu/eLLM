@@ -12,20 +12,20 @@ use super::map::topk_softmax::TopKSoftmax;
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 use super::mul::attention_add::AttentionAdd;
-use super::mul::experts_merge_add::ExpertsMatMulMergeAdd;
-use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
-use super::mul::matmul::MatMul;
-use super::mul::matmul3::MatMul3;
-use super::mul::matmul_add::MatMulAdd;
-use super::mul::matmul_silu_mul_matmul::MatMulSilu;
-use super::mul::matmul_topk::MatMulTopK;
+use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatmulSilu;
+use super::mul::experts_merge_add::ExpertsmatmulMergeAdd;
+use super::mul::matmul::Matmul;
+use super::mul::matmul3::Matmul3;
+use super::mul::matmul_add::MatmulAdd;
+use super::mul::matmul_silu_mul_matmul::MatmulSilu;
+use super::mul::matmul_topk::MatmulTopK;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
 use super::zip_map::add_zip::AddZipMap;
 use super::zip_map::complex_zip::ComplexZipMap;
 use super::zip_map::silu_mul_zip::SiluMulZipMap;
 // use super::mul::vec_mul::VecMul;
 // use super::mul::col_mul::ColMul;
-// use crate::init::matmul_params::MatMulParams;
+// use crate::init::matmul_params::matmulParams;
 // use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 
 #[derive(Clone)]
@@ -35,15 +35,15 @@ pub enum Operator<T> {
     // ArgmaxReduce(ArgmaxReduce<T>),
     AttentionAdd(AttentionAdd<T>),
     ComplexZipMap(ComplexZipMap<T>),
-    ExpertsMatMulMergeAdd(ExpertsMatMulMergeAdd<T>),
-    ExpertsMatMulSiluMulMatMul(ExpertsMatMulSilu<T>),
+    ExpertsMatmulMul(ExpertsMatmulMul<T>),
+    ExpertsMatmulSiluMulMatmul(ExpertsMatmulSilu<T>),
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
     LookupRMSMap(LookupRMSMap<T>),
-    MatMul(MatMul<T>),
-    MatMul3(MatMul3<T>),
-    MatMulAdd(MatMulAdd<T>),
-    MatMulSiluMulMatMul(MatMulSilu<T>),
-    MatMulTopK(MatMulTopK<T>),
+    Matmul(Matmul<T>),
+    Matmul3(Matmul3<T>),
+    MatmulAdd(MatmulAdd<T>),
+    MatmulSiluMulMatmul(MatmulSilu<T>),
+    MatmulTopK(MatmulTopK<T>),
     RMSMap(RMSMap<T>),
     SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
@@ -99,7 +99,7 @@ where
                     thread_id,
                 );
             }
-            Self::ExpertsMatMulMergeAdd(operator) => {
+            Self::ExpertsMatmulMergeAdd(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -108,7 +108,7 @@ where
                     thread_id,
                 );
             }
-            Self::ExpertsMatMulSiluMulMatMul(operator) => {
+            Self::ExpertsMatmulSiluMulMatmul(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -135,7 +135,7 @@ where
                     thread_id,
                 );
             }
-            Self::MatMul(operator) => {
+            Self::Matmul(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -144,7 +144,7 @@ where
                     thread_id,
                 );
             }
-            Self::MatMul3(operator) => {
+            Self::Matmul3(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -153,7 +153,7 @@ where
                     thread_id,
                 );
             }
-            Self::MatMulAdd(operator) => {
+            Self::MatmulAdd(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -162,7 +162,7 @@ where
                     thread_id,
                 );
             }
-            Self::MatMulSiluMulMatMul(operator) => {
+            Self::MatmulSiluMulMatmul(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -171,7 +171,7 @@ where
                     thread_id,
                 );
             }
-            Self::MatMulTopK(operator) => {
+            Self::MatmulTopK(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -578,7 +578,7 @@ mod test {
     }
 
     #[test]
-    fn test_matmul_batch_size_1() {
+    fn test_Matmul_batch_size_1() {
         let max_batch_size = 8;
         let hidden_size = 16;
 
@@ -600,7 +600,7 @@ mod test {
             result[i] = hidden_size as f32;
         }
 
-        let params = MatMulParams {
+        let params = MatmulParams {
             a_row: max_batch_size,
             b_row: hidden_size,
             column: hidden_size,
@@ -611,12 +611,12 @@ mod test {
             b_row_step_micro: 1,
         };
 
-        let chunks = chunk_matmul(data1.as_ptr(), data2.as_ptr(), data3.as_mut_ptr(), &params);
+        let chunks = chunk_Matmul(data1.as_ptr(), data2.as_ptr(), data3.as_mut_ptr(), &params);
 
         let thread_num: usize = num_cpus::get();
         let barrier = Barrier::new(thread_num);
         let barrier_arc = Arc::new(barrier);
-        let mut operator = Operator::MatMul(MatMul::<f32>::new(
+        let mut operator = Operator::Matmul(Matmul::<f32>::new(
             max_batch_size,
             hidden_size,
             hidden_size,
@@ -640,7 +640,7 @@ mod test {
     }
 
     #[test]
-    fn test_matmul_batch_size_1_sequence() {
+    fn test_Matmul_batch_size_1_sequence() {
         let max_batch_size = 8;
         let hidden_size = 16;
         let sequence_length = 16;
@@ -665,7 +665,7 @@ mod test {
             result[i + offset] = hidden_size as f32;
         }
 
-        let params = MatMulParams {
+        let params = MatmulParams {
             a_row: max_batch_size,
             b_row: hidden_size,
             column: hidden_size,
@@ -676,12 +676,12 @@ mod test {
             b_row_step_micro: 1,
         };
 
-        let chunks = chunk_matmul(data1.as_ptr(), data2.as_ptr(), data3.as_mut_ptr(), &params);
+        let chunks = chunk_Matmul(data1.as_ptr(), data2.as_ptr(), data3.as_mut_ptr(), &params);
 
         let thread_num: usize = num_cpus::get();
         let barrier = Barrier::new(thread_num);
         let barrier_arc = Arc::new(barrier);
-        let mut operator = Operator::MatMul(MatMul::<f32>::new(
+        let mut operator = Operator::Matmul(Matmul::<f32>::new(
             max_batch_size,
             hidden_size,
             hidden_size,

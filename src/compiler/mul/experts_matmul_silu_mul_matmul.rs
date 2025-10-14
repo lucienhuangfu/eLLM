@@ -3,19 +3,18 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatMulParams,
+    matmul_params::MatmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
-use super::super::assign::assign;
-use super::mul_trait::MatMul4Trait;
 use super::super::super::memory::allocator::allocate_init;
-
+use super::super::assign::assign;
+use super::mul_trait::Matmul4Trait;
 
 /// there will be just one instance of this runner in the program
 /// this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
-pub struct ExpertsMatMulSilu<T> {
+pub struct ExpertsMatmulSilu<T> {
     input_ptr: ConstPtr<T>,
     gate_weight_ptr: ConstPtr<T>,
     up_weight_ptr: ConstPtr<T>,
@@ -29,10 +28,10 @@ pub struct ExpertsMatMulSilu<T> {
     a_row: usize,
     b_row: usize,
     column: usize,
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     _marker: PhantomData<T>,
 }
-impl<T> ExpertsMatMulSilu<T>
+impl<T> ExpertsMatmulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -51,15 +50,16 @@ where
         a_row_step_micro: usize,
         b_row_step_micro: usize,
     ) -> Self {
-
-        let macro_block_size = a_row_step_macro * column_step_macro ;
+        let macro_block_size = a_row_step_macro * column_step_macro;
         let macro_block = MutPtr {
             ptr: unsafe { allocate_init(macro_block_size, T::default()) },
         };
 
         Self {
             input_ptr: ConstPtr { ptr: input_ptr },
-            gate_weight_ptr: ConstPtr { ptr: gate_weight_ptr },
+            gate_weight_ptr: ConstPtr {
+                ptr: gate_weight_ptr,
+            },
             up_weight_ptr: ConstPtr { ptr: up_weight_ptr },
             sorted_ids: sorted_ids,
             output_ptr: MutPtr { ptr: output_ptr },
@@ -67,7 +67,7 @@ where
             a_row: a_row,
             b_row: b_row,
             column: column,
-            params: MatMulParams {
+            params: MatmulParams {
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,
@@ -93,7 +93,7 @@ where
     }
 }
 
-impl<T> MatMul4Trait<T> for ExpertsMatMulSilu<T>
+impl<T> Matmul4Trait<T> for ExpertsMatmulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -106,7 +106,7 @@ where
     }
 }
 
-impl MatMul4Trait<f16> for ExpertsMatMulSilu<f16> {
+impl Matmul4Trait<f16> for ExpertsMatmulSilu<f16> {
     fn compute1(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
         // print!("f16 runner\n");
     }
@@ -116,7 +116,7 @@ impl MatMul4Trait<f16> for ExpertsMatMulSilu<f16> {
     }
 }
 
-impl MatMul4Trait<f32> for ExpertsMatMulSilu<f32> {
+impl Matmul4Trait<f32> for ExpertsMatmulSilu<f32> {
     fn compute1(&self, input_ptr1: *const f32, input_ptr2: *const f32, output_ptr: *mut f32) {
         // print!("f32 runner\n");
 
@@ -175,7 +175,7 @@ mod tests {
         }
 
         // initialize the params
-        let params: MatMulParams = MatMulParams {
+        let params: matmulParams = matmulParams {
             a_row,
             b_row,
             column,
@@ -185,7 +185,7 @@ mod tests {
             a_row_step_micro,
             b_row_step_micro,
         };
-        let mut operator = MatMul::<f32>::new(
+        let mut operator = matmul::<f32>::new(
             a.as_ptr(),
             b.as_ptr(),
             c.as_mut_ptr(),

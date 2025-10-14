@@ -6,7 +6,7 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::init::matmul_params::MatMulParams;
+use super::super::init::matmul_params::matmulParams;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
@@ -88,7 +88,7 @@ where
     ) -> Tensor<T> {
         let gate_output = hidden_states.matmul(
             &self.gate_weight,
-            MatMulParams {
+            matmulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
@@ -106,7 +106,7 @@ where
             &self.experts_gate_weight,
             &self.experts_up_weight,
             &topk_indices,
-            MatMulParams {
+            matmulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
@@ -121,7 +121,7 @@ where
             &topk_indices,
             &topk_values,
             residual,
-            MatMulParams {
+            matmulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,

@@ -6,7 +6,7 @@ use std::arch::x86_64::{
 };
 use std::f16;
 
-use crate::init::matmul_params::MatMulParams;
+use crate::init::matmul_params::matmulParams;
 
 // 复用已有的 AVX-512 FP16 实现
 use crate::kernel::x86_64::f16_512::rms_norm::rms_norm;
@@ -28,7 +28,7 @@ pub unsafe fn matmul_update_inplace_3x128_accum(
     a: *const f16,        // 3×kc
     b_panel: *const f16,  // kc×128
     c: *mut f16,          // 3×128
-    param: &MatMulParams,
+    param: &matmulParams,
 ) {
     debug_assert_eq!(param.a_row_step_micro, 3);
     debug_assert_eq!(param.b_row_step_micro, 128);
@@ -113,7 +113,7 @@ pub unsafe fn matmul_finalize_rmsnorm_rope_inplace_3x128(
     c: *mut f16,          // 3×128，行距=ldc
     rope_ptr: *const f16, // 128 个交错相位
     eps: f16,
-    p: &MatMulParams,
+    p: &matmulParams,
 ) {
     let ldc = p.b_row_step_macro;
     debug_assert_eq!(p.a_row_step_micro, 3);

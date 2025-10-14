@@ -6,16 +6,16 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
+    Matmul_params::MatmulParams,
 };
 use super::super::assign::assign;
-use super::mul_trait::MatMul4Trait; // 外部提供：compute1/compute2 的 trait
+use super::mul_trait::Matmul4Trait; // 外部提供：compute1/compute2 的 trait
 
 /// Q/K/V 线性（不打包 B），Q/K tile 尾部做 RMS + RoPE（原位）
 /// 约定：MR=3，NR=128，head_dim=128，N 是 128 的倍数
 #[derive(Clone)]
-pub struct MatMul3<T> {
+pub struct Matmul3<T> {
     // A / W / C
     hidden_ptr: ConstPtr<T>,   // A[S×M×K]
     q_weight_ptr: ConstPtr<T>, // Wq[K×N]
@@ -36,7 +36,7 @@ pub struct MatMul3<T> {
     b_kv_row: usize, // N (Wk/Wv 同形)
 
     // 分块（仅承载 MB/NB/KC/MR/NR）
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     _marker: PhantomData<T>,
 
     // —— compute1/2 从“本地字段”取调用形状 —— //
@@ -47,7 +47,7 @@ pub struct MatMul3<T> {
     nr_fixed: usize,         // = params.b_row_step_micro (应=128)
 }
 
-impl<T> MatMul3<T>
+impl<T> Matmul3<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -62,9 +62,9 @@ where
         v_state_ptr: *mut T,
         position_embedding_ptr: *const T,
         head_dim: usize,
-        a_h_row: usize, // M
-        col: usize,     // K
-        b_q_row: usize,  // N 
+        a_h_row: usize,  // M
+        col: usize,      // K
+        b_q_row: usize,  // N
         b_kv_row: usize, // N
         a_row_step_macro: usize,
         b_row_step_macro: usize,
@@ -88,7 +88,7 @@ where
             col,
             b_q_row,
             b_kv_row,
-            params: MatMulParams {
+            params: MatmulParams {
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,
@@ -294,7 +294,7 @@ where
         }
     }
 }
-impl<T> MatMul4Trait<T> for MatMul3<T>
+impl<T> Matmul4Trait<T> for Matmul3<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -307,9 +307,9 @@ where
     }
 }
 
-impl MatMul4Trait<f16> for MatMul3<f16> {
+impl Matmul4Trait<f16> for Matmul3<f16> {
     fn compute1(&self, a: *const f16, b_row: *const f16, c: *mut f16) {
-        let call_param = MatMulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.lda_fixed,
             b_row_step_macro: self.active_ldc.get(),
             column_step_macro: self.kc_fixed,
@@ -319,7 +319,7 @@ impl MatMul4Trait<f16> for MatMul3<f16> {
 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            crate::kernel::x86_64::f16_512::matmul_rms_complex::matmul_update_inplace_3x128_accum(
+            crate::kernel::x86_64::f16_512::Matmul_rms_complex::Matmul_update_inplace_3x128_accum(
                 a,
                 b_row,
                 c,
@@ -333,7 +333,7 @@ impl MatMul4Trait<f16> for MatMul3<f16> {
     }
 
     fn compute2(&self, c: *mut f16, rope_ptr: *const f16) {
-        let call_param = MatMulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.lda_fixed,
             b_row_step_macro: self.active_ldc.get(),
             column_step_macro: self.kc_fixed,
@@ -355,7 +355,7 @@ impl MatMul4Trait<f16> for MatMul3<f16> {
     }
 }
 
-impl MatMul4Trait<f32> for MatMul3<f32> {
+impl matmul4Trait<f32> for matmul3<f32> {
     fn compute1(&self, _a: *const f32, _b: *const f32, _c: *mut f32) {
         // TODO: f32 版本
     }
