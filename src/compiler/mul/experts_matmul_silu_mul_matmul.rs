@@ -9,18 +9,19 @@ use super::super::super::init::{
 use super::super::super::kernel;
 use super::super::assign::assign;
 use super::mul_trait::MatMul4Trait;
+use super::super::super::memory::allocator::allocate_init;
 
-// there will be just one instance of this runner in the program
-// this runner will be shared by many threads that together compute the matrix multiplication
+
+/// there will be just one instance of this runner in the program
+/// this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
 pub struct ExpertsMatMulSilu<T> {
     input_ptr: ConstPtr<T>,
     gate_weight_ptr: ConstPtr<T>,
     up_weight_ptr: ConstPtr<T>,
     // 先不考虑sequence_chunk维度
-    // [num_experts,  batch_size(行号)]
-    // batch_size
-    sorted_ids_ptr: ConstPtr<T>,
+    // [(expert_id, [token_id])]
+    sorted_ids: Vec<(usize, Vec<T>)>,
     // [num_experts, batch_size, intermediate_size]
     output_ptr: MutPtr<T>,
     // [block_size, hidden_size]
@@ -33,13 +34,13 @@ pub struct ExpertsMatMulSilu<T> {
 }
 impl<T> ExpertsMatMulSilu<T>
 where
-    T: Copy + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     pub fn new(
         input_ptr: *const T,
         gate_weight_ptr: *const T,
         up_weight_ptr: *const T,
-        ptr4: *const T,
+        sorted_ids: Vec<(usize, Vec<T>)>,
         output_ptr: *mut T,
         a_row: usize,
         b_row: usize,
@@ -50,12 +51,19 @@ where
         a_row_step_micro: usize,
         b_row_step_micro: usize,
     ) -> Self {
+
+        let macro_block_size = a_row_step_macro * column_step_macro ;
+        let macro_block = MutPtr {
+            ptr: unsafe { allocate_init(macro_block_size, T::default()) },
+        };
+
         Self {
-            input_ptr: ConstPtr { ptr: ptr1 },
-            gate_weight_ptr: ConstPtr { ptr: ptr2 },
-            up_weight_ptr: ConstPtr { ptr: ptr3 },
-            ptr4: ConstPtr { ptr: ptr4 },
+            input_ptr: ConstPtr { ptr: input_ptr },
+            gate_weight_ptr: ConstPtr { ptr: gate_weight_ptr },
+            up_weight_ptr: ConstPtr { ptr: up_weight_ptr },
+            sorted_ids: sorted_ids,
             output_ptr: MutPtr { ptr: output_ptr },
+            macro_block: macro_block,
             a_row: a_row,
             b_row: b_row,
             column: column,
