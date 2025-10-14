@@ -3,17 +3,17 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatMulParams,
+    matmul_params::matmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::MatMulTopKTrait;
+use super::mul_trait::matmulTopKTrait;
 
 // there will be just one instance of this runner in the program
 // this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
-pub struct MatMulTopK<T> {
+pub struct matmulTopK<T> {
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
     indice_ptr: MutPtr<usize>,
@@ -22,10 +22,10 @@ pub struct MatMulTopK<T> {
     a_row: usize,
     b_row: usize,
     column: usize,
-    pub params: MatMulParams,
+    pub params: matmulParams,
     _marker: PhantomData<T>,
 }
-impl<T> MatMulTopK<T>
+impl<T> matmulTopK<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -53,7 +53,7 @@ where
             a_row,
             b_row,
             column,
-            params: MatMulParams {
+            params: matmulParams {
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,
@@ -96,7 +96,7 @@ where
     }
 }
 
-impl<T> MatMulTopKTrait<T> for MatMulTopK<T>
+impl<T> matmulTopKTrait<T> for matmulTopK<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -119,7 +119,7 @@ where
     }
 }
 
-impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
+impl matmulTopKTrait<f16> for matmulTopK<f16> {
     fn compute(
         &self,
         input_ptr1: *const f16,
@@ -149,7 +149,7 @@ impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
     }
 }
 
-impl MatMulTopKTrait<f32> for MatMulTopK<f32> {
+impl matmulTopKTrait<f32> for matmulTopK<f32> {
     fn compute(
         &self,
         input_ptr1: *const f32,
@@ -211,7 +211,7 @@ mod tests {
         }
 
         // initialize the params
-        let params: MatMulParams = MatMulParams {
+        let params: matmulParams = matmulParams {
             a_row,
             b_row,
             column,
@@ -221,7 +221,7 @@ mod tests {
             a_row_step_micro,
             b_row_step_micro,
         };
-        let mut operator = MatMul::<f32>::new(
+        let mut operator = matmul::<f32>::new(
             a.as_ptr(),
             b.as_ptr(),
             c.as_mut_ptr(),
@@ -294,7 +294,7 @@ mod tests {
         }
 
         // initialize the params
-        let params: MatMulParams = MatMulParams {
+        let params: matmulParams = matmulParams {
             a_row,
             b_row,
             column,
@@ -312,7 +312,7 @@ mod tests {
         let thread_num: usize = num_cpus::get();
         let barrier = Barrier::new(thread_num);
         let barrier_arc = Arc::new(barrier);
-        let mut runner = MatMul::<f32>::new(
+        let mut runner = matmul::<f32>::new(
             a_row,
             b_row,
             column,
@@ -416,7 +416,7 @@ mod tests {
         }
 
         // initialize the params
-        let params: MatMulParams = MatMulParams {
+        let params: matmulParams = matmulParams {
             a_row,
             b_row,
             column,
@@ -438,7 +438,7 @@ mod tests {
         let thread_num: usize = num_cpus::get();
         let barrier = Barrier::new(thread_num);
         let barrier_arc = Arc::new(barrier);
-        let mut runner = MatMul::<f16>::new(
+        let mut runner = matmul::<f16>::new(
             a_row,
             b_row,
             column,
@@ -517,7 +517,7 @@ mod tests {
         }
 
         // initialize the params
-        let params: MatMulParams = MatMulParams {
+        let params: matmulParams = matmulParams {
             a_row,
             b_row,
             column,
@@ -542,7 +542,7 @@ mod tests {
         let thread_num: usize = num_cpus::get();
         let barrier = Barrier::new(thread_num);
         let barrier_arc = Arc::new(barrier);
-        let mut runner = MatMul::<f32>::new(
+        let mut runner = matmul::<f32>::new(
             a_row,
             b_row,
             column,

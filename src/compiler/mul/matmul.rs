@@ -6,22 +6,21 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatMulParams,
+    matmul_params::MatmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::MatMulTrait;
+use super::mul_trait::MatmulTrait;
 
 #[derive(Clone)]
-pub struct MatMul<T> {
-    pub ptr1: ConstPtr<T>,       // A[S×M×K] 首地址
-    pub ptr2: ConstPtr<T>,       // B[K×N]   首地址（保留原始指针）
-    pub output_ptr: MutPtr<T>,   // C[S×M×N] 首地址
-    pub output_to_kv: bool,      // 保持兼容
+pub struct Matmul<T> {
+    pub ptr1: ConstPtr<T>,     // A[S×M×K] 首地址
+    pub ptr2: ConstPtr<T>,     // B[K×N]   首地址（保留原始指针）
+    pub output_ptr: MutPtr<T>, // C[S×M×N] 首地址
+    pub output_to_kv: bool,    // 保持兼容
     /// 注意：`params` 仅承载 **step 形状**（MB/NB/KC/MR/NR）
-
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     pub _marker: PhantomData<T>,
 
     // 保存“最大维度” M/N/K（替代旧 params.a_row/b_row/column）
@@ -33,7 +32,7 @@ pub struct MatMul<T> {
     pub b_nt: Option<Box<[T]>>,
 }
 
-impl<T> MatMul<T>
+impl<T> Matmul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -45,7 +44,7 @@ where
         ptr2: *const T,
         output_ptr: *mut T,
         output_to_kv: bool,
-        params: MatMulParams,
+        params: MatmulParams,
         m_max: usize,
         n_max: usize,
         k_max: usize,
@@ -90,9 +89,9 @@ where
     ) {
         unsafe {
             // ===== 维度 =====
-            let m = batch_size;     // 本次 M
-            let n = self.n_max;     // N
-            let k = self.k_max;     // K
+            let m = batch_size; // 本次 M
+            let n = self.n_max; // N
+            let k = self.k_max; // K
 
             // ===== 分块参数（来自 params，仅形状）=====
             let mb = self.params.a_row_step_macro.max(1);
@@ -106,7 +105,7 @@ where
             debug_assert!(k % kc == 0);
 
             // ===== 基址与行距（元素计）=====
-            let a_base = self.ptr1.ptr;       // A[S×M×K]
+            let a_base = self.ptr1.ptr; // A[S×M×K]
             let c_base = self.output_ptr.ptr; // C[S×M×N]
             let lda = k; // A 每行跨度
             let ldc = n; // C 每行跨度
@@ -141,7 +140,7 @@ where
                     k0: usize,      // K 起点
                     kc: usize,
                     nr: usize,
-                    out: *mut T,    // 输出：KC×NR 行主
+                    out: *mut T, // 输出：KC×NR 行主
                 ) {
                     // 从 B_nt 的 (n0..n0+nr, k0..k0+kc) 抽取到连续的 KC×NR 面板
                     for p in 0..kc {
@@ -157,11 +156,11 @@ where
 
                 for t in tb..te {
                     let s_rel = t / (tiles_m * tiles_n);
-                    let rem   = t % (tiles_m * tiles_n);
-                    let tm    = rem / tiles_n;
-                    let tn    = rem % tiles_n;
+                    let rem = t % (tiles_m * tiles_n);
+                    let tm = rem / tiles_n;
+                    let tn = rem % tiles_n;
 
-                    let s  = s_begin + s_rel;
+                    let s = s_begin + s_rel;
                     let m0 = tm * mb;
                     let n0 = tn * nb;
 
@@ -180,9 +179,12 @@ where
                         while nt < n_blk {
                             // 打一块 KC×NR 面板（仅当前块所需）
                             pack_b_panel::<T>(
-                                b_nt_ptr, ldb_row,
-                                n0 + nt, k0,
-                                kc, nr,
+                                b_nt_ptr,
+                                ldb_row,
+                                n0 + nt,
+                                k0,
+                                kc,
+                                nr,
                                 b_panel.as_mut_ptr(),
                             );
 
@@ -209,13 +211,13 @@ where
 
 /* ------------------ 下面是 compute/compute2 的实现（仅此处改“调用 param”） ------------------ */
 
-impl<T> MatMulTrait<T> for MatMul<T>
+impl<T> matmulTrait<T> for matmul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
     /// generic 版本：在这里组装“调用 param”
     default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T) {
-        let call_param = MatMulParams {
+        let call_param = matmulParams {
             a_row_step_macro: self.k_max,                     // lda = K
             b_row_step_macro: self.n_max,                     // ldc = N
             column_step_macro: self.params.column_step_macro, // kc
@@ -242,10 +244,10 @@ where
     }
 }
 
-impl MatMulTrait<f16> for MatMul<f16> {
+impl matmulTrait<f16> for matmul<f16> {
     /// f16 专用：同样在这里组装“调用 param”，而不是用 self.params 直接透传
     fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
-        let call_param = MatMulParams {
+        let call_param = matmulParams {
             a_row_step_macro: self.k_max,                     // lda = K
             b_row_step_macro: self.n_max,                     // ldc = N
             column_step_macro: self.params.column_step_macro, // kc
@@ -290,11 +292,12 @@ impl MatMulTrait<f16> for MatMul<f16> {
     }
 }
 
-impl MatMulTrait<f32> for MatMul<f32> {
-    fn compute(&self, _a: *const f32, _b: *const f32, _c: *mut f32) { /* TODO */ }
-    fn compute2(
-        &self, a: *const f32, b: *const f32, c: *mut f32, length: usize,
-    ) { kernel::generic::dot_product::dot_product(a, b, c, length); }
+impl matmulTrait<f32> for matmul<f32> {
+    fn compute(&self, _a: *const f32, _b: *const f32, _c: *mut f32) { /* TODO */
+    }
+    fn compute2(&self, a: *const f32, b: *const f32, c: *mut f32, length: usize) {
+        kernel::generic::dot_product::dot_product(a, b, c, length);
+    }
 }
 
 /* ---------------------------------- 测试 ---------------------------------- */
@@ -305,27 +308,44 @@ mod innteg_tests {
     use std::arch::is_x86_feature_detected;
     use std::f16;
 
-    #[inline] fn f16v(v: f32) -> f16 { let h = half::f16::from_f32(v); f16::from_bits(h.to_bits()) }
-    #[inline] fn to_f32(x: f16) -> f32 { half::f16::from_bits(x.to_bits()).to_f32() }
-    fn all_close(a: &[f16], b: &[f16], tol: f32) -> bool {
-        a.len() == b.len() && a.iter().zip(b).all(|(x,y)| (to_f32(*x)-to_f32(*y)).abs() <= tol)
+    #[inline]
+    fn f16v(v: f32) -> f16 {
+        let h = half::f16::from_f32(v);
+        f16::from_bits(h.to_bits())
     }
-
+    #[inline]
+    fn to_f32(x: f16) -> f32 {
+        half::f16::from_bits(x.to_bits()).to_f32()
+    }
+    fn all_close(a: &[f16], b: &[f16], tol: f32) -> bool {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(x, y)| (to_f32(*x) - to_f32(*y)).abs() <= tol)
+    }
 
     /// 单序列整除路径：验证 run + compute（compute 内部组装调用 param）
     #[test]
     fn test_run_internal_transpose_f16_m6_n64_k64() {
-        if !is_x86_feature_detected!("avx512fp16") { eprintln!("Skipping avx512fp16"); return; }
+        if !is_x86_feature_detected!("avx512fp16") {
+            eprintln!("Skipping avx512fp16");
+            return;
+        }
         unsafe {
-            let m=6usize; let n=64usize; let k=64usize;
-            let mb=6usize; let nb=64usize; let kc=64usize;
-            let mr=3usize; let nr=32usize;
+            let m = 6usize;
+            let n = 64usize;
+            let k = 64usize;
+            let mb = 6usize;
+            let nb = 64usize;
+            let kc = 64usize;
+            let mr = 3usize;
+            let nr = 32usize;
 
-            let a: Vec<f16> = (0..m*k).map(|_| f16v(1.0)).collect();
-            let b_orig: Vec<f16> = (0..k*n).map(|_| f16v(1.0)).collect();
-            let mut c: Vec<f16> = (0..m*n).map(|_| f16v(0.0)).collect();
+            let a: Vec<f16> = (0..m * k).map(|_| f16v(1.0)).collect();
+            let b_orig: Vec<f16> = (0..k * n).map(|_| f16v(1.0)).collect();
+            let mut c: Vec<f16> = (0..m * n).map(|_| f16v(0.0)).collect();
 
-            let params = MatMulParams {
+            let params = matmulParams {
                 a_row_step_macro: mb,
                 b_row_step_macro: nb,
                 column_step_macro: kc,
@@ -334,18 +354,20 @@ mod innteg_tests {
             };
 
             // 用 new()，构造期一次性转置 B -> B_nt（不使用 Arc）
-            let op = MatMul::<f16>::new(
+            let op = matmul::<f16>::new(
                 a.as_ptr(),
                 b_orig.as_ptr(),
                 c.as_mut_ptr(),
                 false,
                 params,
-                m, n, k,
+                m,
+                n,
+                k,
             );
 
             op.run(0, 1, m, 1, 0);
 
-            let expected: Vec<f16> = (0..m*n).map(|_| f16v(k as f32)).collect();
+            let expected: Vec<f16> = (0..m * n).map(|_| f16v(k as f32)).collect();
             assert!(all_close(&c, &expected, 1e-3));
         }
     }
@@ -353,19 +375,27 @@ mod innteg_tests {
     /// 多序列切片：只处理 s=1,2
     #[test]
     fn test_run_internal_transpose_f16_seqlen_gt1_slice() {
-        if !is_x86_feature_detected!("avx512fp16") { eprintln!("Skipping avx512fp16"); return; }
+        if !is_x86_feature_detected!("avx512fp16") {
+            eprintln!("Skipping avx512fp16");
+            return;
+        }
         unsafe {
-            let s_total=4usize;
-            let m=6usize; let n=64usize; let k=64usize;
-            let mb=6usize; let nb=64usize; let kc=64usize;
-            let mr=3usize; let nr=32usize;
+            let s_total = 4usize;
+            let m = 6usize;
+            let n = 64usize;
+            let k = 64usize;
+            let mb = 6usize;
+            let nb = 64usize;
+            let kc = 64usize;
+            let mr = 3usize;
+            let nr = 32usize;
 
-            let a_len = s_total*m*k;
+            let a_len = s_total * m * k;
             let a: Vec<f16> = (0..a_len).map(|_| f16v(1.0)).collect();
-            let b_orig: Vec<f16> = (0..k*n).map(|_| f16v(1.0)).collect();
-            let mut c: Vec<f16> = (0..s_total*m*n).map(|_| f16v(0.0)).collect();
+            let b_orig: Vec<f16> = (0..k * n).map(|_| f16v(1.0)).collect();
+            let mut c: Vec<f16> = (0..s_total * m * n).map(|_| f16v(0.0)).collect();
 
-            let params = MatMulParams {
+            let params = matmulParams {
                 a_row_step_macro: mb,
                 b_row_step_macro: nb,
                 column_step_macro: kc,
@@ -373,22 +403,27 @@ mod innteg_tests {
                 b_row_step_micro: nr,
             };
 
-            let op = MatMul::<f16>::new(
+            let op = matmul::<f16>::new(
                 a.as_ptr(),
                 b_orig.as_ptr(),
                 c.as_mut_ptr(),
                 false,
                 params,
-                m, n, k,
+                m,
+                n,
+                k,
             );
 
             // 只处理 s=1,2
             op.run(1, 2, m, 1, 0);
 
-            let c_seq_stride = m*n;
-            let view = |s: usize| -> &[f16] { let off=s*c_seq_stride; &c[off..off+c_seq_stride] };
+            let c_seq_stride = m * n;
+            let view = |s: usize| -> &[f16] {
+                let off = s * c_seq_stride;
+                &c[off..off + c_seq_stride]
+            };
 
-            let expected: Vec<f16> = (0..m*n).map(|_| f16v(k as f32)).collect();
+            let expected: Vec<f16> = (0..m * n).map(|_| f16v(k as f32)).collect();
             // s=0、3 未处理
             assert!(view(0).iter().all(|&x| to_f32(x) == 0.0));
             assert!(view(3).iter().all(|&x| to_f32(x) == 0.0));
