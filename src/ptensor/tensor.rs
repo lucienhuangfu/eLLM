@@ -12,7 +12,7 @@ use super::super::memory::allocator::allocate_init;
 use super::tensor_utils::get_strides;
 use crate::init::matmul_params::matmulParams;
 
-use super::super::compiler::map::experts_topk_softmax_norm::ExpertsSoftmaxNorm;
+use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
@@ -30,6 +30,7 @@ use super::super::compiler::zip_map::add_zip::AddZipMap;
 use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
 use super::super::compiler::zip_map::silu_mul_zip::SiluMulZipMap;
 use crate::compiler::zip_map::add_rms_zip::AddRMSZipMap;
+use super::super::compiler::mul::expert_routing::ExpertRouting;
 
 #[derive(Clone)]
 pub struct Tensor<T> {
@@ -180,7 +181,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::ExpertsmatmulMergeAdd(ExpertsmatmulMergeAdd::new(
+        let operator = Operator::ExpertsMatmulMergeAdd(ExpertsmatmulMergeAdd::new(
             self.data,
             down_weights.data,
             topk_indice.data,
@@ -220,7 +221,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::ExpertsmatmulSiluMulmatmul(ExpertsmatmulSilu::new(
+        let operator = Operator::ExpertsMatmulSiluMulMatmul(ExpertsmatmulSilu::new(
             self.data,
             gate_weights.data,
             up_weights.data,
@@ -240,31 +241,38 @@ where
         output_tensor
     }
 
-    pub fn experts_softmax_norm(&self, topk_size: usize, scope_name: String) -> (Self, Self) {
-        let indice_tensor = Tensor::from_cache(
-            vec![self.shape[0], self.shape[1], topk_size],
-            format!("{}.indice", scope_name),
-            self.cache.clone(),
-            self.operator_queue.clone(),
+    pub fn experts_softmax_norm(
+        &self,
+        sorted_expert_ids: Vec<(usize, Vec<(usize, T)>)>,
+        topk_size: usize,
+        scope_name: String,
+    ) -> Self {
+        // Create ExpertRouting from sorted expert IDs
+        let mut cache_usize = Cache::<usize>::new(std::collections::HashMap::new());
+        let expert_routing = ExpertRouting::new(
+            sorted_expert_ids,
+            &mut self.cache.borrow_mut(),
+            &mut cache_usize,
         );
 
-        let value_tensor = Tensor::from_cache(
+        // Create output tensor for the softmax normalized values
+        let output_tensor = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], topk_size],
-            format!("{}.value", scope_name),
+            format!("{}.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
             self.data,
-            indice_tensor.data,
-            value_tensor.data,
+            expert_routing,
             self.shape[1],
+            self.shape[2], // num_experts
             topk_size,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
-        (indice_tensor, value_tensor)
+        output_tensor
     }
 
     pub fn from_cache(
@@ -1331,8 +1339,6 @@ mod test {
 
 
 
-
-    */
 
     #[test]
     fn test_permute() {

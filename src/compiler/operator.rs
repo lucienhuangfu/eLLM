@@ -5,7 +5,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
-use super::map::experts_topk_softmax_norm::ExpertsSoftmaxNorm;
+use super::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
 use super::map::topk_softmax::TopKSoftmax;
@@ -35,7 +35,7 @@ pub enum Operator<T> {
     // ArgmaxReduce(ArgmaxReduce<T>),
     AttentionAdd(AttentionAdd<T>),
     ComplexZipMap(ComplexZipMap<T>),
-    ExpertsMatmulMul(ExpertsMatmulMul<T>),
+    ExpertsMatmulMergeAdd(ExpertsmatmulMergeAdd<T>),
     ExpertsMatmulSiluMulMatmul(ExpertsMatmulSilu<T>),
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
     LookupRMSMap(LookupRMSMap<T>),

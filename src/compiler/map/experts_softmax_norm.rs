@@ -3,18 +3,17 @@ use std::ops::{AddAssign, Sub};
 
 use super::map_trait::SoftmaxTrait;
 use crate::compiler::assign::assign;
-use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::compiler::mul::expert_routing::ExpertRouting;
+use crate::init::send_sync_ptr::ConstPtr;
 use crate::kernel::generic;
-use crate::kernel::generic::{exp::Exp,sqrt::Sqrt };
-// use crate::kernel::generic::from_usize::FromUsize;
+use crate::kernel::generic::{exp::Exp, sqrt::Sqrt};
 
 #[derive(Clone)]
 pub struct ExpertsSoftmaxNorm<T> {
     // [sequence_length, batch_size, num_experts]
     ptr1: ConstPtr<T>,
-    // [sequence_length, batch_size, num_experts_topk]
-    indice_ptr: MutPtr<usize>,
-    value_ptr: MutPtr<T>,
+    // Expert routing information
+    expert_routing: ExpertRouting<T>,
     batch_size: usize,
     num_experts: usize,
     topk_size: usize,
@@ -23,16 +22,14 @@ pub struct ExpertsSoftmaxNorm<T> {
 impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
     pub fn new(
         ptr1: *const T,
-        indice_ptr: *mut usize,
-        value_ptr: *mut T,
+        expert_routing: ExpertRouting<T>,
         batch_size: usize,
         num_experts: usize,
         topk_size: usize,
     ) -> Self {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
-            indice_ptr: MutPtr { ptr: indice_ptr },
-            value_ptr: MutPtr { ptr: value_ptr },
+            expert_routing,
             batch_size,
             num_experts,
             topk_size,
@@ -52,21 +49,13 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
         if let Some((begin, end)) = assign(batch_size * position_interval, thread_num, thread_id) {
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
 
-            let mut ptr1 = self.ptr1.ptr;
-            let mut indice_ptr = self.indice_ptr.ptr;
-            let mut value_ptr = self.value_ptr.ptr;
+            let ptr1 = self.ptr1.ptr;
 
             for _ in begin..end {
                 let index = row_index * self.batch_size + col_index;
                 unsafe {
                     let p1 = index * self.num_experts;
-                    let p2 = index * self.topk_size;
-                    self.compute(
-                        ptr1.add(p1),
-                        indice_ptr.add(p2),
-                        value_ptr.add(p2),
-                        self.num_experts,
-                    );
+                    self.compute(ptr1.add(p1), index, self.num_experts);
                 }
                 col_index += 1;
                 if col_index == batch_size {
@@ -81,68 +70,44 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
 impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<T>
     for ExpertsSoftmaxNorm<T>
 {
-    default fn compute(
-        &self,
-        input_ptr: *const T,
-        indice_ptr: *mut usize,
-        value_ptr: *mut T,
-        length: usize,
-    ) {
-        generic::experts_topk_softmax_norm::experts_topk_softmax_norm(
-            input_ptr,
-            indice_ptr,
-            value_ptr,
-            length,
-            self.topk_size,
-        );
+    default fn compute(&self, input_ptr: *const T, batch_index: usize, length: usize) {
+        // Process each expert
+        for expert_idx in 0..self.expert_routing.num_experts {
+            let (token_ids_ptr, weights_ptr, token_count) =
+                self.expert_routing.get_expert_tokens(expert_idx);
+
+            generic::experts_topk_softmax_norm::experts_topk_softmax_norm(
+                input_ptr,
+                token_ids_ptr,
+                weights_ptr,
+                length,
+                self.topk_size,
+            );
+        }
     }
 }
 
 impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
-    fn compute(
-        &self,
-        input_ptr: *const f16,
-        indice_ptr: *mut usize,
-        value_ptr: *mut f16,
-        length: usize,
-    ) {
-        /*
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-        kernel::x86_64::f16_512::softmax::softmax(
-            input_ptr,
-            sum_ptr.ptr,
-            max_ptr.ptr,
-            output_ptr,
-            length,
-        );
+    fn compute(&self, input_ptr: *const f16, batch_index: usize, length: usize) {
+        // Process each expert for f16
+        for expert_idx in 0..self.expert_routing.num_experts {
+            let (token_ids_ptr, weights_ptr, token_count) =
+                self.expert_routing.get_expert_tokens(expert_idx);
 
-        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        kernel::generic::softmax::softmax(
-            input_ptr,
-            sum_ptr.ptr,
-            max_ptr.ptr,
-            output_ptr,
-            length,
-        );*/
+            // TODO: Implement f16-specific expert routing softmax
+        }
     }
 }
 
 impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
-    fn compute(
-        &self,
-        input_ptr: *const f32,
-        indice_ptr: *mut usize,
-        value_ptr: *mut f32,
-        length: usize,
-    ) {
-        /*
-        kernel::generic::softmax::softmax(
-            input_ptr,
-            sum_ptr.ptr,
-            max_ptr.ptr,
-            output_ptr,
-            length,
-        ); */
+    fn compute(&self, input_ptr: *const f32, batch_index: usize, length: usize) {
+        // Process each expert for f32
+        for expert_idx in 0..self.expert_routing.num_experts {
+            let (token_ids_ptr, weights_ptr, token_count) =
+                self.expert_routing.get_expert_tokens(expert_idx);
+
+            // TODO: Implement f32-specific expert routing softmax
+        }
     }
 }
 
