@@ -27,7 +27,7 @@
   "rope_scaling": null,
   "rope_theta": 10000000,
   "router_aux_loss_coef": 0.0,
-  "shared_expert_intermediate_size": 0,
+  "shared_experts_intermediate_size": 0,
   "sliding_window": null,
   "tie_word_embeddings": false,
   "torch_dtype": "bfloat16",

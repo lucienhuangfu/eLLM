@@ -9,7 +9,9 @@ use super::super::super::init::{
 use super::super::super::kernel;
 use super::super::super::memory::allocator::allocate_init;
 use super::super::assign::assign;
+use super::experts_routing::ExpertRouting;
 use super::mul_trait::Matmul4Trait;
+use crate::memory::cache::Cache;
 
 /// there will be just one instance of this runner in the program
 /// this runner will be shared by many threads that together compute the matrix multiplication
@@ -18,9 +20,9 @@ pub struct ExpertsMatmulSilu<T> {
     input_ptr: ConstPtr<T>,
     gate_weight_ptr: ConstPtr<T>,
     up_weight_ptr: ConstPtr<T>,
-    // 先不考虑sequence_chunk维度
-    // [(expert_id, [token_id])]
-    sorted_ids: Vec<(usize, Vec<T>)>,
+    // 使用ExpertRouting替代sorted_ids
+    experts_routing: ExpertRouting<T>,
+
     // [num_experts, batch_size, intermediate_size]
     output_ptr: MutPtr<T>,
     // [block_size, hidden_size]
@@ -39,7 +41,7 @@ where
         input_ptr: *const T,
         gate_weight_ptr: *const T,
         up_weight_ptr: *const T,
-        sorted_ids: Vec<(usize, Vec<T>)>,
+        experts_routing: ExpertRouting<T>,
         output_ptr: *mut T,
         a_row: usize,
         b_row: usize,
@@ -61,7 +63,7 @@ where
                 ptr: gate_weight_ptr,
             },
             up_weight_ptr: ConstPtr { ptr: up_weight_ptr },
-            sorted_ids: sorted_ids,
+            experts_routing,
             output_ptr: MutPtr { ptr: output_ptr },
             macro_block: macro_block,
             a_row: a_row,
