@@ -3,13 +3,13 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    send_sync_ptr::{ConstPtr, MutPtr},
     matmul_params::MatmulParams,
+    send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
+use super::experts_routing::ExpertRouting;
 use super::mul_trait::Matmul2Trait;
-use super::expert_routing::ExpertRouting;
 // 完成down projection的Matmul
 // 乘以weight
 // 然后根据sorted_ids把结果放到对应的位置 [num_experts_per_tok, batch_size, hidden_size]
@@ -20,7 +20,7 @@ pub struct ExpertsMatmulMul<T> {
     down_weight_ptr: ConstPtr<T>,
 
     output_ptr: MutPtr<T>,
-    expert_routing: ExpertRouting<T>,
+    experts_routing: ExpertRouting<T>,
     a_row: usize,
     b_row: usize,
     column: usize,
@@ -35,7 +35,7 @@ where
         input_ptr: *const T,
         down_weight_ptr: *const T,
         output_ptr: *mut T,
-        expert_routing: ExpertRouting<T>,
+        experts_routing: ExpertRouting<T>,
         a_row: usize,
         b_row: usize,
         column: usize,
@@ -47,9 +47,11 @@ where
     ) -> Self {
         Self {
             input_ptr: ConstPtr { ptr: input_ptr },
-            down_weight_ptr: ConstPtr { ptr: down_weight_ptr },
+            down_weight_ptr: ConstPtr {
+                ptr: down_weight_ptr,
+            },
             output_ptr: MutPtr { ptr: output_ptr },
-            expert_routing,
+            experts_routing,
             a_row,
             b_row,
             column,
@@ -72,7 +74,6 @@ where
         thread_num: usize,
         thread_id: usize,
     ) {
-
         /*
         let (mut a_chunk_num, remainder) = (self.params.a_row / self.params.a_row_step_macro, self.params.a_row % self.params.a_row_step_macro);
         if remainder > 0 {
@@ -93,16 +94,16 @@ where
         }*/
 
         // 遍历所有专家
-        for expert_idx in 0..self.expert_routing.num_experts {
-            let (token_ids_ptr, weights_ptr, token_count) = 
-                self.expert_routing.get_expert_tokens(expert_idx);
-            
+        for experts_idx in 0..self.experts_routing.num_experts {
+            let (token_ids_ptr, weights_ptr, token_count) =
+                self.experts_routing.get_experts_tokens(experts_idx);
+
             unsafe {
                 // 处理当前专家的所有tokens
                 for token_idx in 0..token_count {
                     let token_id = *token_ids_ptr.add(token_idx);
                     let weight = *weights_ptr.add(token_idx);
-                    
+
                     // 这里可以调用具体的矩阵乘法计算
                     self.compute(
                         self.input_ptr.ptr,

@@ -12,17 +12,9 @@ use super::map::topk_softmax::TopKSoftmax;
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 use super::mul::attention_add::AttentionAdd;
+use super::mul::experts_matmul_mul::ExpertsMatmulMul;
 use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatmulSilu;
-use super::mul::experts_merge_add::ExpertsmatmulMergeAdd;
-use super::mul::matmul::Matmul;
-use super::mul::matmul3::Matmul3;
-use super::mul::matmul_add::MatmulAdd;
-use super::mul::matmul_silu_mul_matmul::MatmulSilu;
-use super::mul::matmul_topk::MatmulTopK;
-use super::zip_map::add_rms_zip::AddRMSZipMap;
-use super::zip_map::add_zip::AddZipMap;
-use super::zip_map::complex_zip::ComplexZipMap;
-use super::zip_map::silu_mul_zip::SiluMulZipMap;
+use super::mul::experts_merge_add::ExpertsMergeAdd;
 // use super::mul::vec_mul::VecMul;
 // use super::mul::col_mul::ColMul;
 // use crate::init::matmul_params::matmulParams;
@@ -35,8 +27,9 @@ pub enum Operator<T> {
     // ArgmaxReduce(ArgmaxReduce<T>),
     AttentionAdd(AttentionAdd<T>),
     ComplexZipMap(ComplexZipMap<T>),
-    ExpertsMatmulMergeAdd(ExpertsmatmulMergeAdd<T>),
+    ExpertsMatmulMul(ExpertsMatmulMul<T>),
     ExpertsMatmulSiluMulMatmul(ExpertsMatmulSilu<T>),
+    ExpertsMergeAdd(ExpertsMergeAdd<T>),
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
     LookupRMSMap(LookupRMSMap<T>),
     Matmul(Matmul<T>),
@@ -99,7 +92,7 @@ where
                     thread_id,
                 );
             }
-            Self::ExpertsMatmulMergeAdd(operator) => {
+            Self::ExpertsMatmulMul(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -109,6 +102,15 @@ where
                 );
             }
             Self::ExpertsMatmulSiluMulMatmul(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::ExpertsMergeAdd(operator) => {
                 operator.run(
                     position_index,
                     position_interval,

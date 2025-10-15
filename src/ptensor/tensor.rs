@@ -19,7 +19,8 @@ use super::super::compiler::map::topk_softmax::TopKSoftmax;
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::attention_add::AttentionAdd;
 use super::super::compiler::mul::experts_merge_add::ExpertsmatmulMergeAdd;
-use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsmatmulSilu;
+use super::super::compiler::mul::experts_matmul_mul::ExpertsMatmulMul;
+use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsMatmulSilu;
 use super::super::compiler::mul::matmul::matmul;
 use super::super::compiler::mul::matmul3::matmul3;
 use super::super::compiler::mul::matmul_add::matmulAdd;
@@ -30,7 +31,7 @@ use super::super::compiler::zip_map::add_zip::AddZipMap;
 use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
 use super::super::compiler::zip_map::silu_mul_zip::SiluMulZipMap;
 use crate::compiler::zip_map::add_rms_zip::AddRMSZipMap;
-use super::super::compiler::mul::expert_routing::ExpertRouting;
+use super::super::compiler::mul::experts_routing::ExpertsRouting;
 
 #[derive(Clone)]
 pub struct Tensor<T> {
@@ -202,11 +203,48 @@ where
         output_tensor
     }
 
+    pub fn experts_matmul_mul(
+        &self,
+        down_weights: &Tensor<T>,
+        experts_routing: ExpertRouting<T>,
+        params: matmulParams,
+        scope_name: String,
+    ) -> Self {
+        // down_weights [num_experts, hidden_size, intermediate_size]
+        // output [sequence_chunk_size, batch_size, hidden_size]
+        let output_shape = vec![self.shape[0], self.shape[1], down_weights.shape[1]];
+
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            format!("{}.output", scope_name),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::ExpertsMatmulMul(ExpertsMatmulMul::new(
+            self.data,
+            down_weights.data,
+            output_tensor.data,
+            experts_routing,
+            self.shape[1],
+            down_weights.shape[1],
+            self.shape[2],
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
     pub fn experts_matmul_silu_mul_matmul(
         &self,
         gate_weights: &Tensor<T>,
         up_weights: &Tensor<T>,
-        topk: &Tensor<T>,
+        experts_routing: ExpertRouting<T>,
         params: matmulParams,
         tensor_name: String,
     ) -> Self {
@@ -221,11 +259,11 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::ExpertsMatmulSiluMulMatmul(ExpertsmatmulSilu::new(
+        let operator = Operator::ExpertsMatmulSiluMulMatmul(ExpertsMatmulSilu::new(
             self.data,
             gate_weights.data,
             up_weights.data,
-            topk.data,
+            experts_routing,
             output_tensor.data,
             self.shape[1],
             gate_weights.shape[1],
@@ -243,36 +281,28 @@ where
 
     pub fn experts_softmax_norm(
         &self,
-        sorted_expert_ids: Vec<(usize, Vec<(usize, T)>)>,
-        topk_size: usize,
+        num_experts: usize,
+        num_experts_per_tok: usize,
         scope_name: String,
-    ) -> Self {
-        // Create ExpertRouting from sorted expert IDs
-        let mut cache_usize = Cache::<usize>::new(std::collections::HashMap::new());
-        let expert_routing = ExpertRouting::new(
-            sorted_expert_ids,
+    ) -> ExpertsRouting<T> {
+        // Create ExpertsRouting with the corrected parameters
+        let experts_routing = ExpertsRouting::new(
+            self.shape[0], // sequence_chunk_size
+            self.shape[1], // batch_size
+            num_experts,
+            num_experts_per_tok,
             &mut self.cache.borrow_mut(),
-            &mut cache_usize,
-        );
-
-        // Create output tensor for the softmax normalized values
-        let output_tensor = Tensor::from_cache(
-            vec![self.shape[0], self.shape[1], topk_size],
-            format!("{}.output", scope_name),
-            self.cache.clone(),
-            self.operator_queue.clone(),
         );
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
             self.data,
-            expert_routing,
+            experts_routing,
             self.shape[1],
-            self.shape[2], // num_experts
-            topk_size,
+            num_experts,
+            num_experts_per_tok,
         ));
-
         self.operator_queue.borrow_mut().push(operator);
-        output_tensor
+        experts_routing
     }
 
     pub fn from_cache(
@@ -1787,6 +1817,7 @@ mod test {
             cache_rc.clone(),
             Rc::new(RefCell::new(operator_queue.clone())),
         );
+
         unsafe {
             input_tensor
                 .data

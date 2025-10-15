@@ -10,7 +10,7 @@ use super::super::super::kernel;
 use super::super::assign::assign;
 use super::mul_trait::Matmul5Trait;
 
-// merge num_experts_per_tok个expert的结果
+// merge num_experts_per_tok个experts的结果
 // 加上残差
 
 #[derive(Clone)]
@@ -70,7 +70,7 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
-        // TODO: Implement parallel matrix multiplication with expert merging
+        // TODO: Implement parallel matrix multiplication with experts merging
         // 1. Calculate chunk dimensions based on macro step sizes
         // 2. Determine work distribution for current thread
         // 3. Iterate through assigned chunks
@@ -98,17 +98,17 @@ where
 {
     default fn compute(
         &self,
-        input_ptr1: *const T, // First expert weights
-        input_ptr2: *const T, // Second expert weights
-        input_ptr3: *const T, // Third expert weights
-        input_ptr4: *const T, // Fourth expert weights
-        input_ptr5: *const T, // Fifth expert weights
+        input_ptr1: *const T, // First experts weights
+        input_ptr2: *const T, // Second experts weights
+        input_ptr3: *const T, // Third experts weights
+        input_ptr4: *const T, // Fourth experts weights
+        input_ptr5: *const T, // Fifth experts weights
         output_ptr: *mut T,   // Output buffer for merged results
     ) {
         // TODO: Generic implementation for merging 5 experts
-        // 1. Perform matrix multiplication for each expert
-        // 2. Apply expert routing weights/gates
-        // 3. Sum weighted expert outputs
+        // 1. Perform matrix multiplication for each experts
+        // 2. Apply experts routing weights/gates
+        // 3. Sum weighted experts outputs
         // 4. Add residual connection from input
 
         // Use generic kernel for matrix multiplication
@@ -135,7 +135,7 @@ impl Matmul5Trait<f16> for ExpertsMergeAdd<f16> {
 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            // TODO: Call optimized AVX512FP16 kernel for 5-expert merge
+            // TODO: Call optimized AVX512FP16 kernel for 5-experts merge
             // kernel::x86_64::f16_512::experts_merge_add::compute_5experts(...)
         }
 
@@ -173,7 +173,7 @@ impl Matmul5Trait<f32> for ExpertsMergeAdd<f32> {
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
         {
             // TODO: Generic f32 implementation
-            // Use generic matrix multiplication with expert merging
+            // Use generic matrix multiplication with experts merging
         }
     }
 }
