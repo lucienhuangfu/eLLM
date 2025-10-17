@@ -211,13 +211,13 @@ where
 
 /* ------------------ 下面是 compute/compute2 的实现（仅此处改“调用 param”） ------------------ */
 
-impl<T> matmulTrait<T> for matmul<T>
+impl<T> MatmulTrait<T> for Matmul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
     /// generic 版本：在这里组装“调用 param”
     default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T) {
-        let call_param = matmulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.k_max,                     // lda = K
             b_row_step_macro: self.n_max,                     // ldc = N
             column_step_macro: self.params.column_step_macro, // kc
@@ -244,10 +244,10 @@ where
     }
 }
 
-impl matmulTrait<f16> for matmul<f16> {
+impl MatmulTrait<f16> for Matmul<f16> {
     /// f16 专用：同样在这里组装“调用 param”，而不是用 self.params 直接透传
     fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
-        let call_param = matmulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.k_max,                     // lda = K
             b_row_step_macro: self.n_max,                     // ldc = N
             column_step_macro: self.params.column_step_macro, // kc
@@ -292,7 +292,7 @@ impl matmulTrait<f16> for matmul<f16> {
     }
 }
 
-impl matmulTrait<f32> for matmul<f32> {
+impl MatmulTrait<f32> for Matmul<f32> {
     fn compute(&self, _a: *const f32, _b: *const f32, _c: *mut f32) { /* TODO */
     }
     fn compute2(&self, a: *const f32, b: *const f32, c: *mut f32, length: usize) {
@@ -345,7 +345,7 @@ mod innteg_tests {
             let b_orig: Vec<f16> = (0..k * n).map(|_| f16v(1.0)).collect();
             let mut c: Vec<f16> = (0..m * n).map(|_| f16v(0.0)).collect();
 
-            let params = matmulParams {
+            let params = MatmulParams {
                 a_row_step_macro: mb,
                 b_row_step_macro: nb,
                 column_step_macro: kc,
@@ -354,7 +354,7 @@ mod innteg_tests {
             };
 
             // 用 new()，构造期一次性转置 B -> B_nt（不使用 Arc）
-            let op = matmul::<f16>::new(
+            let op = Matmul::<f16>::new(
                 a.as_ptr(),
                 b_orig.as_ptr(),
                 c.as_mut_ptr(),
@@ -395,7 +395,7 @@ mod innteg_tests {
             let b_orig: Vec<f16> = (0..k * n).map(|_| f16v(1.0)).collect();
             let mut c: Vec<f16> = (0..s_total * m * n).map(|_| f16v(0.0)).collect();
 
-            let params = matmulParams {
+            let params = MatmulParams {
                 a_row_step_macro: mb,
                 b_row_step_macro: nb,
                 column_step_macro: kc,
@@ -403,7 +403,7 @@ mod innteg_tests {
                 b_row_step_micro: nr,
             };
 
-            let op = matmul::<f16>::new(
+            let op = Matmul::<f16>::new(
                 a.as_ptr(),
                 b_orig.as_ptr(),
                 c.as_mut_ptr(),

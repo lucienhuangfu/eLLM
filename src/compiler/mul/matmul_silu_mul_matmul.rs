@@ -6,12 +6,12 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::matmulParams,
+    matmul_params::MatmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::matmul3Trait; // 直接使用你的 trait（已改为 compute1/compute2 签名）
+use super::mul_trait::Matmul3Trait; // 直接使用你的 trait（已改为 compute1/compute2 签名）
 
 /// 构造期：把 B[K×N] 转置为 B_nt[N×K]（行主，行距=K）
 #[inline]
@@ -28,13 +28,13 @@ unsafe fn make_b_nt<T: Copy + Default>(ptr2: *const T, n: usize, k: usize) -> Bo
 
 /// Runner：A·W_gate 与 A·W_up 的 fused 计算；最终输出 SiLU(gate) ⊙ up
 #[derive(Clone)]
-pub struct matmulSilu<T> {
+pub struct MatmulSilu<T> {
     pub ptr1: ConstPtr<T>,     // A[M×K]
     pub ptr2: ConstPtr<T>,     // W_gate[K×N]
     pub ptr3: ConstPtr<T>,     // W_up  [K×N]
     pub output_ptr: MutPtr<T>, // C[M×N]
     /// params 只承载 step 形状（MB/NB/KC/MR/NR）
-    pub params: matmulParams,
+    pub params: MatmulParams,
     pub m_max: usize,
     pub n_max: usize,
     pub k_max: usize,
@@ -45,7 +45,7 @@ pub struct matmulSilu<T> {
     pub wup_nt: Option<Box<[T]>>,
 }
 
-impl<T> matmulSilu<T>
+impl<T> MatmulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -73,7 +73,7 @@ where
             ptr2: ConstPtr { ptr: wgate_ptr },
             ptr3: ConstPtr { ptr: wup_ptr },
             output_ptr: MutPtr { ptr: out_ptr },
-            params: matmulParams {
+            params: MatmulParams {
                 a_row_step_macro: mb,
                 b_row_step_macro: nb,
                 column_step_macro: kc,
@@ -239,7 +239,7 @@ where
 
 /* -------------------- 默认实现（占位，保持与 matmul 一致的模式） -------------------- */
 
-impl<T> matmul3Trait<T> for matmulSilu<T>
+impl<T> Matmul3Trait<T> for MatmulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -261,7 +261,7 @@ where
 
 /* -------------------------- f16 专用实现（AVX-512 FP16） -------------------------- */
 
-impl matmul3Trait<f16> for matmulSilu<f16> {
+impl Matmul3Trait<f16> for MatmulSilu<f16> {
     /// per-kc 累加：把 A×W_gate 与 A×W_up 的部分和累加进两个 3×32 的 acc
     fn compute1(
         &self,
@@ -276,7 +276,7 @@ impl matmul3Trait<f16> for matmulSilu<f16> {
         // - ldc_acc = 32 (NR)     -> b_row_step_macro = self.params.b_row_step_micro
         // - kc = self.params.column_step_macro
         // - mr/nr 来自 params
-        let call_param = matmulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.k_max,                     // lda (=K)
             b_row_step_macro: self.params.b_row_step_micro,   // ldc_acc (=NR=32)
             column_step_macro: self.params.column_step_macro, // kc
@@ -306,7 +306,7 @@ impl matmul3Trait<f16> for matmulSilu<f16> {
         // 调用期参数映射（finalize 阶段）：
         // - ldc_out = N           -> b_row_step_macro = self.n_max
         // - mr/nr 来自 params
-        let call_param = matmulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.k_max,                     // unused here
             b_row_step_macro: self.n_max,                     // ldc_out (=N)
             column_step_macro: self.params.column_step_macro, // unused here

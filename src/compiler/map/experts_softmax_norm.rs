@@ -3,7 +3,7 @@ use std::ops::{AddAssign, Sub};
 
 use super::map_trait::SoftmaxTrait;
 use crate::compiler::assign::assign;
-use crate::compiler::mul::experts_routing::ExpertRouting;
+use crate::compiler::mul::experts_routing::ExpertsRouting;
 use crate::init::send_sync_ptr::ConstPtr;
 use crate::kernel::generic;
 use crate::kernel::generic::{exp::Exp, sqrt::Sqrt};
@@ -13,7 +13,7 @@ pub struct ExpertsSoftmaxNorm<T> {
     // [sequence_length, batch_size, num_experts]
     ptr1: ConstPtr<T>,
     // Expert routing information
-    experts_routing: ExpertRouting<T>,
+    experts_routing: ExpertsRouting<T>,
     batch_size: usize,
     num_experts: usize,
     topk_size: usize,
@@ -22,7 +22,7 @@ pub struct ExpertsSoftmaxNorm<T> {
 impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
     pub fn new(
         ptr1: *const T,
-        experts_routing: ExpertRouting<T>,
+        experts_routing: ExpertsRouting<T>,
         batch_size: usize,
         num_experts: usize,
         topk_size: usize,

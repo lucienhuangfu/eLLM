@@ -8,7 +8,7 @@ use super::super::super::init::{
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::experts_routing::ExpertRouting;
+use super::experts_routing::ExpertsRouting;
 use super::mul_trait::Matmul2Trait;
 // 完成down projection的Matmul
 // 乘以weight
@@ -18,9 +18,8 @@ use super::mul_trait::Matmul2Trait;
 pub struct ExpertsMatmulMul<T> {
     input_ptr: ConstPtr<T>,
     down_weight_ptr: ConstPtr<T>,
-
     output_ptr: MutPtr<T>,
-    experts_routing: ExpertRouting<T>,
+    experts_routing: ExpertsRouting<T>,
     a_row: usize,
     b_row: usize,
     column: usize,
@@ -35,7 +34,7 @@ where
         input_ptr: *const T,
         down_weight_ptr: *const T,
         output_ptr: *mut T,
-        experts_routing: ExpertRouting<T>,
+        experts_routing: ExpertsRouting<T>,
         a_row: usize,
         b_row: usize,
         column: usize,

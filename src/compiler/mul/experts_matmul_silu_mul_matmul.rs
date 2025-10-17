@@ -9,7 +9,7 @@ use super::super::super::init::{
 use super::super::super::kernel;
 use super::super::super::memory::allocator::allocate_init;
 use super::super::assign::assign;
-use super::experts_routing::ExpertRouting;
+use super::experts_routing::ExpertsRouting;
 use super::mul_trait::Matmul4Trait;
 use crate::memory::cache::Cache;
 
@@ -21,7 +21,7 @@ pub struct ExpertsMatmulSilu<T> {
     gate_weight_ptr: ConstPtr<T>,
     up_weight_ptr: ConstPtr<T>,
     // 使用ExpertRouting替代sorted_ids
-    experts_routing: ExpertRouting<T>,
+    experts_routing: ExpertsRouting<T>,
 
     // [num_experts, batch_size, intermediate_size]
     output_ptr: MutPtr<T>,
@@ -41,7 +41,7 @@ where
         input_ptr: *const T,
         gate_weight_ptr: *const T,
         up_weight_ptr: *const T,
-        experts_routing: ExpertRouting<T>,
+        experts_routing: ExpertsRouting<T>,
         output_ptr: *mut T,
         a_row: usize,
         b_row: usize,
