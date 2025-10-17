@@ -3,12 +3,12 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::matmulParams,
+    matmul_params::MatmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::matmulTopKTrait;
+use super::mul_trait::MatmulTopKTrait;
 
 // there will be just one instance of this runner in the program
 // this runner will be shared by many threads that together compute the matrix multiplication
@@ -22,7 +22,7 @@ pub struct matmulTopK<T> {
     a_row: usize,
     b_row: usize,
     column: usize,
-    pub params: matmulParams,
+    pub params: MatmulParams,
     _marker: PhantomData<T>,
 }
 impl<T> matmulTopK<T>
@@ -53,7 +53,7 @@ where
             a_row,
             b_row,
             column,
-            params: matmulParams {
+            params: MatmulParams {
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,
@@ -96,7 +96,7 @@ where
     }
 }
 
-impl<T> matmulTopKTrait<T> for matmulTopK<T>
+impl<T> MatmulTopKTrait<T> for matmulTopK<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -119,7 +119,7 @@ where
     }
 }
 
-impl matmulTopKTrait<f16> for matmulTopK<f16> {
+impl MatmulTopKTrait<f16> for matmulTopK<f16> {
     fn compute(
         &self,
         input_ptr1: *const f16,
@@ -149,7 +149,7 @@ impl matmulTopKTrait<f16> for matmulTopK<f16> {
     }
 }
 
-impl matmulTopKTrait<f32> for matmulTopK<f32> {
+impl MatmulTopKTrait<f32> for matmulTopK<f32> {
     fn compute(
         &self,
         input_ptr1: *const f32,

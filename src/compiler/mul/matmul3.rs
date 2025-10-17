@@ -7,7 +7,7 @@ use std::ops::{Add, Mul};
 
 use super::super::super::init::{
     send_sync_ptr::{ConstPtr, MutPtr},
-    Matmul_params::MatmulParams,
+    matmul_params::MatmulParams,
 };
 use super::super::assign::assign;
 use super::mul_trait::Matmul4Trait; // 外部提供：compute1/compute2 的 trait
@@ -355,7 +355,7 @@ impl Matmul4Trait<f16> for Matmul3<f16> {
     }
 }
 
-impl matmul4Trait<f32> for matmul3<f32> {
+impl Matmul4Trait<f32> for Matmul3<f32> {
     fn compute1(&self, _a: *const f32, _b: *const f32, _c: *mut f32) {
         // TODO: f32 版本
     }

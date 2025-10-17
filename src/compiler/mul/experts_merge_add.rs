@@ -21,7 +21,7 @@ pub struct ExpertsMergeAdd<T> {
     a_row: usize,
     b_row: usize,
     column: usize,
-    pub params: MatmulParams,
+    // pub params: MatmulParams,
     _marker: PhantomData<T>,
 }
 impl<T> ExpertsMergeAdd<T>
@@ -35,11 +35,6 @@ where
         a_row: usize,
         b_row: usize,
         column: usize,
-        a_row_step_macro: usize,
-        b_row_step_macro: usize,
-        column_step_macro: usize,
-        a_row_step_micro: usize,
-        b_row_step_micro: usize,
     ) -> Self {
         // TODO: Create new instance with proper field initialization
         // Initialize all struct fields with corresponding parameters
@@ -51,13 +46,6 @@ where
             a_row,
             b_row,
             column,
-            params: MatmulParams {
-                a_row_step_macro,
-                b_row_step_macro,
-                column_step_macro,
-                a_row_step_micro,
-                b_row_step_micro,
-            },
             _marker: PhantomData,
         }
     }
@@ -79,10 +67,7 @@ where
         // 6. Add residual connection to final output
 
         // Calculate total number of chunks for work distribution
-        let total_chunks = (self.a_row + self.params.a_row_step_macro - 1)
-            / self.params.a_row_step_macro
-            * (self.b_row + self.params.b_row_step_macro - 1)
-            / self.params.b_row_step_macro;
+
 
         // TODO: Use assign function to get work range for this thread
         // if let Some((begin, end)) = assign(total_chunks, cpu_num, thread_id) {

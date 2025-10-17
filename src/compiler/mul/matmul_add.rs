@@ -3,30 +3,30 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::matmulParams,
+    matmul_params::MatmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::matmulAddTrait;
+use super::mul_trait::MatmulAddTrait;
 
 // there will be just one instance of this runner in the program
 // this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
-pub struct matmulAdd<T> {
+pub struct MatmulAdd<T> {
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
     ptr3: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     // sequence_length: usize,
     // output_to_kv: bool,
-    pub params: matmulParams,
+    pub params: MatmulParams,
     _marker: PhantomData<T>,
     // sequence_stride: usize,
     // batch_size: usize,
     // hidden_size: usize,
 }
-impl<T> matmulAdd<T>
+impl<T> MatmulAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -64,7 +64,7 @@ where
             output_ptr: MutPtr { ptr: output_ptr },
             // sequence_length: sequence_length,
             // output_to_kv: output_to_kv,
-            params: matmulParams {
+            params: MatmulParams {
                 // a_row,
                 // b_row,
                 // column,
@@ -108,7 +108,7 @@ where
     }
 }
 
-impl<T> matmulAddTrait<T> for matmulAdd<T>
+impl<T> MatmulAddTrait<T> for MatmulAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -131,7 +131,7 @@ where
     }
 }
 
-impl matmulAddTrait<f16> for matmulAdd<f16> {
+impl MatmulAddTrait<f16> for MatmulAdd<f16> {
     fn compute(
         &self,
         input_ptr1: *const f16,
@@ -161,7 +161,7 @@ impl matmulAddTrait<f16> for matmulAdd<f16> {
     }
 }
 
-impl matmulAddTrait<f32> for matmulAdd<f32> {
+impl MatmulAddTrait<f32> for MatmulAdd<f32> {
     fn compute(
         &self,
         input_ptr1: *const f32,
