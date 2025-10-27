@@ -22,7 +22,7 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::operator::Operator;
-use super::super::init::matmul_params::matmulParams;
+use super::super::init::matmul_params::MatmulParams;
 use super::super::memory::cache::Cache;
 use super::super::memory::model_loader::SafeTensorsLoader;
 use super::super::ptensor::linear::Linear;
@@ -160,7 +160,7 @@ where
 
         let (indices_ptr, values_tensor, sum_tensor) = norm_state.matmul_topk(
             &self.lm_head_weight,
-            matmulParams {
+            MatmulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,

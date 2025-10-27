@@ -43,7 +43,7 @@ where
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
-        let scope_name = format!("{}.moe", parent_scope_name);
+        let scope_name = format!("{}.mlp", parent_scope_name);
         Self {
             // sequence_chunk_size,
             hidden_size,
@@ -52,26 +52,26 @@ where
             norm_topk_prob,
             gate_weight: Tensor::zeros(
                 vec![hidden_size, num_experts],
-                format!("{}.gate_proj.weight", scope_name),
+                format!("{}.gate.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             experts_gate_weight: Tensor::zeros(
                 vec![num_experts, hidden_size, intermediate_size],
-                format!("{}.experts_gate_proj.weight", scope_name),
+                format!("{}.experts.gate_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             experts_up_weight: Tensor::zeros(
                 vec![num_experts, hidden_size, intermediate_size],
-                format!("{}.experts_up_proj.weight", scope_name),
+                format!("{}.experts.up_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
 
             experts_down_weight: Tensor::zeros(
                 vec![num_experts, hidden_size, intermediate_size],
-                format!("{}.experts_down_proj.weight", scope_name),
+                format!("{}.experts.down_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
@@ -135,7 +135,7 @@ where
         );
 
         let output_tensor =
-            down_product.experts_merge_add(residual, experts_indicator, indice_ptr, weight_ptr, format!("{}.down", self.scope_name));
+            down_product.experts_merge_add(residual,  format!("{}.down", self.scope_name));
 
         down_product
     }

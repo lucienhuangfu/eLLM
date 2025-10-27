@@ -7,6 +7,7 @@ use crate::kernel::generic::from_f32::FromF32;
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+use crate::qwen3_moe::mlp;
 
 use super::config::Config;
 
@@ -61,6 +62,7 @@ where
     ) -> Self {
         let scope_name = format!("{}.layers.{}", parent_scope_name, layer_idx);
 
+        // let mlp_scope_name = format!("{}.mlp", scope_name);
         let moe_layer =
             if config.num_experts > 0 && (layer_idx + 1) % config.decoder_sparse_step == 0 {
                 // sparse moe block
