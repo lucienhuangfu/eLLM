@@ -167,9 +167,9 @@ where
         residual: &Tensor<T>,
         scope_name: String,
     ) -> Self {
-        // down_weights [num_experts, hidden_size, intermediate_size]
+       
         // output [sequence_chunk_size, batch_size, hidden_size]
-        let output_shape = vec![self.shape[0], self.shape[1], down_weights.shape[1]];
+        let output_shape = vec![self.shape[0], self.shape[1], self.shape[3]];
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
@@ -181,9 +181,10 @@ where
         let operator = Operator::ExpertsMergeAdd(ExpertsMergeAdd::new(
             self.data,
             output_tensor.data,
+            self.shape[0],
             self.shape[1],
-            down_weights.shape[1],
             self.shape[2],
+            self.shape[3],
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -193,12 +194,14 @@ where
     pub fn experts_matmul_mul(
         &self,
         down_weights: &Tensor<T>,
-        experts_routing: ExpertRouting<T>,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        weight_ptr: *mut T,
         params: matmulParams,
         scope_name: String,
     ) -> Self {
         // down_weights [num_experts, hidden_size, intermediate_size]
-        // output [sequence_chunk_size, batch_size, hidden_size]
+        // output [sequence_chunk_size, batch_size, num_experts_per_token, hidden_size]
         let output_shape = vec![self.shape[0], self.shape[1], down_weights.shape[1]];
 
         let output_tensor = Tensor::from_cache(
@@ -212,7 +215,10 @@ where
             self.data,
             down_weights.data,
             output_tensor.data,
-            experts_routing,
+                    experts_indicator,
+        indice_ptr,
+        weight_ptr,
+
             self.shape[1],
             down_weights.shape[1],
             self.shape[2],
@@ -231,13 +237,15 @@ where
         &self,
         gate_weights: &Tensor<T>,
         up_weights: &Tensor<T>,
-        experts_routing: ExpertRouting<T>,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        // weight_ptr: *mut T,
         params: matmulParams,
         tensor_name: String,
     ) -> Self {
         // gate_weights [num_experts, intermediate_size, hidden_size]
-        // output [sequence_chunk_size, batch_size, intermediate_size]
-        let output_shape = vec![self.shape[0], self.shape[1], gate_weights.shape[1]];
+        // output [num_experts, sequence_chunk_size * batch_size, intermediate_size]
+        let output_shape = vec![gate_weights.shape[0], self.shape[0]*self.shape[1], gate_weights.shape[1]];
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
@@ -250,7 +258,9 @@ where
             self.data,
             gate_weights.data,
             up_weights.data,
-            experts_routing,
+            experts_indicator,
+            indice_ptr,
+            // weight_ptr,
             output_tensor.data,
             self.shape[1],
             gate_weights.shape[1],
@@ -271,25 +281,31 @@ where
         num_experts: usize,
         num_experts_per_tok: usize,
         scope_name: String,
-    ) -> ExpertsRouting<T> {
-        // Create ExpertsRouting with the corrected parameters
-        let experts_routing = ExpertsRouting::new(
-            self.shape[0], // sequence_chunk_size
-            self.shape[1], // batch_size
-            num_experts,
-            num_experts_per_tok,
-            &mut self.cache.borrow_mut(),
-        );
+    ) -> (*mut bool , *mut bool, *mut T) {
+        // [(experts_id, [(token_id, weight)])]
+        // sorted_ids: Vec<(usize, Vec<(usize, T)>)>,
+        
+        // [expert_num] bool
+        let experts_indicator = unsafe { allocate_init(num_experts, false) };
+        // [expert_num, sequence_chunk_size * batch_size] indice bool vec<bool>
+        // [expert_num, sequence_chunk_size * batch_size] weight f16
+        let length = num_experts * self.shape[0]*self.shape[1];
+        let indice_ptr = unsafe { allocate_init(length, false) };
+        let weight_ptr = unsafe { allocate_init(length, T::default()) };
+    
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
             self.data,
-            experts_routing,
+            experts_indicator, 
+            indice_ptr, 
+            weight_ptr,
+            self.shape[0], 
             self.shape[1],
             num_experts,
             num_experts_per_tok,
         ));
         self.operator_queue.borrow_mut().push(operator);
-        experts_routing
+        (experts_indicator, indice_ptr, weight_ptr)
     }
 
     pub fn from_cache(

@@ -6,10 +6,11 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::init::matmul_params::matmulParams;
+use super::super::init::matmul_params::MatmulParams;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
+
 // use super::mlp::MLP;
 // use super::super::ptensor::linear::Linear;
 
@@ -88,7 +89,7 @@ where
     ) -> Tensor<T> {
         let gate_output = hidden_states.matmul(
             &self.gate_weight,
-            matmulParams {
+            MatmulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
@@ -106,7 +107,7 @@ where
             &self.experts_gate_weight,
             &self.experts_up_weight,
             &experts_routing,
-            matmulParams {
+            MatmulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
@@ -116,10 +117,11 @@ where
             format!("{}.gate_up", self.scope_name),
         );
 
+        // [batch_size, num_experts, hidden_size]
         let down_product = nonlinear_product.experts_matmul_mul(
             &self.experts_down_weight,
             experts_routing,
-            matmulParams {
+            MatmulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
@@ -129,13 +131,8 @@ where
             format!("{}.down", self.scope_name),
         );
 
-
-        let output_tensor = down_product.experts_merge_add(
-            residual,
-            
-            format!("{}.down", self.scope_name),
-        );
-
+        let output_tensor =
+            down_product.experts_merge_add(residual, format!("{}.down", self.scope_name));
 
         down_product
     }

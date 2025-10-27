@@ -3,8 +3,7 @@ use std::ops::{AddAssign, Sub};
 
 use super::map_trait::SoftmaxTrait;
 use crate::compiler::assign::assign;
-use crate::compiler::mul::experts_routing::ExpertsRouting;
-use crate::init::send_sync_ptr::ConstPtr;
+use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::generic;
 use crate::kernel::generic::{exp::Exp, sqrt::Sqrt};
 
@@ -13,7 +12,9 @@ pub struct ExpertsSoftmaxNorm<T> {
     // [sequence_length, batch_size, num_experts]
     ptr1: ConstPtr<T>,
     // Expert routing information
-    experts_routing: ExpertsRouting<T>,
+    experts_indicator: MutPtr<bool>,
+    indice_ptr: MutPtr<bool>,
+    weight_ptr: MutPtr<T>,
     batch_size: usize,
     num_experts: usize,
     topk_size: usize,
@@ -22,14 +23,24 @@ pub struct ExpertsSoftmaxNorm<T> {
 impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
     pub fn new(
         ptr1: *const T,
-        experts_routing: ExpertsRouting<T>,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        weight_ptr: *mut T,
         batch_size: usize,
         num_experts: usize,
         topk_size: usize,
     ) -> Self {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
-            experts_routing,
+            experts_indicator: MutPtr {
+                ptr: experts_indicator,
+            },
+            indice_ptr: MutPtr {
+                ptr: indice_ptr,
+            },
+            weight_ptr: MutPtr {
+                ptr: weight_ptr,
+            },  
             batch_size,
             num_experts,
             topk_size,
@@ -55,7 +66,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
                 let index = row_index * self.batch_size + col_index;
                 unsafe {
                     let p1 = index * self.num_experts;
-                    self.compute(ptr1.add(p1), index, self.num_experts);
+                    self.compute(ptr1.add(p1), self.experts_indicator.ptr, self.indice_ptr.ptr, self.weight_ptr.ptr, token_index, self.num_experts, self.topk_size);
                 }
                 col_index += 1;
                 if col_index == batch_size {

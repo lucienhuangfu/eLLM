@@ -1,6 +1,7 @@
 use crate::kernel::generic::exp::Exp;
 use std::ops::{AddAssign, Div, Sub};
 use std::ptr;
+use super::super::super::init::experts_routing::ExpertsRouting;
 
 #[inline]
 fn heapify_down<T: PartialOrd + Copy>(
@@ -235,6 +236,7 @@ pub fn experts_topk_softmax_norm<
     input_ptr: *const T,
     output_indices_ptr: *mut usize,
     output_value_ptr: *mut T,
+    // expert_routing: &ExpertsRouting<T>,
     length: usize,
     topk_size: usize,
 ) {
