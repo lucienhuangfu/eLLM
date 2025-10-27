@@ -539,7 +539,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::matmulTopK(matmulTopK::new(
+        let operator = Operator::MatmulTopK(MatmulTopK::new(
             self.data,
             tensor2.data,
             indice_ptr,
