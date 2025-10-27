@@ -8,7 +8,6 @@ use super::super::super::init::{
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::experts_routing::ExpertsRouting;
 use super::mul_trait::Matmul2Trait;
 // 完成down projection的Matmul
 // 乘以weight

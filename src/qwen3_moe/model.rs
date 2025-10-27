@@ -77,9 +77,7 @@ where
         // let loader = SafeTensorsLoader::new(&torch_file).unwrap();
         // let tensors = loader.load_all_weights_f16().unwrap();
         let parameter_tensors = std::collections::HashMap::new();
-
         let cache = Rc::new(RefCell::new(Cache::new(parameter_tensors)));
-
         let operator_queue: Rc<RefCell<Vec<Operator<T>>>> = Rc::new(RefCell::new(Vec::new()));
 
         // Create default tensors
