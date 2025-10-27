@@ -36,7 +36,7 @@ pub trait MatmulTopKTrait<T> {
         &self,
         input_ptr1: *const T,
         input_ptr2: *const T,
-        indice_ptr: *mut T,
+        indice_ptr: *mut usize,
         value_ptr: *mut T,
         sum_ptr: *mut T,
     );

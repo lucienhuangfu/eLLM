@@ -17,8 +17,11 @@ use super::mul_trait::Matmul2Trait;
 pub struct ExpertsMatmulMul<T> {
     input_ptr: ConstPtr<T>,
     down_weight_ptr: ConstPtr<T>,
+    // Expert routing information
+    experts_indicator: MutPtr<bool>,
+    indice_ptr: MutPtr<bool>,
+    weight_ptr: MutPtr<T>,
     output_ptr: MutPtr<T>,
-    experts_routing: ExpertsRouting<T>,
     a_row: usize,
     b_row: usize,
     column: usize,
@@ -32,8 +35,10 @@ where
     pub fn new(
         input_ptr: *const T,
         down_weight_ptr: *const T,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        weight_ptr: *mut T,
         output_ptr: *mut T,
-        experts_routing: ExpertsRouting<T>,
         a_row: usize,
         b_row: usize,
         column: usize,
@@ -48,8 +53,10 @@ where
             down_weight_ptr: ConstPtr {
                 ptr: down_weight_ptr,
             },
+            experts_indicator: MutPtr { ptr: experts_indicator },
+            indice_ptr: MutPtr { ptr: indice_ptr },
+            weight_ptr: MutPtr { ptr: weight_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
-            experts_routing,
             a_row,
             b_row,
             column,
@@ -91,27 +98,8 @@ where
             let mut output_ptr = self.output_ptr.ptr;
         }*/
 
-        // 遍历所有专家
-        for experts_idx in 0..self.experts_routing.num_experts {
-            let (token_ids_ptr, weights_ptr, token_count) =
-                self.experts_routing.get_experts_tokens(experts_idx);
 
-            unsafe {
-                // 处理当前专家的所有tokens
-                for token_idx in 0..token_count {
-                    let token_id = *token_ids_ptr.add(token_idx);
-                    let weight = *weights_ptr.add(token_idx);
 
-                    // 这里可以调用具体的矩阵乘法计算
-                    self.compute(
-                        self.input_ptr.ptr,
-                        self.down_weight_ptr.ptr,
-                        self.output_ptr.ptr,
-                        weight,
-                    );
-                }
-            }
-        }
     }
 }
 

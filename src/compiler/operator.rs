@@ -9,15 +9,24 @@ use super::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
 use super::map::topk_softmax::TopKSoftmax;
+// Add missing imports for zip map operations
+use super::zip_map::add_rms_zip::AddRMSZipMap;
+use super::zip_map::add_zip::AddZipMap;
+use super::zip_map::complex_zip::ComplexZipMap;
+use super::zip_map::silu_mul_zip::SiluMulZipMap;
+// Add missing imports for matmul operations
+use super::mul::matmul::Matmul;
+use super::mul::matmul3::Matmul3;
+use super::mul::matmul_add::MatmulAdd;
+use super::mul::matmul_silu_mul_matmul::MatmulSilu;
+use super::mul::matmul_topk::MatmulTopK;
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 use super::mul::attention_add::AttentionAdd;
 use super::mul::experts_matmul_mul::ExpertsMatmulMul;
 use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatmulSilu;
 use super::mul::experts_merge_add::ExpertsMergeAdd;
-// use super::mul::vec_mul::VecMul;
-// use super::mul::col_mul::ColMul;
-// use crate::init::matmul_params::matmulParams;
+// use crate::init::matmul_params::MatmulParams;
 // use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 
 #[derive(Clone)]

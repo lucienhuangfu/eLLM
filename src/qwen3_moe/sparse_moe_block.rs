@@ -18,7 +18,7 @@ use crate::compiler::operator::Operator;
 pub struct SparseMoeBlock<T> {
     hidden_size: usize,
     num_experts: usize,
-    top_k: usize,
+    num_topk: usize,
     norm_topk_prob: bool,
     gate_weight: Tensor<T>,
     experts_gate_weight: Tensor<T>,
@@ -37,7 +37,7 @@ where
         hidden_size: usize,
         intermediate_size: usize,
         num_experts: usize,
-        top_k: usize,
+        num_topk: usize,
         norm_topk_prob: bool,
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
@@ -48,7 +48,7 @@ where
             // sequence_chunk_size,
             hidden_size,
             num_experts,
-            top_k,
+            num_topk,
             norm_topk_prob,
             gate_weight: Tensor::zeros(
                 vec![hidden_size, num_experts],
@@ -100,13 +100,14 @@ where
             self.scope_name.clone(),
         );
 
-        let experts_routing = gate_output
-            .experts_softmax_norm(self.top_k, format!("{}.router_probs", self.scope_name));
+        let (experts_indicator, indice_ptr, weight_ptr) = gate_output
+            .experts_softmax_norm(self.num_experts, self.num_topk, format!("{}.router_probs", self.scope_name));
 
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
             &self.experts_up_weight,
-            &experts_routing,
+            experts_indicator,
+            indice_ptr,
             MatmulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
@@ -120,7 +121,9 @@ where
         // [batch_size, num_experts, hidden_size]
         let down_product = nonlinear_product.experts_matmul_mul(
             &self.experts_down_weight,
-            experts_routing,
+            experts_indicator,
+            indice_ptr,
+            weight_ptr,
             MatmulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
@@ -132,7 +135,7 @@ where
         );
 
         let output_tensor =
-            down_product.experts_merge_add(residual, format!("{}.down", self.scope_name));
+            down_product.experts_merge_add(residual, experts_indicator, indice_ptr, weight_ptr, format!("{}.down", self.scope_name));
 
         down_product
     }

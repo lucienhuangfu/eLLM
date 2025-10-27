@@ -10,7 +10,7 @@ use super::super::super::kernel;
 use super::super::super::memory::allocator::allocate_init;
 use super::super::assign::assign;
 use super::mul_trait::Matmul4Trait;
-use crate::memory::cache::Cache;
+// use crate::memory::cache::Cache;
 
 /// there will be just one instance of this runner in the program
 /// this runner will be shared by many threads that together compute the matrix multiplication
@@ -19,10 +19,10 @@ pub struct ExpertsMatmulSilu<T> {
     input_ptr: ConstPtr<T>,
     gate_weight_ptr: ConstPtr<T>,
     up_weight_ptr: ConstPtr<T>,
-    // 使用ExpertRouting替代sorted_ids
-    experts_routing: ExpertsRouting<T>,
-
-    // [num_experts, batch_size, intermediate_size]
+    // Expert routing information
+    experts_indicator: MutPtr<bool>,
+    indice_ptr: MutPtr<bool>,
+    // [num_experts, sequence_chunk_size*batch_size, intermediate_size]
     output_ptr: MutPtr<T>,
     // [block_size, hidden_size]
     macro_block: MutPtr<T>,
@@ -40,7 +40,8 @@ where
         input_ptr: *const T,
         gate_weight_ptr: *const T,
         up_weight_ptr: *const T,
-    
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
         output_ptr: *mut T,
         a_row: usize,
         b_row: usize,
@@ -62,7 +63,10 @@ where
                 ptr: gate_weight_ptr,
             },
             up_weight_ptr: ConstPtr { ptr: up_weight_ptr },
-            experts_routing,
+            experts_indicator: MutPtr {
+                ptr: experts_indicator,
+            },
+            indice_ptr: MutPtr { ptr: indice_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
             macro_block: macro_block,
             a_row: a_row,
@@ -87,10 +91,6 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
-
-        // 跟mlp类似
-        // ptr2 [sequence_chunk_size, batch_size, num_experts, intermediate_size]
-        // output [sequence_chunk_size, batch_size, num_experts_per_tok, intermediate_size]
     }
 }
 

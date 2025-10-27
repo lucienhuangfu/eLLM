@@ -1,7 +1,6 @@
 use crate::kernel::generic::exp::Exp;
 use std::ops::{AddAssign, Div, Sub};
 use std::ptr;
-use super::super::super::init::experts_routing::ExpertsRouting;
 
 #[inline]
 fn heapify_down<T: PartialOrd + Copy>(
