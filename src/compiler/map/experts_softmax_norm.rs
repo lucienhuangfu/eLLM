@@ -17,7 +17,7 @@ pub struct ExpertsSoftmaxNorm<T> {
     weight_ptr: MutPtr<T>,
     batch_size: usize,
     num_experts: usize,
-    topk_size: usize,
+    num_topk: usize,
 }
 
 impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
@@ -28,22 +28,18 @@ impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
         weight_ptr: *mut T,
         batch_size: usize,
         num_experts: usize,
-        topk_size: usize,
+        num_topk: usize,
     ) -> Self {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             experts_indicator: MutPtr {
                 ptr: experts_indicator,
             },
-            indice_ptr: MutPtr {
-                ptr: indice_ptr,
-            },
-            weight_ptr: MutPtr {
-                ptr: weight_ptr,
-            },  
+            indice_ptr: MutPtr { ptr: indice_ptr },
+            weight_ptr: MutPtr { ptr: weight_ptr },
             batch_size,
             num_experts,
-            topk_size,
+            num_topk,
         }
     }
 }
@@ -66,7 +62,16 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
                 let index = row_index * self.batch_size + col_index;
                 unsafe {
                     let p1 = index * self.num_experts;
-                    self.compute(ptr1.add(p1), self.experts_indicator.ptr, self.indice_ptr.ptr, self.weight_ptr.ptr, token_index, self.num_experts, self.topk_size);
+                    let token_index = col_index + row_index * batch_size;
+                    self.compute(
+                        ptr1.add(p1),
+                        self.experts_indicator.ptr,
+                        self.indice_ptr.ptr,
+                        self.weight_ptr.ptr,
+                        token_index,
+                        self.num_experts,
+                        self.num_topk,
+                    );
                 }
                 col_index += 1;
                 if col_index == batch_size {
@@ -81,59 +86,58 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
 impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<T>
     for ExpertsSoftmaxNorm<T>
 {
-    default fn compute(&self, input_ptr: *const T, batch_index: usize, length: usize) {
-        // Process each experts
-        for experts_idx in 0..self.experts_routing.num_experts {
-            let (token_ids_ptr, weights_ptr, token_count) =
-                self.experts_routing.get_experts_tokens(experts_idx);
-
-            generic::experts_topk_softmax_norm::experts_topk_softmax_norm(
-                input_ptr,
-                token_ids_ptr,
-                weights_ptr,
-                length,
-                self.topk_size,
-            );
-        }
+    default fn compute(
+        &self,
+        input_ptr: *const T,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        weight_ptr: *mut T,
+        token_index: usize,
+        input_length: usize,
+        output_length: usize,
+    ) {
+        generic::experts_topk_softmax_norm::experts_topk_softmax_norm(
+            input_ptr,
+            experts_indicator,
+            indice_ptr,
+            weight_ptr,
+            token_index,
+            input_length,
+            output_length,
+            self.num_topk,
+        );
     }
 }
 
 impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
-    fn compute(&self, input_ptr: *const f16, batch_index: usize, length: usize) {
-        // Process each experts for f16
-        for experts_idx in 0..self.experts_routing.num_experts {
-            let (token_ids_ptr, weights_ptr, token_count) =
-                self.experts_routing.get_experts_tokens(experts_idx);
-
-            // TODO: Implement f16-specific experts routing softmax
-        }
+    fn compute(
+        &self,
+        input_ptr: *const f16,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        weight_ptr: *mut f16,
+        token_index: usize,
+        input_length: usize,
+        output_length: usize,
+    ) {
     }
 }
 
 impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
-    fn compute(&self, input_ptr: *const f32, batch_index: usize, length: usize) {
-        // Process each experts for f32
-        for experts_idx in 0..self.experts_routing.num_experts {
-            let (token_ids_ptr, weights_ptr, token_count) =
-                self.experts_routing.get_experts_tokens(experts_idx);
-
-            // TODO: Implement f32-specific experts routing softmax
-        }
+    fn compute(
+        &self,
+        input_ptr: *const f32,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        weight_ptr: *mut f32,
+        token_index: usize,
+        input_length: usize,
+        output_length: usize,
+    ) {
     }
 }
 
-/*
-impl SoftmaxTrait<f64> for ExpertsSoftmaxNorm<f64> {
-    fn compute(&self, input_ptr: *const f64, sum_ptr: *const f64, max_ptr: *const f64, output_ptr: *mut f64, length: usize) {
-        kernel::generic::softmax::softmax(
-            input_ptr,
-            sum_ptr.ptr,
-            max_ptr.ptr,
-            output_ptr,
-            length,
-        );
-    }
-} */
+
 
 #[cfg(test)]
 mod test {

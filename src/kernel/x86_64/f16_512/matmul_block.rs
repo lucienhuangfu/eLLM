@@ -4,7 +4,7 @@
 use std::arch::x86_64::{_mm512_fmadd_ph, _mm512_loadu_ph, _mm512_set1_ph, _mm512_storeu_ph};
 use std::f16;
 
-use crate::init::matmul_params::matmulParams;
+use crate::init::matmul_params::MatmulParams;
 
 /// 广播式 3x32 FP16 AVX-512 微核：
 /// 约定把 (lda/ldc/kc) 映射进 matmulParams 的 5 字段中：
@@ -22,7 +22,7 @@ pub unsafe fn matmul_block(
     a: *const f16,        // A tile base: 3xkc
     b_panel: *const f16,  // packed B panel: kc x 32
     c: *mut f16,          // C tile base: 3x32
-    param: &matmulParams,
+    param: &MatmulParams,
 ) {
     // 形状校验
     debug_assert_eq!(param.a_row_step_micro, 3);
@@ -85,7 +85,7 @@ mod tests {
             let mr=3; let nr=32; let kc=64;
             let lda=kc; let ldc=nr;
 
-            let param = matmulParams {
+            let param = MatmulParams {
                 a_row_step_macro: lda,
                 b_row_step_macro: ldc,
                 column_step_macro: kc,

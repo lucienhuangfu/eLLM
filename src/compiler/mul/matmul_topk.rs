@@ -13,7 +13,7 @@ use super::mul_trait::MatmulTopKTrait;
 // there will be just one instance of this runner in the program
 // this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
-pub struct matmulTopK<T> {
+pub struct MatmulTopK<T> {
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
     indice_ptr: MutPtr<usize>,
@@ -25,7 +25,7 @@ pub struct matmulTopK<T> {
     pub params: MatmulParams,
     _marker: PhantomData<T>,
 }
-impl<T> matmulTopK<T>
+impl<T> MatmulTopK<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -96,7 +96,7 @@ where
     }
 }
 
-impl<T> MatmulTopKTrait<T> for matmulTopK<T>
+impl<T> MatmulTopKTrait<T> for MatmulTopK<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -104,7 +104,7 @@ where
         &self,
         input_ptr1: *const T,
         input_ptr2: *const T,
-        indice_ptr: *mut T,
+        indice_ptr: *mut usize,
         value_ptr: *mut T,
         sum_ptr: *mut T,
     ) {
@@ -119,12 +119,12 @@ where
     }
 }
 
-impl MatmulTopKTrait<f16> for matmulTopK<f16> {
+impl MatmulTopKTrait<f16> for MatmulTopK<f16> {
     fn compute(
         &self,
         input_ptr1: *const f16,
         input_ptr2: *const f16,
-        indice_ptr: *mut f16,
+        indice_ptr: *mut usize,
         value_ptr: *mut f16,
         sum_ptr: *mut f16,
     ) {
@@ -149,12 +149,12 @@ impl MatmulTopKTrait<f16> for matmulTopK<f16> {
     }
 }
 
-impl MatmulTopKTrait<f32> for matmulTopK<f32> {
+impl MatmulTopKTrait<f32> for MatmulTopK<f32> {
     fn compute(
         &self,
         input_ptr1: *const f32,
         input_ptr2: *const f32,
-        indice_ptr: *mut f32,
+        indice_ptr: *mut usize,
         value_ptr: *mut f32,
         sum_ptr: *mut f32,
     ) {
