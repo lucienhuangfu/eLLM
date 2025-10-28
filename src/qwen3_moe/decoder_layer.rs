@@ -126,17 +126,17 @@ where
             );
             (hidden_states, norm_hidden)
         } else {
-            Tensor::lookup_rms(
+            let (hidden_states, norm_hidden) = Tensor::lookup_rms(
                 input_sequences,
                 &*self.word_embedding,
+                 self.sequence_chunk_size,
                 self.batch_size,
                 self.rms_norm_eps,
-                self.sequence_chunk_size,
                 self.scope_name.clone(),
                 self.cache.clone(),
                 self.operator_queue.clone(),
             );
-            (hidden_states, hidden_states.clone())
+            (&hidden_states, norm_hidden)
         };
 
         //  attention + add

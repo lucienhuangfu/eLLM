@@ -501,7 +501,7 @@ where
         output_tensor
     }
 
-    pub fn matmul_topk(
+    pub fn matmul_local_topk(
         &self,
         tensor2: &Tensor<T>,
         params: MatmulParams,
@@ -514,16 +514,10 @@ where
 
         let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
 
-        /*
-        let indice_tensor = Tensor::from_cache(
-            output_shape.clone(),
-            format!("{}.indices", scope_name),
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        ); */
+
 
         let indice_ptr = allocate_init(output_shape.iter().product(), 0usize);
-        //  = self.cache.borrow_mut().get(&format!("{}.indices", scope_name), output_shape.iter().product());
+       
 
         let value_tensor = Tensor::<T>::from_cache(
             output_shape.clone(),
@@ -624,40 +618,29 @@ where
     pub fn topk_softmax(
         &self,
         indices_ptr: *const usize,
-        // values_tensor: &Tensor<T>,
         sums_tensor: &Tensor<T>,
-        topk_size: usize,
+        num_topk: usize,
         scope_name: String,
-        // value_tensor_name: String,
     ) -> (*const usize, Self) {
-        /*
-        let indice_tensor = Tensor::from_cache(
-            vec![self.shape[0], self.shape[1], topk_size],
-            format!("{}.output_indice", scope_name),
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );*/
 
-        let output_shape = vec![self.shape[0], self.shape[1], topk_size];
+        let output_shape = vec![self.shape[0], self.shape[1], num_topk];
         let indice_ptr = allocate_init(output_shape.iter().product(), 0usize);
 
         let value_tensor = Tensor::from_cache(
-            vec![self.shape[0], self.shape[1], topk_size],
+            vec![self.shape[0], self.shape[1], num_topk],
             format!("{}.output_value", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
         let operator = Operator::TopKSoftmax(TopKSoftmax::new(
-            //indices_tensor.data,
             indices_ptr,
             self.data,
-            // values_tensor.data,
             sums_tensor.data,
             indice_ptr,
             value_tensor.data,
             self.shape[1],
-            topk_size,
+            num_topk,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -705,9 +688,9 @@ where
     pub fn lookup_rms(
         input_sequences: *mut usize,
         word_embedding: &Tensor<T>,
+        sequence_chunk_size: usize,
         batch_size: usize,
         eps: T,
-        sequence_chunk_size: usize,
         scope_name: String,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
