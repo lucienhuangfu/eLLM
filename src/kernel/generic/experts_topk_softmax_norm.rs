@@ -2,255 +2,60 @@ use crate::kernel::generic::exp::Exp;
 use std::ops::{AddAssign, Div, Sub};
 use std::ptr;
 
-#[inline]
-fn heapify_down<T: PartialOrd + Copy>(
-    input_ptr: *const T,
-    indices_ptr: *mut usize,
-    heap_size: usize,
-    start: usize,
-) {
-    unsafe {
-        let mut parent = start;
-        loop {
-            let left = 2 * parent + 1;
-            let right = 2 * parent + 2;
-            let mut smallest = parent;
-
-            if left < heap_size {
-                let left_idx = *indices_ptr.add(left);
-                let smallest_idx = *indices_ptr.add(smallest);
-                if *input_ptr.add(left_idx) < *input_ptr.add(smallest_idx) {
-                    smallest = left;
-                }
-            }
-
-            if right < heap_size {
-                let right_idx = *indices_ptr.add(right);
-                let smallest_idx = *indices_ptr.add(smallest);
-                if *input_ptr.add(right_idx) < *input_ptr.add(smallest_idx) {
-                    smallest = right;
-                }
-            }
-
-            if smallest != parent {
-                // Swap
-                let temp = *indices_ptr.add(parent);
-                *indices_ptr.add(parent) = *indices_ptr.add(smallest);
-                *indices_ptr.add(smallest) = temp;
-                parent = smallest;
-            } else {
-                break;
-            }
-        }
-    }
-}
-
-#[inline]
-fn build_min_heap<T: PartialOrd + Copy>(
-    input_ptr: *const T,
-    indices_ptr: *mut usize,
-    heap_size: usize,
-) {
-    unsafe {
-        // Initialize with first heap_size indices
-        for i in 0..heap_size {
-            *indices_ptr.add(i) = i;
-        }
-
-        // Heapify from bottom up
-        if heap_size > 0 {
-            for i in (0..heap_size).rev() {
-                heapify_down(input_ptr, indices_ptr, heap_size, i);
-            }
-        }
-    }
-}
-
-#[inline]
-fn select_topk<T: PartialOrd + Copy>(
-    input_ptr: *const T,
-    indices_ptr: *mut usize,
-    length: usize,
-    topk_size: usize,
-) {
-    unsafe {
-        // Build initial heap
-        let heap_size = topk_size.min(length);
-        build_min_heap(input_ptr, indices_ptr, heap_size);
-
-        // Process remaining elements
-        for i in topk_size..length {
-            let current_val = *input_ptr.add(i);
-            let root_idx = *indices_ptr.add(0);
-            let root_val = *input_ptr.add(root_idx);
-
-            if current_val > root_val {
-                *indices_ptr.add(0) = i;
-                heapify_down(input_ptr, indices_ptr, topk_size, 0);
-            }
-        }
-    }
-}
-
-// Optimized version using partial selection for small k
-#[inline]
-fn select_topk_optimized<T: PartialOrd + Copy>(
-    input_ptr: *const T,
-    indices_ptr: *mut usize,
-    length: usize,
-    topk_size: usize,
-) {
-    unsafe {
-        // For small k, use partial selection instead of heap
-        if topk_size <= 8 && topk_size < length / 4 {
-            // Initialize with first topk_size elements
-            for i in 0..topk_size {
-                *indices_ptr.add(i) = i;
-            }
-
-            // For each remaining element, find insertion point
-            for i in topk_size..length {
-                let current_val = *input_ptr.add(i);
-
-                // Find minimum in current topk
-                let mut min_pos = 0;
-                let mut min_val = *input_ptr.add(*indices_ptr.add(0));
-
-                for j in 1..topk_size {
-                    let val = *input_ptr.add(*indices_ptr.add(j));
-                    if val < min_val {
-                        min_val = val;
-                        min_pos = j;
-                    }
-                }
-
-                // Replace if current is larger
-                if current_val > min_val {
-                    *indices_ptr.add(min_pos) = i;
-                }
-            }
-        } else {
-            // Use heap for larger k
-            select_topk(input_ptr, indices_ptr, length, topk_size);
-        }
-    }
-}
-
-#[inline]
-fn sort_topk_descending<T: PartialOrd + Copy>(
-    input_ptr: *const T,
-    indices_ptr: *mut usize,
-    topk_size: usize,
-) {
-    unsafe {
-        // Convert min-heap to sorted array (largest to smallest)
-        for i in (1..topk_size).rev() {
-            // Move current root to end
-            let temp = *indices_ptr.add(0);
-            *indices_ptr.add(0) = *indices_ptr.add(i);
-            *indices_ptr.add(i) = temp;
-
-            // Heapify reduced heap (but reverse comparison for descending order)
-            let mut parent = 0;
-            loop {
-                let left = 2 * parent + 1;
-                let right = 2 * parent + 2;
-                let mut largest = parent;
-
-                if left < i {
-                    let left_idx = *indices_ptr.add(left);
-                    let largest_idx = *indices_ptr.add(largest);
-                    if *input_ptr.add(left_idx) > *input_ptr.add(largest_idx) {
-                        largest = left;
-                    }
-                }
-
-                if right < i {
-                    let right_idx = *indices_ptr.add(right);
-                    let largest_idx = *indices_ptr.add(largest);
-                    if *input_ptr.add(right_idx) > *input_ptr.add(largest_idx) {
-                        largest = right;
-                    }
-                }
-
-                if largest != parent {
-                    let temp = *indices_ptr.add(parent);
-                    *indices_ptr.add(parent) = *indices_ptr.add(largest);
-                    *indices_ptr.add(largest) = temp;
-                    parent = largest;
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-}
-
-#[inline]
-fn calculate_softmax_normalized<
-    T: Exp + Default + AddAssign + Copy + Sub<Output = T> + Div<Output = T>,
->(
-    input_ptr: *const T,
-    indices_ptr: *const usize,
-    output_ptr: *mut T,
-    topk_size: usize,
-) {
-    unsafe {
-        if topk_size == 0 {
-            return;
-        }
-
-        // Max value is first element (already sorted)
-        let max_idx = *indices_ptr.add(0);
-        let max_val = *input_ptr.add(max_idx);
-
-        // Calculate exp values and sum
-        let mut sum = T::default();
-        for i in 0..topk_size {
-            let idx = *indices_ptr.add(i);
-            let exp_val = (*input_ptr.add(idx) - max_val).exp();
-            *output_ptr.add(i) = exp_val;
-            sum += exp_val;
-        }
-
-        let mut norm_sum = T::default();
-        // Normalize
-        for i in 0..topk_size {
-            let exp_val = *output_ptr.add(i);
-            *output_ptr.add(i) = exp_val / sum;
-            norm_sum += *output_ptr.add(i);
-        }
-
-        // 需要对topk的结果进行归一化处理，使得所有值的和为1
-        for i in 0..topk_size {
-            let val = *output_ptr.add(i);
-            *output_ptr.add(i) = val / norm_sum;
-        }
-    }
-}
-
 pub fn experts_topk_softmax_norm<
     T: Exp + Default + AddAssign + PartialOrd + Copy + Sub<Output = T> + Div<Output = T>,
 >(
     input_ptr: *const T,
-    output_indices_ptr: *mut usize,
-    output_value_ptr: *mut T,
-    // expert_routing: &ExpertsRouting<T>,
-    length: usize,
-    topk_size: usize,
+    // [num_experts]
+    experts_indicator_ptr: *mut bool,
+    // [num_experts, batch_size]
+    indices_ptr: *mut bool,
+    value_ptr: *mut T,
+    index_token: usize,
+    num_token: usize,
+    num_experts: usize,
+    num_topk: usize,
 ) {
-    if topk_size == 0 || length == 0 {
-        return;
+    unsafe {
+        // Read input values
+        let input_slice = std::slice::from_raw_parts(input_ptr, num_experts);
+
+        // Find top-k indices and values
+        let mut indexed_values: Vec<(usize, T)> = input_slice
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (i, v))
+            .collect();
+
+        // Sort by value in descending order
+        indexed_values.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        // Take top-k
+        let topk_items = &indexed_values[..num_topk.min(num_experts)];
+
+        // Calculate sum of all input values for softmax normalization
+        let mut sum = T::default();
+        for &value in input_slice {
+            sum += value.exp();
+        }
+
+        // Set experts_indicator for top-k experts
+        for &(expert_idx, _) in topk_items {
+            *experts_indicator_ptr.add(expert_idx) = true;
+        }
+
+        // For each top-k expert, compute softmax and set outputs
+        for (k, &(expert_idx, value)) in topk_items.iter().enumerate() {
+            // Compute softmax: exp(x) / sum
+            let softmax_value = value.exp() / sum;
+
+            *experts_indicator_ptr.add(expert_idx) = true;
+            // Set indices_ptr at [expert_idx * num_token + index_token]
+            *indices_ptr.add(expert_idx * num_token + index_token) = true;
+            // Set value_ptr
+            *value_ptr.add(k) = softmax_value;
+        }
     }
-
-    // Step 1: Select top-k largest elements (optimized for small k)
-    select_topk_optimized(input_ptr, output_indices_ptr, length, topk_size);
-
-    // Step 2: Sort using heap sort (more efficient than insertion sort)
-    sort_topk_descending(input_ptr, output_indices_ptr, topk_size);
-
-    // Step 3: Calculate softmax with double normalization
-    calculate_softmax_normalized(input_ptr, output_indices_ptr, output_value_ptr, topk_size);
 }
 
 #[cfg(test)]

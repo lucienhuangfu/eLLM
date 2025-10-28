@@ -9,7 +9,7 @@ use crate::kernel::generic::{exp::Exp, sqrt::Sqrt};
 
 #[derive(Clone)]
 pub struct ExpertsSoftmaxNorm<T> {
-    // [sequence_length, batch_size, num_experts]
+    // [sequence_chunk_size, batch_size, num_experts]
     ptr1: ConstPtr<T>,
     // Expert routing information
     experts_indicator: MutPtr<bool>,
@@ -103,8 +103,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<
             weight_ptr,
             token_index,
             input_length,
-            output_length,
-            self.num_topk,
+            output_length
         );
     }
 }
