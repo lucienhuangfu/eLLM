@@ -1,4 +1,5 @@
 use std::f16;
+use std::ptr;
 
 use super::super::super::kernel;
 use super::map_trait::MapTrait;
@@ -53,12 +54,10 @@ impl<T: Sqrt> LookupRMSMap<T> {
         position_start: usize,
         position_interval: usize,
         batch_size: usize,
-        cpu_num: usize,
+        thread_num: usize,
         thread_id: usize,
     ) {
-        /*
-        if let Some((begin, end)) = assign(batch_size * position_interval, cpu_num, thread_id)
-        {
+        if let Some((begin, end)) = assign(batch_size * position_interval, thread_num, thread_id) {
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
 
             // Calculate the current pointer for sequences
@@ -73,16 +72,18 @@ impl<T: Sqrt> LookupRMSMap<T> {
                     "LookupRMSMap run: begin {}, end {}, row_index {}, col_index {}",
                     begin, end, row_index, col_index
                 );
-                let mut output_ptr = self.output_ptr.ptr;
+                let output_normal_ptr = self.output_normal_ptr.ptr;
+                let output_hidden_ptr = self.output_hidden_ptr.ptr;
                 for _ in begin..end {
                     let index = row_index * self.max_batch_size + col_index;
                     let p = *current.add(index);
                     let a_ptr = self.word_embedding.ptr.add(p * self.hidden_size);
-                    self.compute(
-                        a_ptr,
-                        output_ptr.add(index * self.hidden_size),
-                        self.hidden_size,
-                    );
+                    let offset = index * self.hidden_size;
+
+                    let hidden_ptr = output_hidden_ptr.add(offset);
+                    // Copy embedding to output hidden
+                    ptr::copy_nonoverlapping(a_ptr, hidden_ptr, self.hidden_size);
+                    self.compute(a_ptr, output_normal_ptr.add(offset), self.hidden_size);
 
                     col_index += 1;
                     if col_index == batch_size {
@@ -91,7 +92,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
                     }
                 }
             }
-        }*/
+        }
     }
 }
 
@@ -133,58 +134,42 @@ impl MapTrait<f32> for LookupRMSMap<f32> {
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use approx::assert_ulps_eq;
     use num_cpus;
-    use super::*;
 
-    /*
     #[test]
     fn test_lookup_f32() {
-        let sequence_length = 64; // Length of the sequence
+        let sequence_chunk_size = 64; // Length of the sequence
         let batch_size = 10; // Each batch processes 10 elements
         let hidden_size = 18;
         let vocab_size = 10;
-        let cpu_num = num_cpus::get();
+        let thread_num = num_cpus::get();
 
-        let shapes = vec![sequence_length, batch_size, hidden_size];
-        let strides = vec![batch_size * hidden_size, hidden_size, 1]; // Corresponding strides
+        let shapes = vec![sequence_chunk_size, batch_size, hidden_size];
+        // let strides = vec![batch_size * hidden_size, hidden_size, 1]; // Corresponding strides
         let length = shapes.iter().product(); // Total number of elements
 
         let eps = 1e-6;
-
-        // Create mock input and output data
-        let input_data: Vec<f32> = (1..=hidden_size)
-            .cycle()
-            .take(length)
-            .map(|x| x as f32)
-            .collect();
-        let mut sequences: Vec<usize> = vec![1; sequence_length * batch_size];
-        let word_embedding: Vec<f32> = (1..=18)
+        let mut sequences: Vec<usize> = vec![1; sequence_chunk_size * batch_size];
+        let word_embedding: Vec<f32> = (1..=hidden_size)
             .cycle()
             .take(vocab_size * hidden_size)
             .map(|x| x as f32)
             .collect();
-        let weight = vec![1.0f32; hidden_size];
-        let mut output_data: Vec<f32> = vec![0.0; length];
-
-        /*
-        // Create chunks using chunk_map function
-        let chunks = chunk_map(
-            shapes,
-            strides,
-            input_data.as_ptr(),
-            output_data.as_mut_ptr(),
-        ); */
+        // let weight = vec![1.0f32; hidden_size];
+        let mut output_hidden_data: Vec<f32> = vec![0.0; length];
+        let mut output_normal_data: Vec<f32> = vec![0.0; length];
 
         // Initialize LookupRMSMap with these chunks and length
         let mut o = LookupRMSMap::new(
             sequences.as_mut_ptr(),
-            output_data.as_mut_ptr(),
+            word_embedding.as_ptr(),
+            output_hidden_data.as_mut_ptr(),
+            output_normal_data.as_mut_ptr(),
             batch_size,
             hidden_size,
-            word_embedding.as_ptr(),
-            // weight.as_ptr(),
-            eps, // cpu_num,
+            eps,
         );
         let result = [
             0.09238425642251968,
@@ -206,20 +191,23 @@ mod test {
             1.5705323219299316,
             1.662916660308838,
         ];
-        // o.set_chunk(chunks);
 
-        let thread_num: usize = cpu_num;
+        // Expected hidden output (copied embeddings for sequence index 1)
+        let expected_hidden: Vec<f32> = (1..=hidden_size).map(|x| x as f32).collect();
 
-        let position = 8;
+        let position = 0;
         let sequence_interval = 8;
         for i in 0..thread_num {
-            o.run(position, sequence_interval, batch_size, cpu_num, i);
+            o.run(position, sequence_interval, batch_size, thread_num, i);
         }
 
-        assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
+        // Verify output_normal_data
+        assert_ulps_eq!(output_normal_data[18..36], result, max_ulps = 4);
+
+        // Verify output_hidden_data (should contain copied embeddings)
+        assert_ulps_eq!(output_hidden_data[18..36], expected_hidden, max_ulps = 1);
     }
-    */
-    
+
     /*
     #[test]
     fn test_lookup_f16() {
@@ -227,7 +215,7 @@ mod test {
         let batch_size = 64; // Each batch processes 2 elements
         let hidden_size = 128;
         let vocab_size = 512;
-        let cpu_num = num_cpus::get();
+        let thread_num = num_cpus::get();
 
         let shapes = vec![batch_size, hidden_size];
         let strides = vec![hidden_size, 1]; // Corresponding strides
@@ -264,7 +252,7 @@ mod test {
             hidden_size,
             weight,
             eps,
-            cpu_num,
+            thread_num,
             word_embedding,
             sequences,
             hidden_size,
@@ -273,7 +261,7 @@ mod test {
         let mut expected: Vec<f16> = vec![0.0; hidden_size];
 
         o.set_chunk(chunks);
-        let thread_num: usize = cpu_num;
+        let thread_num: usize = thread_num;
         for i in 0..thread_num {
             o.run(1, position, i);
         }

@@ -158,7 +158,7 @@ where
             format!("{}.norm_hidden.output", self.scope_name),
         );
 
-        let (indices_ptr, values_tensor, sum_tensor) = norm_state.matmul_topk(
+        let (indices_ptr, values_tensor, sum_tensor) = norm_state.matmul_local_topk(
             &self.lm_head_weight,
             MatmulParams {
                 a_row_step_macro: 16,

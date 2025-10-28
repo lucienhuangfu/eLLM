@@ -10,38 +10,13 @@
 #![allow(incomplete_features)]
 #![allow(unused_parens)]
 
-pub mod compiler;
 pub mod init;
-pub mod kernel;
-// pub mod llama;
 pub mod memory;
-pub mod ptensor;
-pub mod qwen3_moe;
+pub mod kernel;
+pub mod compiler;
+
+// pub mod llama;
+
+// pub mod ptensor;
+// pub mod qwen3_moe;
 // pub mod runtime;
-
-/*
-// Python 绑定模块
-#[cfg(feature = "python")]
-pub mod python_bindings;
-
-// 删除原有PyTransformer定义
-#[cfg(feature = "python")]
-pub mod python_bindings;
-
-/// Python 模块定义
-#[pymodule]
-fn ellm(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_class::<python_bindings::PyTransformer>()?;
-    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    Ok(())
-}
-
-pub mod runtime;
-pub mod serving;
-*/
-
-/*
-#[macro_use]
-extern crate log;
-#[macro_use]
-extern crate approx;*/
