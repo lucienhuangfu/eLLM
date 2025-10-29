@@ -1,9 +1,9 @@
 use std::f16;
-use std::marker::PhantomData;
+// use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatmulParams,
+    // matmul_params::MatmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
@@ -17,12 +17,15 @@ use super::mul_trait::Matmul5Trait;
 pub struct ExpertsMergeAdd<T> {
     input_ptr: ConstPtr<T>,
     residual_ptr: ConstPtr<T>,
+    experts_indicator: MutPtr<bool>,
+    indice_ptr: MutPtr<bool>,
     output_ptr: MutPtr<T>,
-    a_row: usize,
-    b_row: usize,
-    column: usize,
-    // pub params: MatmulParams,
-    _marker: PhantomData<T>,
+    sequence_chunk_size: usize,
+    batch_size: usize,
+    num_experts: usize,
+    num_experts_per_token: usize,
+    hidden_size: usize,
+    // _marker: PhantomData<T>,
 }
 impl<T> ExpertsMergeAdd<T>
 where
@@ -31,22 +34,29 @@ where
     pub fn new(
         input_ptr: *const T, // TODO: Fix parameter name - should match struct field
         residual_ptr: *const T,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
         output_ptr: *mut T,
-        a_row: usize,
-        b_row: usize,
-        column: usize,
+        sequence_chunk_size: usize,
+        batch_size: usize,
+        num_experts: usize,
+        num_experts_per_token: usize,
+        hidden_size: usize,
     ) -> Self {
-        // TODO: Create new instance with proper field initialization
-        // Initialize all struct fields with corresponding parameters
-        // Create ConstPtr and MutPtr wrappers for the raw pointers
         Self {
             input_ptr: ConstPtr { ptr: input_ptr },
             residual_ptr: ConstPtr { ptr: residual_ptr },
+            experts_indicator: MutPtr {
+                ptr: experts_indicator,
+            },
+            indice_ptr: MutPtr { ptr: indice_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
-            a_row,
-            b_row,
-            column,
-            _marker: PhantomData,
+            sequence_chunk_size,
+            batch_size,
+            num_experts,
+            num_experts_per_token,
+            hidden_size,
+            // _marker: PhantomData,
         }
     }
 
@@ -55,9 +65,28 @@ where
         position_index: usize,
         position_interval: usize,
         batch_size: usize,
-        cpu_num: usize,
+        thread_num: usize,
         thread_id: usize,
     ) {
+        let num_tokens = self.sequence_chunk_size * self.batch_size;
+        // 重置gate_routing数据结构
+        if let Some((begin, end)) = assign(self.num_experts, thread_num, thread_id) {
+            let experts_indicator_ptr = self.experts_indicator.ptr;
+            let indices_ptr = self.indice_ptr.ptr;
+
+            for i in begin..end {
+                unsafe {
+                    if *experts_indicator_ptr.add(i) {
+                        *experts_indicator_ptr.add(i) = false;
+                        // reset indices_ptr using write_bytes for better performance
+                        // write_bytes(p, 0, count) sets all bytes to 0, which means false for bool
+                        let p = indices_ptr.add(i * num_tokens);
+                        std::ptr::write_bytes(p, 0, num_tokens);
+                    }
+                }
+            }
+        }
+
         // TODO: Implement parallel matrix multiplication with experts merging
         // 1. Calculate chunk dimensions based on macro step sizes
         // 2. Determine work distribution for current thread
@@ -65,15 +94,6 @@ where
         // 4. For each chunk, perform matrix multiplication of experts
         // 5. Merge results from multiple experts
         // 6. Add residual connection to final output
-
-        // Calculate total number of chunks for work distribution
-
-
-        // TODO: Use assign function to get work range for this thread
-        // if let Some((begin, end)) = assign(total_chunks, cpu_num, thread_id) {
-        //     // Process chunks from begin to end
-        //     // Each chunk processes a_row_step_macro x b_row_step_macro block
-        // }
     }
 }
 
@@ -90,6 +110,7 @@ where
         input_ptr5: *const T, // Fifth experts weights
         output_ptr: *mut T,   // Output buffer for merged results
     ) {
+
         // TODO: Generic implementation for merging 5 experts
         // 1. Perform matrix multiplication for each experts
         // 2. Apply experts routing weights/gates

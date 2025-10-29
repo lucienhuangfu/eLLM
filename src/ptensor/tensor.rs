@@ -160,7 +160,10 @@ where
         output_tensor
     }
 
-    pub fn experts_merge_add(&self, residual: &Tensor<T>, scope_name: String) -> Self {
+    pub fn experts_merge_add(&self, residual: &Tensor<T>, 
+                experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        scope_name: String) -> Self {
         // output [sequence_chunk_size, batch_size, hidden_size]
         let output_shape = vec![self.shape[0], self.shape[1], self.shape[3]];
 
@@ -174,7 +177,10 @@ where
         let operator = Operator::ExpertsMergeAdd(ExpertsMergeAdd::new(
             self.data,
             residual.data,
+            experts_indicator,
+            indice_ptr,
             output_tensor.data,
+            self.shape[0],
             self.shape[1],
             self.shape[2],
             self.shape[3],
