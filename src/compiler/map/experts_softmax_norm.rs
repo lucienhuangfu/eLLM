@@ -1,6 +1,8 @@
 use std::f16;
 use std::ops::{AddAssign, Sub};
 
+use rand::seq;
+
 use super::map_trait::SoftmaxTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
@@ -15,6 +17,7 @@ pub struct ExpertsSoftmaxNorm<T> {
     experts_indicator: MutPtr<bool>,
     indice_ptr: MutPtr<bool>,
     weight_ptr: MutPtr<T>,
+    num_tokens: usize,
     batch_size: usize,
     num_experts: usize,
     num_topk: usize,
@@ -26,6 +29,7 @@ impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
         experts_indicator: *mut bool,
         indice_ptr: *mut bool,
         weight_ptr: *mut T,
+        sequence_chunk_size: usize,
         batch_size: usize,
         num_experts: usize,
         num_topk: usize,
@@ -37,6 +41,7 @@ impl<T: Sqrt> ExpertsSoftmaxNorm<T> {
             },
             indice_ptr: MutPtr { ptr: indice_ptr },
             weight_ptr: MutPtr { ptr: weight_ptr },
+            num_tokens: sequence_chunk_size * batch_size,
             batch_size,
             num_experts,
             num_topk,
@@ -102,6 +107,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<
             indice_ptr,
             weight_ptr,
             token_index,
+            self.num_tokens,
             input_length,
             output_length
         );

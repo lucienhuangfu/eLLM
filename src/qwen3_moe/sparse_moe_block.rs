@@ -100,8 +100,11 @@ where
             self.scope_name.clone(),
         );
 
-        let (experts_indicator, indice_ptr, weight_ptr) = gate_output
-            .experts_softmax_norm(self.num_experts, self.num_topk, format!("{}.router_probs", self.scope_name));
+        let (experts_indicator, indice_ptr, weight_ptr) = gate_output.experts_softmax_norm(
+            self.num_experts,
+            self.num_topk,
+            format!("{}.router_probs", self.scope_name),
+        );
 
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
@@ -118,7 +121,7 @@ where
             format!("{}.gate_up", self.scope_name),
         );
 
-        // [batch_size, num_experts, hidden_size]
+        // down_product [sequence_chunk_size, batch_size, num_experts_per_token, hidden_size]
         let down_product = nonlinear_product.experts_matmul_mul(
             &self.experts_down_weight,
             experts_indicator,
@@ -134,10 +137,14 @@ where
             format!("{}.down", self.scope_name),
         );
 
-        let output_tensor =
-            down_product.experts_merge_add(residual,  format!("{}.down", self.scope_name));
+        let merge_tensor = down_product.experts_merge_add(
+            residual,
+            experts_indicator,
+            indice_ptr,
+            format!("{}.down", self.scope_name),
+        );
 
-        down_product
+        merge_tensor
     }
 }
 
