@@ -2,103 +2,7 @@ use std::arch::x86_64::*;
 use std::ptr;
 use std::f16;
 use super::activation::exp512;
-
-
-/* 
-use super::super::super::asmsimd::*;
-type Reg = __m512h;
-
-
-#[inline]
-unsafe fn ext_exp_avx512(x_i: Reg) -> (Reg, Reg) {
-    let log2e = _mm512_set1_ph(f16::LOG2_E);
-    let loge2 = _mm512_set1_ph(f16::LN_2);
-    let temp:Reg = _mm512_mul_ph(x_i, log2e);//x * log2e
-    //let n:Reg = _mm512_roundscale_ps(temp, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);//n = round to nearest integer
-    let n:Reg = _mm512_roundscale_round_ph::<_MM_FROUND_TO_NEAREST_INT, _MM_FROUND_NO_EXC>(temp);
-    let temp1:Reg = _mm512_mul_ph(n, loge2);//n * loge2
-    let t:Reg = _mm512_sub_ph(x_i, temp1);//t = x - n * loge2
-    (exp512(t),n)
-}
-
-#[inline]
-unsafe fn calculate_exp2_512(n:Reg) -> Reg {
-    let mut n = _mm512_cvttph_epi16(n);
-    //fixed bias for f16 is 15
-    n = _mm512_add_epi16(n, _mm512_set1_epi16(0x0f));
-    //shift by 10 to get the exponent
-    n = _mm512_slli_epi16(n, 10);
-    let ans = _mm512_castsi512_ph(n);
-    _mm512_max_ph(ans, _mm512_setzero_ph())
-}
-
-#[inline]
-unsafe fn sumh_m512(m_i:Reg, n_i:Reg) -> (Reg,Reg) {
-    let n_max = hmax(n_i);
-    let exp = _mm512_sub_ph(n_i, n_max);
-    let m_i = _mm512_mul_ph(m_i, calculate_exp2_512(exp));
-    (hsum(m_i),n_max)
-}
-
-#[inline]
-unsafe fn hmax(n_i:Reg) -> Reg {
-    _mm512_set1_ph(_mm512_reduce_max_ph(n_i))
-}
-
-#[inline]
-unsafe fn hsum(v:Reg) -> Reg {
-    
-    let mut sum = _mm512_reduce_add_ph(v);
-    
-    _mm512_set1_ph(sum)
-}
-
-#[inline]
-pub fn _scale_softmax(input_ptr: *const f16, output_ptr: *mut f16, length: usize, scale: f16) {
-    unsafe {
-        let rem = length % 32;
-        let length2 = length - rem;
-
-        let mut chunks_sum = f16::ZERO;
-        if rem != length {
-            let mut m_sum = _mm512_setzero_ph();
-            let scale_ = _mm512_set1_ph(scale);
-            for (ptr1, ptr2) in (0..length2).step_by(32).map(|x| (input_ptr.add(x), output_ptr.add(x))) {
-                let mut x = _mm512_loadu_ph(ptr1);
-                x = _mm512_mul_ph(x, scale_);
-                let y = exp512(x);
-                // println!("{:?}", y);
-                _mm512_storeu_ph(ptr2, y);
-               m_sum = _mm512_add_ph(m_sum, y);
-            }
-           chunks_sum = _mm512_reduce_add_ph(m_sum);
-        }
-        let mut remainder_sum = 0.0f32;
-        if rem != 0 {
-            for (ptr1, ptr2) in (length2..length).map(|count| (input_ptr.add(count), output_ptr.add(count))) {
-                let expx = ((*ptr1).to_f32()*scale.to_f32()).exp();
-                remainder_sum += expx;
-                ptr::write(ptr2, expx));
-            }
-        }
-        let remainder_sum = remainder_sum);
-        let sum = chunks_sum.ss_add(remainder_sum);
-        if rem != length {
-            let sum1 = _mm512_set1_ph(sum);
-            for ptr in (0..length2).step_by(32).map(|x| output_ptr.add(x)) {
-                let mut x = _mm512_loadu_ph(ptr);
-                x = _mm512_divbyrcp_ph(x, sum1);
-                _mm512_storeu_ph(ptr, x);
-            }
-        }
-        if rem != 0 {
-            for ptr in (length2..length).map(|count| output_ptr.add(count)) {
-                let x1 = *ptr;
-                ptr::write(ptr, x1.ss_div_by_rcp(sum));
-            }
-        }
-    }
-}*/
+use crate::kernel::generic::merge_topk::merge_topk_lists;
 
 pub fn topk_softmax(
     // [thread_num, topk_size]
@@ -107,6 +11,7 @@ pub fn topk_softmax(
     input_values_ptr: *const f16,
     // [thread_num]
     sums_ptr: *const f16,
+    max_positions_ptr: *mut usize,
     // [topk_size]
     output_indices_ptr: *mut usize,
     // [topk_size]
@@ -115,70 +20,46 @@ pub fn topk_softmax(
     topk_size: usize,
 ) {
     unsafe {
-        // SIMD registers for values and indices (since topk_size < 32)
-        let mut values_reg = _mm512_setzero_ph();
-        let mut indices_reg = [0usize; 32];
-        let mut valid_count = 0;
+        let merged_count = merge_topk_lists(
+            input_indices_ptr,
+            input_values_ptr,
+            max_positions_ptr,
+            output_indices_ptr,
+            output_values_ptr,
+            thread_num,
+            topk_size,
+        );
         
-        // Track positions for each thread's topk
-        let mut thread_positions = [0usize; 16]; // assume max 16 threads
+        // Get max value directly from first element (merge sort results are ordered)
+        let max_val = if merged_count > 0 {
+            *output_values_ptr.add(0)
+        } else {
+            f16::ZERO
+        };
         
-        // Merge sorted topk lists using SIMD
-        for output_idx in 0..topk_size {
-            let mut best_value = f16::NEG_INFINITY;
-            let mut best_thread = None;
-            
-            // Find thread with maximum current value
-            for thread_idx in 0..thread_num {
-                if thread_positions[thread_idx] < topk_size {
-                    let val = *input_values_ptr.add(thread_idx * topk_size + thread_positions[thread_idx]);
-                    if val > best_value {
-                        best_value = val;
-                        best_thread = Some(thread_idx);
-                    }
-                }
-            }
-            
-            if let Some(thread_idx) = best_thread {
-                let pos = thread_positions[thread_idx];
-                let idx = *input_indices_ptr.add(thread_idx * topk_size + pos);
-                
-                // Store in arrays for SIMD processing
-                let mut temp_values = [f16::ZERO; 32];
-                _mm512_storeu_ph(temp_values.as_mut_ptr(), values_reg);
-                temp_values[output_idx] = best_value;
-                values_reg = _mm512_loadu_ph(temp_values.as_ptr());
-                
-                indices_reg[output_idx] = idx;
-                thread_positions[thread_idx] += 1;
-                valid_count += 1;
-            }
+        // Calculate adjusted total sum (subtract max for numerical stability)
+        let mut total_sum = f16::ZERO;
+        for i in 0..thread_num {
+            let thread_sum = *sums_ptr.add(i);
+            // Adjust each thread's sum by subtracting max and applying exp
+            let adjusted_sum = (thread_sum - max_val).exp();
+            total_sum += adjusted_sum;
         }
         
-        // Find max for numerical stability
-        let max_val = _mm512_reduce_max_ph(values_reg);
+        // Use SIMD for softmax computation directly on output
+        let values_vec = _mm512_loadu_ph(output_values_ptr);
         let max_vec = _mm512_set1_ph(max_val);
         
         // Apply softmax: subtract max and exp
-        let shifted_vec = _mm512_sub_ph(values_reg, max_vec);
+        let shifted_vec = _mm512_sub_ph(values_vec, max_vec);
         let exp_vec = exp512(shifted_vec);
         
-        // Calculate sum for normalization
-        let sum = _mm512_reduce_add_ph(exp_vec);
-        let sum_vec = _mm512_set1_ph(sum);
+        // Use the adjusted total sum for normalization
+        let sum_vec = _mm512_set1_ph(total_sum);
         
-        // Normalize
+        // Normalize and store directly
         let normalized_vec = _mm512_div_ph(exp_vec, sum_vec);
-        
-        // Store results using SIMD
-        let mut temp_values = [f16::ZERO; 32];
-        _mm512_storeu_ph(temp_values.as_mut_ptr(), normalized_vec);
-        
-        // Write output
-        for i in 0..valid_count.min(topk_size) {
-            ptr::write(output_values_ptr.add(i), temp_values[i]);
-            ptr::write(output_indices_ptr.add(i), indices_reg[i]);
-        }
+        _mm512_storeu_ph(output_values_ptr, normalized_vec);
     }
 }
 
@@ -187,21 +68,51 @@ mod tests {
     use approx::assert_ulps_eq;
     use super::*;
 
-    // #[test]
-    // fn test_softmax() {
-    //     let v1: Vec<f32> = (1..17).map(|x| x as f32).collect();
-    //     let exp_sum: f32 = v1.iter().map(|x| x.exp()).sum();
-    //     let result: Vec<f32> = v1.iter().map(|x| x.exp()/exp_sum).collect();
+    #[test]
+    fn test_topk_softmax_integration() {
+        unsafe {
+            let thread_num = 2;
+            let topk_size = 3;
+            
+            // Input data
+            let input_values = vec![
+                f16::from_f32(2.0), f16::from_f32(1.0), f16::from_f32(0.5), // thread 0
+                f16::from_f32(1.5), f16::from_f32(1.2), f16::from_f32(0.3), // thread 1
+            ];
+            let input_indices = vec![10, 30, 50, 20, 40, 60];
+            let sums = vec![f16::ZERO; thread_num]; // not used in current implementation
+            
+            let mut max_positions = vec![0usize; thread_num];
+            let mut output_values = vec![f16::ZERO; topk_size];
+            let mut output_indices = vec![0usize; topk_size];
+            
+            topk_softmax(
+                input_indices.as_ptr(),
+                input_values.as_ptr(),
+                sums.as_ptr(),
+                max_positions.as_mut_ptr(),
+                output_indices.as_mut_ptr(),
+                output_values.as_mut_ptr(),
+                thread_num,
+                topk_size,
+            );
+            
+            // Check that indices are correctly ordered
+            assert_eq!(output_indices[0], 10); // highest value 2.0
+            assert_eq!(output_indices[1], 20); // second highest 1.5
+            assert_eq!(output_indices[2], 40); // third highest 1.2
+            
+            // Check that softmax values sum to approximately 1.0
+            let sum: f32 = output_values.iter().map(|&x| x.to_f32()).sum();
+            assert_ulps_eq!(sum, 1.0, max_ulps = 10);
+            
+            // Check that values are in descending order after softmax
+            assert!(output_values[0] >= output_values[1]);
+            assert!(output_values[1] >= output_values[2]);
+        }
+    }
 
-    //     let v1:Vec<f16> = v1.into_iter().map(|x| x)).collect();
-    //     let mut output = vec![f16::ZERO; v1.len()];
-    //     _softmax(v1.as_ptr(), output.as_mut_ptr(), v1.len());
 
-    //     //transforming the output to f32
-    //     let output: Vec<f32> = output.iter().map(|x| x.to_f32()).collect();
-    //     println!("{:?}", output);
-    //     println!("{:?}", result);
-    // }
 
     #[test]
     fn test_calculate_exp2_512() {
