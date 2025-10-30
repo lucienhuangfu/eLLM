@@ -9,31 +9,31 @@ use crate::kernel::generic::sqrt::Sqrt;
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {
-    indices_ptr: ConstPtr<usize>,
-    values_ptr: ConstPtr<T>,
+    input_indices_ptr: ConstPtr<usize>,
+    input_values_ptr: ConstPtr<T>,
     sums_ptr: ConstPtr<T>,
-    indice_ptr: MutPtr<usize>,
-    value_ptr: MutPtr<T>,
+    output_indices_ptr: MutPtr<usize>,
+    output_values_ptr: MutPtr<T>,
     batch_size: usize,
     topk_size: usize,
 }
 
 impl<T: Sqrt> TopKSoftmax<T> {
     pub fn new(
-        indices_ptr: *const usize,
-        values_ptr: *const T,
+        input_indices_ptr: *const usize,
+        input_values_ptr: *const T,
         sums_ptr: *const T,
-        indice_ptr: *mut usize,
-        value_ptr: *mut T,
+        output_indices_ptr: *mut usize,
+        output_values_ptr: *mut T,
         batch_size: usize,
         topk_size: usize,
     ) -> Self {
         Self {
-            indices_ptr: ConstPtr { ptr: indices_ptr },
-            values_ptr: ConstPtr { ptr: values_ptr },
+            input_indices_ptr: ConstPtr { ptr: input_indices_ptr },
+            input_values_ptr: ConstPtr { ptr: input_values_ptr },
             sums_ptr: ConstPtr { ptr: sums_ptr },
-            indice_ptr: MutPtr { ptr: indice_ptr },
-            value_ptr: MutPtr { ptr: value_ptr },
+            output_indices_ptr: MutPtr { ptr: output_indices_ptr },
+            output_values_ptr: MutPtr { ptr: output_values_ptr },
             batch_size,
             topk_size,
         }
@@ -47,19 +47,22 @@ impl<T: Sqrt> TopKSoftmax<T> {
         thread_num: usize,
         thread_id: usize,
     ) {
-        /*
+    
         if let Some((begin, end)) = assign(batch_size * position_interval, thread_num, thread_id)
         {
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
-            let mut ptr1 = self.ptr1.ptr;
-            let mut output_ptr = self.output_ptr.ptr;
+            let mut input_indices_ptr = self.input_indices_ptr.ptr;
+            let mut input_values_ptr = self.input_values_ptr.ptr;
+            let mut sums_ptr = self.sums_ptr.ptr;
+            let mut output_indices_ptr = self.output_indices_ptr.ptr;
+            let mut output_values_ptr = self.output_values_ptr.ptr;
 
             for _ in begin..end {
-                let index = row_index * self.max_batch_size + col_index;
+                let index = row_index * self.batch_size + col_index;
                 unsafe {
-                    // let (a, b) = self.chunks.get_unchecked(index);
-                    let p = index * self.hidden_size;
-                    self.compute(ptr1.add(p), output_ptr.add(p), self.hidden_size);
+                    let input_stride = index * self.topk_size * thread_num;
+                    let output_stride = index * self.topk_size;
+                    self.compute(input_indices_ptr.add(input_stride), input_values_ptr.add(input_stride), sums_ptr.add(index), output_indices_ptr.add(output_stride), output_values_ptr.add(output_stride), thread_num, self.topk_size);
                 }
                 col_index += 1;
                 if col_index == batch_size {
@@ -67,12 +70,12 @@ impl<T: Sqrt> TopKSoftmax<T> {
                     row_index += 1;
                 }
             }
-        } */
+        } 
     }
 }
 
 impl<T: Sqrt> TopKSoftmaxTrait<T> for TopKSoftmax<T> {
-    default fn compute(&self, indices_ptr: *const usize, values_ptr: *const T, sums_ptr: *const T, indice_ptr: *mut usize, value_ptr: *mut T, length: usize) {
+    default fn compute(&self, input_indices_ptr: *const usize, input_values_ptr: *const T, sums_ptr: *const T, output_indices_ptr: *mut usize, output_values_ptr: *mut T, thread_num: usize, topk_size: usize) {
         /* 
         kernel::generic::softmax::softmax(
             input_ptr,
@@ -85,7 +88,7 @@ impl<T: Sqrt> TopKSoftmaxTrait<T> for TopKSoftmax<T> {
 }
 
 impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
-    fn compute(&self, indices_ptr: *const usize, values_ptr: *const f16, sums_ptr: *const f16, indice_ptr: *mut usize, value_ptr: *mut f16, length: usize) {
+    fn compute(&self, input_indices_ptr: *const usize, input_values_ptr: *const f16, sums_ptr: *const f16, output_indices_ptr: *mut usize, output_values_ptr: *mut f16, thread_num: usize, topk_size: usize) {
         /* 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::softmax::softmax(
@@ -108,7 +111,7 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
 }
 
 impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
-    fn compute(&self, indices_ptr: *const usize, values_ptr: *const f32, sums_ptr: *const f32, indice_ptr: *mut usize, value_ptr: *mut f32, length: usize) {
+    fn compute(&self, input_indices_ptr: *const usize, input_values_ptr: *const f32, sums_ptr: *const f32, output_indices_ptr: *mut usize, output_values_ptr: *mut f32, thread_num: usize, topk_size: usize) {
         /*
         kernel::generic::softmax::softmax(
             input_ptr,

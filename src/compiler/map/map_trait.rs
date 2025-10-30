@@ -18,11 +18,12 @@ pub trait SoftmaxTrait<T> {
 pub trait TopKSoftmaxTrait<T> {
     fn compute(
         &self,
-        indices_ptr: *const usize,
-        values_ptr: *const T,
-        sum_ptr: *const T,
-        indice_ptr: *mut usize,
-        value_ptr: *mut T,
-        length: usize,
+        input_indices_ptr: *const usize,
+        input_values_ptr: *const T,
+        sums_ptr: *const T,
+        output_indices_ptr: *mut usize,
+        output_values_ptr: *mut T,
+        thread_num: usize,
+        topk_size: usize
     );
 }
