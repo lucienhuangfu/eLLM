@@ -1,46 +1,13 @@
 use std::arch::x86_64::*;
 use std::ptr;
 use std::f16;
+use super::activation::exp512;
 
 
+/* 
 use super::super::super::asmsimd::*;
-use super::math::exp512;
-
 type Reg = __m512h;
 
-// pub fn _softmax(input_ptr: *const f16, output_ptr: *mut f16, length: usize) {
-//     unsafe {
-        
-
-//         let mut m_sum = _mm512_set1_ph(f16::ZERO);
-//         let mut n_sum = _mm512_set1_ph(f16::MIN);
-
-//         for i in (0..length).step_by(32) {
-//             let x_i = _mm512_loadu_ph(input_ptr.add(i));
-//             let (m_i, n_i) = ext_exp_avx512(x_i);
-//             let n_max = _mm512_max_ph(n_i, n_sum);
-//             let exp1 = _mm512_sub_ph(n_i, n_max);
-//             let exp2 = _mm512_sub_ph(n_sum, n_max);
-//             m_sum = _mm512_add_ph(_mm512_mul_ph(m_i, calculate_exp2_512(exp1)), _mm512_mul_ph(m_sum, calculate_exp2_512(exp2)));
-//             n_sum = n_max;
-//         }
-        
-//         let (m_sum, n_sum) = sumh_m512(m_sum, n_sum);
-
-
-//         let lambda_sum = _mm512_rcp_ph(m_sum);
-    
-
-//         for i in (0..length).step_by(32) {
-//             let x_i = _mm512_loadu_ph(input_ptr.add(i));
-//             let (m_i, n_i) = ext_exp_avx512(x_i);
-            
-//             let exp = _mm512_sub_ph(n_i, n_sum);
-//             let y_i = _mm512_mul_ph(_mm512_mul_ph(m_i, lambda_sum), calculate_exp2_512(exp));
-//             _mm512_storeu_ph(output_ptr.add(i), y_i);
-//         }
-//     }
-// }
 
 #[inline]
 unsafe fn ext_exp_avx512(x_i: Reg) -> (Reg, Reg) {
@@ -129,6 +96,88 @@ pub fn _scale_softmax(input_ptr: *const f16, output_ptr: *mut f16, length: usize
                 let x1 = *ptr;
                 ptr::write(ptr, x1.ss_div_by_rcp(sum));
             }
+        }
+    }
+}*/
+
+pub fn topk_softmax(
+    // [thread_num, topk_size]
+    input_indices_ptr: *const usize,
+    // [thread_num, topk_size]
+    input_values_ptr: *const f16,
+    // [thread_num]
+    sums_ptr: *const f16,
+    // [topk_size]
+    output_indices_ptr: *mut usize,
+    // [topk_size]
+    output_values_ptr: *mut f16,
+    thread_num: usize,
+    topk_size: usize,
+) {
+    unsafe {
+        // SIMD registers for values and indices (since topk_size < 32)
+        let mut values_reg = _mm512_setzero_ph();
+        let mut indices_reg = [0usize; 32];
+        let mut valid_count = 0;
+        
+        // Track positions for each thread's topk
+        let mut thread_positions = [0usize; 16]; // assume max 16 threads
+        
+        // Merge sorted topk lists using SIMD
+        for output_idx in 0..topk_size {
+            let mut best_value = f16::NEG_INFINITY;
+            let mut best_thread = None;
+            
+            // Find thread with maximum current value
+            for thread_idx in 0..thread_num {
+                if thread_positions[thread_idx] < topk_size {
+                    let val = *input_values_ptr.add(thread_idx * topk_size + thread_positions[thread_idx]);
+                    if val > best_value {
+                        best_value = val;
+                        best_thread = Some(thread_idx);
+                    }
+                }
+            }
+            
+            if let Some(thread_idx) = best_thread {
+                let pos = thread_positions[thread_idx];
+                let idx = *input_indices_ptr.add(thread_idx * topk_size + pos);
+                
+                // Store in arrays for SIMD processing
+                let mut temp_values = [f16::ZERO; 32];
+                _mm512_storeu_ph(temp_values.as_mut_ptr(), values_reg);
+                temp_values[output_idx] = best_value;
+                values_reg = _mm512_loadu_ph(temp_values.as_ptr());
+                
+                indices_reg[output_idx] = idx;
+                thread_positions[thread_idx] += 1;
+                valid_count += 1;
+            }
+        }
+        
+        // Find max for numerical stability
+        let max_val = _mm512_reduce_max_ph(values_reg);
+        let max_vec = _mm512_set1_ph(max_val);
+        
+        // Apply softmax: subtract max and exp
+        let shifted_vec = _mm512_sub_ph(values_reg, max_vec);
+        let exp_vec = exp512(shifted_vec);
+        
+        // Calculate sum for normalization
+        let sum = _mm512_reduce_add_ph(exp_vec);
+        let sum_vec = _mm512_set1_ph(sum);
+        
+        // Normalize
+        let normalized_vec = _mm512_div_ph(exp_vec, sum_vec);
+        
+        // Store results using SIMD
+        let mut temp_values = [f16::ZERO; 32];
+        _mm512_storeu_ph(temp_values.as_mut_ptr(), normalized_vec);
+        
+        // Write output
+        for i in 0..valid_count.min(topk_size) {
+            ptr::write(output_values_ptr.add(i), temp_values[i]);
+            ptr::write(output_indices_ptr.add(i), indices_reg[i]);
         }
     }
 }
