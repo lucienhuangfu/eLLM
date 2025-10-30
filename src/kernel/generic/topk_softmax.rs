@@ -1,4 +1,5 @@
 use crate::kernel::generic::exp::Exp;
+use crate::kernel::generic::merge_topk::merge_topk_lists;
 use std::ops::{AddAssign, Div, Sub};
 use std::ptr;
 
@@ -11,6 +12,7 @@ pub fn topk_softmax<
     input_values_ptr: *const T,
     // [thread_num]
     sums_ptr: *const T,
+    max_positions_ptr: *mut usize,
     // [topk_size]
     output_indices_ptr: *mut usize,
     // [topk_size]
@@ -19,65 +21,33 @@ pub fn topk_softmax<
     topk_size: usize,
 ) {
     unsafe {
-        // Track current position for each thread
-        let mut thread_positions = vec![0usize; thread_num];
-        let mut merged_pairs: Vec<(T, usize)> = Vec::with_capacity(topk_size);
+        // Use the generic merge sort function
+        let merged_count = merge_topk_lists(
+            input_indices_ptr,
+            input_values_ptr,
+            max_positions_ptr,
+            output_indices_ptr,
+            output_values_ptr,
+            thread_num,
+            topk_size,
+        );
 
-        // Find global max for numerical stability
-        let mut max_val = T::default();
-        let mut first = true;
-        for thread_idx in 0..thread_num {
-            if thread_positions[thread_idx] < topk_size {
-                let val =
-                    *input_values_ptr.add(thread_idx * topk_size + thread_positions[thread_idx]);
-                if first {
-                    max_val = val;
-                    first = false;
-                } else if val > max_val {
-                    max_val = val;
-                }
-            }
+        // Get max value directly from first element (merge sort results are ordered)
+        let max_val = *output_values_ptr.add(0);
+        // Calculate adjusted total sum (subtract max for numerical stability)
+        let mut total_sum = T::default();
+        for i in 0..thread_num {
+            total_sum += *sums_ptr.add(i);
         }
 
-        // Merge sorted topk lists to get global topk
-        for _ in 0..topk_size {
-            let mut best_thread = None;
-            let mut best_val = T::default();
+        total_sum -= (max_val * topk_size * thread_num);
 
-            // Find thread with highest current value
-            for thread_idx in 0..thread_num {
-                if thread_positions[thread_idx] < topk_size {
-                    let val = *input_values_ptr
-                        .add(thread_idx * topk_size + thread_positions[thread_idx]);
-                    if best_thread.is_none() || val > best_val {
-                        best_thread = Some(thread_idx);
-                        best_val = val;
-                    }
-                }
-            }
-
-            if let Some(thread_idx) = best_thread {
-                let pos = thread_positions[thread_idx];
-                let idx = *input_indices_ptr.add(thread_idx * topk_size + pos);
-                merged_pairs.push((best_val, idx));
-                thread_positions[thread_idx] += 1;
-            } else {
-                break;
-            }
-        }
-
-        // Apply softmax to merged results
-        let mut sum = T::default();
-        for (val, _) in &mut merged_pairs {
-            *val = (*val - max_val).exp();
-            sum += *val;
-        }
-
-        // Normalize and write output
-        for i in 0..merged_pairs.len() {
-            let normalized_val = merged_pairs[i].0 / sum;
+        // Normalize using the adjusted total sum
+        for i in 0..topk_size {
+            let val = *output_values_ptr.add(i);
+            let exp_val = (val - max_val).exp();
+            let normalized_val = exp_val / total_sum;
             ptr::write(output_values_ptr.add(i), normalized_val);
-            ptr::write(output_indices_ptr.add(i), merged_pairs[i].1);
         }
     }
 }
