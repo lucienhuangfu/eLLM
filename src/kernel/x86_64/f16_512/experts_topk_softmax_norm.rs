@@ -27,7 +27,7 @@ pub fn experts_topk_softmax_norm(
         let mut heap_indices = _mm512_setzero_epi16(); // 32 u16 indices
 
         // Initialize heap with first num_topk elements
-        let mut init_vals = [f16::ZERO; 32];
+        let mut init_vals = [f16::INFINITY; 32];
         let mut init_indices = [0u16; 32];
 
         for idx in 0..num_topk.min(32).min(num_experts) {
@@ -36,7 +36,7 @@ pub fn experts_topk_softmax_norm(
         }
 
         heap_values = _mm512_loadu_ph(init_vals.as_ptr());
-        heap_indices = _mm512_loadu_epi16(init_indices.as_ptr());
+        heap_indices = _mm512_loadu_epi16(initIndices.as_ptr());
 
         // Build min-heap using AVX-512 F16 sorting
         simd_heapify_f16(&mut heap_values, &mut heap_indices, num_topk);
@@ -104,10 +104,12 @@ pub fn experts_topk_softmax_norm(
         // Sort heap to get descending order
         simd_heap_sort_f16(&mut heap_values, &mut heap_indices, num_topk);
 
-        // Calculate sum using AVX-512 F16 operations for normalization
+        // Optimized approach: Calculate exp only for top-k values first
+        let exp_heap_values = exp512(heap_values);
+
+        // Calculate sum for normalization (this is still needed for correct softmax)
         let mut sum_accum = _mm512_setzero_ph();
         let mut i = 0;
-
         while i < num_experts {
             let vals = _mm512_loadu_ph(input_ptr.add(i));
             let exp_vals = exp512(vals);
@@ -115,26 +117,25 @@ pub fn experts_topk_softmax_norm(
             i += 32;
         }
 
-        // Horizontal sum of f16 values
         let sum_f16 = horizontal_sum_f16_native(sum_accum);
 
-        // Apply softmax directly to heap_values (top-k values)
-        let exp_heap_values = exp512(heap_values);
+        // Apply softmax normalization
         let sum_broadcast = _mm512_set1_ph(sum_f16.to_bits());
         let softmax_values = _mm512_div_ph(exp_heap_values, sum_broadcast);
 
-        // Extract results and set outputs
-        let mut final_vals = [f16::ZERO; 32];
-        let mut final_indices = [0u16; 32];
-        _mm512_storeu_ph(final_vals.as_mut_ptr(), softmax_values);
-        _mm512_storeu_epi16(final_indices.as_mut_ptr(), heap_indices);
+        // Clear and store results
+        init_vals = [f16::INFINITY; 32];
+        init_indices = [0u16; 32];
 
+        _mm512_storeu_ph(init_vals.as_mut_ptr(), softmax_values);
+        _mm512_storeu_epi16(init_indices.as_mut_ptr(), heap_indices);
+
+        // Set outputs efficiently
         for k in 0..num_topk {
-            let expert_idx = final_indices[k] as usize;
-            let softmax_value = final_vals[k];
+            let expert_idx = init_indices[k] as usize;
             *experts_indicator_ptr.add(expert_idx) = true;
             *output_indices_ptr.add(expert_idx * num_token + index_token) = true;
-            *(output_values_ptr.add(expert_idx * num_token + index_token)) = softmax_value;
+            *(output_values_ptr.add(expert_idx * num_token + index_token)) = init_vals[k];
         }
     }
 }
