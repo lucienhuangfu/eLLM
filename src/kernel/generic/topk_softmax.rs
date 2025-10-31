@@ -37,7 +37,7 @@ pub fn topk_softmax<
         // Calculate adjusted total sum (subtract max for numerical stability)
         let mut total_sum = T::default();
         for i in 0..thread_num {
-            total_sum += *sums_ptr.add(i);
+            total_sum += (*sums_ptr.add(i))*(*input_values_ptr.add(i*topk_size) - max_val).exp();
         }
 
         total_sum -= (max_val * topk_size * thread_num);

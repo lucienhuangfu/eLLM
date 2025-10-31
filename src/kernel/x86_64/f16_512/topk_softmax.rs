@@ -31,19 +31,12 @@ pub fn topk_softmax(
         );
         
         // Get max value directly from first element (merge sort results are ordered)
-        let max_val = if merged_count > 0 {
-            *output_values_ptr.add(0)
-        } else {
-            f16::ZERO
-        };
-        
+        let max_val = *output_values_ptr.add(0)
+    
         // Calculate adjusted total sum (subtract max for numerical stability)
         let mut total_sum = f16::ZERO;
         for i in 0..thread_num {
-            let thread_sum = *sums_ptr.add(i);
-            // Adjust each thread's sum by subtracting max and applying exp
-            let adjusted_sum = (thread_sum - max_val).exp();
-            total_sum += adjusted_sum;
+            total_sum += (*sums_ptr.add(i))*(*input_values_ptr.add(i*topk_size) - max_val).exp();
         }
         
         // Use SIMD for softmax computation directly on output
