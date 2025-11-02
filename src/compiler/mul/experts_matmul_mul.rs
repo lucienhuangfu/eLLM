@@ -18,8 +18,12 @@ pub struct ExpertsMatmulMul<T> {
     input_ptr: ConstPtr<T>,
     down_weight_ptr: ConstPtr<T>,
     // Expert routing information
+    // sorted [num_experts, [(token_index, weight)]]
+    // [num_experts]
     experts_indicator: MutPtr<bool>,
+    // [num_experts, batch_size]
     indice_ptr: MutPtr<bool>,
+    // [num_experts, batch_size]
     weight_ptr: MutPtr<T>,
     output_ptr: MutPtr<T>,
     a_row: usize,

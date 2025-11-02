@@ -106,6 +106,7 @@ where
             format!("{}.router_probs", self.scope_name),
         );
 
+        // nonlinear_product [num_experts, batch_size, intermediate_size]
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
             &self.experts_up_weight,

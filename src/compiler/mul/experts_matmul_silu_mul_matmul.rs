@@ -20,7 +20,10 @@ pub struct ExpertsMatmulSilu<T> {
     gate_weight_ptr: ConstPtr<T>,
     up_weight_ptr: ConstPtr<T>,
     // Expert routing information
+    // sorted [num_experts, [(token_index, weight)]]
+    // [num_experts]
     experts_indicator: MutPtr<bool>,
+    // [num_experts, batch_size]
     indice_ptr: MutPtr<bool>,
     // [num_experts, sequence_chunk_size*batch_size, intermediate_size]
     output_ptr: MutPtr<T>,
