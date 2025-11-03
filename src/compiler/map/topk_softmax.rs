@@ -7,6 +7,8 @@ use crate::kernel;
 use crate::kernel::generic::from_usize::FromUsize;
 use crate::kernel::generic::sqrt::Sqrt;
 
+use crate::memory::allocator::allocate_init;
+
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {
     input_indices_ptr: ConstPtr<usize>,
@@ -14,6 +16,7 @@ pub struct TopKSoftmax<T> {
     sums_ptr: ConstPtr<T>,
     output_indices_ptr: MutPtr<usize>,
     output_values_ptr: MutPtr<T>,
+    output_sequences: MutPtr<usize>,
     batch_size: usize,
     topk_size: usize,
 }
@@ -25,15 +28,28 @@ impl<T: Sqrt> TopKSoftmax<T> {
         sums_ptr: *const T,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
+        output_sequences: *mut usize,
         batch_size: usize,
         topk_size: usize,
     ) -> Self {
+
+        let max_positions_ptr: *mut usize = allocate_init::<usize>(batch_size, 0usize);
+        
+        /* 
+        unsafe {
+            let layout = std::alloc::Layout::from_size_align(batch_size * std::mem::size_of::<usize>(), std::mem::align_of::<usize>()).unwrap();
+            let ptr = std::alloc::alloc_zeroed(layout) as *mut usize;
+            ptr
+        };*/
+
+
         Self {
             input_indices_ptr: ConstPtr { ptr: input_indices_ptr },
             input_values_ptr: ConstPtr { ptr: input_values_ptr },
             sums_ptr: ConstPtr { ptr: sums_ptr },
             output_indices_ptr: MutPtr { ptr: output_indices_ptr },
             output_values_ptr: MutPtr { ptr: output_values_ptr },
+            output_sequences: MutPtr { ptr: output_sequences },
             batch_size,
             topk_size,
         }
@@ -62,7 +78,9 @@ impl<T: Sqrt> TopKSoftmax<T> {
                 unsafe {
                     let input_stride = index * self.topk_size * thread_num;
                     let output_stride = index * self.topk_size;
-                    self.compute(input_indices_ptr.add(input_stride), input_values_ptr.add(input_stride), sums_ptr.add(index), output_indices_ptr.add(output_stride), output_values_ptr.add(output_stride), thread_num, self.topk_size);
+                    let token_index = index + position_begin * self.batch_size;
+                    let token_ptr = self.output_sequences.ptr.add(token_index);
+                    self.compute(input_indices_ptr.add(input_stride), input_values_ptr.add(input_stride), sums_ptr.add(index), output_indices_ptr.add(output_stride), output_values_ptr.add(output_stride), token_index, thread_num, self.topk_size);
                 }
                 col_index += 1;
                 if col_index == batch_size {
@@ -75,20 +93,23 @@ impl<T: Sqrt> TopKSoftmax<T> {
 }
 
 impl<T: Sqrt> TopKSoftmaxTrait<T> for TopKSoftmax<T> {
-    default fn compute(&self, input_indices_ptr: *const usize, input_values_ptr: *const T, sums_ptr: *const T, output_indices_ptr: *mut usize, output_values_ptr: *mut T, thread_num: usize, topk_size: usize) {
-        /* 
-        kernel::generic::softmax::softmax(
-            input_ptr,
-            sum_ptr.ptr,
-            max_ptr.ptr,
-            output_ptr,
-            length,
-        );*/
+    default fn compute(&self, input_indices_ptr: *const usize, input_values_ptr: *const T, sums_ptr: *const T, output_indices_ptr: *mut usize, output_values_ptr: *mut T, output_token_ptr: *mut usize, thread_num: usize, topk_size: usize) {
+        
+        kernel::generic::topk_softmax::topk_softmax(
+            input_indices_ptr,
+            input_values_ptr,
+            sums_ptr,
+            output_indices_ptr,
+            output_values_ptr,
+            output_token_ptr,
+            thread_num,
+            topk_size,
+        );
     }
 }
 
 impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
-    fn compute(&self, input_indices_ptr: *const usize, input_values_ptr: *const f16, sums_ptr: *const f16, output_indices_ptr: *mut usize, output_values_ptr: *mut f16, thread_num: usize, topk_size: usize) {
+    fn compute(&self, input_indices_ptr: *const usize, input_values_ptr: *const f16, sums_ptr: *const f16, output_indices_ptr: *mut usize, output_values_ptr: *mut f16, output_token_ptr: *mut usize, thread_num: usize, topk_size: usize) {
         /* 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::softmax::softmax(
@@ -111,7 +132,7 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
 }
 
 impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
-    fn compute(&self, input_indices_ptr: *const usize, input_values_ptr: *const f32, sums_ptr: *const f32, output_indices_ptr: *mut usize, output_values_ptr: *mut f32, thread_num: usize, topk_size: usize) {
+    fn compute(&self, input_indices_ptr: *const usize, input_values_ptr: *const f32, sums_ptr: *const f32, output_indices_ptr: *mut usize, output_values_ptr: *mut f32, output_token_ptr: *mut usize, thread_num: usize, topk_size: usize) {
         /*
         kernel::generic::softmax::softmax(
             input_ptr,

@@ -625,6 +625,7 @@ where
         &self,
         indices_ptr: *const usize,
         sums_tensor: &Tensor<T>,
+        output_sequences: *mut usize,
         num_topk: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
@@ -645,6 +646,7 @@ where
             sums_tensor.data,
             indice_ptr,
             value_tensor.data,
+            output_sequences,
             self.shape[1],
             num_topk,
         ));

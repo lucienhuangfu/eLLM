@@ -11,11 +11,14 @@ pub fn topk_softmax(
     input_values_ptr: *const f16,
     // [thread_num]
     sums_ptr: *const f16,
-    max_positions_ptr: *mut usize,
+
+    // max_positions_ptr: *mut usize,
     // [topk_size]
     output_indices_ptr: *mut usize,
     // [topk_size]
     output_values_ptr: *mut f16,
+    // [1]
+    output_token_ptr: *mut usize,
     thread_num: usize,
     topk_size: usize,
 ) {
@@ -23,9 +26,11 @@ pub fn topk_softmax(
         let merged_count = merge_topk_lists(
             input_indices_ptr,
             input_values_ptr,
-            max_positions_ptr,
+            // max_positions_ptr,
             output_indices_ptr,
             output_values_ptr,
+            // [1]
+            output_token_ptr,
             thread_num,
             topk_size,
         );
