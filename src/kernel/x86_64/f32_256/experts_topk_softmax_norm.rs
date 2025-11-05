@@ -1,16 +1,13 @@
 // use crate::kernel::generic::exp::Exp;
+use crate::kernel::common::heap::FixedMinHeap;
 #[cfg(target_arch = "x86_64")]
 use crate::kernel::x86_64::f32_256::bitonic_sort::bitonic_sort_f32x8_desc;
-#[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
-use std::cmp::{Ordering, Reverse};
-// use std::collections::BinaryHeap;
-// use std::ops::{AddAssign, Div, Sub};
-use std::ptr;
 
-/*
 pub fn experts_topk_softmax_norm(
     input_ptr: *const f32,
+    topk_values_ptr: *mut f32,
+    topk_indices_ptr: *mut usize,
     // [num_experts]
     experts_indicator_ptr: *mut bool,
     // token_size = sequence_chunk_size * batch_size
@@ -22,131 +19,47 @@ pub fn experts_topk_softmax_norm(
     num_experts: usize,
     num_topk: usize,
 ) {
+    unsafe {
+        get_topk(
+            input_ptr,
+            topk_values_ptr,
+            topk_indices_ptr,
+            num_experts,
+            num_topk,
+        );
+        let (max_val, denom) = softmax_stats_avx(input_ptr, num_experts);
+        softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
 
-
-}
-*/
-
-#[derive(Copy, Clone)]
-struct HeapElem {
-    value: f32,
-    index: i32,
-}
-impl HeapElem {
-    const NEG_INF: HeapElem = HeapElem {
-        value: f32::NEG_INFINITY,
-        index: -1,
-    };
-}
-impl PartialEq for HeapElem {
-    fn eq(&self, other: &Self) -> bool {
-        self.index == other.index && self.value.to_bits() == other.value.to_bits()
-    }
-}
-impl Eq for HeapElem {}
-impl PartialOrd for HeapElem {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for HeapElem {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.value
-            .total_cmp(&other.value)
-            .then_with(|| self.index.cmp(&other.index))
-    }
-}
-
-struct FixedMinHeap<const CAP: usize> {
-    data: [HeapElem; CAP],
-    len: usize,
-    limit: usize,
-}
-impl<const CAP: usize> FixedMinHeap<CAP> {
-    fn new(limit: usize) -> Self {
-        assert!(limit <= CAP);
-        Self {
-            data: [HeapElem::NEG_INF; CAP],
-            len: 0,
-            limit,
-        }
-    }
-    fn len(&self) -> usize {
-        self.len
-    }
-    fn push(&mut self, elem: HeapElem) {
-        if self.limit == 0 {
-            return;
-        }
-        if self.len < self.limit {
-            self.data[self.len] = elem;
-            self.sift_up(self.len);
-            self.len += 1;
-        } else if elem > self.data[0] {
-            self.data[0] = elem;
-            self.sift_down(0);
-        }
-    }
-    fn sort_desc(&mut self) {
-        self.data[..self.len].sort_unstable_by(|a, b| b.cmp(a));
-    }
-    fn as_slice(&self) -> &[HeapElem] {
-        &self.data[..self.len]
-    }
-    fn sift_up(&mut self, mut idx: usize) {
-        while idx > 0 {
-            let parent = (idx - 1) >> 1;
-            if self.data[idx] < self.data[parent] {
-                self.data.swap(idx, parent);
-                idx = parent;
-            } else {
-                break;
-            }
-        }
-    }
-    fn sift_down(&mut self, mut idx: usize) {
-        let len = self.len;
-        loop {
-            let left = (idx << 1) + 1;
-            if left >= len {
-                break;
-            }
-            let right = left + 1;
-            let smallest = if right < len && self.data[right] < self.data[left] {
-                right
-            } else {
-                left
-            };
-            if self.data[smallest] < self.data[idx] {
-                self.data.swap(idx, smallest);
-                idx = smallest;
-            } else {
-                break;
-            }
+        for i in 0..num_topk {
+            let expert_idx = *topk_indices_ptr.add(i);
+            *experts_indicator_ptr.add(expert_idx) = true;
+            let offset = expert_idx * num_token + index_token;
+            *indices_ptr.add(offset) = true;
+            *value_ptr.add(offset) = *topk_values_ptr.add(i);
         }
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[inline(always)]
 pub unsafe fn get_topk(
-    input_ptr: *const f32,
+    in_ptr: *const f32,
+    out_values: *mut f32,
+    out_indices: *mut usize,
     len: usize,
     topk: usize,
-    out_values: *mut f32,
-    out_indices: *mut i32,
 ) {
-    assert!(!input_ptr.is_null());
-    assert!(!out_values.is_null());
-    assert!(!out_indices.is_null());
-    assert!(len % 8 == 0, "len must be divisible by 8");
-    assert!(topk > 0 && topk <= 8, "topk must be within 1..=8");
-    assert!(topk <= len, "topk cannot exceed len");
+    debug_assert!(!in_ptr.is_null());
+    debug_assert!(!out_values.is_null());
+    debug_assert!(!out_indices.is_null());
+    debug_assert!(len % 8 == 0, "len must be divisible by 8");
+    debug_assert!(topk > 0 && topk <= 8, "topk must be within 1..=8");
+    debug_assert!(topk <= len, "topk cannot exceed len");
 
     let lane_offsets = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
-    let mut heap = FixedMinHeap::<8>::new(topk);
+    let mut heap = FixedMinHeap::new(out_values, out_indices, topk);
 
     for chunk_start in (0..len).step_by(8) {
-        let values = _mm256_loadu_ps(input_ptr.add(chunk_start));
+        let values = _mm256_loadu_ps(in_ptr.add(chunk_start));
         let base = _mm256_set1_epi32(chunk_start as i32);
         let indices = _mm256_add_epi32(base, lane_offsets);
         let (sorted_vals, sorted_idx) = bitonic_sort_f32x8_desc(values, indices);
@@ -158,25 +71,100 @@ pub unsafe fn get_topk(
 
         let chunk_take = topk.min(8);
         for lane in 0..chunk_take {
-            heap.push(HeapElem {
-                value: chunk_vals[lane],
-                index: chunk_idx[lane],
-            });
+            heap.push(chunk_vals[lane], chunk_idx[lane] as usize);
         }
     }
-
     debug_assert_eq!(heap.len(), topk);
     heap.sort_desc();
-    for (i, elem) in heap.as_slice().iter().enumerate() {
-        ptr::write(out_values.add(i), elem.value);
-        ptr::write(out_indices.add(i), elem.index);
+}
+
+#[inline(always)]
+unsafe fn softmax_stats_avx(input_ptr: *const f32, len: usize) -> (f32, f32) {
+    debug_assert!(!input_ptr.is_null());
+    debug_assert!(len % 8 == 0 && len > 0);
+    let mut max_vec = _mm256_loadu_ps(input_ptr);
+    let mut offset = 8;
+    while offset < len {
+        let vals = _mm256_loadu_ps(input_ptr.add(offset));
+        max_vec = _mm256_max_ps(max_vec, vals);
+        offset += 8;
     }
+    let mut tmp = _mm256_permute2f128_ps(max_vec, max_vec, 0x01);
+    max_vec = _mm256_max_ps(max_vec, tmp);
+    tmp = _mm256_shuffle_ps(max_vec, max_vec, 0x4E);
+    max_vec = _mm256_max_ps(max_vec, tmp);
+    tmp = _mm256_shuffle_ps(max_vec, max_vec, 0xB1);
+    max_vec = _mm256_max_ps(max_vec, tmp);
+    let max_scalar = _mm_cvtss_f32(_mm256_castps256_ps128(max_vec));
+    let max_broadcast = _mm256_set1_ps(max_scalar);
+
+    let mut sum_vec = _mm256_setzero_ps();
+    let mut sum_offset = 0;
+    while sum_offset < len {
+        let vals = _mm256_loadu_ps(input_ptr.add(sum_offset));
+        let shifted = _mm256_sub_ps(vals, max_broadcast);
+        let exp_vals = exp256_ps(shifted);
+        sum_vec = _mm256_add_ps(sum_vec, exp_vals);
+        sum_offset += 8;
+    }
+    let mut acc = _mm256_hadd_ps(sum_vec, sum_vec);
+    acc = _mm256_hadd_ps(acc, acc);
+    let swapped = _mm256_permute2f128_ps(acc, acc, 0x01);
+    let total = _mm256_add_ps(acc, swapped);
+    let mut denom = _mm_cvtss_f32(_mm256_castps256_ps128(total));
+    denom = denom.max(f32::MIN_POSITIVE);
+    (max_scalar, denom)
+}
+
+#[inline(always)]
+unsafe fn softmax_topk_inplace(out_values: *mut f32, topk: usize, max_val: f32, denom: f32) {
+    debug_assert!(!out_values.is_null());
+    debug_assert!(topk > 0 && topk <= 8);
+    let effective_denom = denom.max(f32::MIN_POSITIVE);
+    let mut lane_buf = [f32::NEG_INFINITY; 8];
+    for i in 0..topk {
+        lane_buf[i] = *out_values.add(i);
+    }
+    let values = _mm256_loadu_ps(lane_buf.as_ptr());
+    let shifted = _mm256_sub_ps(values, _mm256_set1_ps(max_val));
+    let exp_vals = exp256_ps(shifted);
+    let normalized = _mm256_mul_ps(exp_vals, _mm256_set1_ps(1.0 / effective_denom));
+    _mm256_storeu_ps(lane_buf.as_mut_ptr(), normalized);
+    for i in 0..topk {
+        *out_values.add(i) = lane_buf[i];
+    }
+}
+
+#[inline(always)]
+unsafe fn exp256_ps(x: __m256) -> __m256 {
+    let max_x = _mm256_set1_ps(88.3762626647949);
+    let min_x = _mm256_set1_ps(-88.3762626647949);
+    let clamped = _mm256_min_ps(_mm256_max_ps(x, min_x), max_x);
+    let log2e = _mm256_set1_ps(1.4426950408889634);
+    let ln2 = _mm256_set1_ps(0.6931471805599453);
+    let fx = _mm256_mul_ps(clamped, log2e);
+    let fx_floor = _mm256_floor_ps(fx);
+    let r = _mm256_sub_ps(clamped, _mm256_mul_ps(fx_floor, ln2));
+    let r2 = _mm256_mul_ps(r, r);
+    let r3 = _mm256_mul_ps(r2, r);
+    let r4 = _mm256_mul_ps(r2, r2);
+    let r5 = _mm256_mul_ps(r4, r);
+    let mut poly = _mm256_set1_ps(1.0);
+    poly = _mm256_add_ps(poly, r);
+    poly = _mm256_add_ps(poly, _mm256_mul_ps(r2, _mm256_set1_ps(0.5)));
+    poly = _mm256_add_ps(poly, _mm256_mul_ps(r3, _mm256_set1_ps(0.16666667)));
+    poly = _mm256_add_ps(poly, _mm256_mul_ps(r4, _mm256_set1_ps(0.04166667)));
+    poly = _mm256_add_ps(poly, _mm256_mul_ps(r5, _mm256_set1_ps(0.008333333)));
+    let n = _mm256_cvttps_epi32(fx_floor);
+    let exponent = _mm256_add_epi32(n, _mm256_set1_epi32(127));
+    let pow2n = _mm256_castsi256_ps(_mm256_slli_epi32(exponent, 23));
+    _mm256_mul_ps(poly, pow2n)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_ulps_eq;
+    use approx::{assert_relative_eq, assert_ulps_eq};
 
     #[test]
     fn test_get_topk() {
@@ -186,17 +174,22 @@ mod tests {
         let data = [
             0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
         ];
+        let topk = 4;
         let mut out_vals = [0.0f32; 4];
-        let mut out_idx = [0i32; 4];
-
+        let mut out_idx = [0usize; 4];
         unsafe {
             get_topk(
                 data.as_ptr(),
-                data.len(),
-                4,
                 out_vals.as_mut_ptr(),
                 out_idx.as_mut_ptr(),
+                data.len(),
+                topk,
             );
+        }
+        let raw_vals = out_vals;
+        unsafe {
+            let (max_val, denom) = softmax_stats_avx(data.as_ptr(), data.len());
+            softmax_topk_inplace(out_vals.as_mut_ptr(), topk, max_val, denom);
         }
 
         let mut expected: Vec<(f32, usize)> = data
@@ -206,30 +199,59 @@ mod tests {
             .map(|(idx, val)| (val, idx))
             .collect();
         expected.sort_by(|a, b| b.0.total_cmp(&a.0));
-
-        for i in 0..4 {
-            assert_ulps_eq!(out_vals[i], expected[i].0);
-            assert_eq!(out_idx[i], expected[i].1 as i32);
+        for i in 0..topk {
+            assert_ulps_eq!(raw_vals[i], expected[i].0);
+            assert_eq!(out_idx[i], expected[i].1);
+        }
+        let max_val = expected[0].0;
+        let denom = data.iter().map(|v| (v - max_val).exp()).sum::<f32>();
+        for i in 0..topk {
+            let expected_prob = ((expected[i].0 - max_val).exp()) / denom;
+            assert_relative_eq!(out_vals[i], expected_prob, epsilon = 1e-3);
         }
     }
 
     #[test]
-    fn test_fixed_min_heap_topk() {
-        let samples = [1.5, -0.5, 2.25, 4.0, 3.5];
-        let mut heap = FixedMinHeap::<8>::new(3);
-        for (idx, &val) in samples.iter().enumerate() {
-            heap.push(HeapElem {
-                value: val,
-                index: idx as i32,
-            });
+    fn test_softmax_stats_avx() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            return;
         }
-        assert_eq!(heap.len(), 3);
-        heap.sort_desc();
-        let slice = heap.as_slice();
-        let expected = [(4.0, 3), (3.5, 4), (2.25, 2)];
-        for (elem, exp) in slice.iter().zip(expected.iter()) {
-            assert_ulps_eq!(elem.value, exp.0);
-            assert_eq!(elem.index, exp.1);
+        let data = [
+            -0.5, 0.25, 3.75, -2.0, 6.0, 1.75, -4.25, 2.5, 0.0, 5.25, -1.25, 4.0, 3.0, -3.5, 7.5,
+            2.25,
+        ];
+        let expected_max = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let expected_denom: f32 = data.iter().map(|v| (v - expected_max).exp()).sum();
+        let (max_val, denom) = unsafe { softmax_stats_avx(data.as_ptr(), data.len()) };
+        assert_relative_eq!(max_val, expected_max, epsilon = 1e-6);
+        assert_relative_eq!(denom, expected_denom, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn test_softmax_topk_inplace() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            return;
+        }
+        let data = [
+            0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
+        ];
+        let topk = 4;
+        let mut expected: Vec<(f32, usize)> = data
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(idx, val)| (val, idx))
+            .collect();
+        expected.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let mut topk_vals = [expected[0].0, expected[1].0, expected[2].0, expected[3].0];
+        let (max_val, denom) = unsafe { softmax_stats_avx(data.as_ptr(), data.len()) };
+        unsafe {
+            softmax_topk_inplace(topk_vals.as_mut_ptr(), topk, max_val, denom);
+        }
+        let norm: f32 = data.iter().map(|v| (v - max_val).exp()).sum();
+        for i in 0..topk {
+            let expected_prob = ((expected[i].0 - max_val).exp()) / norm;
+            assert_relative_eq!(topk_vals[i], expected_prob, epsilon = 1e-3);
         }
     }
 }
