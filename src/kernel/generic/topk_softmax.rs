@@ -23,17 +23,9 @@ pub fn topk_softmax<
     topk_size: usize,
 ) {
     unsafe {
-        // Use the generic merge sort function
-        let merged_count = merge_topk_lists(
-            input_indices_ptr,
-            input_values_ptr,
-            // max_positions_ptr,
-            output_indices_ptr,
-            output_values_ptr,
-            output_token_ptr,
-            thread_num,
-            topk_size,
-        );
+        // get topk from input
+        
+
 
         // Get max value directly from first element (merge sort results are ordered)
         let max_val = *output_values_ptr.add(0);

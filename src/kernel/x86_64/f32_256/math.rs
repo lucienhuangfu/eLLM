@@ -1,5 +1,33 @@
 use std::arch::x86_64::*;
 
+/* 
+#[inline(always)]
+unsafe fn exp256_ps(x: __m256) -> __m256 {
+    let max_x = _mm256_set1_ps(88.3762626647949);
+    let min_x = _mm256_set1_ps(-88.3762626647949);
+    let clamped = _mm256_min_ps(_mm256_max_ps(x, min_x), max_x);
+    let log2e = _mm256_set1_ps(1.4426950408889634);
+    let ln2 = _mm256_set1_ps(0.6931471805599453);
+    let fx = _mm256_mul_ps(clamped, log2e);
+    let fx_floor = _mm256_floor_ps(fx);
+    let r = _mm256_sub_ps(clamped, _mm256_mul_ps(fx_floor, ln2));
+    let r2 = _mm256_mul_ps(r, r);
+    let r3 = _mm256_mul_ps(r2, r);
+    let r4 = _mm256_mul_ps(r2, r2);
+    let r5 = _mm256_mul_ps(r4, r);
+    let mut poly = _mm256_set1_ps(1.0);
+    poly = _mm256_add_ps(poly, r);
+    poly = _mm256_add_ps(poly, _mm256_mul_ps(r2, _mm256_set1_ps(0.5)));
+    poly = _mm256_add_ps(poly, _mm256_mul_ps(r3, _mm256_set1_ps(0.16666667)));
+    poly = _mm256_add_ps(poly, _mm256_mul_ps(r4, _mm256_set1_ps(0.04166667)));
+    poly = _mm256_add_ps(poly, _mm256_mul_ps(r5, _mm256_set1_ps(0.008333333)));
+    let n = _mm256_cvttps_epi32(fx_floor);
+    let exponent = _mm256_add_epi32(n, _mm256_set1_epi32(127));
+    let pow2n = _mm256_castsi256_ps(_mm256_slli_epi32(exponent, 23));
+    _mm256_mul_ps(poly, pow2n)
+}*/
+
+
 #[inline]
 pub unsafe fn exp256(x: __m256) -> __m256 {
     let mut x = x;
