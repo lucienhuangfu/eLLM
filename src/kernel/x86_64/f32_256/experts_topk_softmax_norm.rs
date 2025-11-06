@@ -1,8 +1,11 @@
 // use crate::kernel::generic::exp::Exp;
-use crate::kernel::common::heap::FixedMinHeap;
-#[cfg(target_arch = "x86_64")]
-use crate::kernel::x86_64::f32_256::bitonic_sort::bitonic_sort_f32x8_desc;
+
 use std::arch::x86_64::*;
+use crate::kernel::common::heap::FixedMinHeap;
+use super::math::exp256;
+
+use crate::kernel::x86_64::f32_256::bitonic_sort::bitonic_sort_f32x8_desc;
+
 
 pub fn experts_topk_softmax_norm(
     input_ptr: *const f32,
@@ -10,8 +13,7 @@ pub fn experts_topk_softmax_norm(
     topk_indices_ptr: *mut usize,
     // [num_experts]
     experts_indicator_ptr: *mut bool,
-    // token_size = sequence_chunk_size * batch_size
-    // [num_experts, token_size]
+    // [num_experts, batch_size]
     indices_ptr: *mut bool,
     value_ptr: *mut f32,
     index_token: usize,
@@ -78,6 +80,8 @@ pub unsafe fn get_topk(
     heap.sort_desc();
 }
 
+
+
 #[inline(always)]
 unsafe fn softmax_stats_avx(input_ptr: *const f32, len: usize) -> (f32, f32) {
     debug_assert!(!input_ptr.is_null());
@@ -103,7 +107,7 @@ unsafe fn softmax_stats_avx(input_ptr: *const f32, len: usize) -> (f32, f32) {
     while sum_offset < len {
         let vals = _mm256_loadu_ps(input_ptr.add(sum_offset));
         let shifted = _mm256_sub_ps(vals, max_broadcast);
-        let exp_vals = exp256_ps(shifted);
+        let exp_vals = exp256(shifted);
         sum_vec = _mm256_add_ps(sum_vec, exp_vals);
         sum_offset += 8;
     }
@@ -127,7 +131,7 @@ unsafe fn softmax_topk_inplace(out_values: *mut f32, topk: usize, max_val: f32, 
     }
     let values = _mm256_loadu_ps(lane_buf.as_ptr());
     let shifted = _mm256_sub_ps(values, _mm256_set1_ps(max_val));
-    let exp_vals = exp256_ps(shifted);
+    let exp_vals = exp256(shifted);
     let normalized = _mm256_mul_ps(exp_vals, _mm256_set1_ps(1.0 / effective_denom));
     _mm256_storeu_ps(lane_buf.as_mut_ptr(), normalized);
     for i in 0..topk {
@@ -135,31 +139,7 @@ unsafe fn softmax_topk_inplace(out_values: *mut f32, topk: usize, max_val: f32, 
     }
 }
 
-#[inline(always)]
-unsafe fn exp256_ps(x: __m256) -> __m256 {
-    let max_x = _mm256_set1_ps(88.3762626647949);
-    let min_x = _mm256_set1_ps(-88.3762626647949);
-    let clamped = _mm256_min_ps(_mm256_max_ps(x, min_x), max_x);
-    let log2e = _mm256_set1_ps(1.4426950408889634);
-    let ln2 = _mm256_set1_ps(0.6931471805599453);
-    let fx = _mm256_mul_ps(clamped, log2e);
-    let fx_floor = _mm256_floor_ps(fx);
-    let r = _mm256_sub_ps(clamped, _mm256_mul_ps(fx_floor, ln2));
-    let r2 = _mm256_mul_ps(r, r);
-    let r3 = _mm256_mul_ps(r2, r);
-    let r4 = _mm256_mul_ps(r2, r2);
-    let r5 = _mm256_mul_ps(r4, r);
-    let mut poly = _mm256_set1_ps(1.0);
-    poly = _mm256_add_ps(poly, r);
-    poly = _mm256_add_ps(poly, _mm256_mul_ps(r2, _mm256_set1_ps(0.5)));
-    poly = _mm256_add_ps(poly, _mm256_mul_ps(r3, _mm256_set1_ps(0.16666667)));
-    poly = _mm256_add_ps(poly, _mm256_mul_ps(r4, _mm256_set1_ps(0.04166667)));
-    poly = _mm256_add_ps(poly, _mm256_mul_ps(r5, _mm256_set1_ps(0.008333333)));
-    let n = _mm256_cvttps_epi32(fx_floor);
-    let exponent = _mm256_add_epi32(n, _mm256_set1_epi32(127));
-    let pow2n = _mm256_castsi256_ps(_mm256_slli_epi32(exponent, 23));
-    _mm256_mul_ps(poly, pow2n)
-}
+
 
 #[cfg(test)]
 mod tests {
@@ -254,4 +234,77 @@ mod tests {
             assert_relative_eq!(topk_vals[i], expected_prob, epsilon = 1e-3);
         }
     }
+
+    #[test]
+    fn test_experts_topk_softmax_norm() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            return;
+        }
+        const NUM_EXPERTS: usize = 16;
+        const NUM_TOPK: usize = 4;
+        const NUM_TOKEN: usize = 3;
+        const INDEX_TOKEN: usize = 1;
+        let data = [
+            0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
+        ];
+        let mut topk_vals = [0.0f32; NUM_TOPK];
+        let mut topk_idx = [0usize; NUM_TOPK];
+        let mut expert_flags = [false; NUM_EXPERTS];
+        let mut indices = [false; NUM_EXPERTS * NUM_TOKEN];
+        let mut values = [0.0f32; NUM_EXPERTS * NUM_TOKEN];
+
+        unsafe {
+            experts_topk_softmax_norm(
+                data.as_ptr(),
+                topk_vals.as_mut_ptr(),
+                topk_idx.as_mut_ptr(),
+                expert_flags.as_mut_ptr(),
+                indices.as_mut_ptr(),
+                values.as_mut_ptr(),
+                INDEX_TOKEN,
+                NUM_TOKEN,
+                NUM_EXPERTS,
+                NUM_TOPK,
+            );
+        }
+
+        let mut expected: Vec<(usize, f32)> = data
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(idx, val)| (idx, val))
+            .collect();
+        expected.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let max_val = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let denom: f32 = data.iter().map(|v| (v - max_val).exp()).sum();
+
+        let mut is_topk = [false; NUM_EXPERTS];
+        for i in 0..NUM_TOPK {
+            let idx = expected[i].0;
+            let prob = ((expected[i].1 - max_val).exp()) / denom;
+            assert_eq!(topk_idx[i], idx);
+            assert_relative_eq!(topk_vals[i], prob, epsilon = 1e-3);
+            assert!(expert_flags[idx]);
+            let offset = idx * NUM_TOKEN + INDEX_TOKEN;
+            assert!(indices[offset]);
+            assert_relative_eq!(values[offset], prob, epsilon = 1e-3);
+            is_topk[idx] = true;
+        }
+
+        for expert in 0..NUM_EXPERTS {
+            if !is_topk[expert] {
+                assert!(!expert_flags[expert]);
+            }
+            for token in 0..NUM_TOKEN {
+                let offset = expert * NUM_TOKEN + token;
+                if is_topk[expert] && token == INDEX_TOKEN {
+                    continue;
+                }
+                assert!(!indices[offset]);
+                assert_relative_eq!(values[offset], 0.0, epsilon = 1e-6);
+            }
+        }
+    }
+
+    
 }
