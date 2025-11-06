@@ -8,7 +8,6 @@ pub fn experts_topk_softmax_norm<
     input_ptr: *const T,
     // [num_experts]
     experts_indicator_ptr: *mut bool,
-    // token_size = sequence_chunk_size * batch_size
     // [num_experts, token_size]
     indices_ptr: *mut bool,
     value_ptr: *mut T,
@@ -62,99 +61,122 @@ pub fn experts_topk_softmax_norm<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_ulps_eq;
+    use approx::{assert_relative_eq, assert_ulps_eq};
 
     #[test]
-    fn test_experts_topk_softmax_norm() {
-        // Test data: 128 experts with random-like values
-        let mut input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1) % 10.0).collect();
-        // Make some values clearly larger for predictable top-k
-        input[120] = 15.0; // largest
-        input[100] = 14.0;
-        input[80] = 13.0;
-        input[60] = 12.0;
-        input[40] = 11.0;
-        input[20] = 10.5;
-        input[10] = 10.2;
-        input[5] = 10.1; // 8th largest
+    fn test_experts_topk_softmax_norm_basic() {
+        const NUM_EXPERTS: usize = 16;
+        const NUM_TOPK: usize = 4;
+        const NUM_TOKEN: usize = 3;
+        const INDEX_TOKEN: usize = 1;
+        let data = [
+            0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
+        ];
+        let mut experts_indicator = [false; NUM_EXPERTS];
+        let mut indices = [false; NUM_EXPERTS * NUM_TOKEN];
+        let mut values = [0.0f32; NUM_EXPERTS * NUM_TOKEN];
 
-        let num_experts = 128;
-        let num_topk = 8;
-        let num_token = 32;
-        let index_token = 5;
-
-        let mut experts_indicator = vec![false; num_experts];
-        let mut indices = vec![false; num_experts * num_token];
-        let mut values = vec![0.0f32; num_experts * num_token];
-
-        experts_topk_softmax_norm(
-            input.as_ptr(),
-            experts_indicator.as_mut_ptr(),
-            indices.as_mut_ptr(),
-            values.as_mut_ptr(),
-            index_token,
-            num_token,
-            num_experts,
-            num_topk,
-        );
-
-        // Expected top-8 experts: 120, 100, 80, 60, 40, 20, 10, 5
-        let expected_experts = [120, 100, 80, 60, 40, 20, 10, 5];
-        for &expert_idx in &expected_experts {
-            assert!(
-                experts_indicator[expert_idx],
-                "Expert {} should be selected",
-                expert_idx
+        unsafe {
+            super::experts_topk_softmax_norm(
+                data.as_ptr(),
+                experts_indicator.as_mut_ptr(),
+                indices.as_mut_ptr(),
+                values.as_mut_ptr(),
+                INDEX_TOKEN,
+                NUM_TOKEN,
+                NUM_EXPERTS,
+                NUM_TOPK,
             );
         }
 
-        // Check that only top-k experts are marked
-        let true_count = experts_indicator.iter().filter(|&&x| x).count();
-        assert_eq!(true_count, num_topk);
+        let mut expected: Vec<(usize, f32)> = data
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(idx, val)| (idx, val))
+            .collect();
+        expected.sort_by(|a, b| b.1.total_cmp(&a.1));
 
-        // Check indices array for expected experts
-        for &expert_idx in &expected_experts {
-            assert!(
-                indices[expert_idx * num_token + index_token],
-                "Index for expert {} at token {} should be true",
-                expert_idx,
-                index_token
+        let denom: f32 = data.iter().map(|v| v.exp()).sum();
+        let mut is_topk = [false; NUM_EXPERTS];
+
+        for i in 0..NUM_TOPK {
+            let (idx, val) = expected[i];
+            let offset = idx * NUM_TOKEN + INDEX_TOKEN;
+            assert!(experts_indicator[idx]);
+            assert!(indices[offset]);
+            assert_relative_eq!(values[offset], val.exp() / denom, epsilon = 1e-6);
+            is_topk[idx] = true;
+        }
+
+        for expert in 0..NUM_EXPERTS {
+            if !is_topk[expert] {
+                assert!(!experts_indicator[expert]);
+            }
+            for token in 0..NUM_TOKEN {
+                let offset = expert * NUM_TOKEN + token;
+                if is_topk[expert] && token == INDEX_TOKEN {
+                    continue;
+                }
+                assert!(!indices[offset]);
+                assert_relative_eq!(values[offset], 0.0, epsilon = 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn test_experts_topk_softmax_norm_topk_exceeds_num_experts() {
+        const NUM_EXPERTS: usize = 3;
+        const NUM_TOPK: usize = 5;
+        const NUM_TOKEN: usize = 2;
+        const INDEX_TOKEN: usize = 0;
+        let data = [1.0f32, -0.75, 2.5];
+        let mut experts_indicator = [false; NUM_EXPERTS];
+        let mut indices = [false; NUM_EXPERTS * NUM_TOKEN];
+        let mut values = [0.0f32; NUM_EXPERTS * NUM_TOKEN];
+
+        unsafe {
+            super::experts_topk_softmax_norm(
+                data.as_ptr(),
+                experts_indicator.as_mut_ptr(),
+                indices.as_mut_ptr(),
+                values.as_mut_ptr(),
+                INDEX_TOKEN,
+                NUM_TOKEN,
+                NUM_EXPERTS,
+                NUM_TOPK,
             );
         }
 
-        // Check that softmax values are written at correct positions
-        for &expert_idx in &expected_experts {
-            let value_idx = expert_idx * num_token + index_token;
-            assert!(
-                values[value_idx] > 0.0,
-                "Value for expert {} should be non-zero",
-                expert_idx
+        let mut expected: Vec<(usize, f32)> = data
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(idx, val)| (idx, val))
+            .collect();
+        expected.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+        let denom: f32 = data.iter().map(|v| v.exp()).sum();
+
+        for idx in 0..NUM_EXPERTS {
+            let offset = idx * NUM_TOKEN + INDEX_TOKEN;
+            assert!(experts_indicator[idx]);
+            assert!(indices[offset]);
+            assert_relative_eq!(
+                values[offset],
+                expected[idx].1.exp() / denom,
+                epsilon = 1e-6
             );
         }
 
-        // Check that softmax values sum to less than 1 (since we use full sum for normalization)
-        let mut sum_values = 0.0f32;
-        for &expert_idx in &expected_experts {
-            sum_values += values[expert_idx * num_token + index_token];
-        }
-        assert!(sum_values > 0.0 && sum_values < 1.0);
-
-        // Check that values are in descending order by checking actual positions
-        for i in 0..num_topk - 1 {
-            let val1 = values[expected_experts[i] * num_token + index_token];
-            let val2 = values[expected_experts[i + 1] * num_token + index_token];
-            assert!(val1 >= val2, "Values should be in descending order");
-        }
-
-        // Check that non-selected experts have zero values
-        for expert_idx in 0..num_experts {
-            if !expected_experts.contains(&expert_idx) {
-                let value_idx = expert_idx * num_token + index_token;
-                assert_eq!(
-                    values[value_idx], 0.0,
-                    "Non-selected expert {} should have zero value",
-                    expert_idx
-                );
+        for token in 0..NUM_TOKEN {
+            if token == INDEX_TOKEN {
+                continue;
+            }
+            for expert in 0..NUM_EXPERTS {
+                let offset = expert * NUM_TOKEN + token;
+                assert!(!indices[offset]);
+                assert_relative_eq!(values[offset], 0.0, epsilon = 1e-6);
             }
         }
     }

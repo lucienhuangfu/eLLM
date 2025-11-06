@@ -1,15 +1,15 @@
 use std::cmp::Ordering;
 use std::ptr;
 
-pub struct FixedMinHeap {
-    values: *mut f32,
+pub struct FixedMinHeap<T: PartialOrd + Copy> {
+    values: *mut T,
     indices: *mut usize,
     len: usize,
     limit: usize,
 }
 
-impl FixedMinHeap {
-    pub fn new(values: *mut f32, indices: *mut usize, limit: usize) -> Self {
+impl<T: PartialOrd + Copy> FixedMinHeap<T> {
+    pub fn new(values: *mut T, indices: *mut usize, limit: usize) -> Self {
         debug_assert!(!values.is_null());
         debug_assert!(!indices.is_null());
         Self {
@@ -24,7 +24,7 @@ impl FixedMinHeap {
         self.len
     }
 
-    pub fn push(&mut self, value: f32, index: usize) {
+    pub fn push(&mut self, value: T, index: usize) {
         if self.limit == 0 {
             return;
         }
@@ -64,14 +64,14 @@ impl FixedMinHeap {
         }
     }
 
-    fn set(&mut self, idx: usize, value: f32, index: usize) {
+    fn set(&mut self, idx: usize, value: T, index: usize) {
         unsafe {
             ptr::write(self.values.add(idx), value);
             ptr::write(self.indices.add(idx), index);
         }
     }
 
-    fn value_at(&self, idx: usize) -> f32 {
+    fn value_at(&self, idx: usize) -> T {
         unsafe { *self.values.add(idx) }
     }
 
@@ -79,10 +79,11 @@ impl FixedMinHeap {
         unsafe { *self.indices.add(idx) }
     }
 
-    fn cmp_pair(value_a: f32, index_a: usize, value_b: f32, index_b: usize) -> Ordering {
-        value_a
-            .total_cmp(&value_b)
-            .then_with(|| index_a.cmp(&index_b))
+    fn cmp_pair(value_a: T, index_a: usize, value_b: T, index_b: usize) -> Ordering {
+        match value_a.partial_cmp(&value_b) {
+            Some(ordering) if ordering != Ordering::Equal => ordering,
+            _ => index_a.cmp(&index_b),
+        }
     }
 
     fn cmp_at(&self, lhs: usize, rhs: usize) -> Ordering {
