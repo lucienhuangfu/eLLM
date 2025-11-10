@@ -2,6 +2,8 @@ use crate::kernel::generic::exp::Exp;
 use std::ops::{AddAssign, Div, Sub};
 use std::ptr;
 
+
+// 还未实现norm
 pub fn experts_topk_softmax_norm<
     T: Exp + Default + AddAssign + PartialOrd + Copy + Sub<Output = T> + Div<Output = T>,
 >(
