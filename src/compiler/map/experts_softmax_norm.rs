@@ -7,6 +7,7 @@ use super::map_trait::SoftmaxTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::generic;
+use crate::kernel::x86_64;
 use crate::kernel::generic::{exp::Exp, sqrt::Sqrt};
 
 #[derive(Clone)]
@@ -139,6 +140,17 @@ impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
         input_length: usize,
         output_length: usize,
     ) {
+        x86_64::f32_256::experts_topk_softmax_norm::experts_topk_softmax_norm(
+            input_ptr,
+            experts_indicator,
+            indice_ptr,
+            weight_ptr,
+            token_index,
+            self.num_tokens,
+            input_length,
+            output_length
+        );
+
     }
 }
 

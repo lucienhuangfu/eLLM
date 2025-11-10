@@ -34,28 +34,25 @@ unsafe fn truncated_topk_softmax(
     debug_assert_eq!(len % 8, 0);
     let max_val = *output_values_ptr;
 
-    let mut sum_vec = _mm256_setzero_ps();
+    // let mut sum_vec = _mm256_setzero_ps();
     let max_broadcast = _mm256_set1_ps(max_val);
-    let mut i = 0;
-    while i < len {
-        let chunk = _mm256_loadu_ps(output_values_ptr.add(i));
+    for offset in (0..len).step_by(8) {
+        let chunk = _mm256_loadu_ps(output_values_ptr.add(offset));
         let shifted = _mm256_sub_ps(chunk, max_broadcast);
         let exp_chunk = exp256(shifted);
-        _mm256_storeu_ps(output_values_ptr.add(i), exp_chunk);
-        sum_vec = _mm256_add_ps(sum_vec, exp_chunk);
-        i += 8;
+        _mm256_storeu_ps(output_values_ptr.add(offset), exp_chunk);
     }
 
-    let mut sum_buf = [0f32; 8];
-    _mm256_storeu_ps(sum_buf.as_mut_ptr(), sum_vec);
-    let total_sum = sum_buf.iter().sum::<f32>();
+    let mut total_sum = 0.0f32;
+    for k in 0..len {
+        total_sum += *output_values_ptr.add(k);
+    }
+
     let inv_vec = _mm256_set1_ps(1.0f32 / total_sum);
-    let mut j = 0;
-    while j < len {
-        let chunk = _mm256_loadu_ps(output_values_ptr.add(j));
+    for offset in (0..len).step_by(8) {
+        let chunk = _mm256_loadu_ps(output_values_ptr.add(offset));
         let normalized = _mm256_mul_ps(chunk, inv_vec);
-        _mm256_storeu_ps(output_values_ptr.add(j), normalized);
-        j += 8;
+        _mm256_storeu_ps(output_values_ptr.add(offset), normalized);
     }
 
     ptr::write(output_token_ptr, *output_indices_ptr);
