@@ -13,5 +13,5 @@ pub mod colmul; */
 pub mod activation;
 pub mod bitonic_sort;
 pub mod experts_topk_softmax_norm;
-pub mod topk_softmax;
-// pub mod truncated_topk_softmax;
+// pub mod topk_softmax;
+pub mod truncated_topk_softmax;

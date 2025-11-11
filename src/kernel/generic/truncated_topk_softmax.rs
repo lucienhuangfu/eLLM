@@ -17,7 +17,6 @@ pub fn truncated_topk_softmax<
     input_values_ptr: *const T,
     // [thread_num, topk_size]
     input_indices_ptr: *const usize,
-
     // [thread_num]
     // sums_ptr: *const T,
     // [topk_size]
