@@ -2,7 +2,7 @@ use crate::kernel::common::heap::FixedMinHeap;
 use crate::kernel::generic::exp::Exp;
 use crate::kernel::x86_64::f16_512::activation::exp512;
 use crate::kernel::x86_64::f16_512::bitonic_sort::bitonic_sort_f16x32_desc;
-use half::f16;
+// use half::f16;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
@@ -26,7 +26,7 @@ unsafe fn sum_f16_vec(vec: __m512h, count: usize) -> f32 {
 }
 
 #[inline(always)]
-#[target_feature(enable = "avx512f,avx512bw,avx512fp16")]
+// #[target_feature(enable = "avx512f,avx512bw,avx512fp16")]
 pub unsafe fn get_topk(
     in_ptr: *const f16,
     out_values: *mut f16,
@@ -94,7 +94,7 @@ unsafe fn softmax_stats_avx512_fp16(input_ptr: *const f16, len: usize) -> (f32, 
         max_scalar = 0.0;
     }
 
-    let max_broadcast = _mm512_set1_ph(f16::from_f32(max_scalar));
+    let max_broadcast = _mm512_set1_ph(max_scalar as f16);
     let mut denom = 0.0f32;
     offset = 0;
     while offset < len {
@@ -109,21 +109,21 @@ unsafe fn softmax_stats_avx512_fp16(input_ptr: *const f16, len: usize) -> (f32, 
 }
 
 #[inline(always)]
-#[target_feature(enable = "avx512f,avx512bw,avx512fp16")]
+// #[target_feature(enable = "avx512f,avx512bw,avx512fp16")]
 unsafe fn softmax_topk_inplace(out_values: *mut f16, topk: usize, max_val: f32, denom: f32) {
     debug_assert!(!out_values.is_null());
     debug_assert!(topk > 0 && topk <= LANES);
 
-    let mut lane_buf = [f16::ZERO; LANES];
+    let mut lane_buf = [f16::default(); LANES];
     for i in 0..topk {
         lane_buf[i] = *out_values.add(i);
     }
 
     let mask = mask_for_len(topk);
     let values = _mm512_maskz_loadu_ph(mask, lane_buf.as_ptr() as *const _);
-    let shifted = _mm512_sub_ph(values, _mm512_set1_ph(f16::from_f32(max_val)));
+    let shifted = _mm512_sub_ph(values, _mm512_set1_ph(max_val as f16));
     let exp_vals = exp512(shifted);
-    let scale = _mm512_set1_ph(f16::from_f32(1.0f32 / denom.max(f32::MIN_POSITIVE)));
+    let scale = _mm512_set1_ph((1.0f32 / denom.max(f32::MIN_POSITIVE)) as f16);
     let normalized = _mm512_mul_ph(exp_vals, scale);
     _mm512_mask_storeu_ph(lane_buf.as_mut_ptr() as *mut _, mask, normalized);
 
