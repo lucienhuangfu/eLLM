@@ -6,6 +6,8 @@ pub trait SoftmaxTrait<T> {
     fn compute(
         &self,
         ptr1: *const T,
+        topk_values_ptr: *mut T,
+        topk_indices_ptr: *mut usize,
         experts_indicator_ptr: *mut bool,
         indice_ptr: *mut bool,
         weight_ptr: *mut T,

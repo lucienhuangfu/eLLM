@@ -3,7 +3,7 @@ use crate::kernel::x86_64::f32_256::activation::exp256;
 use core::arch::x86_64::*;
 use std::ptr;
 
-unsafe fn truncated_topk_softmax(
+fn truncated_topk_softmax(
     // [thread_num, topk_size]
     input_values_ptr: *const f32,
     // [thread_num, topk_size]
@@ -23,8 +23,8 @@ unsafe fn truncated_topk_softmax(
     let total_candidates = thread_num * topk_size;
     let mut heap = FixedMinHeap::new(output_values_ptr, output_indices_ptr, topk_size);
     for i in 0..total_candidates {
-        let value = *input_values_ptr.add(i);
-        let index = *input_indices_ptr.add(i);
+        let value = unsafe { *input_values_ptr.add(i) };
+        let index = unsafe { *input_indices_ptr.add(i) };
         heap.push(value, index);
     }
 
@@ -32,30 +32,34 @@ unsafe fn truncated_topk_softmax(
 
     let len = heap.len();
     debug_assert_eq!(len % 8, 0);
-    let max_val = *output_values_ptr;
+    let max_val = unsafe { *output_values_ptr };
 
     // let mut sum_vec = _mm256_setzero_ps();
     let max_broadcast = _mm256_set1_ps(max_val);
     for offset in (0..len).step_by(8) {
-        let chunk = _mm256_loadu_ps(output_values_ptr.add(offset));
-        let shifted = _mm256_sub_ps(chunk, max_broadcast);
-        let exp_chunk = exp256(shifted);
-        _mm256_storeu_ps(output_values_ptr.add(offset), exp_chunk);
+        unsafe {
+            let chunk = _mm256_loadu_ps(output_values_ptr.add(offset));
+            let shifted = _mm256_sub_ps(chunk, max_broadcast);
+            let exp_chunk = exp256(shifted);
+            _mm256_storeu_ps(output_values_ptr.add(offset), exp_chunk);
+        }
     }
 
     let mut total_sum = 0.0f32;
     for k in 0..len {
-        total_sum += *output_values_ptr.add(k);
+        total_sum += unsafe { *output_values_ptr.add(k) };
     }
 
     let inv_vec = _mm256_set1_ps(1.0f32 / total_sum);
     for offset in (0..len).step_by(8) {
-        let chunk = _mm256_loadu_ps(output_values_ptr.add(offset));
-        let normalized = _mm256_mul_ps(chunk, inv_vec);
-        _mm256_storeu_ps(output_values_ptr.add(offset), normalized);
+        unsafe {
+            let chunk = _mm256_loadu_ps(output_values_ptr.add(offset));
+            let normalized = _mm256_mul_ps(chunk, inv_vec);
+            _mm256_storeu_ps(output_values_ptr.add(offset), normalized);
+        }
     }
 
-    ptr::write(output_token_ptr, *output_indices_ptr);
+    unsafe { ptr::write(output_token_ptr, *output_indices_ptr) };
 }
 
 #[cfg(test)]
@@ -77,17 +81,15 @@ mod tests {
         let mut out_idx = vec![0usize; topk_size];
         let mut out_token = 0usize;
 
-        unsafe {
-            truncated_topk_softmax(
-                values.as_ptr(),
-                indices.as_ptr(),
-                out_vals.as_mut_ptr(),
-                out_idx.as_mut_ptr(),
-                &mut out_token,
-                thread_num,
-                topk_size,
-            );
-        }
+        truncated_topk_softmax(
+            values.as_ptr(),
+            indices.as_ptr(),
+            out_vals.as_mut_ptr(),
+            out_idx.as_mut_ptr(),
+            &mut out_token,
+            thread_num,
+            topk_size,
+        );
 
         let mut paired: Vec<(f32, usize)> = values
             .iter()
