@@ -3,14 +3,14 @@ use crate::kernel::x86_64::f32_256::activation::exp256;
 use core::arch::x86_64::*;
 use std::ptr;
 
-fn truncated_topk_softmax(
+pub fn truncated_topk_softmax(
     // [thread_num, topk_size]
     input_values_ptr: *const f32,
     // [thread_num, topk_size]
     input_indices_ptr: *const usize,
 
     // [thread_num]
-    // sums_ptr: *const f32,
+    sums_ptr: *const f32,
     // [topk_size]
     output_values_ptr: *mut f32,
     // [topk_size]
@@ -80,10 +80,12 @@ mod tests {
         let mut out_vals = vec![0.0f32; topk_size];
         let mut out_idx = vec![0usize; topk_size];
         let mut out_token = 0usize;
+        let sums = vec![0.0f32; thread_num];
 
         truncated_topk_softmax(
             values.as_ptr(),
             indices.as_ptr(),
+            sums.as_ptr(),
             out_vals.as_mut_ptr(),
             out_idx.as_mut_ptr(),
             &mut out_token,

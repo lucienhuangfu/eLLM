@@ -9,7 +9,7 @@ pub mod from_f32;
 
 pub mod add;
 pub mod argmax;
-// pub mod complex_mul;
+pub mod complex_mul;
 pub mod dot_product;
 pub mod silu;
 pub mod experts_topk_softmax_norm;

@@ -10,15 +10,15 @@ use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
 use super::map::topk_softmax::TopKSoftmax;
 // Add missing imports for zip map operations
-use super::zip_map::add_rms_zip::AddRMSZipMap;
-use super::zip_map::add_zip::AddZipMap;
-use super::zip_map::complex_zip::ComplexZipMap;
-use super::zip_map::silu_mul_zip::SiluMulZipMap;
 use super::mul::matmul::Matmul;
 use super::mul::matmul3::Matmul3;
 use super::mul::matmul_add::MatmulAdd;
 use super::mul::matmul_silu_mul_matmul::MatmulSilu;
 use super::mul::matmul_topk::MatmulTopK;
+use super::zip_map::add_rms_zip::AddRMSZipMap;
+use super::zip_map::add_zip::AddZipMap;
+use super::zip_map::complex_zip::ComplexZipMap;
+use super::zip_map::silu_mul_zip::SiluMulZipMap;
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 use super::mul::attention_add::AttentionAdd;
@@ -53,7 +53,15 @@ pub enum Operator<T> {
 
 impl<T> Operator<T>
 where
-    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
+    T: Copy
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid<T>
+        + Sqrt
+        + AddAssign,
 {
     pub fn run(
         &self,
@@ -236,15 +244,10 @@ where
 mod test {
     use super::*;
     use approx::assert_ulps_eq;
-    use nom::sequence;
-    use rand::seq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
-    // use nom::sequence;
-    // use nom::sequence;
     // use std::sync::{Arc, Barrier};
     // use std::thread;
 
-    /*
     #[test]
     fn test_add_zip() {
         let sequence_chunk_size = 1;
@@ -309,7 +312,7 @@ mod test {
             output_data.as_mut_ptr(),
             batch_size,
             hidden_size,
-            weight.as_ptr(),
+            // weight.as_ptr(),
             eps,
         ));
 
@@ -337,75 +340,6 @@ mod test {
         for i in 0..thread_num {
             operator.run(position_index, sequence_chunk_size, batch_size, cpu_num, i);
         }
-        assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
-        println!("{:?}", output_data);
-    }
-
-    #[test]
-    fn test_lookup_rms_map() {
-        let sequence_chunk_size = 1;
-        let batch_size = 10;
-        let hidden_size = 18;
-        let vocab_size = 10;
-        let cpu_num = num_cpus::get();
-        let sequence_length = 16;
-        let position = 0;
-
-        let shapes = vec![sequence_chunk_size, batch_size, hidden_size];
-        // let strides = vec![hidden_size, 1];
-        let length = shapes.iter().product();
-
-        let input_data: Vec<f32> = (1..=hidden_size)
-            .cycle()
-            .take(length)
-            .map(|x| x as f32)
-            .collect();
-        let mut sequences = vec![1; sequence_length];
-        let word_embedding: Vec<f32> = (1..=18)
-            .cycle()
-            .take(vocab_size * hidden_size)
-            .map(|x| x as f32)
-            .collect();
-
-        let weight = vec![1.0f32; hidden_size];
-        let eps = 1e-6;
-        let mut output_data: Vec<f32> = vec![0.0; length];
-
-        let mut Operator = Operator::LookupRMSMap(LookupRMSMap::new(
-            sequences.as_mut_ptr(),
-            output_data.as_mut_ptr(),
-            batch_size,
-            hidden_size,
-            word_embedding.as_ptr(),
-            weight.as_ptr(),
-            eps,
-        ));
-        let result = [
-            0.09238425642251968,
-            0.18476851284503937,
-            0.27715277671813965,
-            0.36953702569007874,
-            0.4619212746620178,
-            0.5543055534362793,
-            0.646689772605896,
-            0.7390740513801575,
-            0.831458330154419,
-            0.9238425493240356,
-            1.0162267684936523,
-            1.1086111068725586,
-            1.2009953260421753,
-            1.293379545211792,
-            1.3857638835906982,
-            1.478148102760315,
-            1.5705323219299316,
-            1.662916660308838,
-        ];
-
-        let thread_num: usize = cpu_num;
-        for i in 0..thread_num {
-            Operator.run(position, sequence_chunk_size, batch_size, thread_num, i);
-        }
-
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
         println!("{:?}", output_data);
     }
@@ -535,9 +469,231 @@ mod test {
         ]
         .repeat(sequence_chunk_size * batch_size);
         assert_ulps_eq!(output_data[..], result, max_ulps = 4);
-    } */
+    }
+
+    #[test]
+    fn test_experts_softmax_norm() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            println!("AVX2 not supported, skipping test.");
+            return;
+        }
+
+        let sequence_chunk_size = 1;
+        let batch_size = 2;
+        let num_experts = 16;
+        let num_topk = 4;
+        let num_tokens = sequence_chunk_size * batch_size;
+
+        let input_data1: Vec<f32> = vec![
+            0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
+        ];
+        let input_data2: Vec<f32> = vec![
+            -0.5, 0.25, 3.75, -2.0, 6.0, 1.75, -4.25, 2.5, 0.0, 5.25, -1.25, 4.0, 3.0, -3.5, 7.5,
+            2.25,
+        ];
+        let mut input_data = Vec::new();
+        input_data.extend_from_slice(&input_data1);
+        input_data.extend_from_slice(&input_data2);
+
+        let mut experts_indicator = vec![false; num_experts];
+        let mut indice_ptr = vec![false; num_experts * num_tokens];
+        let mut weight_ptr = vec![0.0f32; num_experts * num_tokens];
+
+        let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::<f32>::new(
+            input_data.as_ptr(),
+            experts_indicator.as_mut_ptr(),
+            indice_ptr.as_mut_ptr(),
+            weight_ptr.as_mut_ptr(),
+            sequence_chunk_size,
+            batch_size,
+            num_experts,
+            num_topk,
+        ));
+
+        let thread_num = 1;
+        let thread_id = 0;
+        operator.run(0, sequence_chunk_size, batch_size, thread_num, thread_id);
+
+        // Verification for token 0
+        let mut expected1: Vec<(usize, f32)> = input_data1.iter().copied().enumerate().collect();
+        expected1.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let max_val1 = input_data1
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        let denom1: f32 = input_data1.iter().map(|v| (v - max_val1).exp()).sum();
+
+        for i in 0..num_topk {
+            let (idx, val) = expected1[i];
+            let prob = (val - max_val1).exp() / denom1;
+            assert!(experts_indicator[idx]);
+            let offset = idx * num_tokens + 0;
+            assert!(indice_ptr[offset]);
+            assert_ulps_eq!(weight_ptr[offset], prob, max_ulps = 4);
+        }
+
+        // Verification for token 1
+        let mut expected2: Vec<(usize, f32)> = input_data2.iter().copied().enumerate().collect();
+        expected2.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let max_val2 = input_data2
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        let denom2: f32 = input_data2.iter().map(|v| (v - max_val2).exp()).sum();
+
+        for i in 0..num_topk {
+            let (idx, val) = expected2[i];
+            let prob = (val - max_val2).exp() / denom2;
+            assert!(experts_indicator[idx]);
+            let offset = idx * num_tokens + 1;
+            assert!(indice_ptr[offset]);
+            assert_ulps_eq!(weight_ptr[offset], prob, max_ulps = 4);
+        }
+    }
+
+    #[test]
+    fn test_topk_softmax() {
+        let batch_size = 2;
+        let topk_size = 8;
+        let thread_num = 4;
+        let position_begin = 0;
+        let position_interval = 1;
+
+        let total_candidates_per_item = topk_size * thread_num;
+        let input_len = batch_size * total_candidates_per_item;
+
+        let mut input_values = Vec::<f32>::with_capacity(input_len);
+        let mut input_indices = Vec::<usize>::with_capacity(input_len);
+
+        for i in 0..batch_size {
+            for j in 0..total_candidates_per_item {
+                input_values.push(5.0 - (j as f32 * 0.1) - (i as f32));
+                input_indices.push(i * 1000 + j);
+            }
+        }
+
+        let sums = vec![0.0f32; batch_size * position_interval];
+        let mut output_values = vec![0.0f32; batch_size * topk_size];
+        let mut output_indices = vec![0usize; batch_size * topk_size];
+        let mut output_sequences = vec![0usize; batch_size * position_interval];
+
+        let operator = Operator::TopKSoftmax(TopKSoftmax::<f32>::new(
+            input_indices.as_ptr(),
+            input_values.as_ptr(),
+            sums.as_ptr(),
+            output_indices.as_mut_ptr(),
+            output_values.as_mut_ptr(),
+            output_sequences.as_mut_ptr(),
+            batch_size,
+            topk_size,
+        ));
+
+        for i in 0..thread_num {
+            operator.run(position_begin, position_interval, batch_size, thread_num, i);
+        }
+
+        for i in 0..batch_size {
+            let item_input_values =
+                &input_values[i * total_candidates_per_item..(i + 1) * total_candidates_per_item];
+            let item_input_indices =
+                &input_indices[i * total_candidates_per_item..(i + 1) * total_candidates_per_item];
+
+            let mut paired: Vec<_> = item_input_values
+                .iter()
+                .copied()
+                .zip(item_input_indices.iter().copied())
+                .collect();
+            paired.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+
+            let topk = &paired[..topk_size];
+            let max_val = topk[0].0;
+            let denom: f32 = topk.iter().map(|(v, _)| (v - max_val).exp()).sum();
+
+            let expected_probs: Vec<f32> = topk
+                .iter()
+                .map(|(v, _)| (v - max_val).exp() / denom)
+                .collect();
+            let expected_indices: Vec<usize> = topk.iter().map(|(_, idx)| *idx).collect();
+
+            let output_vals_slice = &output_values[i * topk_size..(i + 1) * topk_size];
+            let output_idx_slice = &output_indices[i * topk_size..(i + 1) * topk_size];
+
+            assert_ulps_eq!(output_vals_slice, expected_probs.as_slice(), max_ulps = 4);
+            assert_eq!(output_idx_slice, expected_indices.as_slice());
+            assert_eq!(output_sequences[i], expected_indices[0]);
+        }
+    }
 
     /*
+    #[test]
+    fn test_lookup_rms_map() {
+        let sequence_chunk_size = 1;
+        let batch_size = 10;
+        let hidden_size = 18;
+        let vocab_size = 10;
+        let cpu_num = num_cpus::get();
+        let sequence_length = 16;
+        let position = 0;
+
+        let shapes = vec![sequence_chunk_size, batch_size, hidden_size];
+        // let strides = vec![hidden_size, 1];
+        let length = shapes.iter().product();
+
+        let input_data: Vec<f32> = (1..=hidden_size)
+            .cycle()
+            .take(length)
+            .map(|x| x as f32)
+            .collect();
+        let mut sequences = vec![1; sequence_length];
+        let word_embedding: Vec<f32> = (1..=18)
+            .cycle()
+            .take(vocab_size * hidden_size)
+            .map(|x| x as f32)
+            .collect();
+
+        let weight = vec![1.0f32; hidden_size];
+        let eps = 1e-6;
+        let mut output_data: Vec<f32> = vec![0.0; length];
+
+        let mut Operator = Operator::LookupRMSMap(LookupRMSMap::new(
+            sequences.as_mut_ptr(),
+            output_data.as_mut_ptr(),
+            batch_size,
+            hidden_size,
+            word_embedding.as_ptr(),
+            weight.as_ptr(),
+            eps,
+        ));
+        let result = [
+            0.09238425642251968,
+            0.18476851284503937,
+            0.27715277671813965,
+            0.36953702569007874,
+            0.4619212746620178,
+            0.5543055534362793,
+            0.646689772605896,
+            0.7390740513801575,
+            0.831458330154419,
+            0.9238425493240356,
+            1.0162267684936523,
+            1.1086111068725586,
+            1.2009953260421753,
+            1.293379545211792,
+            1.3857638835906982,
+            1.478148102760315,
+            1.5705323219299316,
+            1.662916660308838,
+        ];
+
+        let thread_num: usize = cpu_num;
+        for i in 0..thread_num {
+            Operator.run(position, sequence_chunk_size, batch_size, thread_num, i);
+        }
+
+        assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
+        println!("{:?}", output_data);
+    }
+
     #[test]
     fn test_softmax_map() {
         let batch_size = 10;

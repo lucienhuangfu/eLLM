@@ -151,7 +151,7 @@ mod test {
     
     use super::*;
     // use super::super::chunk_zipmap::chunk_zipmap;
-    use crate::ptensor::tensor_utils::get_strides;
+    use crate::init::tensor_utils::get_strides;
     use approx::assert_ulps_eq;
     // use nom::sequence;
     // use rand::seq;
