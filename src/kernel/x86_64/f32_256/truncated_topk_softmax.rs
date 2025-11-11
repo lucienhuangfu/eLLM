@@ -35,7 +35,7 @@ fn truncated_topk_softmax(
     let max_val = unsafe { *output_values_ptr };
 
     // let mut sum_vec = _mm256_setzero_ps();
-    let max_broadcast = _mm256_set1_ps(max_val);
+    let max_broadcast = unsafe { _mm256_set1_ps(max_val) };
     for offset in (0..len).step_by(8) {
         unsafe {
             let chunk = _mm256_loadu_ps(output_values_ptr.add(offset));
@@ -50,7 +50,7 @@ fn truncated_topk_softmax(
         total_sum += unsafe { *output_values_ptr.add(k) };
     }
 
-    let inv_vec = _mm256_set1_ps(1.0f32 / total_sum);
+    let inv_vec = unsafe { _mm256_set1_ps(1.0f32 / total_sum) };
     for offset in (0..len).step_by(8) {
         unsafe {
             let chunk = _mm256_loadu_ps(output_values_ptr.add(offset));

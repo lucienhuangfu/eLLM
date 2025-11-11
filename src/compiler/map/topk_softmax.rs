@@ -4,6 +4,7 @@ use super::map_trait::TopKSoftmaxTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
+use crate::kernel::generic::exp::Exp;
 use crate::kernel::generic::from_usize::FromUsize;
 use crate::kernel::generic::sqrt::Sqrt;
 
@@ -21,7 +22,7 @@ pub struct TopKSoftmax<T> {
     topk_size: usize,
 }
 
-impl<T: Sqrt> TopKSoftmax<T> {
+impl<T: Sqrt + Exp> TopKSoftmax<T> {
     pub fn new(
         input_indices_ptr: *const usize,
         input_values_ptr: *const T,
@@ -73,14 +74,23 @@ impl<T: Sqrt> TopKSoftmax<T> {
             let mut output_indices_ptr = self.output_indices_ptr.ptr;
             let mut output_values_ptr = self.output_values_ptr.ptr;
 
+            let mut output_sequences_ptr = self.output_sequences.ptr;
+
             for _ in begin..end {
                 let index = row_index * self.batch_size + col_index;
                 unsafe {
                     let input_stride = index * self.topk_size * thread_num;
                     let output_stride = index * self.topk_size;
                     let token_index = index + position_begin * self.batch_size;
-                    let token_ptr = self.output_sequences.ptr.add(token_index);
-                    self.compute(input_indices_ptr.add(input_stride), input_values_ptr.add(input_stride), sums_ptr.add(index), output_indices_ptr.add(output_stride), output_values_ptr.add(output_stride), token_index, thread_num, self.topk_size);
+                    let token_ptr = output_sequences_ptr.add(token_index);
+                    self.compute(input_indices_ptr.add(input_stride), 
+                    input_values_ptr.add(input_stride), 
+                    sums_ptr.add(index), 
+                    output_indices_ptr.add(output_stride), 
+                    output_values_ptr.add(output_stride), 
+                    token_ptr, 
+                    thread_num, 
+                    self.topk_size);
                 }
                 col_index += 1;
                 if col_index == batch_size {
@@ -92,15 +102,17 @@ impl<T: Sqrt> TopKSoftmax<T> {
     }
 }
 
-impl<T: Sqrt> TopKSoftmaxTrait<T> for TopKSoftmax<T> {
+impl<T: Sqrt + Exp> TopKSoftmaxTrait<T> for TopKSoftmax<T> {
     default fn compute(&self, input_indices_ptr: *const usize, input_values_ptr: *const T, sums_ptr: *const T, output_indices_ptr: *mut usize, output_values_ptr: *mut T, output_token_ptr: *mut usize, thread_num: usize, topk_size: usize) {
         
-        kernel::generic::topk_softmax::topk_softmax(
-            input_indices_ptr,
+        kernel::generic::truncated_topk_softmax::truncated_topk_softmax(
             input_values_ptr,
-            sums_ptr,
-            output_indices_ptr,
+            input_indices_ptr,
+            
+            // sums_ptr,
             output_values_ptr,
+            output_indices_ptr,
+            
             output_token_ptr,
             thread_num,
             topk_size,
@@ -133,14 +145,17 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
 
 impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
     fn compute(&self, input_indices_ptr: *const usize, input_values_ptr: *const f32, sums_ptr: *const f32, output_indices_ptr: *mut usize, output_values_ptr: *mut f32, output_token_ptr: *mut usize, thread_num: usize, topk_size: usize) {
-        /*
-        kernel::generic::softmax::softmax(
-            input_ptr,
-            sum_ptr.ptr,
-            max_ptr.ptr,
-            output_ptr,
-            length,
-        ); */
+        
+        kernel::x86_64::f32_256::topk_softmax::truncated_topk_softmax(
+            input_indices_ptr,
+            input_values_ptr,
+            sums_ptr,
+            output_indices_ptr,
+            output_values_ptr,
+            output_token_ptr,
+            thread_num,
+            topk_size,
+        );
     }
 }
 
