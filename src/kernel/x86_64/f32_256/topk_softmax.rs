@@ -196,5 +196,4 @@ mod tests {
         }
         assert_eq!(out_token, paired[0].1);
     }
-
 }
