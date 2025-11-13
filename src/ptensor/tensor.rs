@@ -7,9 +7,9 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
+use super::super::init::tensor_utils::get_strides;
 use super::super::memory::allocator::allocate_init;
 use super::super::memory::cache::Cache;
-use super::tensor_utils::get_strides;
 use crate::init::matmul_params::MatmulParams;
 
 use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
@@ -46,7 +46,15 @@ pub struct Tensor<T> {
 
 impl<T> Tensor<T>
 where
-    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
+    T: Copy
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid<T>
+        + Sqrt
+        + AddAssign,
 {
     pub fn add(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
         let output_tensor = <Tensor<T>>::from_cache(
@@ -160,10 +168,14 @@ where
         output_tensor
     }
 
-    pub fn experts_merge_add(&self, residual: &Tensor<T>, 
-                experts_indicator: *mut bool,
+    pub fn experts_merge_add(
+        &self,
+        residual: &Tensor<T>,
+        experts_indicator: *mut bool,
         indice_ptr: *mut bool,
-        scope_name: String) -> Self {
+        num_experts: usize,
+        scope_name: String,
+    ) -> Self {
         // output [sequence_chunk_size, batch_size, hidden_size]
         let output_shape = vec![self.shape[0], self.shape[1], self.shape[3]];
 
@@ -182,6 +194,7 @@ where
             output_tensor.data,
             self.shape[0],
             self.shape[1],
+            num_experts,
             self.shape[2],
             self.shape[3],
         ));
@@ -299,6 +312,7 @@ where
             experts_indicator,
             indice_ptr,
             weight_ptr,
+            self.shape[0],
             self.shape[1],
             num_experts,
             num_experts_per_tok,
@@ -520,10 +534,7 @@ where
 
         let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
 
-
-
         let indice_ptr = allocate_init(output_shape.iter().product(), 0usize);
-       
 
         let value_tensor = Tensor::<T>::from_cache(
             output_shape.clone(),
@@ -629,7 +640,6 @@ where
         num_topk: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
-
         let output_shape = vec![self.shape[0], self.shape[1], num_topk];
         let indice_ptr = allocate_init(output_shape.iter().product(), 0usize);
 
@@ -837,8 +847,6 @@ where
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
-
-
     }*/
 }
 
@@ -852,6 +860,93 @@ mod test {
     // use std::sync::Arc;
     // use std::sync::Barrier;
     use super::*;
+    // use crate::compiler::operator::execute;
     use std::collections::HashMap;
     use std::thread;
+
+    #[test]
+    fn test_experts_softmax_norm_f32() {
+        let cache: Rc<RefCell<Cache<f32>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f32>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let sequence_chunk_size = 1;
+        let batch_size = 2;
+        let num_experts = 8;
+        let num_experts_per_tok = 2;
+
+        let shape = vec![sequence_chunk_size, batch_size, num_experts];
+        let tensor = Tensor::<f32>::from_cache(
+            shape.clone(),
+            "model.layers.0.logits".to_string(),
+            //"input".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        let data: Vec<f32> = vec![
+            // token 0
+            1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5, // token 1
+            5.0, 6.0, 7.0, 8.0, 4.5, 5.5, 6.5, 7.5,
+        ];
+        unsafe {
+            tensor
+                .data
+                .copy_from_nonoverlapping(data.as_ptr(), data.len());
+        }
+
+        let (experts_indicator, indice_ptr, weight_ptr) = tensor.experts_softmax_norm(
+            num_experts,
+            num_experts_per_tok,
+            "softmax_norm".to_string(),
+        );
+
+        for op in operator_queue.borrow_mut().iter() {
+            op.run(0, sequence_chunk_size, batch_size, 1, 0);
+        }
+
+        let num_tokens = sequence_chunk_size * batch_size;
+        let indices = unsafe { std::slice::from_raw_parts(indice_ptr, num_experts * num_tokens) };
+        let weights = unsafe { std::slice::from_raw_parts(weight_ptr, num_experts * num_tokens) };
+        let indicators = unsafe { std::slice::from_raw_parts(experts_indicator, num_experts) };
+
+        // Token 0: input [1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5], topk indices 3, 7
+        let data0 = &data[0..num_experts];
+        let exps0: Vec<f32> = data0.iter().map(|v| v.exp()).collect();
+        let sum0: f32 = exps0.iter().sum();
+        assert_ulps_eq!(weights[3 * num_tokens + 0], exps0[3] / sum0);
+        assert_ulps_eq!(weights[7 * num_tokens + 0], exps0[7] / sum0);
+        assert!(indices[3 * num_tokens + 0]);
+        assert!(indices[7 * num_tokens + 0]);
+
+        // Token 1: input [5.0, 6.0, 7.0, 8.0, 4.5, 5.5, 6.5, 7.5], topk indices 3, 7
+        let data1 = &data[num_experts..2 * num_experts];
+        let exps1: Vec<f32> = data1.iter().map(|v| v.exp()).collect();
+        let sum1: f32 = exps1.iter().sum();
+        assert_ulps_eq!(weights[3 * num_tokens + 1], exps1[3] / sum1);
+        assert_ulps_eq!(weights[7 * num_tokens + 1], exps1[7] / sum1);
+        assert!(indices[3 * num_tokens + 1]);
+        assert!(indices[7 * num_tokens + 1]);
+
+        // Check indicators
+        assert!(!indicators[0]);
+        assert!(!indicators[1]);
+        assert!(!indicators[2]);
+        assert!(indicators[3]);
+        assert!(!indicators[4]);
+        assert!(!indicators[5]);
+        assert!(!indicators[6]);
+        assert!(indicators[7]);
+
+        // Check other indices and weights are false/zero
+        for e in 0..num_experts {
+            for t in 0..num_tokens {
+                let offset = e * num_tokens + t;
+                if (e == 3 && (t == 0 || t == 1)) || (e == 7 && (t == 0 || t == 1)) {
+                    continue;
+                }
+                assert!(!indices[offset]);
+                assert_ulps_eq!(weights[offset], 0.0);
+            }
+        }
+    }
 }
