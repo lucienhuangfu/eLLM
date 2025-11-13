@@ -8,9 +8,8 @@ pub fn truncated_topk_softmax(
     input_values_ptr: *const f32,
     // [thread_num, topk_size]
     input_indices_ptr: *const usize,
-
     // [thread_num]
-    sums_ptr: *const f32,
+    _sums_ptr: *const f32,
     // [topk_size]
     output_values_ptr: *mut f32,
     // [topk_size]
@@ -31,6 +30,9 @@ pub fn truncated_topk_softmax(
     heap.sort_desc();
 
     let len = heap.len();
+    if len == 0 {
+        return;
+    }
     debug_assert_eq!(len % 8, 0);
     let max_val = unsafe { *output_values_ptr };
 
