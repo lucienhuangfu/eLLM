@@ -11,7 +11,7 @@ use super::super::assign::assign;
 use super::mul_trait::Matmul2Trait;
 // 完成down projection的Matmul
 // 乘以weight
-// 然后根据sorted_ids把结果放到对应的位置 [num_experts_per_tok, batch_size, hidden_size]
+// 然后根据sorted_ids把结果放到对应的位置 [batch_size, num_experts_per_tok,  hidden_size]
 
 #[derive(Clone)]
 pub struct ExpertsMatmulMul<T> {

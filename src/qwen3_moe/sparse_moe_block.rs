@@ -31,7 +31,15 @@ pub struct SparseMoeBlock<T> {
 
 impl<T> SparseMoeBlock<T>
 where
-    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
+    T: Copy
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid<T>
+        + Sqrt
+        + AddAssign,
 {
     pub fn new(
         hidden_size: usize,
@@ -142,6 +150,7 @@ where
             residual,
             experts_indicator,
             indice_ptr,
+            self.num_experts,
             format!("{}.down", self.scope_name),
         );
 
@@ -156,30 +165,30 @@ mod test {
 
     use crate::memory::allocator::allocate_init;
 
-    /*
     #[test]
     fn test_sparse_moe_block() {
         let position_window_size = 4;
         let batch_size = 32;
         let head_size = 128;
 
-        let hidden_size = 8192;
+        let hidden_size = 256;
         let intermediate_size = 4 * hidden_size;
         let num_experts = 8;
         let top_k = 2;
-        let norm_topk_prob = 1;
+        let norm_topk_prob = true;
 
-        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
+        let cache = Rc::new(RefCell::new(Cache::<f32>::new(
+            std::collections::HashMap::new(),
+        )));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let sparse_moe = SparseMoeBlock::<f32>::new(
-            position_window_size,
+            // position_window_size,
             hidden_size,
+            intermediate_size,
             num_experts,
             top_k,
             norm_topk_prob,
-            intermediate_size,
-            head_size,
             "model.layers.0",
             cache.clone(),
             operator_queue.clone(),
@@ -192,23 +201,37 @@ mod test {
             cache.clone(),
             operator_queue.clone(),
         );
+
+        let residual = Tensor::from_cache(
+            shape.clone(),
+            String::from("model.layers.0.residual_tensor"),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
         for i in 0..input.shape.iter().product() {
             unsafe {
                 input.data.add(i).write(1.0);
             }
         }
 
+        for i in 0..residual.shape.iter().product() {
+            unsafe {
+                residual.data.add(i).write(1.0);
+            }
+        }
+
         let output_tensor = sparse_moe.forward(
             &input,
+            &residual,
             String::from("model.layers.0.output_tensor"),
-            num_cpus::get(),
         );
 
         let thread_num: usize = num_cpus::get();
         for operator in output_tensor.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, 0, i);
+                operator.run(0, 1, batch_size, thread_num, i);
             }
         }
-    } */
+    }
 }
