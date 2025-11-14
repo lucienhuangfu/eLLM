@@ -209,12 +209,13 @@ where
         experts_indicator: *mut bool,
         indice_ptr: *mut bool,
         weight_ptr: *mut T,
+        num_experts_per_tok: usize,
         params: MatmulParams,
         scope_name: String,
     ) -> Self {
         // down_weights [num_experts, hidden_size, intermediate_size]
         // output [sequence_chunk_size, batch_size, num_experts_per_token, hidden_size]
-        let output_shape = vec![self.shape[0], self.shape[1], down_weights.shape[1]];
+        let output_shape = vec![self.shape[0], self.shape[1], num_experts_per_tok, down_weights.shape[1]];
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
@@ -252,7 +253,7 @@ where
         indice_ptr: *mut bool,
         // weight_ptr: *mut T,
         params: MatmulParams,
-        tensor_name: String,
+        scope_name: String,
     ) -> Self {
         // gate_weights [num_experts, intermediate_size, hidden_size]
         // output [num_experts, sequence_chunk_size * batch_size, intermediate_size]
@@ -264,7 +265,7 @@ where
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
-            tensor_name,
+            format!("{}.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
@@ -345,7 +346,7 @@ where
         tensor2: &Tensor<T>,
         params: MatmulParams,
         sequence_length: usize,
-        tensor_name: String,
+        scope_name: String,
     ) -> Self {
         let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
 
@@ -356,7 +357,7 @@ where
         };
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
-            tensor_name,
+            format!("{}.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );

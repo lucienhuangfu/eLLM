@@ -143,7 +143,7 @@ impl Matmul4Trait<f32> for ExpertsMatmulSilu<f32> {
 mod tests {
     use super::*;
     // use std::thread;
-    // use super::super::chunk_matmul::chunk_matmul;
+
     /*
     #[test]
     fn test_f32_chunk() {
@@ -179,17 +179,17 @@ mod tests {
         }
 
         // initialize the params
-        let params: matmulParams = matmulParams {
-            a_row,
-            b_row,
-            column,
+        let params: MatmulParams = MatmulParams {
+            // a_row,
+            // b_row,
+            // column,
             a_row_step_macro,
             b_row_step_macro,
             column_step_macro,
             a_row_step_micro,
             b_row_step_micro,
         };
-        let mut operator = matmul::<f32>::new(
+        let mut operator = Matmul::<f32>::new(
             a.as_ptr(),
             b.as_ptr(),
             c.as_mut_ptr(),
@@ -209,18 +209,21 @@ mod tests {
         for i in 0..thread_num {
             // println!("{}", i);
             operator.run(0, sequence_chunk_size, batch_size, thread_num, i);
-        }
+        } 
+        
 
 
         // assert_eq!(c, expected);
-
+        
         // print the result
         for i in 0..a_row {
             for j in 0..b_row {
                 //print!("{:?} ", c[i * b_row + j]);
             }
             //println!();
-        }
-    }
-    */
+        } 
+
+
+    }*/
+    
 }
