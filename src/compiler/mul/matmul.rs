@@ -296,7 +296,7 @@ impl MatmulTrait<f32> for Matmul<f32> {
     fn compute(&self, _a: *const f32, _b: *const f32, _c: *mut f32) { /* TODO */
     }
     fn compute2(&self, a: *const f32, b: *const f32, c: *mut f32, length: usize) {
-        kernel::generic::dot_product::dot_product(a, b, c, length);
+        // kernel::generic::dot_product::dot_product(a, b, c, length);
     }
 }
 

@@ -105,7 +105,7 @@ where
                 b_row_step_micro: 8,
             },
             hidden_states.shape[0],
-            self.scope_name.clone(),
+            format!("{}.gate", self.scope_name),
         );
 
         let (experts_indicator, indice_ptr, weight_ptr) = gate_output.experts_softmax_norm(
@@ -113,6 +113,7 @@ where
             self.num_topk,
             format!("{}.router_probs", self.scope_name),
         );
+
 
         // nonlinear_product [num_experts, batch_size, intermediate_size]
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
@@ -129,13 +130,14 @@ where
             },
             format!("{}.gate_up", self.scope_name),
         );
-
+  
         // down_product [sequence_chunk_size, batch_size, num_experts_per_token, hidden_size]
         let down_product = nonlinear_product.experts_matmul_mul(
             &self.experts_down_weight,
             experts_indicator,
             indice_ptr,
             weight_ptr,
+            self.num_topk,
             MatmulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
@@ -145,15 +147,14 @@ where
             },
             format!("{}.down", self.scope_name),
         );
-
+        
         let merge_tensor = down_product.experts_merge_add(
             residual,
             experts_indicator,
             indice_ptr,
             self.num_experts,
-            format!("{}.down", self.scope_name),
-        );
-
+            format!("{}.merge", self.scope_name),
+        ); 
         merge_tensor
     }
 }
@@ -163,13 +164,13 @@ mod test {
     use super::*;
     use approx::assert_relative_eq;
 
-    use crate::memory::allocator::allocate_init;
+    // use crate::memory::allocator::allocate_init;
 
     #[test]
     fn test_sparse_moe_block() {
         let position_window_size = 4;
         let batch_size = 32;
-        let head_size = 128;
+        // let head_size = 128;
 
         let hidden_size = 256;
         let intermediate_size = 4 * hidden_size;
@@ -228,7 +229,8 @@ mod test {
         );
 
         let thread_num: usize = num_cpus::get();
-        for operator in output_tensor.operator_queue.borrow().iter() {
+        for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
+            println!("operator {} in queue", index);
             for i in 0..thread_num {
                 operator.run(0, 1, batch_size, thread_num, i);
             }
