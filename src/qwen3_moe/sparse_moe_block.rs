@@ -108,7 +108,7 @@ where
             format!("{}.gate", self.scope_name),
         );
 
-        let (experts_indicator, indice_ptr, weight_ptr) = gate_output.experts_softmax_norm(
+        let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) = gate_output.experts_softmax_norm(
             self.num_experts,
             self.num_topk,
             format!("{}.router_probs", self.scope_name),
@@ -137,6 +137,7 @@ where
             experts_indicator,
             indice_ptr,
             weight_ptr,
+            topk_indices_ptr,
             self.num_topk,
             MatmulParams {
                 a_row_step_macro: 16,
