@@ -5,7 +5,7 @@ use super::super::super::init::send_sync_ptr::{ConstPtr, MutPtr};
 use super::super::super::kernel;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::mul_trait::AttentionAddTrait;
+use super::mul_trait::AttentionTrait;
 use crate::compiler::assign::assign;
 
 #[derive(Clone)]
