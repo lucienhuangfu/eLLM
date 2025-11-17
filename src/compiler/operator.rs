@@ -90,7 +90,7 @@ where
                     thread_id,
                 );
             }
-            Self::AttentionAdd(operator) => {
+            Self::Attention(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
