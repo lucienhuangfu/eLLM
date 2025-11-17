@@ -17,7 +17,7 @@ use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
-use super::super::compiler::mul::attention_add::AttentionAdd;
+use super::super::compiler::mul::attention::Attention;
 use super::super::compiler::mul::experts_matmul_mul::ExpertsMatmulMul;
 use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsMatmulSilu;
 use super::super::compiler::mul::experts_merge_add::ExpertsMergeAdd;
@@ -102,11 +102,11 @@ where
         output_tensor
     }
 
-    pub fn attention_add(
+    pub fn attention(
         &self,
         k_tensor: &Tensor<T>,
         v_tensor: &Tensor<T>,
-        residual: &Tensor<T>,
+        // residual: &Tensor<T>,
         inverse_sqrt_head: T,
         scope_name: String,
     ) -> Self {
@@ -118,11 +118,11 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::AttentionAdd(AttentionAdd::new(
+        let operator = Operator::Attention(Attention::new(
             self.data,
             k_tensor.data,
             v_tensor.data,
-            residual.data,
+            // residual.data,
             output_tensor.data,
             self.shape[1],
             self.shape[2],

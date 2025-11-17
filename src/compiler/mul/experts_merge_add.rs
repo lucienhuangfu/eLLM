@@ -73,8 +73,10 @@ where
         if let Some((begin, end)) = assign(self.num_experts, thread_num, thread_id) {
             let experts_indicator_ptr = self.experts_indicator.ptr;
             let indices_ptr = self.indice_ptr.ptr;
+            // println!("ExpertsMergeAdd reset from {} to {}", begin, end);
 
             for i in begin..end {
+                // println!(   "ExpertsMergeAdd reset expert {}", i);
                 unsafe {
                     if *experts_indicator_ptr.add(i) {
                         *experts_indicator_ptr.add(i) = false;
