@@ -13,7 +13,7 @@ pub struct ExpertsSoftmaxNorm<T> {
     // [sequence_chunk_size, batch_size, num_experts]
     ptr1: ConstPtr<T>,
     topk_values_ptr: *mut T,
-    topk_indices_ptr: *mut usize,
+    topk_indices_ptr: MutPtr<usize>,
     // Expert routing information
     experts_indicator: MutPtr<bool>,
     indice_ptr: MutPtr<bool>,
@@ -31,6 +31,7 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
         experts_indicator: *mut bool,
         indice_ptr: *mut bool,
         weight_ptr: *mut T,
+        topk_indices_ptr: *mut usize,
         sequence_chunk_size: usize,
         batch_size: usize,
         num_experts: usize,
@@ -43,9 +44,8 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
             topk_values_ptr: unsafe {
                 allocate_init::<T>(length, T::default())
             },
-            topk_indices_ptr: unsafe {
-                allocate_init::<usize>(length, 0)
-            },
+            topk_indices_ptr: MutPtr { ptr: topk_indices_ptr },
+
             experts_indicator: MutPtr {
                 ptr: experts_indicator,
             },
@@ -72,6 +72,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
 
             let ptr1 = self.ptr1.ptr;
+            let topk_indices_ptr = self.topk_indices_ptr.ptr;
 
             for _ in begin..end {
                 let index = row_index * self.batch_size + col_index;
@@ -82,7 +83,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
                     self.compute(
                         ptr1.add(p1),
                         self.topk_values_ptr.add(p2),
-                        self.topk_indices_ptr.add(p2),
+                        topk_indices_ptr.add(p2),
                         self.experts_indicator.ptr,
                         self.indice_ptr.ptr,
                         self.weight_ptr.ptr,
@@ -224,11 +225,14 @@ mod test {
         let mut indice_ptr = vec![false; num_experts * num_tokens];
         let mut weight_ptr = vec![0.0f32; num_experts * num_tokens];
 
+        let mut topk_indices_ptr = vec![0usize; num_topk * num_tokens];
+
         let operator = ExpertsSoftmaxNorm::<f32>::new(
             input_data.as_ptr(),
             experts_indicator.as_mut_ptr(),
             indice_ptr.as_mut_ptr(),
             weight_ptr.as_mut_ptr(),
+            topk_indices_ptr.as_mut_ptr(),
             sequence_chunk_size,
             batch_size,
             num_experts,

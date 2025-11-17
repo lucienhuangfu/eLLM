@@ -209,6 +209,7 @@ where
         experts_indicator: *mut bool,
         indice_ptr: *mut bool,
         weight_ptr: *mut T,
+        topk_indices_ptr: *mut usize,
         num_experts_per_tok: usize,
         params: MatmulParams,
         scope_name: String,
@@ -230,6 +231,7 @@ where
             experts_indicator,
             indice_ptr,
             weight_ptr,
+            topk_indices_ptr,
             output_tensor.data,
             self.shape[1],
             down_weights.shape[1],
@@ -296,7 +298,7 @@ where
         num_experts: usize,
         num_experts_per_tok: usize,
         scope_name: String,
-    ) -> (*mut bool, *mut bool, *mut T) {
+    ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
         // [(experts_id, [(token_id, weight)])]
         // sorted_ids: Vec<(usize, Vec<(usize, T)>)>,
 
@@ -307,19 +309,22 @@ where
         let length = num_experts * self.shape[0] * self.shape[1];
         let indice_ptr = unsafe { allocate_init(length, false) };
         let weight_ptr = unsafe { allocate_init(length, T::default()) };
+        let mut topk_indices_ptr = unsafe { allocate_init(num_experts_per_tok * self.shape[0] * self.shape[1]  , 0usize) };
+        // vec![0usize; num_experts * self.shape[0] * self.shape[1]];
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
             self.data,
             experts_indicator,
             indice_ptr,
             weight_ptr,
+            topk_indices_ptr,
             self.shape[0],
             self.shape[1],
             num_experts,
             num_experts_per_tok,
         ));
         self.operator_queue.borrow_mut().push(operator);
-        (experts_indicator, indice_ptr, weight_ptr)
+        (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr)
     }
 
     pub fn from_cache(
@@ -896,7 +901,7 @@ mod test {
                 .copy_from_nonoverlapping(data.as_ptr(), data.len());
         }
 
-        let (experts_indicator, indice_ptr, weight_ptr) = tensor.experts_softmax_norm(
+        let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) = tensor.experts_softmax_norm(
             num_experts,
             num_experts_per_tok,
             "softmax_norm".to_string(),

@@ -25,6 +25,7 @@ pub struct ExpertsMatmulMul<T> {
     indice_ptr: MutPtr<bool>,
     // [num_experts, batch_size]
     weight_ptr: MutPtr<T>,
+    topk_indices_ptr: MutPtr<usize>,
     output_ptr: MutPtr<T>,
     a_row: usize,
     b_row: usize,
@@ -42,6 +43,7 @@ where
         experts_indicator: *mut bool,
         indice_ptr: *mut bool,
         weight_ptr: *mut T,
+        topk_indices_ptr: *mut usize,
         output_ptr: *mut T,
         a_row: usize,
         b_row: usize,
@@ -60,6 +62,7 @@ where
             experts_indicator: MutPtr { ptr: experts_indicator },
             indice_ptr: MutPtr { ptr: indice_ptr },
             weight_ptr: MutPtr { ptr: weight_ptr },
+            topk_indices_ptr: MutPtr { ptr: topk_indices_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
             a_row,
             b_row,

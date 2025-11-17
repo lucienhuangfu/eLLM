@@ -498,12 +498,14 @@ mod test {
         let mut experts_indicator = vec![false; num_experts];
         let mut indice_ptr = vec![false; num_experts * num_tokens];
         let mut weight_ptr = vec![0.0f32; num_experts * num_tokens];
+        let mut topk_indices_ptr = vec![0usize; num_topk * num_tokens];
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::<f32>::new(
             input_data.as_ptr(),
             experts_indicator.as_mut_ptr(),
             indice_ptr.as_mut_ptr(),
             weight_ptr.as_mut_ptr(),
+            topk_indices_ptr.as_mut_ptr(),
             sequence_chunk_size,
             batch_size,
             num_experts,
