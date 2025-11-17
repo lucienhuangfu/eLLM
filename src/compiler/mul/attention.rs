@@ -9,11 +9,11 @@ use super::mul_trait::AttentionAddTrait;
 use crate::compiler::assign::assign;
 
 #[derive(Clone)]
-pub struct AttentionAdd<T> {
+pub struct Attention<T> {
     q_ptr: ConstPtr<T>,
     k_ptr: ConstPtr<T>,
     v_ptr: ConstPtr<T>,
-    residual_ptr: ConstPtr<T>,
+    // residual_ptr: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     batch_size: usize,
     attention_head_num: usize,
@@ -26,7 +26,7 @@ pub struct AttentionAdd<T> {
     // stride: usize,
 }
 
-impl<T> AttentionAdd<T>
+impl<T> Attention<T>
 where
     T: Copy
         + Default
@@ -42,7 +42,7 @@ where
         q_ptr: *const T,
         k_ptr: *const T,
         v_ptr: *const T,
-        residual_ptr: *const T,
+        // residual_ptr: *const T,
         output_ptr: *mut T,
         batch_size: usize,
         attention_head_num: usize,
@@ -55,7 +55,7 @@ where
             q_ptr: ConstPtr { ptr: q_ptr },
             k_ptr: ConstPtr { ptr: k_ptr },
             v_ptr: ConstPtr { ptr: v_ptr },
-            residual_ptr: ConstPtr { ptr: residual_ptr },
+            // residual_ptr: ConstPtr { ptr: residual_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
             batch_size: batch_size,
             attention_head_num: attention_head_num,
@@ -156,7 +156,7 @@ where
     }
 }
 
-impl<T> AttentionAddTrait<T> for AttentionAdd<T>
+impl<T> AttentionTrait<T> for Attention<T>
 where
     T: Copy
         + Default
@@ -192,7 +192,7 @@ where
     }
 }
 
-impl AttentionAddTrait<f16> for AttentionAdd<f16> {
+impl AttentionTrait<f16> for Attention<f16> {
     fn compute(
         &self,
         q_ptr: *const f16,
@@ -229,7 +229,7 @@ impl AttentionAddTrait<f16> for AttentionAdd<f16> {
     }
 }
 
-impl AttentionAddTrait<f32> for AttentionAdd<f32> {
+impl AttentionTrait<f32> for Attention<f32> {
     fn compute(
         &self,
         q_ptr: *const f32,

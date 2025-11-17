@@ -47,7 +47,8 @@ where
         + NegInfinity
         + Sigmoid<T>
         + Sqrt
-        + FromF32,
+        + FromF32
+        + AddAssign,
 {
     pub fn new(
         config: &Config,
@@ -160,7 +161,7 @@ where
             let mut view_value_tensor2 = value_states.permute(vec![1, 2, 0, 3]);
 
             // [position_window_size, batch_size, head_num, head_size] <- [position_window_size, batch_size, head_num, head_size] [batch_size, head_num, sequence_num, head_size] [batch_size, head_num, sequence_num, head_size]
-            let attn_output = query_states.attention_add(
+            let attn_output = query_states.attention(
                 &view_key_position_tensor,
                 &view_value_tensor2,
                 residual,

@@ -21,7 +21,7 @@ use super::zip_map::complex_zip::ComplexZipMap;
 use super::zip_map::silu_mul_zip::SiluMulZipMap;
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
-use super::mul::attention_add::AttentionAdd;
+use super::mul::attention::Attention;
 use super::mul::experts_matmul_mul::ExpertsMatmulMul;
 use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatmulSilu;
 use super::mul::experts_merge_add::ExpertsMergeAdd;
@@ -33,7 +33,7 @@ pub enum Operator<T> {
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
     // ArgmaxReduce(ArgmaxReduce<T>),
-    AttentionAdd(AttentionAdd<T>),
+    Attention(Attention<T>),
     ComplexZipMap(ComplexZipMap<T>),
     ExpertsMatmulMul(ExpertsMatmulMul<T>),
     ExpertsMatmulSiluMulMatmul(ExpertsMatmulSilu<T>),
