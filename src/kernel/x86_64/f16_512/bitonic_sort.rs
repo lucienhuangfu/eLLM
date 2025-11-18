@@ -50,8 +50,8 @@ pub(crate) unsafe fn bitonic_sort_f16x32_desc(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use half::f16;
     use std::arch::is_x86_feature_detected;
+    use std::f16;
 
     #[test]
     fn bitonic_sort_desc_orders_f16_values_and_indices() {
@@ -62,19 +62,19 @@ mod tests {
             eprintln!("Skipping AVX-512 FP16-dependent test");
             return;
         }
-        let input_vals = [
-            1.0f32, -5.5, 3.0, 7.25, 0.5, 12.0, -1.25, 4.75, 9.5, -3.75, 2.5, 6.5, 8.0, -2.0, 5.5,
+        let input_vals: [f16; LANES as usize] = [
+            1.0, -5.5, 3.0, 7.25, 0.5, 12.0, -1.25, 4.75, 9.5, -3.75, 2.5, 6.5, 8.0, -2.0, 5.5,
             10.25, 11.5, -4.5, 13.0, 14.75, 15.5, -6.0, 16.25, 17.5, 18.75, -7.5, 19.25, 20.5,
             21.75, -8.25, 22.0, 23.5,
         ];
         let mut value_bits = [0u16; LANES as usize];
         for (dst, &val) in value_bits.iter_mut().zip(input_vals.iter()) {
-            *dst = f16::from_f32(val).to_bits();
+            *dst = val.to_bits();
         }
-        let mut expected_pairs: Vec<(f32, i16)> = value_bits
+        let mut expected_pairs: Vec<(f16, i16)> = input_vals
             .iter()
             .enumerate()
-            .map(|(i, &bits)| (f16::from_bits(bits).to_f32(), i as i16))
+            .map(|(i, &val)| (val, i as i16))
             .collect();
         expected_pairs
             .sort_by(|(av, ai), (bv, bi)| bv.partial_cmp(av).unwrap().then_with(|| ai.cmp(bi)));
@@ -88,15 +88,15 @@ mod tests {
             let (sorted_vals, sorted_ids) = bitonic_sort_f16x32_desc(values_vec, indices_vec);
             let mut sorted_vals_bits = [0u16; LANES as usize];
             _mm512_storeu_ph(sorted_vals_bits.as_mut_ptr() as *mut _, sorted_vals);
-            let mut sorted_vals_f32 = [0f32; LANES as usize];
-            for (dst, &bits) in sorted_vals_f32.iter_mut().zip(sorted_vals_bits.iter()) {
-                *dst = f16::from_bits(bits).to_f32();
+            let mut sorted_vals_f16 = [0f16; LANES as usize];
+            for (dst, &bits) in sorted_vals_f16.iter_mut().zip(sorted_vals_bits.iter()) {
+                *dst = f16::from_bits(bits);
             }
             let mut sorted_idx = [0i16; LANES as usize];
             _mm512_storeu_si512(sorted_idx.as_mut_ptr() as *mut _, sorted_ids);
-            let expected_vals: Vec<f32> = expected_pairs.iter().map(|(v, _)| *v).collect();
+            let expected_vals: Vec<f16> = expected_pairs.iter().map(|(v, _)| *v).collect();
             let expected_idx: Vec<i16> = expected_pairs.iter().map(|(_, i)| *i).collect();
-            assert_eq!(sorted_vals_f32.to_vec(), expected_vals);
+            assert_eq!(sorted_vals_f16.to_vec(), expected_vals);
             assert_eq!(sorted_idx.iter().copied().collect::<Vec<_>>(), expected_idx);
         }
     }

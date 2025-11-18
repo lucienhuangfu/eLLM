@@ -7,16 +7,17 @@ use crate::kernel::generic::from_f32::FromF32;
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
-use crate::qwen3_moe::mlp;
 
 use super::config::Config;
 
 use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
-// use super::feedforward::FeedForward;
 use super::attention::Attention;
-use super::moe_layer::MoeLayer;
+use super::sparse_moe_block::SparseMoeBlock;
+// use super::moe_layer::MoeLayer;
+// use crate::qwen3_moe::mlp;
+// use super::feedforward::FeedForward;
 
 #[derive(Clone)]
 pub struct DecoderLayer<T> {
@@ -30,7 +31,8 @@ pub struct DecoderLayer<T> {
     word_embedding: Rc<Tensor<T>>,
     position_embedding: Rc<Tensor<T>>,
     self_attention: Attention<T>,
-    moe_layer: MoeLayer<T>,
+    // moe_layer: MoeLayer<T>,
+    sparse_moe_block: SparseMoeBlock<T>,
     scope_name: String,
     cache: Rc<RefCell<Cache<T>>>,
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
@@ -46,7 +48,8 @@ where
         + NegInfinity
         + Sigmoid<T>
         + Sqrt
-        + FromF32,
+        + FromF32
+        + AddAssign,
 {
     pub fn new(
         config: &Config,
@@ -63,6 +66,7 @@ where
         let scope_name = format!("{}.layers.{}", parent_scope_name, layer_idx);
 
         // let mlp_scope_name = format!("{}.mlp", scope_name);
+        /*
         let moe_layer =
             if config.num_experts > 0 && (layer_idx + 1) % config.decoder_sparse_step == 0 {
                 // sparse moe block
@@ -85,7 +89,18 @@ where
                     cache.clone(),
                     operator_queue.clone(),
                 )
-            };
+            };*/
+
+        let sparse_moe_block = SparseMoeBlock::new(
+            config.hidden_size,
+            config.intermediate_size,
+            config.num_experts,
+            config.num_experts_per_tok,
+            config.norm_topk_prob,
+            &scope_name,
+            cache.clone(),
+            operator_queue.clone(),
+        );
 
         Self {
             sequence_length: config.max_position_embeddings,
@@ -102,7 +117,7 @@ where
                 cache.clone(),
                 operator_queue.clone(),
             ),
-            moe_layer: moe_layer,
+            sparse_moe_block: sparse_moe_block,
             word_embedding: word_embedding,
             position_embedding: position_embedding,
             cache: cache,
@@ -129,7 +144,7 @@ where
             let (hidden_states, norm_hidden) = Tensor::lookup_rms(
                 input_sequences,
                 &*self.word_embedding,
-                 self.sequence_chunk_size,
+                self.sequence_chunk_size,
                 self.batch_size,
                 self.rms_norm_eps,
                 self.scope_name.clone(),
@@ -153,7 +168,7 @@ where
             format!("{}.norm_hidden2", self.scope_name),
         );
 
-        let output_hidden_states = self.moe_layer.forward(
+        let output_hidden_states = self.sparse_moe_block.forward(
             &norm_hidden_states,
             &attention_hidden_states,
             format!("{}.attention_hidden3", self.scope_name),
@@ -184,137 +199,176 @@ where
 
 #[cfg(test)]
 mod test {
-    /*
     use super::*;
     use std::slice;
-    use approx::assert_relative_eq;
 
     #[test]
-    fn test_layer() {
-        let cpu_num = num_cpus::get();
-        let mut config: Config = Config::new();
-        config.load_model_config(r"models/Llama-2-7b-hf/config.json");
-        config.load_compile_config(r"models/Llama-2-7b-hf.json");
+    fn test_decoder_layer_f32() {
+        let position_window_size = 4;
+        let batch_size = 6;
 
-        let batch_size = config.batch_size;
-        // let sequence_length = config;
+        let config = Config::load_from_file(r"models/Qwen2.5-0.5B-Instruct/config.json").unwrap();
+
+        let sequence_chunk_size = position_window_size;
         let hidden_size = config.hidden_size;
-        let num_attention_heads = config.num_attention_heads;
-        let num_key_value_heads = config.num_key_value_heads;
         let max_position_embeddings = config.max_position_embeddings;
-        let attention_head_size = config.attention_head_size;
-        let multiple_of = config.multiple_of;
-        let rms_norm_eps = config.rms_norm_eps;
+        let head_dim = config.head_dim;
 
         let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let vocab_size = 4096;
-        let word_embedding = Tensor::zeros(vec![4096, hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
-        let position_embedding = Tensor::zeros(vec![max_position_embeddings, 1, 1, attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
+        let vocab_size = config.vocab_size;
+        let word_embedding = Rc::new(Tensor::zeros(
+            vec![vocab_size, hidden_size],
+            String::from("model.embed_tokens.weight"),
+            cache.clone(),
+            operator_queue.clone(),
+        ));
+        let position_embedding = Rc::new(Tensor::zeros(
+            vec![max_position_embeddings, 1, 1, head_dim],
+            String::from("model.rotary_emb.weight"),
+            cache.clone(),
+            operator_queue.clone(),
+        ));
 
-        let layer = TransformerBlock::<f32>::new(&config,
-            &word_embedding,
-            &position_embedding,
+        let layer = DecoderLayer::<f32>::new(
+            &config,
             0,
-            cpu_num,
+            max_position_embeddings,
+            sequence_chunk_size,
+            batch_size,
+            word_embedding.clone(),
+            position_embedding.clone(),
             "model",
             cache.clone(),
-            operator_queue.clone());
+            operator_queue.clone(),
+        );
 
-        let shape = vec![batch_size, hidden_size];
-        let input = Tensor::from_cache(shape.clone(), String::from("model.layers.0.input_tensor"), cache.clone(), operator_queue.clone());
+        let shape = vec![position_window_size, batch_size, hidden_size];
+        let input = Tensor::from_cache(
+            shape.clone(),
+            String::from("model.layers.1.input_tensor"),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
         for i in 0..input.shape.iter().product() {
             unsafe {
                 input.data.add(i).write(1.0);
             }
         }
 
-        let mut sequences = vec![0; config.max_position_embeddings];
-        let output_tensor = layer.forward(&input, sequences.as_mut_ptr() , String::from("model.layers.0.output_tensor"));
+        let mut sequences = vec![0; sequence_chunk_size * batch_size];
+        let output_tensor = layer.forward(
+            &input,
+            sequences.as_mut_ptr(),
+            String::from("model.layers.1.output_tensor"),
+        );
 
+        // Validate output shape
+        debug_assert_eq!(
+            output_tensor.shape,
+            vec![position_window_size, batch_size, hidden_size]
+        );
+
+        // Execute the operator queue
         let thread_num: usize = num_cpus::get();
-        for operator in output_tensor.operator_queue.borrow().iter() {
+        for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
+            println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(1, 64, i);
+                operator.run(1, 1, batch_size, thread_num, i);
             }
         }
 
-        /*
-        let output_shape = vec![batch_size, hidden_size];
-        let size = output_shape.iter().product();
-        let mut result = vec![0.0; size];
-        for i in 0..hidden_size {
-            result[i] = hidden_size as f32;
-        }
-
-        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, size) };
-        assert_relative_eq!(output_slice, &result[..], max_relative = 1e-6);
-         */
+        assert_eq!(
+            output_tensor.shape,
+            vec![position_window_size, batch_size, hidden_size]
+        );
     }
 
-
+    /*
     #[test]
-    fn test_layer_f16() {
-        let cpu_num = num_cpus::get();
-        let mut config: Config = Config::new();
-        config.load_model_config(r"models/Llama-2-7b-hf/config.json");
-        config.load_compile_config(r"models/Llama-2-7b-hf.json");
+    fn test_decoder_layer_f16() {
+        let position_window_size = 4;
+        let batch_size = 6;
 
-        let batch_size = config.batch_size;
-        // let sequence_length = config;
+        let config = Config::load_from_file(r"models/Qwen2.5-0.5B-Instruct/config.json").unwrap();
+
+        let sequence_chunk_size = position_window_size;
         let hidden_size = config.hidden_size;
-        let num_attention_heads = config.num_attention_heads;
-        let num_key_value_heads = config.num_key_value_heads;
         let max_position_embeddings = config.max_position_embeddings;
-        let attention_head_size = config.attention_head_size;
-        let multiple_of = config.multiple_of;
-        let rms_norm_eps = config.rms_norm_eps as f16;
+        let head_dim = config.head_dim;
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
+        let cache: Rc<RefCell<Cache<f16>>> =
+            Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let vocab_size = 4096;
-        let word_embedding = Tensor::zeros(vec![4096, hidden_size], String::from("model.word_embedding.weight"), cache.clone(), operator_queue.clone());
-        let position_embedding = Tensor::zeros(vec![max_position_embeddings, 1, 1, attention_head_size], String::from("model.position_embedding.weight"), cache.clone(), operator_queue.clone());
+        let vocab_size = config.vocab_size;
+        let word_embedding = Rc::new(Tensor::zeros(
+            vec![vocab_size, hidden_size],
+            String::from("model.embed_tokens.weight"),
+            cache.clone(),
+            operator_queue.clone(),
+        ));
+        let position_embedding = Rc::new(Tensor::zeros(
+            vec![max_position_embeddings, 1, 1, head_dim],
+            String::from("model.rotary_emb.weight"),
+            cache.clone(),
+            operator_queue.clone(),
+        ));
 
-        let layer = TransformerBlock::<f16>::new(&config,
-            &word_embedding,
-            &position_embedding,
+        let layer = DecoderLayer::<f16>::new(
+            &config,
             0,
-            cpu_num,
+            max_position_embeddings,
+            sequence_chunk_size,
+            batch_size,
+            word_embedding.clone(),
+            position_embedding.clone(),
             "model",
             cache.clone(),
-            operator_queue.clone());
+            operator_queue.clone(),
+        );
 
-        let shape = vec![batch_size, hidden_size];
-        let input = Tensor::from_cache(shape.clone(), String::from("model.layers.0.input_tensor"), cache.clone(), operator_queue.clone());
+        let shape = vec![position_window_size, batch_size, hidden_size];
+        let input = Tensor::from_cache(
+            shape.clone(),
+            String::from("model.layers.0.input_tensor"),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
         for i in 0..input.shape.iter().product() {
             unsafe {
-                input.data.add(i).write(1.0);
+                input.data.add(i).write(f16::from_f32(1.0));
             }
         }
 
-        let mut sequences = vec![0; config.max_position_embeddings];
-        let output_tensor = layer.forward(&input, sequences.as_mut_ptr() , String::from("model.layers.0.output_tensor"));
+        let mut sequences = vec![0; sequence_chunk_size * batch_size];
+        let output_tensor = layer.forward(
+            &input,
+            sequences.as_mut_ptr(),
+            String::from("model.layers.0.output_tensor"),
+        );
 
+        // Validate output shape
+        debug_assert_eq!(
+            output_tensor.shape,
+            vec![position_window_size, batch_size, hidden_size]
+        );
+
+        // Execute the operator queue
         let thread_num: usize = num_cpus::get();
-        for operator in output_tensor.operator_queue.borrow().iter() {
+        for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
+            println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(1, 128, i);
+                operator.run(1, 1, batch_size, thread_num, i);
             }
         }
 
-        /*
-        let output_shape = vec![batch_size, hidden_size];
-        let size = output_shape.iter().product();
-        let mut result = vec![0.0; size];
-        for i in 0..hidden_size {
-            result[i] = hidden_size as f32;
-        }
-
-        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, size) };
-        assert_relative_eq!(output_slice, &result[..], max_relative = 1e-6);
-         */
+        assert_eq!(
+            output_tensor.shape,
+            vec![position_window_size, batch_size, hidden_size]
+        );
     } */
 }
