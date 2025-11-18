@@ -210,13 +210,15 @@ where
         indice_ptr: *mut bool,
         weight_ptr: *mut T,
         topk_indices_ptr: *mut usize,
+        // sequence_chunk_size: usize, 
+        // batch_size: usize,
         num_experts_per_tok: usize,
         params: MatmulParams,
         scope_name: String,
     ) -> Self {
         // down_weights [num_experts, hidden_size, intermediate_size]
         // output [sequence_chunk_size, batch_size, num_experts_per_token, hidden_size]
-        let output_shape = vec![self.shape[0], self.shape[1], num_experts_per_tok, down_weights.shape[1]];
+        let output_shape = vec![self.shape[1], self.shape[2], num_experts_per_tok, down_weights.shape[1]];
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
@@ -233,9 +235,9 @@ where
             weight_ptr,
             topk_indices_ptr,
             output_tensor.data,
-            self.shape[1],
-            down_weights.shape[1],
             self.shape[2],
+            down_weights.shape[1],
+            down_weights.shape[0],
             params.a_row_step_macro,
             params.b_row_step_macro,
             params.column_step_macro,
@@ -258,10 +260,11 @@ where
         scope_name: String,
     ) -> Self {
         // gate_weights [num_experts, intermediate_size, hidden_size]
-        // output [num_experts, sequence_chunk_size * batch_size, intermediate_size]
+        // output [num_experts, sequence_chunk_size , batch_size, intermediate_size]
         let output_shape = vec![
             gate_weights.shape[0],
-            self.shape[0] * self.shape[1],
+            self.shape[0],
+            self.shape[1],
             gate_weights.shape[1],
         ];
 
@@ -281,7 +284,7 @@ where
             output_tensor.data,
             self.shape[1],
             gate_weights.shape[1],
-            self.shape[2],
+            gate_weights.shape[0],
             params.a_row_step_macro,
             params.b_row_step_macro,
             params.column_step_macro,
