@@ -24,8 +24,8 @@ use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::operator::Operator;
 use super::super::init::matmul_params::MatmulParams;
 use super::super::memory::cache::Cache;
-use super::super::memory::model_loader::SafeTensorsLoader;
-use super::super::ptensor::linear::Linear;
+// use super::super::memory::model_loader::SafeTensorsLoader;
+// use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
 
@@ -61,6 +61,7 @@ where
         + Sigmoid<T>
         + Sqrt
         + FromF32
+        + AddAssign
         + Send
         + Sync,
 {

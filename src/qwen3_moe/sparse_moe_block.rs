@@ -59,19 +59,19 @@ where
             num_topk,
             norm_topk_prob,
             gate_weight: Tensor::zeros(
-                vec![hidden_size, num_experts],
+                vec![num_experts, hidden_size],
                 format!("{}.gate.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             experts_gate_weight: Tensor::zeros(
-                vec![num_experts, hidden_size, intermediate_size],
+                vec![num_experts, intermediate_size, hidden_size],
                 format!("{}.experts.gate_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             experts_up_weight: Tensor::zeros(
-                vec![num_experts, hidden_size, intermediate_size],
+                vec![num_experts, intermediate_size, hidden_size],
                 format!("{}.experts.up_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
@@ -97,6 +97,8 @@ where
     ) -> Tensor<T> {
 
         println!("Entering SparseMoeBlock forward: {}", tensor_name);
+        println!("gate weight shape: {:?}", self.gate_weight.shape);
+        // gate_output [sequence_chunk_size, batch_size, num_experts]
         let gate_output = hidden_states.matmul(
             &self.gate_weight,
             MatmulParams {
@@ -118,7 +120,7 @@ where
         );
 
         println!( "After experts_softmax_norm in SparseMoeBlock forward: {}", tensor_name);
-        // nonlinear_product [num_experts, batch_size, intermediate_size]
+        // nonlinear_product [num_experts, sequence_chunk_size, batch_size, intermediate_size]
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
             &self.experts_up_weight,
