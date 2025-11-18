@@ -49,10 +49,15 @@ where
         n_max: usize,
         k_max: usize,
     ) -> Self {
+        println!(
+            "Matmul::new called with m_max={}, n_max={}, k_max={}",
+            m_max, n_max, k_max
+        );
         // 直接在 new() 内完成转置，避免任何线程或 run() 内重复
         let mut b_nt_vec: Vec<T> = vec![T::default(); n_max * k_max];
         let b_nt_ptr = b_nt_vec.as_mut_ptr();
 
+        println!("Transposing B matrix in Matmul::new");
         // 原始 B 为 K×N（行主，行距 = N）
         // 目标 B_nt 为 N×K（行主，行距 = K）
         for kk in 0..k_max {
@@ -62,7 +67,7 @@ where
                 *b_nt_ptr.add(jj * k_max + kk) = *b_row.add(jj);
             }
         }
-
+        println!("Finished transposing B matrix in Matmul::new");
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             ptr2: ConstPtr { ptr: ptr2 },
