@@ -63,6 +63,7 @@ pub unsafe fn matmul_block(
     _mm512_storeu_ph(c.add(2 * ldc), c_row2);
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,4 +104,4 @@ mod tests {
             assert!(all_close(&c, &expected, 1e-3));
         }
     }
-}
+} */

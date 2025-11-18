@@ -366,6 +366,8 @@ where
             self.cache.clone(),
             self.operator_queue.clone(),
         );
+        tensor2.data;
+        println!( "Before matmul operator creation in Tensor matmul: {}", scope_name);
 
         let operator = unsafe {
             Operator::Matmul(Matmul::new(
@@ -379,6 +381,7 @@ where
                 self.shape[2],
             ))
         };
+        println!( "After matmul in Tensor matmul: {}", scope_name);
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor

@@ -95,6 +95,8 @@ where
         residual: &Tensor<T>,
         tensor_name: String,
     ) -> Tensor<T> {
+
+        println!("Entering SparseMoeBlock forward: {}", tensor_name);
         let gate_output = hidden_states.matmul(
             &self.gate_weight,
             MatmulParams {
@@ -108,13 +110,14 @@ where
             format!("{}.gate", self.scope_name),
         );
 
+        println!( "After gate matmul in SparseMoeBlock forward: {}", tensor_name);
         let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) = gate_output.experts_softmax_norm(
             self.num_experts,
             self.num_topk,
             format!("{}.router_probs", self.scope_name),
         );
 
-
+        println!( "After experts_softmax_norm in SparseMoeBlock forward: {}", tensor_name);
         // nonlinear_product [num_experts, batch_size, intermediate_size]
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
@@ -131,6 +134,7 @@ where
             format!("{}.gate_up", self.scope_name),
         );
   
+        println!( "After experts_matmul_silu_mul_matmul in SparseMoeBlock forward: {}", tensor_name);
         // down_product [sequence_chunk_size, batch_size, num_experts_per_token, hidden_size]
         let down_product = nonlinear_product.experts_matmul_mul(
             &self.experts_down_weight,
@@ -148,6 +152,8 @@ where
             },
             format!("{}.down", self.scope_name),
         );
+        
+        println!( "After experts_matmul_mul in SparseMoeBlock forward: {}", tensor_name);
         
         let merge_tensor = down_product.experts_merge_add(
             residual,
