@@ -137,7 +137,7 @@ where
 
         let mut hidden_state = Tensor::<T>::zeros(
             vec![self.batch_size, self.hidden_size],
-            format!("{}.hidden_state", self.scope_name),
+            format!("{}.hidden_state.output", self.scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
@@ -146,7 +146,7 @@ where
             hidden_state = layer_module.forward(
                 &hidden_state,
                 sequences,
-                format!("{}.hidden_states.{}", self.scope_name, i),
+                format!("{}.hidden_states.{}.output", self.scope_name, i),
             );
             // all_hidden_states.push(hidden_states);
         }
@@ -223,14 +223,14 @@ mod test {
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
         let mut sequences = allocate_init::<usize>((config.max_position_embeddings + 1)*batch_size, 0);
         let output_tensor = unsafe { model.forward(sequences) };
-        /*
+        
         let thread_num: usize = num_cpus::get();
-        for operator in output_tensor.operator_queue.borrow().iter() {
+        for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, 0, i);
+                operator.run(0, 1, batch_size, thread_num, i);
             }
         }
-         */
+         
         // Add assertions to verify the output_tensor
         // For example:
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);

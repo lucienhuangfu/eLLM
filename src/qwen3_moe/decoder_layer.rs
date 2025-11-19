@@ -108,7 +108,7 @@ where
             ),
             sparse_moe_block: SparseMoeBlock::new(
                 config.hidden_size,
-                config.intermediate_size,
+                config.moe_intermediate_size,
                 config.num_experts,
                 config.num_experts_per_tok,
                 config.norm_topk_prob,
