@@ -92,6 +92,7 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
+        /*
         unsafe {
             // ===== 维度 =====
             let m = batch_size; // 本次 M
@@ -104,6 +105,8 @@ where
             let kc = self.params.column_step_macro.max(1);
             let mr = self.params.a_row_step_micro.max(1);
             let nr = self.params.b_row_step_micro.max(1);
+
+            println!( "n = {}, nr = {}", n, nr);
 
             debug_assert!(m % mr == 0);
             debug_assert!(n % nr == 0);
@@ -210,7 +213,7 @@ where
                     }
                 }
             }
-        }
+        }*/
     }
 }
 
@@ -305,10 +308,9 @@ impl MatmulTrait<f32> for Matmul<f32> {
     }
 }
 
-
 /* ---------------------------------- 测试 ---------------------------------- */
 
-/* 
+/*
 #[cfg(test)]
 mod innteg_tests {
     use super::*;

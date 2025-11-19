@@ -121,6 +121,7 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
+        /*
         unsafe {
             // 维度
             let m = batch_size;
@@ -233,8 +234,8 @@ where
                     }
                 }
             }
-        }
-    }
+        }*/
+    } 
 }
 
 /* -------------------- 默认实现（占位，保持与 matmul 一致的模式） -------------------- */
