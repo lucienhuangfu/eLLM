@@ -3,30 +3,30 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatMulParams,
+    matmul_params::MatmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::MatMulAddTrait;
+use super::mul_trait::MatmulAddTrait;
 
 // there will be just one instance of this runner in the program
 // this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
-pub struct MatMulAdd<T> {
+pub struct MatmulAdd<T> {
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
     ptr3: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     // sequence_length: usize,
     // output_to_kv: bool,
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     _marker: PhantomData<T>,
     // sequence_stride: usize,
     // batch_size: usize,
     // hidden_size: usize,
 }
-impl<T> MatMulAdd<T>
+impl<T> MatmulAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -64,7 +64,7 @@ where
             output_ptr: MutPtr { ptr: output_ptr },
             // sequence_length: sequence_length,
             // output_to_kv: output_to_kv,
-            params: MatMulParams {
+            params: MatmulParams {
                 // a_row,
                 // b_row,
                 // column,
@@ -108,7 +108,7 @@ where
     }
 }
 
-impl<T> MatMulAddTrait<T> for MatMulAdd<T>
+impl<T> MatmulAddTrait<T> for MatmulAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -131,7 +131,7 @@ where
     }
 }
 
-impl MatMulAddTrait<f16> for MatMulAdd<f16> {
+impl MatmulAddTrait<f16> for MatmulAdd<f16> {
     fn compute(
         &self,
         input_ptr1: *const f16,
@@ -161,7 +161,7 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
     }
 }
 
-impl MatMulAddTrait<f32> for MatMulAdd<f32> {
+impl MatmulAddTrait<f32> for MatmulAdd<f32> {
     fn compute(
         &self,
         input_ptr1: *const f32,
@@ -222,7 +222,7 @@ mod tests {
         }
 
         // initialize the params
-        let params: MatMulParams = MatMulParams {
+        let params: matmulParams = matmulParams {
             a_row,
             b_row,
             column,
@@ -232,7 +232,7 @@ mod tests {
             a_row_step_micro,
             b_row_step_micro,
         };
-        let mut operator = MatMul::<f32>::new(
+        let mut operator = matmul::<f32>::new(
             a.as_ptr(),
             b.as_ptr(),
             c.as_mut_ptr(),

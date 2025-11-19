@@ -3,37 +3,48 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatMulParams,
+    matmul_params::MatmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
+use super::super::super::memory::allocator::allocate_init;
 use super::super::assign::assign;
-use super::mul_trait::MatMul4Trait;
+use super::mul_trait::Matmul4Trait;
+// use crate::memory::cache::Cache;
 
-// there will be just one instance of this runner in the program
-// this runner will be shared by many threads that together compute the matrix multiplication
+/// there will be just one instance of this runner in the program
+/// this runner will be shared by many threads that together compute the matrix multiplication
 #[derive(Clone)]
-pub struct ExpertsMatMulSilu<T> {
-    ptr1: ConstPtr<T>,
-    ptr2: ConstPtr<T>,
-    ptr3: ConstPtr<T>,
-    ptr4: ConstPtr<T>,
+pub struct ExpertsMatmulSilu<T> {
+    input_ptr: ConstPtr<T>,
+    gate_weight_ptr: ConstPtr<T>,
+    up_weight_ptr: ConstPtr<T>,
+    // Expert routing information
+    // sorted [num_experts, [(token_index, weight)]]
+    // [num_experts]
+    experts_indicator: MutPtr<bool>,
+    // [num_experts, batch_size]
+    indice_ptr: MutPtr<bool>,
+    // [num_experts, sequence_chunk_size*batch_size, intermediate_size]
     output_ptr: MutPtr<T>,
+    // [block_size, hidden_size]
+    macro_block: MutPtr<T>,
     a_row: usize,
     b_row: usize,
     column: usize,
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     _marker: PhantomData<T>,
 }
-impl<T> ExpertsMatMulSilu<T>
+impl<T> ExpertsMatmulSilu<T>
 where
-    T: Copy + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     pub fn new(
-        ptr1: *const T,
-        ptr2: *const T,
-        ptr3: *const T,
-        ptr4: *const T,
+        input_ptr: *const T,
+        gate_weight_ptr: *const T,
+        up_weight_ptr: *const T,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
         output_ptr: *mut T,
         a_row: usize,
         b_row: usize,
@@ -44,16 +55,27 @@ where
         a_row_step_micro: usize,
         b_row_step_micro: usize,
     ) -> Self {
+        let macro_block_size = a_row_step_macro * column_step_macro;
+        let macro_block = MutPtr {
+            ptr: unsafe { allocate_init(macro_block_size, T::default()) },
+        };
+
         Self {
-            ptr1: ConstPtr { ptr: ptr1 },
-            ptr2: ConstPtr { ptr: ptr2 },
-            ptr3: ConstPtr { ptr: ptr3 },
-            ptr4: ConstPtr { ptr: ptr4 },
+            input_ptr: ConstPtr { ptr: input_ptr },
+            gate_weight_ptr: ConstPtr {
+                ptr: gate_weight_ptr,
+            },
+            up_weight_ptr: ConstPtr { ptr: up_weight_ptr },
+            experts_indicator: MutPtr {
+                ptr: experts_indicator,
+            },
+            indice_ptr: MutPtr { ptr: indice_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
+            macro_block: macro_block,
             a_row: a_row,
             b_row: b_row,
             column: column,
-            params: MatMulParams {
+            params: MatmulParams {
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,
@@ -72,14 +94,10 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
-
-        // 跟mlp类似
-        // ptr2 [sequence_chunk_size, batch_size, num_experts, intermediate_size]
-        // output [sequence_chunk_size, batch_size, num_experts_per_tok, intermediate_size]
     }
 }
 
-impl<T> MatMul4Trait<T> for ExpertsMatMulSilu<T>
+impl<T> Matmul4Trait<T> for ExpertsMatmulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -92,7 +110,7 @@ where
     }
 }
 
-impl MatMul4Trait<f16> for ExpertsMatMulSilu<f16> {
+impl Matmul4Trait<f16> for ExpertsMatmulSilu<f16> {
     fn compute1(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
         // print!("f16 runner\n");
     }
@@ -102,7 +120,7 @@ impl MatMul4Trait<f16> for ExpertsMatMulSilu<f16> {
     }
 }
 
-impl MatMul4Trait<f32> for ExpertsMatMulSilu<f32> {
+impl Matmul4Trait<f32> for ExpertsMatmulSilu<f32> {
     fn compute1(&self, input_ptr1: *const f32, input_ptr2: *const f32, output_ptr: *mut f32) {
         // print!("f32 runner\n");
 
@@ -125,7 +143,7 @@ impl MatMul4Trait<f32> for ExpertsMatMulSilu<f32> {
 mod tests {
     use super::*;
     // use std::thread;
-    // use super::super::chunk_matmul::chunk_matmul;
+
     /*
     #[test]
     fn test_f32_chunk() {
@@ -161,17 +179,17 @@ mod tests {
         }
 
         // initialize the params
-        let params: MatMulParams = MatMulParams {
-            a_row,
-            b_row,
-            column,
+        let params: MatmulParams = MatmulParams {
+            // a_row,
+            // b_row,
+            // column,
             a_row_step_macro,
             b_row_step_macro,
             column_step_macro,
             a_row_step_micro,
             b_row_step_micro,
         };
-        let mut operator = MatMul::<f32>::new(
+        let mut operator = Matmul::<f32>::new(
             a.as_ptr(),
             b.as_ptr(),
             c.as_mut_ptr(),
@@ -191,18 +209,21 @@ mod tests {
         for i in 0..thread_num {
             // println!("{}", i);
             operator.run(0, sequence_chunk_size, batch_size, thread_num, i);
-        }
+        } 
+        
 
 
         // assert_eq!(c, expected);
-
+        
         // print the result
         for i in 0..a_row {
             for j in 0..b_row {
                 //print!("{:?} ", c[i * b_row + j]);
             }
             //println!();
-        }
-    }
-    */
+        } 
+
+
+    }*/
+    
 }

@@ -1,4 +1,4 @@
-pub trait AttentionAddTrait<T> {
+pub trait AttentionTrait<T> {
     fn compute(
         &self,
         q_ptr1: *const T,
@@ -10,7 +10,7 @@ pub trait AttentionAddTrait<T> {
     );
 }
 
-pub trait MatMulTrait<T> {
+pub trait MatmulTrait<T> {
     fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T);
     fn compute2(
         &self,
@@ -21,7 +21,7 @@ pub trait MatMulTrait<T> {
     );
 }
 
-pub trait MatMulAddTrait<T> {
+pub trait MatmulAddTrait<T> {
     fn compute(
         &self,
         input_ptr1: *const T,
@@ -31,19 +31,19 @@ pub trait MatMulAddTrait<T> {
     );
 }
 
-pub trait MatMulTopKTrait<T> {
+pub trait MatmulTopKTrait<T> {
     fn compute(
         &self,
         input_ptr1: *const T,
         input_ptr2: *const T,
-        indice_ptr: *mut T,
+        indice_ptr: *mut usize,
         value_ptr: *mut T,
         sum_ptr: *mut T,
     );
 }
 
 // === runner/mul_trait.rs ===
-pub trait MatMul3Trait<T> {
+pub trait Matmul3Trait<T> {
     fn compute1(
         &self,
         input_ptr1: *const T,
@@ -56,7 +56,7 @@ pub trait MatMul3Trait<T> {
     fn compute2(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T);
 }
 
-pub trait MatMul4Trait<T> {
+pub trait Matmul4Trait<T> {
     /// 内核1：C += A × B_panel（3x128 累加，按 kc 反复进入）
     fn compute1(&self, a: *const T, b_panel: *const T, c: *mut T);
 
@@ -66,7 +66,7 @@ pub trait MatMul4Trait<T> {
 }
 
 // === runner/mul_trait.rs ===
-pub trait MatMul5Trait<T> {
+pub trait Matmul5Trait<T> {
     fn compute(
         &self,
         input_ptr1: *const T,
@@ -75,5 +75,15 @@ pub trait MatMul5Trait<T> {
         input_ptr4: *const T,
         input_ptr5: *const T,
         output_ptr: *mut T,
+    );
+}
+
+pub trait Matmul2Trait<T> {
+    fn compute(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        output_ptr: *mut T,
+        weight: T,
     );
 }
