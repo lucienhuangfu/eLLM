@@ -12,7 +12,7 @@ use crate::kernel::x86_64;
 pub struct ExpertsSoftmaxNorm<T> {
     // [sequence_chunk_size, batch_size, num_experts]
     ptr1: ConstPtr<T>,
-    topk_values_ptr: *mut T,
+    topk_values_ptr: MutPtr<T>,
     topk_indices_ptr: MutPtr<usize>,
     // Expert routing information
     experts_indicator: MutPtr<bool>,
@@ -41,8 +41,10 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
 
-            topk_values_ptr: unsafe {
-                allocate_init::<T>(length, T::default())
+            topk_values_ptr: MutPtr {
+                ptr: unsafe {
+                    allocate_init::<T>(length, T::default())
+                },
             },
             topk_indices_ptr: MutPtr { ptr: topk_indices_ptr },
 
@@ -73,6 +75,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
 
             let ptr1 = self.ptr1.ptr;
             let topk_indices_ptr = self.topk_indices_ptr.ptr;
+            let topk_values_ptr = self.topk_values_ptr.ptr;
 
             for _ in begin..end {
                 let index = row_index * self.batch_size + col_index;
@@ -82,7 +85,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
                     let token_index = col_index + row_index * batch_size;
                     self.compute(
                         ptr1.add(p1),
-                        self.topk_values_ptr.add(p2),
+                        topk_values_ptr.add(p2),
                         topk_indices_ptr.add(p2),
                         self.experts_indicator.ptr,
                         self.indice_ptr.ptr,

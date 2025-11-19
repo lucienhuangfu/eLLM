@@ -1,8 +1,9 @@
 use core_affinity;
+use std::rc::Rc;
 use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
-use std::rc::Rc;
+
 use std::sync::Barrier;
 use std::sync::{Arc, RwLock};
 use std::thread;
