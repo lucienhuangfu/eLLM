@@ -550,14 +550,14 @@ where
 
         let value_tensor = Tensor::<T>::from_cache(
             output_shape.clone(),
-            format!("{}.values", scope_name),
+            format!("{}.values.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
         let sum_tensor = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], thread_num],
-            format!("{}.sums", scope_name),
+            format!("{}.sums.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
@@ -609,7 +609,7 @@ where
     pub fn rms(&self, eps: T, scope_name: String) -> Self {
         let output_tensor = Tensor::<T>::from_cache(
             self.shape.clone(),
-            format!("{}.rms_output", scope_name),
+            format!("{}.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
@@ -657,7 +657,7 @@ where
 
         let value_tensor = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], num_topk],
-            format!("{}.output_value", scope_name),
+            format!("{}.output_value.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );

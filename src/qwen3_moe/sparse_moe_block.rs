@@ -43,7 +43,7 @@ where
 {
     pub fn new(
         hidden_size: usize,
-        intermediate_size: usize,
+        moe_intermediate_size: usize,
         num_experts: usize,
         num_topk: usize,
         norm_topk_prob: bool,
@@ -65,20 +65,20 @@ where
                 operator_queue.clone(),
             ),
             experts_gate_weight: Tensor::zeros(
-                vec![num_experts, intermediate_size, hidden_size],
+                vec![num_experts, moe_intermediate_size, hidden_size],
                 format!("{}.experts.gate_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             experts_up_weight: Tensor::zeros(
-                vec![num_experts, intermediate_size, hidden_size],
+                vec![num_experts, moe_intermediate_size, hidden_size],
                 format!("{}.experts.up_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
 
             experts_down_weight: Tensor::zeros(
-                vec![num_experts, hidden_size, intermediate_size],
+                vec![num_experts, hidden_size, moe_intermediate_size],
                 format!("{}.experts.down_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
