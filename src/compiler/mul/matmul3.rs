@@ -115,6 +115,7 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
+        /*
         unsafe {
             // 维度
             let m = batch_size;
@@ -291,7 +292,7 @@ where
                     }
                 }
             }
-        }
+        } */
     }
 }
 impl<T> Matmul4Trait<T> for Matmul3<T>

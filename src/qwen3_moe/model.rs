@@ -1,5 +1,4 @@
 use core_affinity;
-use nom::sequence;
 use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
@@ -34,7 +33,6 @@ use super::decoder_layer::DecoderLayer;
 #[derive(Clone)]
 pub struct Model<T> {
     // config: Config,
-
     // sequences: Vec<usize>,
     word_embedding: Rc<Tensor<T>>,
     position_embedding: Rc<Tensor<T>>,
@@ -67,7 +65,6 @@ where
 {
     pub fn new(
         config: &Config,
-        
         sequence_length: usize,
         sequence_chunk_size: usize,
         batch_size: usize,
@@ -121,7 +118,7 @@ where
                 String::from("lm_head.weight"),
                 cache.clone(),
                 operator_queue.clone(),
-            ),            
+            ),
             layers: layers,
             batch_size: batch_size,
             hidden_size: config.hidden_size,
@@ -140,7 +137,7 @@ where
 
         let mut hidden_state = Tensor::<T>::zeros(
             vec![self.batch_size, self.hidden_size],
-            format!("{}.norm.weight", self.scope_name),
+            format!("{}.hidden_state", self.scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
@@ -156,7 +153,7 @@ where
 
         let norm_state = hidden_state.rms(
             self.rms_norm_eps,
-            format!("{}.norm_hidden.output", self.scope_name),
+            format!("{}.norm_hidden", self.scope_name),
         );
 
         let (indices_ptr, values_tensor, sum_tensor) = norm_state.matmul_local_topk(
@@ -169,7 +166,7 @@ where
                 b_row_step_micro: 8,
             },
             8,
-            format!("{}.lm_head.output", self.scope_name),
+            format!("{}.lm_head", self.scope_name),
         );
 
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
@@ -177,7 +174,7 @@ where
             &sum_tensor,
             sequences,
             self.topk_size,
-            format!("{}.softmax.output", self.scope_name),
+            format!("{}.softmax", self.scope_name),
         );
 
         (topk_indice, topk_value)
@@ -193,10 +190,9 @@ mod test {
     use std::rc::Rc;
     use std::thread;
 
-    /*
     use super::*;
-    use crate::init::config::Config;
-    use crate::llama::model_loader::SafeTensorsLoader;
+    // use crate::init::config::Config;
+    // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::memory::allocator::allocate_init;
     use crate::memory::cache::Cache;
     use crate::ptensor::tensor::Tensor;
@@ -204,12 +200,18 @@ mod test {
     #[test]
     fn test_model_forward() {
         // let cpu_num =  thread::available_parallelism().unwrap().get();
-        let mut config: Config = Config::new();
-        config.load_model_config(r"models/Llama-2-7b-hf/config.json");
-        config.load_compile_config(r"models/Llama-2-7b-hf.json");
+        let sequence_length = 128;
+        let sequence_chunk_size = 4;
+        let batch_size = 6;
 
-        let mut model = Transformer::<f32>::new(
-            config.clone(),
+        let config =
+            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+
+        let mut model = Model::<f32>::new(
+            &config,
+            sequence_length,
+            sequence_chunk_size,
+            batch_size,
             // word_embedding,
             // position_embedding,
             // norm_weight,
@@ -219,8 +221,8 @@ mod test {
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-        // let mut sequences = allocate_init::<usize>((config.max_position_embeddings + 1)*config.batch_size, 0);
-        let output_tensor = unsafe { model.build() };
+        let mut sequences = allocate_init::<usize>((config.max_position_embeddings + 1)*batch_size, 0);
+        let output_tensor = unsafe { model.forward(sequences) };
         /*
         let thread_num: usize = num_cpus::get();
         for operator in output_tensor.operator_queue.borrow().iter() {
@@ -232,7 +234,7 @@ mod test {
         // Add assertions to verify the output_tensor
         // For example:
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
-    } */
+    }
 
     /*
        #[test]

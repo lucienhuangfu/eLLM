@@ -102,11 +102,11 @@ where
         let gate_output = hidden_states.matmul(
             &self.gate_weight,
             MatmulParams {
-                a_row_step_macro: 16,
-                b_row_step_macro: 16,
-                column_step_macro: 16,
-                a_row_step_micro: 8,
-                b_row_step_micro: 8,
+                       a_row_step_macro: 6,
+                    b_row_step_macro: 128,
+                    column_step_macro: 16,
+                    a_row_step_micro: 3,
+                    b_row_step_micro: 128,
             },
             hidden_states.shape[0],
             format!("{}.gate", self.scope_name),
@@ -127,11 +127,11 @@ where
             experts_indicator,
             indice_ptr,
             MatmulParams {
-                a_row_step_macro: 16,
-                b_row_step_macro: 16,
-                column_step_macro: 16,
-                a_row_step_micro: 8,
-                b_row_step_micro: 8,
+                  a_row_step_macro: 6,
+                    b_row_step_macro: 128,
+                    column_step_macro: 16,
+                    a_row_step_micro: 3,
+                    b_row_step_micro: 128,
             },
             format!("{}.gate_up", self.scope_name),
         );
@@ -146,11 +146,11 @@ where
             topk_indices_ptr,
             self.num_topk,
             MatmulParams {
-                a_row_step_macro: 16,
-                b_row_step_macro: 16,
-                column_step_macro: 16,
-                a_row_step_micro: 8,
-                b_row_step_micro: 8,
+                    a_row_step_macro: 6,
+                    b_row_step_macro: 128,
+                    column_step_macro: 16,
+                    a_row_step_micro: 3,
+                    b_row_step_micro: 128,
             },
             format!("{}.down", self.scope_name),
         );
@@ -178,13 +178,13 @@ mod test {
     #[test]
     fn test_sparse_moe_block() {
         let position_window_size = 4;
-        let batch_size = 32;
+        let batch_size = 24;
         // let head_size = 128;
 
         let hidden_size = 256;
         let intermediate_size = 4 * hidden_size;
-        let num_experts = 8;
-        let top_k = 2;
+        let num_experts = 128;
+        let top_k = 8;
         let norm_topk_prob = true;
 
         let cache = Rc::new(RefCell::new(Cache::<f32>::new(
