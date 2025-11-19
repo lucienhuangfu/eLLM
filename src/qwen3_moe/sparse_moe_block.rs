@@ -6,10 +6,11 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::init::matmul_params::MatMulParams;
+use super::super::init::matmul_params::MatmulParams;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
+
 // use super::mlp::MLP;
 // use super::super::ptensor::linear::Linear;
 
@@ -17,7 +18,7 @@ use crate::compiler::operator::Operator;
 pub struct SparseMoeBlock<T> {
     hidden_size: usize,
     num_experts: usize,
-    top_k: usize,
+    num_topk: usize,
     norm_topk_prob: bool,
     gate_weight: Tensor<T>,
     experts_gate_weight: Tensor<T>,
@@ -30,47 +31,55 @@ pub struct SparseMoeBlock<T> {
 
 impl<T> SparseMoeBlock<T>
 where
-    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
+    T: Copy
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid<T>
+        + Sqrt
+        + AddAssign,
 {
     pub fn new(
         hidden_size: usize,
-        intermediate_size: usize,
+        moe_intermediate_size: usize,
         num_experts: usize,
-        top_k: usize,
+        num_topk: usize,
         norm_topk_prob: bool,
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
-        let scope_name = format!("{}.moe", parent_scope_name);
+        let scope_name = format!("{}.mlp", parent_scope_name);
         Self {
             // sequence_chunk_size,
             hidden_size,
             num_experts,
-            top_k,
+            num_topk,
             norm_topk_prob,
             gate_weight: Tensor::zeros(
-                vec![hidden_size, num_experts],
-                format!("{}.gate_proj.weight", scope_name),
+                vec![num_experts, hidden_size],
+                format!("{}.gate.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             experts_gate_weight: Tensor::zeros(
-                vec![num_experts, hidden_size, intermediate_size],
-                format!("{}.experts_gate_proj.weight", scope_name),
+                vec![num_experts, moe_intermediate_size, hidden_size],
+                format!("{}.experts.gate_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             experts_up_weight: Tensor::zeros(
-                vec![num_experts, hidden_size, intermediate_size],
-                format!("{}.experts_up_proj.weight", scope_name),
+                vec![num_experts, moe_intermediate_size, hidden_size],
+                format!("{}.experts.up_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
 
             experts_down_weight: Tensor::zeros(
-                vec![num_experts, hidden_size, intermediate_size],
-                format!("{}.experts_down_proj.weight", scope_name),
+                vec![num_experts, hidden_size, moe_intermediate_size],
+                format!("{}.experts.down_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
@@ -86,51 +95,76 @@ where
         residual: &Tensor<T>,
         tensor_name: String,
     ) -> Tensor<T> {
+
+        println!("Entering SparseMoeBlock forward: {}", tensor_name);
+        println!("gate weight shape: {:?}", self.gate_weight.shape);
+        // gate_output [sequence_chunk_size, batch_size, num_experts]
         let gate_output = hidden_states.matmul(
             &self.gate_weight,
-            MatMulParams {
-                a_row_step_macro: 16,
-                b_row_step_macro: 16,
-                column_step_macro: 16,
-                a_row_step_micro: 8,
-                b_row_step_micro: 8,
+            MatmulParams {
+                       a_row_step_macro: 6,
+                    b_row_step_macro: 128,
+                    column_step_macro: 16,
+                    a_row_step_micro: 3,
+                    b_row_step_micro: 128,
             },
             hidden_states.shape[0],
-            self.scope_name.clone(),
+            format!("{}.gate", self.scope_name),
         );
 
-        let (topk_indices, topk_values) = gate_output
-            .experts_softmax_norm(self.top_k, format!("{}.router_probs", self.scope_name));
+        println!( "After gate matmul in SparseMoeBlock forward: {}", tensor_name);
+        let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) = gate_output.experts_softmax_norm(
+            self.num_experts,
+            self.num_topk,
+            format!("{}.router_probs", self.scope_name),
+        );
 
+        println!( "After experts_softmax_norm in SparseMoeBlock forward: {}", tensor_name);
+        // nonlinear_product [num_experts, sequence_chunk_size, batch_size, intermediate_size]
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
             &self.experts_up_weight,
-            &topk_indices,
-            MatMulParams {
-                a_row_step_macro: 16,
-                b_row_step_macro: 16,
-                column_step_macro: 16,
-                a_row_step_micro: 8,
-                b_row_step_micro: 8,
+            experts_indicator,
+            indice_ptr,
+            MatmulParams {
+                  a_row_step_macro: 6,
+                    b_row_step_macro: 128,
+                    column_step_macro: 16,
+                    a_row_step_micro: 3,
+                    b_row_step_micro: 128,
             },
             format!("{}.gate_up", self.scope_name),
         );
-
-        let down_product = nonlinear_product.experts_matmul_merge_add(
+  
+        println!( "After experts_matmul_silu_mul_matmul in SparseMoeBlock forward: {}", tensor_name);
+        // down_product [sequence_chunk_size, batch_size, num_experts_per_token, hidden_size]
+        let down_product = nonlinear_product.experts_matmul_mul(
             &self.experts_down_weight,
-            &topk_indices,
-            &topk_values,
-            residual,
-            MatMulParams {
-                a_row_step_macro: 16,
-                b_row_step_macro: 16,
-                column_step_macro: 16,
-                a_row_step_micro: 8,
-                b_row_step_micro: 8,
+            experts_indicator,
+            indice_ptr,
+            weight_ptr,
+            topk_indices_ptr,
+            self.num_topk,
+            MatmulParams {
+                    a_row_step_macro: 6,
+                    b_row_step_macro: 128,
+                    column_step_macro: 16,
+                    a_row_step_micro: 3,
+                    b_row_step_micro: 128,
             },
             format!("{}.down", self.scope_name),
         );
-        down_product
+        
+        println!( "After experts_matmul_mul in SparseMoeBlock forward: {}", tensor_name);
+        
+        let merge_tensor = down_product.experts_merge_add(
+            residual,
+            experts_indicator,
+            indice_ptr,
+            self.num_experts,
+            format!("{}.merge", self.scope_name),
+        ); 
+        merge_tensor
     }
 }
 
@@ -139,32 +173,32 @@ mod test {
     use super::*;
     use approx::assert_relative_eq;
 
-    use crate::memory::allocator::allocate_init;
+    // use crate::memory::allocator::allocate_init;
 
-    /*
     #[test]
     fn test_sparse_moe_block() {
         let position_window_size = 4;
-        let batch_size = 32;
-        let head_size = 128;
+        let batch_size = 24;
+        // let head_size = 128;
 
-        let hidden_size = 8192;
+        let hidden_size = 256;
         let intermediate_size = 4 * hidden_size;
-        let num_experts = 8;
-        let top_k = 2;
-        let norm_topk_prob = 1;
+        let num_experts = 128;
+        let top_k = 8;
+        let norm_topk_prob = true;
 
-        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
+        let cache = Rc::new(RefCell::new(Cache::<f32>::new(
+            std::collections::HashMap::new(),
+        )));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let sparse_moe = SparseMoeBlock::<f32>::new(
-            position_window_size,
+            // position_window_size,
             hidden_size,
+            intermediate_size,
             num_experts,
             top_k,
             norm_topk_prob,
-            intermediate_size,
-            head_size,
             "model.layers.0",
             cache.clone(),
             operator_queue.clone(),
@@ -177,23 +211,38 @@ mod test {
             cache.clone(),
             operator_queue.clone(),
         );
+
+        let residual = Tensor::from_cache(
+            shape.clone(),
+            String::from("model.layers.0.residual_tensor"),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
         for i in 0..input.shape.iter().product() {
             unsafe {
                 input.data.add(i).write(1.0);
             }
         }
 
+        for i in 0..residual.shape.iter().product() {
+            unsafe {
+                residual.data.add(i).write(1.0);
+            }
+        }
+
         let output_tensor = sparse_moe.forward(
             &input,
+            &residual,
             String::from("model.layers.0.output_tensor"),
-            num_cpus::get(),
         );
 
         let thread_num: usize = num_cpus::get();
-        for operator in output_tensor.operator_queue.borrow().iter() {
+        for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
+            println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(1, 0, i);
+                operator.run(0, 1, batch_size, thread_num, i);
             }
         }
-    } */
+    }
 }

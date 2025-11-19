@@ -1,6 +1,6 @@
 use std::arch::x86_64::*;
 // use super::super::super::x86_64::asmsimd::*;
-use super::super::super::super::definition::matmul_params::MatMulParams;
+use super::super::super::super::definition::matmul_params::matmulParams;
 
 
 // #[inline]
@@ -30,7 +30,7 @@ use super::super::super::super::definition::matmul_params::MatMulParams;
 
 
 #[inline]
-pub unsafe fn _matmul_block(a: *const f32, b: *const f32, c: *mut f32, param: &MatMulParams) {
+pub unsafe fn _matmul_block(a: *const f32, b: *const f32, c: *mut f32, param: &matmulParams) {
     assert_eq!(param.a_row_step_micro, 3);
     assert_eq!(param.b_row_step_micro, 2);
     // assert_eq!(param.column_step_macro % 8, 0); // 8 floats fit into one AVX2 register (__m256)
@@ -117,7 +117,7 @@ mod tests {
         let column_step_macro = 64;
         let a_row_step_micro = 3;
         let b_row_step_micro = 2;
-        let param = MatMulParams{
+        let param = matmulParams{
             a_row,
             b_row,
             column,
