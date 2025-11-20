@@ -429,6 +429,7 @@ where
         output_tensor
     }
 
+    /* 
     pub fn matmul3(
         &self,
         q_weight: &Tensor<T>,
@@ -488,7 +489,7 @@ where
 
         self.operator_queue.borrow_mut().push(operator);
         (q_state, k_state, v_state)
-    }
+    }*/
 
     pub fn matmul_silu_mul_matmul(
         &self,

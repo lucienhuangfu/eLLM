@@ -153,16 +153,17 @@ where
         let hidden_states = &hidden_states_owned;
 
         
+        
         //  attention + add
         let attention_hidden_states = self.self_attention.forward(
             &norm_hidden,
             hidden_states,
             &*self.position_embedding,
             // format!("{}.attention_hidden1", self.scope_name),
-            // self.cpu_num,
         );
-
+        
      
+      
         let norm_hidden_states = attention_hidden_states.rms(
             // self.layernorm_weight.data,
             self.rms_norm_eps,

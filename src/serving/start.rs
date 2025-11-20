@@ -20,20 +20,20 @@ use super::super::compiler::operator::Operator;
 // use super::state::State;
 
 
-pub fn start(operator_queue: Rc<RefCell<Vec<Operator<f32>>>>) {
+pub fn start(operator_queue: Vec<Operator<f32>>) {
     println!("start");
     // let prompt_operator_num;
     // let data = SyncUnsafeCell::new(DataReader::new(prompt_data));
     let thread_num = thread::available_parallelism().unwrap().get();
-    let sync_operator_queue = Arc::new(operator_queue.borrow().clone());
+    let sync_operator_queue = Arc::new(operator_queue);
 
     let barrier = Arc::new(Barrier::new(thread_num));
 
     let sequence_chunk_size = 64;
-    // let mut handles = Vec::with_capacity(thread_num);
+    let mut handles = Vec::with_capacity(thread_num);
     let core_ids = core_affinity::get_core_ids().unwrap();
     for (i, core_id) in core_ids.into_iter().enumerate() {
-        println!("thread id {}", i);
+        // println!("thread id {}", i);
         // let _state = &state;
         // let _prompt_begin = &prompt_begin;
         // let _prompt_end = &prompt_end;
@@ -57,36 +57,121 @@ pub fn start(operator_queue: Rc<RefCell<Vec<Operator<f32>>>>) {
             // let prompt_queue_slice = &queue[..decode_start.min(queue.len())];
             // let decode_queue_slice = &queue[decode_start.min(queue.len())..];
 
-             let s = Instant::now();
-            let batch_size = 1;
-            // only decode part
-            for operator in queue.iter() {
-                operator.run(0, 1, batch_size, thread_num, thread_id);
-                b.wait();
+            let sequence_length = 10;
+
+            let s = Instant::now();
+            let batch_size = 6;
+            for p in 0..sequence_length {
+                println!("thread {} position {}", thread_id, p);
+                for operator in queue.iter() {
+                    operator.run(p, 1, batch_size, thread_num, thread_id);
+                    b.wait();
+                }
             }
+            // only decode part
+            // for operator in queue.iter() {
+            //    operator.run(0, 1, batch_size, thread_num, thread_id);
+            //    b.wait();
+            // }
             let t = s.elapsed();
             println!("thread {} decode time {:?}", thread_id, t);
 
 
         });
 
-        std::mem::forget(handle);
-        // handles.push(handle);
+        // std::mem::forget(handle);
+        handles.push(handle);
     }
 
-    /*
+    
     for handle in handles {
         handle.join().unwrap();
-    }*/
+    }
 }
 
 #[cfg(test)]
 mod test {
+    use approx::assert_relative_eq;
+
     use super::*;
+    use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
+    use crate::ptensor::tensor::Tensor;
+    use crate::memory::cache::Cache;
+
+    // use crate::memory::allocator::allocate_init;
 
     #[test]
     fn test_start() {
-        let operator_queue: Vec<Operator<f32>> = Vec::new();
-        start(operator_queue);
+        let position_window_size = 4;
+        let batch_size = 24;
+        // let head_size = 128;
+
+        let hidden_size = 256;
+        let intermediate_size = 4 * hidden_size;
+        let num_experts = 128;
+        let top_k = 8;
+        let norm_topk_prob = true;
+
+        let cache = Rc::new(RefCell::new(Cache::<f32>::new(
+            std::collections::HashMap::new(),
+        )));
+        let operator_queue = Rc::new(RefCell::new(Vec::new()));
+
+        let sparse_moe = SparseMoeBlock::<f32>::new(
+            // position_window_size,
+            hidden_size,
+            intermediate_size,
+            num_experts,
+            top_k,
+            norm_topk_prob,
+            "model.layers.0",
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        let shape = vec![position_window_size, batch_size, hidden_size];
+        let input = Tensor::from_cache(
+            shape.clone(),
+            String::from("model.layers.0.input_tensor"),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        let residual = Tensor::from_cache(
+            shape.clone(),
+            String::from("model.layers.0.residual_tensor"),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        for i in 0..input.shape.iter().product() {
+            unsafe {
+                input.data.add(i).write(1.0);
+            }
+        }
+
+        for i in 0..residual.shape.iter().product() {
+            unsafe {
+                residual.data.add(i).write(1.0);
+            }
+        }
+
+        let output_tensor = sparse_moe.forward(
+            &input,
+            &residual,
+            String::from("model.layers.0.output_tensor"),
+        );
+
+        /* 
+        let thread_num: usize = num_cpus::get();
+        for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
+            println!("operator {} in queue", index);
+            for i in 0..thread_num {
+                operator.run(0, 1, batch_size, thread_num, i);
+            }
+        }*/
+
+        // output_tensor.operator_queue.borrow().to_vec()
+        start(output_tensor.operator_queue.take());
     }
 }
