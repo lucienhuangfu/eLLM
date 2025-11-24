@@ -37,7 +37,7 @@ pub fn experts_topk_softmax_norm(
         for i in 0..num_topk {
             sum += *topk_values_ptr.add(i);
         }
-        let scale = sum.inv();
+        let scale = sum.recip();
         for i in 0..num_topk {
             *topk_values_ptr.add(i) *= scale;
         }

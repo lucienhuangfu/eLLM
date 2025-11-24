@@ -9,16 +9,16 @@ use std::f16;
 
 const LANES: usize = 32;
 
+
+
 #[inline(always)]
 unsafe fn sum_f16_vec(vec: __m512h, count: usize) -> f32 {
-    debug_assert!(count == LANES);
-
-    // Convert to f32 for reduction to maintain precision
-    let vec_i = _mm512_castph_si512(vec);
-    let lower = _mm512_cvtph_ps(_mm512_castsi512_si256(vec_i));
-    let upper = _mm512_cvtph_ps(_mm512_extracti64x4_epi64::<1>(vec_i));
-
-    _mm512_reduce_add_ps(_mm512_add_ps(lower, upper))
+    debug_assert!(count <= LANES);
+    let mut tmp = [0.0f16; LANES];
+    _mm512_storeu_ph(tmp.as_mut_ptr() as *mut _, vec);
+    tmp.iter()
+        .take(count)
+        .fold(0.0f32, |acc, &v| acc + (v as f32))
 }
 
 #[inline(always)]
@@ -173,7 +173,7 @@ pub fn experts_topk_softmax_norm(
         );
         let (max_val, denom) = softmax_stats_avx512_fp16(input_ptr, num_experts);
         softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
-
+        
         let mut sum = 0.0;
         for i in 0..num_topk {
             sum += *topk_values_ptr.add(i);
@@ -198,173 +198,172 @@ pub fn experts_topk_softmax_norm(
 mod tests {
     use super::*;
     use approx::{assert_relative_eq, assert_ulps_eq};
-    use std::f16;
+    // use half::f16;
+    use std::arch::is_x86_feature_detected;
+
+    const DATA: [f16; 32] = [
+        0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
+        12.25, -4.75, 13.5, 14.75, 15.5, -6.0, 16.25, 17.5, 18.75, -7.5, 19.25, 20.5, 21.75, -8.25,
+        22.0, 23.5,
+    ];
+
+    fn features_available() -> bool {
+        is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512bw")
+            && is_x86_feature_detected!("avx512fp16")
+    }
 
     #[test]
     fn test_get_topk() {
-        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512fp16") {
+        if !features_available() {
+            eprintln!("Skipping AVX-512 FP16-dependent test");
             return;
         }
-
-        let data: [f16; 32] = [
-            0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
-            0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7,
-        ];
-        let topk = 4;
-        let mut out_vals = [0.0; 4];
-        let mut out_idx = [0usize; 4];
+        const TOPK: usize = 8;
+        let data: Vec<f16> = DATA.iter().map(|&v| v).collect();
+        let mut out_vals = [0.0f16; TOPK];
+        let mut out_idx = [0usize; TOPK];
 
         unsafe {
             get_topk(
-                data.as_ptr(),
-                out_vals.as_mut_ptr(),
+                data.as_ptr() as *const _,
+                out_vals.as_mut_ptr() as *mut _,
                 out_idx.as_mut_ptr(),
-                data.len(),
-                topk,
+                DATA.len(),
+                TOPK,
             );
         }
 
-        let mut result_pairs: Vec<(f32, usize)> = (0..topk)
-            .map(|i| ((out_vals[i] as f32), out_idx[i]))
-            .collect();
-        // Sort descending to compare with expected
-        result_pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-
-        let mut expected: Vec<(f32, usize)> = data
+        let raw_vals = out_vals;
+        let mut expected: Vec<(f32, usize)> = DATA
             .iter()
+            .copied()
             .enumerate()
-            .map(|(idx, &val)| ((val as f32), idx))
+            .map(|(idx, val)| (val, idx))
             .collect();
-        expected.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        expected.sort_by(|a, b| b.0.total_cmp(&a.0));
 
-        for i in 0..topk {
-            assert_relative_eq!(result_pairs[i].0, expected[i].0, epsilon = 1e-3);
-            assert_eq!(result_pairs[i].1, expected[i].1);
+        for i in 0..TOPK {
+            assert_ulps_eq!(raw_vals[i].to_f32(), expected[i].0, max_ulps = 16);
+            assert_eq!(out_idx[i], expected[i].1);
         }
     }
 
     #[test]
     fn test_softmax_stats_avx512_fp16() {
-        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512fp16") {
+        if !features_available() {
+            eprintln!("Skipping AVX-512 FP16-dependent test");
             return;
         }
-        let data: [f16; 32] = [
-            -0.5, 0.25, 3.75, -2.0, 6.0, 1.75, -4.25, 2.5, 0.0, 5.25, -1.25, 4.0, 3.0, -3.5, 7.5,
-            2.25, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7,
-        ];
+        let data: Vec<f16> = DATA.iter().map(|&v| v).collect();
+        let expected_max = DATA.iter().copied().fold(f16::NEG_INFINITY, f16::max);
+        let expected_denom: f32 = DATA.iter().map(|v| (v - expected_max).exp()).sum();
 
-        let data_f32: Vec<f32> = data.iter().map(|&x| (x as f32)).collect();
-        let expected_max = data_f32.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let expected_denom: f32 = data_f32.iter().map(|v| (v - expected_max).exp()).sum();
-
-        let (max_val, denom) = unsafe { softmax_stats_avx512_fp16(data.as_ptr(), data.len()) };
-
-        assert_relative_eq!(max_val, expected_max, epsilon = 1e-2);
-        assert_relative_eq!(denom, expected_denom, max_relative = 0.05);
+        let (max_val, denom) =
+            unsafe { softmax_stats_avx512_fp16(data.as_ptr() as *const _, DATA.len()) };
+        assert_relative_eq!(max_val, expected_max, epsilon = 1e-3);
+        assert_relative_eq!(denom, expected_denom, epsilon = 1e-2);
     }
 
     #[test]
     fn test_softmax_topk_inplace() {
-        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512fp16") {
+        if !features_available() {
+            eprintln!("Skipping AVX-512 FP16-dependent test");
             return;
         }
-        let topk = 4;
-        let mut topk_vals: [f16; 4] = [10.0, 9.5, 8.0, 7.5];
+        const TOPK: usize = 8;
+        let mut expected: Vec<(f32, usize)> = DATA
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(idx, val)| (val, idx))
+            .collect();
+        expected.sort_by(|a, b| b.0.total_cmp(&a.0));
 
-        let max_val = 10.0f32;
-        let data_f32: Vec<f32> = topk_vals.iter().map(|&x| (x as f32)).collect();
-        let denom: f32 = data_f32.iter().map(|v| (v - max_val).exp()).sum();
-
-        unsafe {
-            softmax_topk_inplace(topk_vals.as_mut_ptr(), topk, max_val, denom);
+        let mut topk_vals = [f16::ZERO; TOPK];
+        for i in 0..TOPK {
+            topk_vals[i] = f16::from_f32(expected[i].0);
         }
 
-        for i in 0..topk {
-            let expected = (data_f32[i] - max_val).exp() / denom;
-            assert_relative_eq!((topk_vals[i] as f32), expected, epsilon = 1e-3);
+        let max_val = expected[0].0;
+        let denom: f32 = DATA.iter().map(|v| (v - max_val).exp()).sum();
+
+        unsafe {
+            softmax_topk_inplace(topk_vals.as_mut_ptr() as *mut _, TOPK, max_val, denom);
+        }
+
+        for i in 0..TOPK {
+            let expected_prob = (expected[i].0 - max_val).exp() / denom;
+            assert_relative_eq!(topk_vals[i].to_f32(), expected_prob, epsilon = 1e-2);
         }
     }
 
     #[test]
     fn test_experts_topk_softmax_norm() {
-        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512fp16") {
+        if !features_available() {
+            eprintln!("Skipping AVX-512 FP16-dependent test");
             return;
         }
         const NUM_EXPERTS: usize = 32;
-        const NUM_TOPK: usize = 4;
+        const NUM_TOPK: usize = 8;
         const NUM_TOKEN: usize = 3;
         const INDEX_TOKEN: usize = 1;
 
-        let mut data = [0.0f16; NUM_EXPERTS];
-        for i in 0..NUM_EXPERTS {
-            let val = (i as f32) * 0.5 * if i % 2 == 0 { 1.0 } else { -1.0 };
-            data[i] = val as f16;
-        }
-        data[5] = 10.0;
-        data[10] = 9.0;
-        data[15] = 8.0;
-        data[20] = 7.0;
-
-        let mut topk_vals = [0.0; NUM_TOPK];
+        let data: Vec<f16> = DATA.iter().map(|&v| f16::from_f32(v)).collect();
+        let mut topk_vals = [f16::ZERO; NUM_TOPK];
         let mut topk_idx = [0usize; NUM_TOPK];
         let mut expert_flags = [false; NUM_EXPERTS];
         let mut indices = [false; NUM_EXPERTS * NUM_TOKEN];
-        let mut values = [0.0; NUM_EXPERTS * NUM_TOKEN];
+        let mut values = vec![f16::ZERO; NUM_EXPERTS * NUM_TOKEN];
 
-        unsafe {
-            experts_topk_softmax_norm(
-                data.as_ptr(),
-                topk_vals.as_mut_ptr(),
-                topk_idx.as_mut_ptr(),
-                expert_flags.as_mut_ptr(),
-                indices.as_mut_ptr(),
-                values.as_mut_ptr(),
-                INDEX_TOKEN,
-                NUM_TOKEN,
-                NUM_EXPERTS,
-                NUM_TOPK,
-            );
-        }
+        experts_topk_softmax_norm(
+            data.as_ptr() as *const _,
+            topk_vals.as_mut_ptr() as *mut _,
+            topk_idx.as_mut_ptr(),
+            expert_flags.as_mut_ptr(),
+            indices.as_mut_ptr(),
+            values.as_mut_ptr() as *mut _,
+            INDEX_TOKEN,
+            NUM_TOKEN,
+            NUM_EXPERTS,
+            NUM_TOPK,
+        );
 
-        let mut expected: Vec<(usize, f32)> = data
-            .iter()
-            .enumerate()
-            .map(|(idx, &val)| (idx, (val as f32)))
-            .collect();
-        expected.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let mut expected: Vec<(usize, f32)> = DATA.iter().copied().enumerate().collect();
+        expected.sort_by(|a, b| b.1.total_cmp(&a.1));
 
-        let top_k_subset: Vec<f32> = expected.iter().take(NUM_TOPK).map(|x| x.1).collect();
-        let max_global = expected
-            .iter()
-            .map(|x| x.1)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let denom_global: f32 = expected.iter().map(|x| (x.1 - max_global).exp()).sum();
+        let max_val = DATA.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let denom: f32 = DATA.iter().map(|v| (v - max_val).exp()).sum();
 
-        let mut top_k_probs: Vec<f32> = top_k_subset
-            .iter()
-            .map(|&v| (v - max_global).exp() / denom_global)
-            .collect();
-        let sum_probs: f32 = top_k_probs.iter().sum();
-        for p in &mut top_k_probs {
-            *p /= sum_probs;
-        }
-
-        let mut result_indices = Vec::new();
+        let mut is_topk = [false; NUM_EXPERTS];
         for i in 0..NUM_TOPK {
-            result_indices.push(topk_idx[i]);
-        }
-        let mut expected_indices: Vec<usize> =
-            expected.iter().take(NUM_TOPK).map(|x| x.0).collect();
-        expected_indices.sort_unstable();
-        assert_eq!(result_indices, expected_indices);
-
-        for (rank, (expert_idx, _)) in expected.iter().take(NUM_TOPK).enumerate() {
-            let expected_prob = top_k_probs[rank];
-            assert!(expert_flags[*expert_idx]);
-            let offset = expert_idx * NUM_TOKEN + INDEX_TOKEN;
+            let (idx, value) = expected[i];
+            let prob = (value - max_val).exp() / denom;
+            assert_eq!(topk_idx[i], idx);
+            assert_relative_eq!(topk_vals[i].to_f32(), prob, epsilon = 1e-2);
+            assert!(expert_flags[idx]);
+            let offset = idx * NUM_TOKEN + INDEX_TOKEN;
             assert!(indices[offset]);
-            let actual_val = (values[offset] as f32);
-            assert_relative_eq!(actual_val, expected_prob, epsilon = 1e-2);
+            assert_relative_eq!(values[offset].to_f32(), prob, epsilon = 1e-2);
+            for token in 0..NUM_TOKEN {
+                let off = idx * NUM_TOKEN + token;
+                if token != INDEX_TOKEN {
+                    assert!(!indices[off]);
+                    assert_eq!(values[off].to_bits(), f16::ZERO.to_bits());
+                }
+            }
+            is_topk[idx] = true;
+        }
+
+        for expert in 0..NUM_EXPERTS {
+            if !is_topk[expert] {
+                assert!(!expert_flags[expert]);
+                for token in 0..NUM_TOKEN {
+                    let off = expert * NUM_TOKEN + token;
+                    assert!(!indices[off]);
+                    assert_eq!(values[off].to_bits(), f16::ZERO.to_bits());
+                }
+            }
         }
     }
 }
