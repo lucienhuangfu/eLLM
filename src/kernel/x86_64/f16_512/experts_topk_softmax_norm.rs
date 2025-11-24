@@ -67,7 +67,7 @@ pub unsafe fn get_topk(
     }
 
     debug_assert_eq!(heap.len(), topk);
-    heap.sort_desc();
+    // heap.sort_desc();
 }
 
 #[inline(always)]
@@ -171,6 +171,7 @@ pub fn experts_topk_softmax_norm(
             *indices_ptr.add(offset) = true;
             *value_ptr.add(offset) = *topk_values_ptr.add(i);
         }
+        std::slice::from_raw_parts_mut(topk_indices_ptr, num_topk).sort_unstable();
     }
 }
 
