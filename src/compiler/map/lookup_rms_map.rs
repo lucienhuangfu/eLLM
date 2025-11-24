@@ -113,7 +113,7 @@ impl MapTrait<f16> for LookupRMSMap<f16> {
             input_ptr,
             output_ptr,
             length,
-            self.weight.ptr,
+            // self.weight.ptr,
             self.eps,
         );
 
