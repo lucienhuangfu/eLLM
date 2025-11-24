@@ -23,20 +23,6 @@ pub fn experts_topk_softmax_norm<
         // Read input values
         let input_slice = std::slice::from_raw_parts(input_ptr, num_experts);
 
-        // Find max for numerical stability
-        let mut max_val = input_slice[0];
-        for &val in input_slice.iter().skip(1) {
-            if val > max_val {
-                max_val = val;
-            }
-        }
-
-        // Calculate sum of exp(x - max)
-        let mut sum = T::default();
-        for &value in input_slice {
-            sum += (value - max_val).exp();
-        }
-
         // Find top-k indices and values
         let mut indexed_values: Vec<(usize, T)> = input_slice
             .iter()
@@ -49,6 +35,12 @@ pub fn experts_topk_softmax_norm<
 
         // Take top-k
         let topk_items = &indexed_values[..num_topk.min(num_experts)];
+
+        // Calculate sum of all input values for softmax normalization
+        let mut sum = T::default();
+        for &value in input_slice {
+            sum += value.exp();
+        }
 
         // Set experts_indicator for top-k experts
         for &(expert_idx, _) in topk_items {
@@ -64,10 +56,9 @@ pub fn experts_topk_softmax_norm<
         }
 
         // For each top-k expert, compute softmax and set outputs
-        for (k, &(expert_idx, value)) in topk_items.iter().enumerate() {
+        for (k, &(expert_idx, _)) in topk_items.iter().enumerate() {
             // Compute softmax: exp(x) / sum
-            let softmax_value = value.exp() / sum;
-
+            let softmax_value = *topk_values_ptr.add(k) / norm_sum;
             *experts_indicator_ptr.add(expert_idx) = true;
             // Set indices_ptr at [expert_idx * num_token + index_token]
             *indices_ptr.add(expert_idx * num_token + index_token) = true;
@@ -120,7 +111,7 @@ mod tests {
             .collect();
         expected.sort_by(|a, b| b.1.total_cmp(&a.1));
 
-        let denom: f32 = data.iter().map(|v| v.exp()).sum();
+        let denom: f32 = expected.iter().take(NUM_TOPK).map(|(_, v)| v.exp()).sum();
         let mut is_topk = [false; NUM_EXPERTS];
 
         for i in 0..NUM_TOPK {
@@ -129,11 +120,7 @@ mod tests {
             let offset = idx * NUM_TOKEN + INDEX_TOKEN;
             assert!(experts_indicator[idx]);
             assert!(indices[offset]);
-            assert_relative_eq!(
-                values[offset],
-                (val - max_val).exp() / denom,
-                epsilon = 1e-6
-            );
+            assert_relative_eq!(values[offset], val.exp() / denom, epsilon = 1e-6);
             is_topk[idx] = true;
         }
 
@@ -188,18 +175,13 @@ mod tests {
             .collect();
         expected.sort_by(|a, b| b.1.total_cmp(&a.1));
 
-        let max_val = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let denom: f32 = data.iter().map(|v| (v - max_val).exp()).sum();
+        let denom: f32 = data.iter().map(|v| v.exp()).sum();
 
         for (idx, &val) in data.iter().enumerate() {
             let offset = idx * NUM_TOKEN + INDEX_TOKEN;
             assert!(experts_indicator[idx]);
             assert!(indices[offset]);
-            assert_relative_eq!(
-                values[offset],
-                expected[idx].1.exp() / denom,
-                epsilon = 1e-6
-            );
+            assert_relative_eq!(values[offset], val.exp() / denom, epsilon = 1e-6);
         }
 
         for token in 0..NUM_TOKEN {
