@@ -1,5 +1,7 @@
 // use crate::kernel::generic::exp::Exp;
 
+use num_traits::Inv;
+
 use super::activation::exp256;
 use crate::kernel::common::heap::FixedMinHeap;
 use std::arch::x86_64::*;
@@ -30,6 +32,15 @@ pub fn experts_topk_softmax_norm(
         );
         let (max_val, denom) = softmax_stats_avx(input_ptr, num_experts);
         softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
+
+        let mut sum = 0.0;
+        for i in 0..num_topk {
+            sum += *topk_values_ptr.add(i);
+        }
+        let scale = sum.inv();
+        for i in 0..num_topk {
+            *topk_values_ptr.add(i) *= scale;
+        }
 
         for i in 0..num_topk {
             let expert_idx = *topk_indices_ptr.add(i);
@@ -272,8 +283,12 @@ mod tests {
             .map(|(idx, val)| (idx, val))
             .collect();
         expected.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let max_val = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let denom: f32 = data.iter().map(|v| (v - max_val).exp()).sum();
+
+        let expected_topk_vals: Vec<f32> = expected.iter().take(NUM_TOPK).map(|x| x.1).collect();
+        let max_k = expected_topk_vals
+            .iter()
+            .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let denom_k: f32 = expected_topk_vals.iter().map(|v| (v - max_k).exp()).sum();
 
         let mut is_topk = [false; NUM_EXPERTS];
 
@@ -287,7 +302,7 @@ mod tests {
 
         for i in 0..NUM_TOPK {
             let idx = expected[i].0;
-            let prob = ((expected[i].1 - max_val).exp()) / denom;
+            let prob = ((expected[i].1 - max_k).exp()) / denom_k;
 
             // Check sparse outputs
             assert!(expert_flags[idx]);

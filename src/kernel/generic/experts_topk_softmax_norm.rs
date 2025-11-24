@@ -2,12 +2,13 @@ use crate::kernel::generic::exp::Exp;
 use std::ops::{AddAssign, Div, Sub};
 use std::ptr;
 
-
 // 还未实现norm
 pub fn experts_topk_softmax_norm<
     T: Exp + Default + AddAssign + PartialOrd + Copy + Sub<Output = T> + Div<Output = T>,
 >(
     input_ptr: *const T,
+    topk_values_ptr: *mut T,
+    topk_indices_ptr: *mut usize,
     // [num_experts]
     experts_indicator_ptr: *mut bool,
     // [num_experts, token_size]
@@ -46,11 +47,18 @@ pub fn experts_topk_softmax_norm<
             *experts_indicator_ptr.add(expert_idx) = true;
         }
 
-        // For each top-k expert, compute softmax and set outputs
-        for (k, &(expert_idx, value)) in topk_items.iter().enumerate() {
-            // Compute softmax: exp(x) / sum
+        let mut norm_sum = T::default();
+        for (k, &(_, value)) in topk_items.iter().enumerate() {
             let softmax_value = value.exp() / sum;
+            norm_sum += softmax_value;
+            // Store top-k values and indices
+            *topk_values_ptr.add(k) = softmax_value;
+        }
 
+        // For each top-k expert, compute softmax and set outputs
+        for (k, &(expert_idx, _)) in topk_items.iter().enumerate() {
+            // Compute softmax: exp(x) / sum
+            let softmax_value = *topk_values_ptr.add(k) / norm_sum;
             *experts_indicator_ptr.add(expert_idx) = true;
             // Set indices_ptr at [expert_idx * num_token + index_token]
             *indices_ptr.add(expert_idx * num_token + index_token) = true;
@@ -75,12 +83,16 @@ mod tests {
             0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
         ];
         let mut experts_indicator = [false; NUM_EXPERTS];
+        let mut topk_vals = [0.0f32; NUM_TOPK];
+        let mut topk_idx = [0usize; NUM_TOPK];
         let mut indices = [false; NUM_EXPERTS * NUM_TOKEN];
         let mut values = [0.0f32; NUM_EXPERTS * NUM_TOKEN];
 
         unsafe {
             super::experts_topk_softmax_norm(
                 data.as_ptr(),
+                topk_vals.as_mut_ptr(),
+                topk_idx.as_mut_ptr(),
                 experts_indicator.as_mut_ptr(),
                 indices.as_mut_ptr(),
                 values.as_mut_ptr(),
@@ -99,11 +111,12 @@ mod tests {
             .collect();
         expected.sort_by(|a, b| b.1.total_cmp(&a.1));
 
-        let denom: f32 = data.iter().map(|v| v.exp()).sum();
+        let denom: f32 = expected.iter().take(NUM_TOPK).map(|(_, v)| v.exp()).sum();
         let mut is_topk = [false; NUM_EXPERTS];
 
         for i in 0..NUM_TOPK {
             let (idx, val) = expected[i];
+            // Store top-k values and indices
             let offset = idx * NUM_TOKEN + INDEX_TOKEN;
             assert!(experts_indicator[idx]);
             assert!(indices[offset]);
@@ -134,12 +147,16 @@ mod tests {
         const INDEX_TOKEN: usize = 0;
         let data = [1.0f32, -0.75, 2.5];
         let mut experts_indicator = [false; NUM_EXPERTS];
+        let mut topk_vals = [0.0f32; NUM_TOPK];
+        let mut topk_idx = [0usize; NUM_TOPK];
         let mut indices = [false; NUM_EXPERTS * NUM_TOKEN];
         let mut values = [0.0f32; NUM_EXPERTS * NUM_TOKEN];
 
         unsafe {
             super::experts_topk_softmax_norm(
                 data.as_ptr(),
+                topk_vals.as_mut_ptr(),
+                topk_idx.as_mut_ptr(),
                 experts_indicator.as_mut_ptr(),
                 indices.as_mut_ptr(),
                 values.as_mut_ptr(),
@@ -160,15 +177,11 @@ mod tests {
 
         let denom: f32 = data.iter().map(|v| v.exp()).sum();
 
-        for idx in 0..NUM_EXPERTS {
+        for (idx, &val) in data.iter().enumerate() {
             let offset = idx * NUM_TOKEN + INDEX_TOKEN;
             assert!(experts_indicator[idx]);
             assert!(indices[offset]);
-            assert_relative_eq!(
-                values[offset],
-                expected[idx].1.exp() / denom,
-                epsilon = 1e-6
-            );
+            assert_relative_eq!(values[offset], val.exp() / denom, epsilon = 1e-6);
         }
 
         for token in 0..NUM_TOKEN {

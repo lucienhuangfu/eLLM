@@ -122,6 +122,8 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<
     ) {
         generic::experts_topk_softmax_norm::experts_topk_softmax_norm(
             input_ptr,
+            topk_values_ptr,
+            topk_indices_ptr,
             experts_indicator,
             indice_ptr,
             weight_ptr,
