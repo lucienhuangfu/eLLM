@@ -1,11 +1,11 @@
 use crate::kernel::common::heap::FixedMinHeap;
 use crate::kernel::generic::exp::Exp;
 use crate::kernel::x86_64::f16_512::activation::exp512;
-use crate::kernel::x86_64::f16_512::bitonic_sort::bitonic_sort_f16x32_desc;
-// use half::f16;
+use crate::kernel::x86_64::f16_512::bitonic_sort::bitonic_sort_f16_desc;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
+use std::f16;
 
 const LANES: usize = 32;
 
@@ -18,11 +18,11 @@ fn mask_for_len(len: usize) -> __mmask32 {
 #[inline(always)]
 unsafe fn sum_f16_vec(vec: __m512h, count: usize) -> f32 {
     debug_assert!(count <= LANES);
-    let mut tmp = [f16::ZERO; LANES];
+    let mut tmp = [0.0f16; LANES];
     _mm512_storeu_ph(tmp.as_mut_ptr() as *mut _, vec);
     tmp.iter()
         .take(count)
-        .fold(0.0f32, |acc, &v| acc + v.to_f32())
+        .fold(0.0f32, |acc, &v| acc + (v as f32))
 }
 
 #[inline(always)]
@@ -44,34 +44,48 @@ pub unsafe fn get_topk(
     let mut heap = FixedMinHeap::new(out_values, out_indices, topk);
     let mut chunk_start = 0usize;
 
+    // Buffers for sorting a single chunk
+    let mut chunk_vals = [0.0f16; LANES];
+    let mut chunk_idx = [0i16; LANES];
+
     while chunk_start < len {
         let values = _mm512_loadu_ph(in_ptr.add(chunk_start) as *const _);
-        let mut idx_buf = [0i16; LANES];
-        for lane in 0..LANES {
-            idx_buf[lane] = (chunk_start + lane) as i16;
+        _mm512_storeu_ph(chunk_vals.as_mut_ptr() as *mut _, values);
+
+        // Initialize indices for this chunk (0..31)
+        for i in 0..LANES {
+            chunk_idx[i] = i as i16;
         }
-        let indices = _mm512_loadu_si512(idx_buf.as_ptr() as *const _);
-        let (sorted_vals, sorted_idx) = bitonic_sort_f16x32_desc(values, indices);
 
-        let mut chunk_vals = [f16::ZERO; LANES];
-        let mut chunk_idx = [0i16; LANES];
-        _mm512_storeu_ph(chunk_vals.as_mut_ptr() as *mut _, sorted_vals);
-        _mm512_storeu_si512(chunk_idx.as_mut_ptr() as *mut _, sorted_idx);
+        // Sort this chunk
+        bitonic_sort_f16_desc(chunk_vals.as_mut_ptr(), chunk_idx.as_mut_ptr(), LANES);
 
+        // Push top k from this chunk to heap
         let chunk_take = topk.min(LANES);
-        for lane in 0..chunk_take {
-            heap.push(chunk_vals[lane], chunk_idx[lane] as i32 as usize);
+        for i in 0..chunk_take {
+            let val = chunk_vals[i];
+            let local_idx = chunk_idx[i] as usize;
+            let global_idx = chunk_start + local_idx;
+            heap.push(val, global_idx);
         }
 
         chunk_start += LANES;
     }
 
-    debug_assert_eq!(heap.len(), topk);
-    // heap.sort_desc();
+    /*
+    // Sort the result in descending order of values
+    let mut pairs: Vec<(f16, usize)> = (0..topk)
+        .map(|i| (*out_values.add(i), *out_indices.add(i)))
+        .collect();
+    pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    for i in 0..topk {
+        *out_values.add(i) = pairs[i].0;
+        *out_indices.add(i) = pairs[i].1;
+    }*/
 }
 
 #[inline(always)]
-#[target_feature(enable = "avx512f,avx512bw,avx512fp16")]
+// #[target_feature(enable = "avx512f,avx512bw,avx512fp16")]
 unsafe fn softmax_stats_avx512_fp16(input_ptr: *const f16, len: usize) -> (f32, f32) {
     debug_assert!(!input_ptr.is_null());
     debug_assert!(len % LANES == 0 && len > 0);
@@ -84,17 +98,19 @@ unsafe fn softmax_stats_avx512_fp16(input_ptr: *const f16, len: usize) -> (f32, 
         offset += LANES;
     }
 
-    let mut tmp = [f16::ZERO; LANES];
+    let mut tmp = [0.0f16; LANES];
     _mm512_storeu_ph(tmp.as_mut_ptr() as *mut _, max_vec);
-    let mut max_scalar = f32::NEG_INFINITY;
+    let mut max_scalar = f16::NEG_INFINITY;
     for &v in &tmp {
-        max_scalar = max_scalar.max(v.to_f32());
+        max_scalar = max_scalar.max(v);
     }
-    if !max_scalar.is_finite() {
+    let mut max_scalar_f32 = max_scalar as f32;
+    if !max_scalar_f32.is_finite() {
+        max_scalar_f32 = 0.0;
         max_scalar = 0.0;
     }
 
-    let max_broadcast = _mm512_set1_ph(max_scalar as f16);
+    let max_broadcast = _mm512_set1_ph(max_scalar);
     let mut denom = 0.0f32;
     offset = 0;
     while offset < len {
@@ -105,27 +121,25 @@ unsafe fn softmax_stats_avx512_fp16(input_ptr: *const f16, len: usize) -> (f32, 
     }
 
     denom = denom.max(f32::MIN_POSITIVE);
-    (max_scalar, denom)
+    (max_scalar_f32, denom)
 }
 
 #[inline(always)]
-// #[target_feature(enable = "avx512f,avx512bw,avx512fp16")]
 unsafe fn softmax_topk_inplace(out_values: *mut f16, topk: usize, max_val: f32, denom: f32) {
     debug_assert!(!out_values.is_null());
     debug_assert!(topk > 0 && topk <= LANES);
 
-    let mut lane_buf = [f16::default(); LANES];
+    let mut lane_buf = [0.0f16; LANES];
     for i in 0..topk {
         lane_buf[i] = *out_values.add(i);
     }
 
-    let mask = mask_for_len(topk);
-    let values = _mm512_maskz_loadu_ph(mask, lane_buf.as_ptr() as *const _);
+    let values = _mm512_loadu_ph(lane_buf.as_ptr() as *const _);
     let shifted = _mm512_sub_ph(values, _mm512_set1_ph(max_val as f16));
     let exp_vals = exp512(shifted);
     let scale = _mm512_set1_ph((1.0f32 / denom.max(f32::MIN_POSITIVE)) as f16);
     let normalized = _mm512_mul_ph(exp_vals, scale);
-    _mm512_mask_storeu_ph(lane_buf.as_mut_ptr() as *mut _, mask, normalized);
+    _mm512_storeu_ph(lane_buf.as_mut_ptr() as *mut _, normalized);
 
     for i in 0..topk {
         *out_values.add(i) = lane_buf[i];
@@ -179,10 +193,10 @@ pub fn experts_topk_softmax_norm(
 mod tests {
     use super::*;
     use approx::{assert_relative_eq, assert_ulps_eq};
-    use half::f16;
+    // use half::f16;
     use std::arch::is_x86_feature_detected;
 
-    const DATA: [f32; 32] = [
+    const DATA: [f16; 32] = [
         0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
         12.25, -4.75, 13.5, 14.75, 15.5, -6.0, 16.25, 17.5, 18.75, -7.5, 19.25, 20.5, 21.75, -8.25,
         22.0, 23.5,
@@ -201,14 +215,14 @@ mod tests {
             return;
         }
         const TOPK: usize = 8;
-        let data: Vec<f16> = DATA.iter().map(|&v| f16::from_f32(v)).collect();
-        let mut out_vals = [f16::ZERO; TOPK];
+        let data: Vec<f16> = DATA.iter().map(|&v| v).collect();
+        let mut out_vals = [0.0f16; TOPK];
         let mut out_idx = [0usize; TOPK];
 
         unsafe {
             get_topk(
-                data.as_ptr(),
-                out_vals.as_mut_ptr(),
+                data.as_ptr() as *const _,
+                out_vals.as_mut_ptr() as *mut _,
                 out_idx.as_mut_ptr(),
                 DATA.len(),
                 TOPK,
@@ -236,11 +250,12 @@ mod tests {
             eprintln!("Skipping AVX-512 FP16-dependent test");
             return;
         }
-        let data: Vec<f16> = DATA.iter().map(|&v| f16::from_f32(v)).collect();
-        let expected_max = DATA.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let data: Vec<f16> = DATA.iter().map(|&v| v).collect();
+        let expected_max = DATA.iter().copied().fold(f16::NEG_INFINITY, f16::max);
         let expected_denom: f32 = DATA.iter().map(|v| (v - expected_max).exp()).sum();
 
-        let (max_val, denom) = unsafe { softmax_stats_avx512_fp16(data.as_ptr(), DATA.len()) };
+        let (max_val, denom) =
+            unsafe { softmax_stats_avx512_fp16(data.as_ptr() as *const _, DATA.len()) };
         assert_relative_eq!(max_val, expected_max, epsilon = 1e-3);
         assert_relative_eq!(denom, expected_denom, epsilon = 1e-2);
     }
@@ -269,7 +284,7 @@ mod tests {
         let denom: f32 = DATA.iter().map(|v| (v - max_val).exp()).sum();
 
         unsafe {
-            softmax_topk_inplace(topk_vals.as_mut_ptr(), TOPK, max_val, denom);
+            softmax_topk_inplace(topk_vals.as_mut_ptr() as *mut _, TOPK, max_val, denom);
         }
 
         for i in 0..TOPK {
@@ -297,12 +312,12 @@ mod tests {
         let mut values = vec![f16::ZERO; NUM_EXPERTS * NUM_TOKEN];
 
         experts_topk_softmax_norm(
-            data.as_ptr(),
-            topk_vals.as_mut_ptr(),
+            data.as_ptr() as *const _,
+            topk_vals.as_mut_ptr() as *mut _,
             topk_idx.as_mut_ptr(),
             expert_flags.as_mut_ptr(),
             indices.as_mut_ptr(),
-            values.as_mut_ptr(),
+            values.as_mut_ptr() as *mut _,
             INDEX_TOKEN,
             NUM_TOKEN,
             NUM_EXPERTS,

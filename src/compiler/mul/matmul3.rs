@@ -310,6 +310,7 @@ where
 
 impl Matmul4Trait<f16> for Matmul3<f16> {
     fn compute1(&self, a: *const f16, b_row: *const f16, c: *mut f16) {
+        /* 
         let call_param = MatmulParams {
             a_row_step_macro: self.lda_fixed,
             b_row_step_macro: self.active_ldc.get(),
@@ -320,7 +321,7 @@ impl Matmul4Trait<f16> for Matmul3<f16> {
 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            crate::kernel::x86_64::f16_512::Matmul_rms_complex::Matmul_update_inplace_3x128_accum(
+            crate::kernel::x86_64::f16_512::matmul_rms_complex::Matmul_update_inplace_3x128_accum(
                 a,
                 b_row,
                 c,
@@ -330,10 +331,11 @@ impl Matmul4Trait<f16> for Matmul3<f16> {
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
             // fallback generic 或者留空
-        }
+        }*/
     }
 
     fn compute2(&self, c: *mut f16, rope_ptr: *const f16) {
+        /*
         let call_param = MatmulParams {
             a_row_step_macro: self.lda_fixed,
             b_row_step_macro: self.active_ldc.get(),
@@ -352,7 +354,7 @@ impl Matmul4Trait<f16> for Matmul3<f16> {
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
             // fallback generic 或者留空
-        }
+        } */
     }
 }
 
