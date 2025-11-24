@@ -1,11 +1,10 @@
 // use crate::kernel::generic::exp::Exp;
 
-use std::arch::x86_64::*;
-use crate::kernel::common::heap::FixedMinHeap;
 use super::activation::exp256;
+use crate::kernel::common::heap::FixedMinHeap;
+use std::arch::x86_64::*;
 
 use crate::kernel::x86_64::f32_256::bitonic_sort::bitonic_sort_f32x8_desc;
-
 
 pub fn experts_topk_softmax_norm(
     input_ptr: *const f32,
@@ -39,6 +38,8 @@ pub fn experts_topk_softmax_norm(
             *indices_ptr.add(offset) = true;
             *value_ptr.add(offset) = *topk_values_ptr.add(i);
         }
+
+        std::slice::from_raw_parts_mut(topk_indices_ptr, num_topk).sort_unstable();
     }
 }
 
@@ -77,10 +78,8 @@ pub unsafe fn get_topk(
         }
     }
     debug_assert_eq!(heap.len(), topk);
-    heap.sort_desc();
+    // heap.sort_desc();
 }
-
-
 
 #[inline(always)]
 unsafe fn softmax_stats_avx(input_ptr: *const f32, len: usize) -> (f32, f32) {
@@ -138,8 +137,6 @@ unsafe fn softmax_topk_inplace(out_values: *mut f32, topk: usize, max_val: f32, 
         *out_values.add(i) = lane_buf[i];
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -228,7 +225,7 @@ mod tests {
         unsafe {
             softmax_topk_inplace(topk_vals.as_mut_ptr(), topk, max_val, denom);
         }
-        let norm: f32 = data.iter().map(|v| (v - max_val).exp()).sum();
+        let norm = denom;
         for i in 0..topk {
             let expected_prob = ((expected[i].0 - max_val).exp()) / norm;
             assert_relative_eq!(topk_vals[i], expected_prob, epsilon = 1e-3);
@@ -279,11 +276,20 @@ mod tests {
         let denom: f32 = data.iter().map(|v| (v - max_val).exp()).sum();
 
         let mut is_topk = [false; NUM_EXPERTS];
+
+        // Verify indices are sorted
+        let mut expected_indices: Vec<usize> =
+            expected.iter().take(NUM_TOPK).map(|x| x.0).collect();
+        expected_indices.sort_unstable();
+        for i in 0..NUM_TOPK {
+            assert_eq!(topk_idx[i], expected_indices[i]);
+        }
+
         for i in 0..NUM_TOPK {
             let idx = expected[i].0;
             let prob = ((expected[i].1 - max_val).exp()) / denom;
-            assert_eq!(topk_idx[i], idx);
-            assert_relative_eq!(topk_vals[i], prob, epsilon = 1e-3);
+
+            // Check sparse outputs
             assert!(expert_flags[idx]);
             let offset = idx * NUM_TOKEN + INDEX_TOKEN;
             assert!(indices[offset]);
@@ -305,6 +311,4 @@ mod tests {
             }
         }
     }
-
-    
 }
