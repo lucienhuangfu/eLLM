@@ -148,7 +148,7 @@ impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
         input_length: usize,
         output_length: usize,
     ) {
-        /* 
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         x86_64::f16_512::experts_topk_softmax_norm::experts_topk_softmax_norm(
             input_ptr,
             topk_values_ptr,
@@ -160,7 +160,8 @@ impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
             self.num_tokens,
             input_length,
             output_length,
-        );*/
+            true
+        );
     }
 }
 
@@ -177,6 +178,7 @@ impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
         input_length: usize,
         output_length: usize,
     ) {
+        
         x86_64::f32_256::experts_topk_softmax_norm::experts_topk_softmax_norm(
             input_ptr,
             topk_values_ptr,
