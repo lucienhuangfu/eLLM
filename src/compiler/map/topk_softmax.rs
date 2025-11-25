@@ -57,16 +57,8 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         }
     }
 
-    pub fn run(
-        &self,
-        position_begin: usize,
-        position_interval: usize,
-        batch_size: usize,
-        thread_num: usize,
-        thread_id: usize,
-    ) {
-        if let Some((begin, end)) = assign(batch_size * position_interval, thread_num, thread_id) {
-            let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
+    pub fn run(&self, batch_size: usize, thread_num: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(batch_size, thread_num, thread_id) {
             let mut input_indices_ptr = self.input_indices_ptr.ptr;
             let mut input_values_ptr = self.input_values_ptr.ptr;
             let mut sums_ptr = self.sums_ptr.ptr;
@@ -75,12 +67,12 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
 
             let mut output_sequences_ptr = self.output_sequences.ptr;
 
-            for _ in begin..end {
-                let index = row_index * self.batch_size + col_index;
+            for i in begin..end {
+                let index = i;
                 unsafe {
                     let input_stride = index * self.topk_size * thread_num;
                     let output_stride = index * self.topk_size;
-                    let token_index = index + position_begin * self.batch_size;
+                    let token_index = index;
                     let token_ptr = output_sequences_ptr.add(token_index);
                     self.compute(
                         input_indices_ptr.add(input_stride),
@@ -92,11 +84,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
                         thread_num,
                         self.topk_size,
                     );
-                }
-                col_index += 1;
-                if col_index == batch_size {
-                    col_index = 0;
-                    row_index += 1;
                 }
             }
         }
@@ -141,7 +128,6 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
         thread_num: usize,
         topk_size: usize,
     ) {
-    
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::truncated_topk_softmax::truncated_topk_softmax(
             input_values_ptr,
@@ -153,7 +139,7 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
             thread_num,
             topk_size,
         );
-            /*
+        /*
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::generic::softmax::softmax(
             input_ptr,
@@ -203,8 +189,6 @@ mod test {
         let batch_size = 2;
         let topk_size = 8;
         let thread_num = 4;
-        let position_begin = 0;
-        let position_interval = 1;
 
         let total_candidates_per_item = topk_size * thread_num;
         let input_len = batch_size * total_candidates_per_item;
@@ -220,10 +204,10 @@ mod test {
             }
         }
 
-        let sums = vec![0.0f32; batch_size * position_interval];
+        let sums = vec![0.0f32; batch_size];
         let mut output_values = vec![0.0f32; batch_size * topk_size];
         let mut output_indices = vec![0usize; batch_size * topk_size];
-        let mut output_sequences = vec![0usize; batch_size * position_interval];
+        let mut output_sequences = vec![0usize; batch_size];
 
         let operator = TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
@@ -240,7 +224,7 @@ mod test {
         for i in 0..thread_num {
             let op = operator.clone();
             let handle = std::thread::spawn(move || {
-                op.run(position_begin, position_interval, batch_size, thread_num, i);
+                op.run(batch_size, thread_num, i);
             });
             handles.push(handle);
         }
