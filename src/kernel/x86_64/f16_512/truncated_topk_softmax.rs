@@ -6,7 +6,7 @@ use super::activation::exp512;
 use crate::kernel::common::heap::FixedMinHeap;
 
 // #[target_feature(enable = "avx512f", enable = "avx512fp16")]
-unsafe fn truncated_topk_softmax(
+pub fn truncated_topk_softmax(
     // [thread_num, topk_size]
     input_values_ptr: *const f16,
     // [thread_num, topk_size]
@@ -20,36 +20,38 @@ unsafe fn truncated_topk_softmax(
     thread_num: usize,
     topk_size: usize,
 ) {
-    let total_candidates = thread_num * topk_size;
-    let mut heap = FixedMinHeap::new(output_values_ptr, output_indices_ptr, topk_size);
-    for i in 0..total_candidates {
-        let value = *input_values_ptr.add(i);
-        let index = *input_indices_ptr.add(i);
-        heap.push(value, index);
+    unsafe {
+        let total_candidates = thread_num * topk_size;
+        let mut heap = FixedMinHeap::new(output_values_ptr, output_indices_ptr, topk_size);
+        for i in 0..total_candidates {
+            let value = *input_values_ptr.add(i);
+            let index = *input_indices_ptr.add(i);
+            heap.push(value, index);
+        }
+
+        heap.sort_desc();
+
+        let len = heap.len();
+        let max_val = *output_values_ptr;
+
+        let mut buffer = [f16::NEG_INFINITY; 32];
+        ptr::copy_nonoverlapping(output_values_ptr, buffer.as_mut_ptr(), len);
+
+        let max_broadcast = _mm512_set1_ph(max_val);
+        let chunk = _mm512_loadu_ph(buffer.as_ptr());
+        let shifted = _mm512_sub_ph(chunk, max_broadcast);
+        let exp_chunk = exp512(shifted);
+
+        let total_sum = _mm512_reduce_add_ph(exp_chunk);
+
+        let inv_vec = _mm512_set1_ph(total_sum.recip());
+        let normalized = _mm512_mul_ph(exp_chunk, inv_vec);
+
+        _mm512_storeu_ph(buffer.as_mut_ptr(), normalized);
+        ptr::copy_nonoverlapping(buffer.as_ptr(), output_values_ptr, len);
+
+        ptr::write(output_token_ptr, *output_indices_ptr);
     }
-
-    heap.sort_desc();
-
-    let len = heap.len();
-    let max_val = *output_values_ptr;
-
-    let mut buffer = [f16::NEG_INFINITY; 32];
-    ptr::copy_nonoverlapping(output_values_ptr, buffer.as_mut_ptr(), len);
-
-    let max_broadcast = _mm512_set1_ph(max_val);
-    let chunk = _mm512_loadu_ph(buffer.as_ptr());
-    let shifted = _mm512_sub_ph(chunk, max_broadcast);
-    let exp_chunk = exp512(shifted);
-
-    let total_sum = _mm512_reduce_add_ph(exp_chunk);
-
-    let inv_vec = _mm512_set1_ph(total_sum.recip());
-    let normalized = _mm512_mul_ph(exp_chunk, inv_vec);
-
-    _mm512_storeu_ph(buffer.as_mut_ptr(), normalized);
-    ptr::copy_nonoverlapping(buffer.as_ptr(), output_values_ptr, len);
-
-    ptr::write(output_token_ptr, *output_indices_ptr);
 }
 
 #[cfg(test)]
