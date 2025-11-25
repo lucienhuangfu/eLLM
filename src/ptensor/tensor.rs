@@ -429,7 +429,7 @@ where
         output_tensor
     }
 
-    /* 
+
     pub fn matmul3(
         &self,
         q_weight: &Tensor<T>,
@@ -465,7 +465,7 @@ where
             self.cache.clone(),
             self.operator_queue.clone(),
         );
-
+            /* 
         let operator = Operator::Matmul3(Matmul3::new(
             self.data,
             q_weight.data,
@@ -487,9 +487,9 @@ where
             params.b_row_step_micro,
         ));
 
-        self.operator_queue.borrow_mut().push(operator);
+        self.operator_queue.borrow_mut().push(operator);*/
         (q_state, k_state, v_state)
-    }*/
+    }
 
     pub fn matmul_silu_mul_matmul(
         &self,
