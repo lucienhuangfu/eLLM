@@ -32,7 +32,7 @@ use super::mul::experts_merge_add::ExpertsMergeAdd;
 pub enum Operator<T> {
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
-    // ArgmaxReduce(ArgmaxReduce<T>),
+
     Attention(Attention<T>),
     ComplexZipMap(ComplexZipMap<T>),
     ExpertsMatmulMul(ExpertsMatmulMul<T>),
@@ -41,7 +41,7 @@ pub enum Operator<T> {
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
     LookupRMSMap(LookupRMSMap<T>),
     Matmul(Matmul<T>),
-    Matmul3(Matmul3<T>),
+    // Matmul3(Matmul3<T>),
     MatmulAdd(MatmulAdd<T>),
     MatmulSiluMulMatmul(MatmulSilu<T>),
     MatmulTopK(MatmulTopK<T>),
@@ -49,6 +49,7 @@ pub enum Operator<T> {
     SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
     TopKSoftmax(TopKSoftmax<T>),
+    // ArgmaxReduce(ArgmaxReduce<T>),
 }
 
 impl<T> Operator<T>
@@ -162,6 +163,7 @@ where
                     thread_id,
                 );
             }
+            /*
             Self::Matmul3(operator) => {
                 operator.run(
                     position_index,
@@ -170,7 +172,7 @@ where
                     cpu_num,
                     thread_id,
                 );
-            }
+            } */
             Self::MatmulAdd(operator) => {
                 operator.run(
                     position_index,

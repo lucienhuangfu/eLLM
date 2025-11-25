@@ -141,16 +141,19 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
         thread_num: usize,
         topk_size: usize,
     ) {
-        /*
+    
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-        kernel::x86_64::f16_512::softmax::softmax(
-            input_ptr,
-            sum_ptr.ptr,
-            max_ptr.ptr,
-            output_ptr,
-            length,
+        kernel::x86_64::f16_512::truncated_topk_softmax::truncated_topk_softmax(
+            input_values_ptr,
+            input_indices_ptr,
+            // sums_ptr,
+            output_values_ptr,
+            output_indices_ptr,
+            output_token_ptr,
+            thread_num,
+            topk_size,
         );
-
+            /*
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::generic::softmax::softmax(
             input_ptr,
