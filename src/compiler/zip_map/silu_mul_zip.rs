@@ -113,7 +113,7 @@ impl ZipMapTrait<f16> for SiluMulZipMap<f16> {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
             kernel::x86_64::f16_512::silu::silu_multiply(
-                input_ptr1, input_ptr2 , output_ptr, self.length,
+                input_ptr1, input_ptr2 , output_ptr, self.head_size,
             );
         }; 
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
