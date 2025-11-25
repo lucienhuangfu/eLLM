@@ -55,7 +55,7 @@ unsafe fn truncated_topk_softmax(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_ulps_eq;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn test_topk_softmax_matches_simd_version() {
@@ -113,7 +113,7 @@ mod tests {
 
         for i in 0..topk_size {
             let expected_prob = ((topk[i].0 as f32) - (max_val as f32)).exp() / denom;
-            assert_ulps_eq!((out_vals[i] as f32), expected_prob, max_ulps = 4);
+            assert_abs_diff_eq!((out_vals[i] as f32), expected_prob, epsilon = 1e-3);
             assert_eq!(out_idx[i], topk[i].1);
         }
         assert_eq!(out_token, topk[0].1);

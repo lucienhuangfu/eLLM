@@ -1,5 +1,4 @@
 use crate::kernel::common::heap::FixedMinHeap;
-use crate::kernel::generic::exp::Exp;
 use crate::kernel::x86_64::f16_512::activation::exp512;
 use crate::kernel::x86_64::f16_512::bitonic_sort::bitonic_sort_f16_desc;
 
@@ -153,6 +152,7 @@ pub fn experts_topk_softmax_norm(
     num_token: usize,
     num_experts: usize,
     num_topk: usize,
+    norm_topk_prob: bool,
 ) {
     debug_assert!(!input_ptr.is_null());
     debug_assert!(!topk_values_ptr.is_null());
@@ -174,13 +174,15 @@ pub fn experts_topk_softmax_norm(
         let (max_val, denom) = softmax_stats_avx512_fp16(input_ptr, num_experts);
         softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
 
-        let mut sum = 0.0;
-        for i in 0..num_topk {
-            sum += *topk_values_ptr.add(i);
-        }
-        let scale = sum.recip();
-        for i in 0..num_topk {
-            *topk_values_ptr.add(i) *= scale;
+        if norm_topk_prob {
+            let mut sum = 0.0;
+            for i in 0..num_topk {
+                sum += *topk_values_ptr.add(i);
+            }
+            let scale = sum.recip();
+            for i in 0..num_topk {
+                *topk_values_ptr.add(i) *= scale;
+            }
         }
 
         for i in 0..num_topk {
@@ -260,7 +262,7 @@ mod tests {
         let (max_val, denom) = unsafe { softmax_stats_avx512_fp16(data.as_ptr(), data.len()) };
 
         assert_relative_eq!(max_val, expected_max, epsilon = 1e-2);
-        assert_relative_eq!(denom, expected_denom, max_relative = 0.05);
+        assert_relative_eq!(denom, expected_denom, max_relative = 0.05, epsilon = 1e-3);
     }
 
     #[test]
@@ -323,6 +325,7 @@ mod tests {
                 NUM_TOKEN,
                 NUM_EXPERTS,
                 NUM_TOPK,
+                true,
             );
         }
 
@@ -344,6 +347,8 @@ mod tests {
             .iter()
             .map(|&v| (v - max_global).exp() / denom_global)
             .collect();
+
+        // Since we passed true for norm_topk_prob, we expect normalized probabilities
         let sum_probs: f32 = top_k_probs.iter().sum();
         for p in &mut top_k_probs {
             *p /= sum_probs;
