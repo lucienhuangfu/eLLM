@@ -12,122 +12,94 @@ use crate::init::matmul_params::MatMulParams;
 use crate::kernel::x86_64::f16_512::rms_norm::rms_norm;
 use crate::kernel::x86_64::f16_512::complex_mul::complex_mul;
 
-/// 3×128 in-place 累加：每个 kc 面板把 A×B_panel 直接加到 C 上并写回
+/// 3×32 in-place 累加：每个 kc 面板把 A×B_panel 直接加到 C 上并写回
 ///
 /// 形状约定:
-/// - MR = 3, NR = 128
+/// - MR = 3, NR = 32
 /// - A_tile: 3×kc，行距 = lda = K
-/// - B_panel: kc×128（行主，每行 128 连续）
-/// - C_tile: 3×128，行距 = ldc = N
+/// - B_panel: kc×32（行主，每行 32 连续）
+/// - C_tile: 3×32，行距 = ldc = N（整行跨度，和 K/Q/V 自己的 N 有关）
 /// - kc     = param.column_step_macro
 ///
 /// 注意：不清零，不做 first；要求上层在 run 前保证 C 的初始状态。
-
 #[target_feature(enable = "avx512fp16")]
-pub unsafe fn matmul_update_inplace_3x128_accum(
+pub unsafe fn matmul_update_inplace_3x128_accum( // 名字暂时不改，内部已经是 3×32
     a: *const f16,        // 3×kc
-    b_panel: *const f16,  // kc×128
-    c: *mut f16,          // 3×128
+    b_panel: *const f16,  // kc×32
+    c: *mut f16,          // 3×32
     param: &MatMulParams,
 ) {
+    // 微核尺寸：3 行 × 32 列
     debug_assert_eq!(param.a_row_step_micro, 3);
-    debug_assert_eq!(param.b_row_step_micro, 128);
+    debug_assert_eq!(param.b_row_step_micro, 32);
 
-    let lda     = param.a_row_step_macro;
-    let kc      = param.column_step_macro;
-    let ldc     = param.b_row_step_macro;
-    let bstride = 128usize;
+    let lda     = param.a_row_step_macro;   // A 行距 = K
+    let kc      = param.column_step_macro;  // 当前 kc
+    let ldc     = param.b_row_step_macro;   // C 行距 = 该矩阵的 N
+    let bstride = 32usize;                  // B_panel 每行 32 连续元素
 
     // A 三行基址
     let a0 = a;
     let a1 = a.add(lda);
     let a2 = a.add(2 * lda);
 
-    // 从 C 载入旧值
-    let mut c0_0 = _mm512_load_ph(c.add(0*ldc +  0));
-    let mut c0_1 = _mm512_load_ph(c.add(0*ldc + 32));
-    let mut c0_2 = _mm512_load_ph(c.add(0*ldc + 64));
-    let mut c0_3 = _mm512_load_ph(c.add(0*ldc + 96));
+    // 从 C 载入旧值（3 行 × 32 列，各占 1 个 ZMM）
+    let mut c0 = _mm512_load_ph(c.add(0 * ldc));
+    let mut c1 = _mm512_load_ph(c.add(1 * ldc));
+    let mut c2 = _mm512_load_ph(c.add(2 * ldc));
 
-    let mut c1_0 = _mm512_load_ph(c.add(1*ldc +  0));
-    let mut c1_1 = _mm512_load_ph(c.add(1*ldc + 32));
-    let mut c1_2 = _mm512_load_ph(c.add(1*ldc + 64));
-    let mut c1_3 = _mm512_load_ph(c.add(1*ldc + 96));
-
-    let mut c2_0 = _mm512_load_ph(c.add(2*ldc +  0));
-    let mut c2_1 = _mm512_load_ph(c.add(2*ldc + 32));
-    let mut c2_2 = _mm512_load_ph(c.add(2*ldc + 64));
-    let mut c2_3 = _mm512_load_ph(c.add(2*ldc + 96));
-
-    // 主循环
+    // 主循环：对 kc 方向做标量广播 × 向量 FMA
     for k in 0..kc {
-        let b0 = _mm512_load_ph(b_panel.add(k*bstride +  0));
-        let b1 = _mm512_load_ph(b_panel.add(k*bstride + 32));
-        let b2 = _mm512_load_ph(b_panel.add(k*bstride + 64));
-        let b3 = _mm512_load_ph(b_panel.add(k*bstride + 96));
+        // 这一行 B 的 32 宽向量
+        let b = _mm512_load_ph(b_panel.add(k * bstride));
 
+        // A 三行各取一个标量并广播
         let a0k = _mm512_set1_ph(*a0.add(k));
         let a1k = _mm512_set1_ph(*a1.add(k));
         let a2k = _mm512_set1_ph(*a2.add(k));
 
-        c0_0 = _mm512_fmadd_ph(a0k, b0, c0_0);
-        c0_1 = _mm512_fmadd_ph(a0k, b1, c0_1);
-        c0_2 = _mm512_fmadd_ph(a0k, b2, c0_2);
-        c0_3 = _mm512_fmadd_ph(a0k, b3, c0_3);
-
-        c1_0 = _mm512_fmadd_ph(a1k, b0, c1_0);
-        c1_1 = _mm512_fmadd_ph(a1k, b1, c1_1);
-        c1_2 = _mm512_fmadd_ph(a1k, b2, c1_2);
-        c1_3 = _mm512_fmadd_ph(a1k, b3, c1_3);
-
-        c2_0 = _mm512_fmadd_ph(a2k, b0, c2_0);
-        c2_1 = _mm512_fmadd_ph(a2k, b1, c2_1);
-        c2_2 = _mm512_fmadd_ph(a2k, b2, c2_2);
-        c2_3 = _mm512_fmadd_ph(a2k, b3, c2_3);
+        // C += A_row * B_row
+        c0 = _mm512_fmadd_ph(a0k, b, c0);
+        c1 = _mm512_fmadd_ph(a1k, b, c1);
+        c2 = _mm512_fmadd_ph(a2k, b, c2);
     }
 
-    // 写回
-    _mm512_store_ph(c.add(0*ldc +  0), c0_0);
-    _mm512_store_ph(c.add(0*ldc + 32), c0_1);
-    _mm512_store_ph(c.add(0*ldc + 64), c0_2);
-    _mm512_store_ph(c.add(0*ldc + 96), c0_3);
-
-    _mm512_store_ph(c.add(1*ldc +  0), c1_0);
-    _mm512_store_ph(c.add(1*ldc + 32), c1_1);
-    _mm512_store_ph(c.add(1*ldc + 64), c1_2);
-    _mm512_store_ph(c.add(1*ldc + 96), c1_3);
-
-    _mm512_store_ph(c.add(2*ldc +  0), c2_0);
-    _mm512_store_ph(c.add(2*ldc + 32), c2_1);
-    _mm512_store_ph(c.add(2*ldc + 64), c2_2);
-    _mm512_store_ph(c.add(2*ldc + 96), c2_3);
+    // 写回 C 的 3×32 tile
+    _mm512_store_ph(c.add(0 * ldc), c0);
+    _mm512_store_ph(c.add(1 * ldc), c1);
+    _mm512_store_ph(c.add(2 * ldc), c2);
 }
 
-/// 收尾：在 C 上 **原地** 做 RMSNorm(weight=1) + RoPE
+/// 收尾：在 C 上 **原地** 做 RMSNorm(weight=1) + RoPE（3×32 tile）
 ///
-/// - rope_ptr: 长度 128 的 [cos0, sin0, cos1, sin1, ...]
+/// - rope_ptr: 长度 32 的 [cos0, sin0, cos1, sin1, ...]（对应这个 32 维子块）
 /// - eps: 数值稳定项
-
+///
+/// 注意：这个内核只看当前 3×32 子块：
+/// - C 的行距用 `ldc = p.b_row_step_macro`
+/// - K/Q/V 的总 N 可以都不一样，上层只要给对每个矩阵自己的 ldc 和 tile 起始指针即可。
 #[target_feature(enable = "avx512fp16")]
-pub unsafe fn matmul_finalize_rmsnorm_rope_inplace_3x128(
-    c: *mut f16,          // 3×128，行距=ldc
-    rope_ptr: *const f16, // 128 个交错相位
+pub unsafe fn matmul_finalize_rmsnorm_rope_inplace_3x128( // 同上，内部是 3×32
+    c: *mut f16,          // 3×32，行距=ldc
+    rope_ptr: *const f16, // 32 个交错相位
     eps: f16,
     p: &MatMulParams,
 ) {
     let ldc = p.b_row_step_macro;
     debug_assert_eq!(p.a_row_step_micro, 3);
-    debug_assert_eq!(p.b_row_step_micro, 128);
+    debug_assert_eq!(p.b_row_step_micro, 32);
 
-    // 权重恒 1
+    // 权重恒 1（长度 32，对这块 32 维做 RMS）
     const F16_ONE_BITS: u16 = 0x3C00;
-    static ONES128: [f16; 128] = [f16::from_bits(F16_ONE_BITS); 128];
+    static ONES32: [f16; 32] = [f16::from_bits(F16_ONE_BITS); 32];
 
-    rms_norm(c.add(0*ldc), c.add(0*ldc), 128, ONES128.as_ptr(), eps);
-    rms_norm(c.add(1*ldc), c.add(1*ldc), 128, ONES128.as_ptr(), eps);
-    rms_norm(c.add(2*ldc), c.add(2*ldc), 128, ONES128.as_ptr(), eps);
+    // 对 3 行分别做 in-place RMSNorm（长度 32）
+    rms_norm(c.add(0 * ldc), c.add(0 * ldc), 32, ONES32.as_ptr(), eps);
+    rms_norm(c.add(1 * ldc), c.add(1 * ldc), 32, ONES32.as_ptr(), eps);
+    rms_norm(c.add(2 * ldc), c.add(2 * ldc), 32, ONES32.as_ptr(), eps);
 
-    complex_mul(c.add(0*ldc), rope_ptr, c.add(0*ldc), 128);
-    complex_mul(c.add(1*ldc), rope_ptr, c.add(1*ldc), 128);
-    complex_mul(c.add(2*ldc), rope_ptr, c.add(2*ldc), 128);
+    // 然后对 3 行分别做 in-place RoPE 复数乘（长度 32）
+    complex_mul(c.add(0 * ldc), rope_ptr, c.add(0 * ldc), 32);
+    complex_mul(c.add(1 * ldc), rope_ptr, c.add(1 * ldc), 32);
+    complex_mul(c.add(2 * ldc), rope_ptr, c.add(2 * ldc), 32);
 }
