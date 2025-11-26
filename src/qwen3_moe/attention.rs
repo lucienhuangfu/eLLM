@@ -206,7 +206,7 @@ mod test {
     
     #[test]
     fn test_self_attention() {
-        let position_window_size = 4;
+        // let position_window_size = 4;
         let batch_size = 6;
         // let hidden_size = 128;
         // let num_attention_heads = 64;
@@ -241,14 +241,14 @@ mod test {
         );
 
         let hidden_states = Tensor::zeros(
-            vec![position_window_size, batch_size, config.hidden_size],
+            vec![ batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
             cache.clone(),
             operator_queue.clone(),
         );
 
         let residual_tensor = Tensor::zeros(
-            vec![position_window_size, batch_size, config.hidden_size],
+            vec![ batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
             cache.clone(),
             operator_queue.clone(),
@@ -267,7 +267,7 @@ mod test {
         // Add assertions to validate the output
         debug_assert_eq!(
             output.shape,
-            vec![position_window_size, batch_size, config.num_attention_heads * config.head_dim]
+            vec![ batch_size, config.num_attention_heads * config.head_dim]
         );
 
         // Execute the operator queue

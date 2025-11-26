@@ -1,8 +1,8 @@
 use core_affinity;
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::rc::Rc;
 
 use std::sync::Barrier;
 use std::sync::{Arc, RwLock};
@@ -40,7 +40,6 @@ pub struct Model<T> {
     lm_head_weight: Tensor<T>,
     pub layers: Vec<DecoderLayer<T>>,
     rms_norm_eps: T,
-    pub sequence_chunk_size: usize,
     pub batch_size: usize,
     pub hidden_size: usize,
     pub topk_size: usize,
@@ -64,12 +63,7 @@ where
         + Send
         + Sync,
 {
-    pub fn new(
-        config: &Config,
-        sequence_length: usize,
-        sequence_chunk_size: usize,
-        batch_size: usize,
-    ) -> Self {
+    pub fn new(config: &Config, sequence_length: usize, batch_size: usize) -> Self {
         let scope_name = String::from("model");
 
         // let torch_file = String::from("D:/llama-3-chinese-8b-instruct-v3");
@@ -123,7 +117,6 @@ where
             layers: layers,
             batch_size: batch_size,
             hidden_size: config.hidden_size,
-            sequence_chunk_size: sequence_chunk_size,
             topk_size: config.num_experts_per_tok,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
@@ -173,7 +166,7 @@ where
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
             indices_ptr,
             &sum_tensor,
-            unsafe {sequences.add(self.batch_size)},
+            unsafe { sequences.add(self.batch_size) },
             self.topk_size,
             format!("{}.softmax", self.scope_name),
         );
@@ -202,7 +195,6 @@ mod test {
     fn test_model_forward() {
         // let cpu_num =  thread::available_parallelism().unwrap().get();
         let sequence_length = 128;
-        let sequence_chunk_size = 4;
         let batch_size = 6;
 
         let config =
@@ -211,7 +203,6 @@ mod test {
         let mut model = Model::<f32>::new(
             &config,
             sequence_length,
-            sequence_chunk_size,
             batch_size,
             // word_embedding,
             // position_embedding,
@@ -222,16 +213,17 @@ mod test {
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-        let mut sequences = allocate_init::<usize>((config.max_position_embeddings + 1)*batch_size, 0);
+        let mut sequences =
+            allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
         let output_tensor = unsafe { model.forward(sequences) };
-        
+
         let thread_num: usize = num_cpus::get();
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run( batch_size, thread_num, i);
+                operator.run(batch_size, thread_num, i);
             }
         }
-         
+
         // Add assertions to verify the output_tensor
         // For example:
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
