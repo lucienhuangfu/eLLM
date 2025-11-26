@@ -14,7 +14,7 @@ pub mod init;
 pub mod memory;
 pub mod kernel;
 pub mod compiler;
-// pub mod ptensor;
+pub mod ptensor;
 // pub mod qwen3_moe;
 // pub mod runtime;
 // pub mod serving;

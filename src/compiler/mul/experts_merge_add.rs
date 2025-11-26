@@ -20,7 +20,6 @@ pub struct ExpertsMergeAdd<T> {
     experts_indicator: MutPtr<bool>,
     indice_ptr: MutPtr<bool>,
     output_ptr: MutPtr<T>,
-    sequence_chunk_size: usize,
     batch_size: usize,
     num_experts: usize,
     num_experts_per_token: usize,
@@ -37,7 +36,6 @@ where
         experts_indicator: *mut bool,
         indice_ptr: *mut bool,
         output_ptr: *mut T,
-        sequence_chunk_size: usize,
         batch_size: usize,
         num_experts: usize,
         num_experts_per_token: usize,
@@ -51,7 +49,6 @@ where
             },
             indice_ptr: MutPtr { ptr: indice_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
-            sequence_chunk_size,
             batch_size,
             num_experts,
             num_experts_per_token,
@@ -62,13 +59,13 @@ where
 
     pub fn run(
         &self,
-        position_index: usize,
-        position_interval: usize,
+        // position_index: usize,
+        // position_interval: usize,
         batch_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
-        let num_tokens = self.sequence_chunk_size * self.batch_size;
+        let num_tokens = self.batch_size;
         // 重置gate_routing数据结构
         if let Some((begin, end)) = assign(self.num_experts, thread_num, thread_id) {
             let experts_indicator_ptr = self.experts_indicator.ptr;
