@@ -274,7 +274,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, 1, batch_size,  thread_num, i);
+                operator.run( batch_size,  thread_num, i);
             }
         }
 

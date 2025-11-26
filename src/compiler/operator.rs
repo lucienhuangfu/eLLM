@@ -165,7 +165,7 @@ mod test {
             input_data1.as_ptr(),
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
-            batch_size,
+            // batch_size,
             head_num,
             head_size,
         ));
@@ -273,7 +273,7 @@ mod test {
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
             // sequence_chunk_size,
-            batch_size,
+            //batch_size,
             head_num,
             head_size,
             false,

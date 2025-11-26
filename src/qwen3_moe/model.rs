@@ -100,7 +100,7 @@ where
                 &config,
                 i,
                 sequence_length,
-                sequence_chunk_size,
+                // sequence_chunk_size,
                 batch_size,
                 word_embedding.clone(),
                 position_embedding.clone(),
@@ -228,7 +228,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(0, 1, batch_size, thread_num, i);
+                operator.run( batch_size, thread_num, i);
             }
         }
          
