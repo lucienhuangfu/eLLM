@@ -67,9 +67,10 @@ where
             self.data,
             b_tensor.data,
             output_tensor.data,
-            1,
-            self.shape[0],
+            
+            // self.shape[0],
             self.shape[1],
+            self.shape[2],
         ));
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
@@ -93,7 +94,7 @@ where
             self.data,
             b_tensor.data,
             output_tensor.data,
-            self.shape[0],
+            // self.shape[0],
             self.shape[1],
             // weight,
             eps,
@@ -159,7 +160,7 @@ where
             b_tensor.data,
             output_tensor.data,
             // sequence_length,
-            self.shape[0],
+            // self.shape[0],
             self.shape[1],
             self.shape[2],
             output_to_kv,
@@ -879,7 +880,7 @@ mod test {
         let cache: Rc<RefCell<Cache<f32>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f32>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
+        // let sequence_chunk_size = 1;
         let batch_size = 2;
         let num_experts = 8;
         let num_experts_per_tok = 2;
@@ -962,7 +963,7 @@ mod test {
         let cache: Rc<RefCell<Cache<f32>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f32>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
+        // let sequence_chunk_size = 1;
         let batch_size = 2;
         let num_topk = 8;
         let thread_num = 2;

@@ -16,7 +16,7 @@ pub struct ComplexZipMap<T> {
     ptr2: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     // sequence_length: usize,
-    batch_size: usize,
+    // batch_size: usize,
     head_num: usize,
     head_size: usize,
     output_to_kv: bool,
@@ -41,7 +41,7 @@ where
         ptr2: *const T,
         output_ptr: *mut T,
         // sequence_length: usize,
-        batch_size: usize,
+        // batch_size: usize,
         head_num: usize,
         head_size: usize,
         output_to_kv: bool,
@@ -52,7 +52,7 @@ where
             ptr2: ConstPtr { ptr: ptr2 },
             output_ptr: MutPtr { ptr: output_ptr },
             // sequence_length: sequence_length,
-            batch_size: batch_size,
+            // batch_size: batch_size,
             head_num: head_num,
             head_size: head_size,
             output_to_kv: output_to_kv,
@@ -62,7 +62,7 @@ where
     }
 
     pub fn run(&self, batch_size: usize, cpu_num: usize, thread_id: usize) {
-        let stride = batch_size * self.head_num;
+        let stride =  self.head_num;
 
         if let Some((begin, end)) = assign(stride, cpu_num, thread_id) {
             let (mut row_index, mut col_index) = (begin / self.head_num, begin % self.head_num);
@@ -237,7 +237,7 @@ mod test {
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
             // sequence_chunk_size,
-            batch_size,
+            // batch_size,
             head_num,
             head_size,
             false, // thread_num,

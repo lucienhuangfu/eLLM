@@ -241,7 +241,7 @@ mod test {
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(0, 1, batch_size, thread_num, i);
+                operator.run( batch_size, thread_num, i);
             }
         }
     }

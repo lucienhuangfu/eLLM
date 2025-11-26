@@ -15,7 +15,7 @@ pub struct AddZipMap<T> {
     ptr1: ConstPtr<T>,
     ptr2: ConstPtr<T>,
     output_ptr: MutPtr<T>,
-    max_batch_size: usize,
+    // max_batch_size: usize,
     head_num: usize,
     head_size: usize,
     // cpu_num: usize
@@ -36,7 +36,7 @@ where
         ptr1: *const T,
         ptr2: *const T,
         output_ptr: *mut T,
-        max_batch_size: usize,
+        // max_batch_size: usize,
         head_num: usize,
         head_size: usize,
         // cpu_num: usize
@@ -46,7 +46,7 @@ where
             ptr1: ConstPtr { ptr: ptr1 },
             ptr2: ConstPtr { ptr: ptr2 },
             output_ptr: MutPtr { ptr: output_ptr },
-            max_batch_size,
+            // max_batch_size,
             head_num,
             head_size,
             // cpu_num
@@ -174,7 +174,7 @@ mod test {
             input_data1.as_ptr(),
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
-            batch_size,
+            // batch_size,
             head_num,
             head_size,
         );

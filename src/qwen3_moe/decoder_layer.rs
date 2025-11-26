@@ -22,7 +22,7 @@ use super::sparse_moe_block::SparseMoeBlock;
 #[derive(Clone)]
 pub struct DecoderLayer<T> {
     sequence_length: usize,
-    sequence_chunk_size: usize,
+    // sequence_chunk_size: usize,
     batch_size: usize,
     hidden_size: usize,
     head_dim: usize,
@@ -55,7 +55,7 @@ where
         config: &Config,
         layer_idx: usize,
         sequence_length: usize,
-        sequence_chunk_size: usize,
+        // sequence_chunk_size: usize,
         batch_size: usize,
         word_embedding: Rc<Tensor<T>>,
         position_embedding: Rc<Tensor<T>>,
@@ -93,7 +93,7 @@ where
 
         Self {
             sequence_length: config.max_position_embeddings,
-            sequence_chunk_size: sequence_chunk_size,
+            // sequence_chunk_size: sequence_chunk_size,
             batch_size: batch_size,
             hidden_size: config.hidden_size,
             head_dim: config.head_dim,
@@ -142,7 +142,7 @@ where
             Tensor::lookup_rms(
                 input_sequences,
                 &*self.word_embedding,
-                self.sequence_chunk_size,
+                // self.sequence_chunk_size,
                 self.batch_size,
                 self.rms_norm_eps,
                 self.scope_name.clone(),
@@ -245,7 +245,7 @@ mod test {
             &config,
             1,
             max_position_embeddings,
-            sequence_chunk_size,
+            // sequence_chunk_size,
             batch_size,
             word_embedding.clone(),
             position_embedding.clone(),
@@ -288,7 +288,7 @@ mod test {
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(0, 1, batch_size, thread_num, i);
+                operator.run( batch_size, thread_num, i);
             }
         }
 
