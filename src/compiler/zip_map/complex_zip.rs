@@ -61,22 +61,11 @@ where
         }
     }
 
-
-    pub fn run(
-        &self,
-        position_begin: usize,
-        position_interval: usize,
-        batch_size: usize,
-        cpu_num: usize,
-        thread_id: usize,
-    ) {
+    pub fn run(&self, batch_size: usize, cpu_num: usize, thread_id: usize) {
         let stride = batch_size * self.head_num;
 
-        if let Some((begin, end)) = assign(position_interval * stride, cpu_num, thread_id) {
-            let max_stride = self.batch_size * self.head_num;
-            // 从begin得到对应的坐标
-            let (mut high_index, mut _index) = (begin / stride, begin % stride);
-            let (mut row_index, mut col_index) = (_index / self.head_num, _index % self.head_num);
+        if let Some((begin, end)) = assign(stride, cpu_num, thread_id) {
+            let (mut row_index, mut col_index) = (begin / self.head_num, begin % self.head_num);
 
             unsafe {
                 // 遍历每个chunk;
@@ -89,23 +78,15 @@ where
                     // self.chunks.len()
                 );
 
-                let ptr1 = if self.output_to_kv {
-                    self.ptr1
-                        .ptr
-                        .add(position_begin * max_stride * self.head_size)
-                } else {
-                    self.ptr1.ptr
-                };
-                // let ptr2 = self.ptr2.ptr;
-                let mut ptr2 = self.ptr2.ptr.add(position_begin * self.head_size);
+                let ptr1 = self.ptr1.ptr;
+                let ptr2 = self.ptr2.ptr;
                 let output_ptr = self.output_ptr.ptr;
 
                 for _ in begin..end {
-                    let index = (high_index * max_stride + row_index * self.head_num + col_index)
-                        * self.head_size;
+                    let index = (row_index * self.head_num + col_index) * self.head_size;
                     println!(
-                        " high_index: {}, row_index: {}, col_index: {}, index: {}",
-                        high_index, row_index, col_index, index
+                        " row_index: {}, col_index: {}, index: {}",
+                        row_index, col_index, index
                     );
 
                     // Print values from self.ptr1 as slice
@@ -119,11 +100,6 @@ where
                     if col_index == self.head_num {
                         col_index = 0;
                         row_index += 1;
-                    }
-                    if row_index == batch_size {
-                        row_index = 0;
-                        high_index += 1;
-                        ptr2 = ptr2.add(self.head_size);
                     }
                 }
             }
@@ -235,12 +211,12 @@ mod test {
     #[test]
     fn test_complexmul2() {
         let sequence_length = 10;
-        let sequence_chunk_size = 4;
+        // let sequence_chunk_size = 4;
         let batch_size = 10;
         let head_num = 10;
         let head_size = 34;
 
-        let shape1 = vec![sequence_chunk_size, batch_size, head_num, head_size];
+        let shape1 = vec![batch_size, head_num, head_size];
         let shape2 = vec![sequence_length, head_size];
 
         let length1: usize = shape1.iter().product();
@@ -267,17 +243,10 @@ mod test {
             false, // thread_num,
         );
         // operator.set_chunk(chunks);
-        let position_index = 0; // Assuming we want to run for the first position
         let thread_num: usize = num_cpus::get();
         for i in 0..thread_num {
             // for position_index in 0..sequence_length {
-            operator.run(
-                position_index,
-                sequence_chunk_size,
-                batch_size,
-                thread_num,
-                i,
-            );
+            operator.run(batch_size, thread_num, i);
             // }
             break;
         }

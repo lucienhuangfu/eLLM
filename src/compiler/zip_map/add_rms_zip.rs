@@ -51,35 +51,16 @@ where
     //    self.chunks = chunks;
     // }
 
-    pub fn run(
-        &self,
-        position_start: usize,
-        position_interval: usize,
-        batch_size: usize,
-        cpu_num: usize,
-        thread_id: usize,
-        
-    ) {
-        if let Some((begin, end)) = assign(batch_size * position_interval, cpu_num, thread_id)
-        {
-            // 从begin得到对应的坐标
-            let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
-
+    pub fn run(&self, batch_size: usize, thread_num: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(batch_size, thread_num, thread_id) {
             let mut ptr1 = self.ptr1.ptr;
             let mut ptr2 = self.ptr2.ptr;
             let mut output_ptr = self.output_ptr.ptr;
 
-            for _ in begin..end {
-                let index = row_index * self.max_batch_size + col_index;
+            for index in begin..end {
                 unsafe {
-                    // let (a, b, c) = self.chunks.get_unchecked(index);
                     let p = index * self.hidden_size;
                     self.compute(ptr1.add(p), ptr2.add(p), output_ptr.add(p));
-                }
-                col_index += 1;
-                if col_index == batch_size {
-                    col_index = 0;
-                    row_index += 1;
                 }
             }
         }
@@ -161,17 +142,15 @@ mod test {
 
     #[test]
     fn test_add_rms_zip() {
-        let sequence_threshold = 64;
         let batch_size = 10;
         let hidden_size = 18;
 
-        let shapes = vec![sequence_threshold, batch_size, hidden_size];
-        let input_strides1 = vec![batch_size * hidden_size, hidden_size, 1];
-        let input_strides2 = vec![batch_size * hidden_size, hidden_size, 1];
-        let output_strides = vec![batch_size * hidden_size, hidden_size, 1];
+        let shapes = vec![batch_size, hidden_size];
+        let input_strides1 = vec![hidden_size, 1];
+        let input_strides2 = vec![hidden_size, 1];
+        let output_strides = vec![hidden_size, 1];
         let length = shapes.iter().product(); // 总元素数量
                                               // let batch_size = 10; // 每次批处理 10 个元素
-        let position_size = 0; // 起始位置，根据实际情况可以修改
 
         // 创建模拟的输入和输出数据
         //let input_data: Vec<f32> = (0..length).map(|x| x as f32).collect();
@@ -228,7 +207,7 @@ mod test {
         // argmax_operator.set_chunk(chunks);
 
         for i in 0..thread_num {
-            operator.run(position_size, sequence_threshold, batch_size, thread_num, i);
+            operator.run(batch_size, thread_num, i);
         }
 
         // 如需打印输出数据，请取消以下注释
