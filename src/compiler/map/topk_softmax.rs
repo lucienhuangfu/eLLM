@@ -141,7 +141,6 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
         thread_num: usize,
         topk_size: usize,
     ) {
-    
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::truncated_topk_softmax::truncated_topk_softmax(
             input_values_ptr,
@@ -153,7 +152,7 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
             thread_num,
             topk_size,
         );
-            /*
+        /*
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::generic::softmax::softmax(
             input_ptr,
@@ -282,76 +281,98 @@ mod test {
         }
     }
 
-    /*
     #[test]
-    fn test_rms_map() {
-        let seq_threshold = 64; // 序列长度
-        let batch_size = 10; // 每个批次处理 10 个元素
-        let hidden_size = 18;
+    fn test_topk_softmax_f16() {
+        if !std::arch::is_x86_feature_detected!("avx512fp16") {
+            println!("AVX512FP16 not supported, skipping test.");
+            return;
+        }
 
-        let shapes = vec![seq_threshold, batch_size, hidden_size];
-        let strides = vec![batch_size * hidden_size, hidden_size, 1]; // 对应的步长
-        let length = shapes.iter().product(); // 总元素数量
-                                              // let batch_size = 10; // 每次批处理 10 个元素
-        let position_index = 0; // 起始位置，根据实际情况可以修改
-        let position_interval = 4; // 间隔位置，根据实际情况可以修改
+        let batch_size = 2;
+        let topk_size = 8;
+        let thread_num = 4;
+        let position_begin = 0;
+        let position_interval = 1;
 
-        let cpu_num = num_cpus::get();
+        let total_candidates_per_item = topk_size * thread_num;
+        let input_len = batch_size * total_candidates_per_item;
 
-        // 创建模拟的输入和输出数据
-        let input_data: Vec<f32> = (1..=18).cycle().take(180).map(|x| x as f32).collect();
-        let weight = vec![1.0f32; hidden_size];
-        let eps = 1e-6;
-        let mut output_data: Vec<f32> = vec![0.0; length];
+        let mut input_values = Vec::<f16>::with_capacity(input_len);
+        let mut input_indices = Vec::<usize>::with_capacity(input_len);
 
-        /*
-        // 使用 chunk_map 函数创建块
-        let chunks = chunk_map(
-            shapes,
-            strides,
-            input_data.as_ptr(),
-            output_data.as_mut_ptr(),
-        );
-         */
+        for i in 0..batch_size {
+            for j in 0..total_candidates_per_item {
+                // Create some decreasing values for each batch item
+                let val = 5.0 - (j as f32 * 0.1) - (i as f32);
+                input_values.push(val as f16);
+                input_indices.push(i * 1000 + j); // Unique indices
+            }
+        }
 
-        // 使用这些块和长度初始化 ArgmaxMap
-        let mut operator = RMSMap::new(
-            input_data.as_ptr(),
-            output_data.as_mut_ptr(),
+        let sums = vec![0.0 as f16; batch_size * position_interval];
+        let mut output_values = vec![0.0 as f16; batch_size * topk_size];
+        let mut output_indices = vec![0usize; batch_size * topk_size];
+        let mut output_sequences = vec![0usize; batch_size * position_interval];
+
+        let operator = TopKSoftmax::<f16>::new(
+            input_indices.as_ptr(),
+            input_values.as_ptr(),
+            sums.as_ptr(),
+            output_indices.as_mut_ptr(),
+            output_values.as_mut_ptr(),
+            output_sequences.as_mut_ptr(),
             batch_size,
-            hidden_size,
-            weight.as_ptr(),
-            eps,
-            // cpu_num,
+            topk_size,
         );
-        let result = [
-            0.09238425642251968,
-            0.18476851284503937,
-            0.27715277671813965,
-            0.36953702569007874,
-            0.4619212746620178,
-            0.5543055534362793,
-            0.646689772605896,
-            0.7390740513801575,
-            0.831458330154419,
-            0.9238425493240356,
-            1.0162267684936523,
-            1.1086111068725586,
-            1.2009953260421753,
-            1.293379545211792,
-            1.3857638835906982,
-            1.478148102760315,
-            1.5705323219299316,
-            1.662916660308838,
-        ];
-        // operator.set_chunk(chunks);
-        let thread_num: usize = cpu_num;
 
         for i in 0..thread_num {
-            operator.run(position_index, position_interval, batch_size,  thread_num, i);
+            operator.run(position_begin, position_interval, batch_size, thread_num, i);
         }
-        // 如需打印输出数据，请取消以下注释
-        assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
-        // println!("{:?}", output_data);
-    }*/
+
+        // Verification
+        for i in 0..batch_size {
+            let item_input_values =
+                &input_values[i * total_candidates_per_item..(i + 1) * total_candidates_per_item];
+            let item_input_indices =
+                &input_indices[i * total_candidates_per_item..(i + 1) * total_candidates_per_item];
+
+            let mut paired: Vec<_> = item_input_values
+                .iter()
+                .copied()
+                .zip(item_input_indices.iter().copied())
+                .collect();
+            paired.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+
+            let topk = &paired[..topk_size];
+            let max_val = topk[0].0 as f32;
+
+            let topk_f32: Vec<(f32, usize)> =
+                topk.iter().map(|(v, idx)| (*v as f32, *idx)).collect();
+            let denom: f32 = topk_f32.iter().map(|(v, _)| (v - max_val).exp()).sum();
+
+            let expected_probs: Vec<f32> = topk_f32
+                .iter()
+                .map(|(v, _)| (v - max_val).exp() / denom)
+                .collect();
+            let expected_indices: Vec<usize> = topk.iter().map(|(_, idx)| *idx).collect();
+
+            let output_vals_slice = &output_values[i * topk_size..(i + 1) * topk_size];
+            let output_idx_slice = &output_indices[i * topk_size..(i + 1) * topk_size];
+
+            for k in 0..topk_size {
+                let out_val = (output_vals_slice[k] as f32);
+                let expected = expected_probs[k];
+                assert!(
+                    (out_val - expected).abs() < 1e-3,
+                    "Mismatch at batch {} index {}: got {}, expected {}",
+                    i,
+                    k,
+                    out_val,
+                    expected
+                );
+                assert_eq!(output_idx_slice[k], expected_indices[k]);
+            }
+            assert_eq!(output_sequences[i], expected_indices[0]);
+        }
+    }
 }
