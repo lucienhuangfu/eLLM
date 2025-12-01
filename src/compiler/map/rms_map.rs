@@ -25,8 +25,8 @@ impl<T: Sqrt> RMSMap<T> {
         }
     }
 
-    pub fn run(&self, batch_size: usize, thread_num: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(batch_size, thread_num, thread_id) {
+    pub fn run(&self, token_size: usize, thread_num: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
             let mut ptr1 = self.ptr1.ptr;
             let mut output_ptr = self.output_ptr.ptr;
 
@@ -87,21 +87,16 @@ impl MapTrait<f64> for RMSMap<f64> {
 mod test {
     use approx::assert_ulps_eq;
     use num_cpus;
-    // use rand::seq;
-    // use std::ptr;
 
-    // use super::super::chunk_map::chunk_map;
-    // use crate::memory::allocator::allocate_init;
     use super::*;
 
     #[test]
     fn test_rms_map() {
-        let seq_threshold = 64; // 序列长度
         let batch_size = 10; // 每个批次处理 10 个元素
         let hidden_size = 18;
 
-        let shapes = vec![seq_threshold, batch_size, hidden_size];
-        let strides = vec![batch_size * hidden_size, hidden_size, 1]; // 对应的步长
+        let shapes = vec![batch_size, hidden_size];
+        // let strides = vec![batch_size * hidden_size, hidden_size, 1]; // 对应的步长
         let length = shapes.iter().product(); // 总元素数量
                                               // let batch_size = 10; // 每次批处理 10 个元素
 
@@ -110,18 +105,9 @@ mod test {
         // 创建模拟的输入和输出数据
         let input_data: Vec<f32> = (1..=18).cycle().take(180).map(|x| x as f32).collect();
         let weight = vec![1.0f32; hidden_size];
-        let eps = 1e-6;
+        let eps = 1e-6f32;
         let mut output_data: Vec<f32> = vec![0.0; length];
 
-        /*
-        // 使用 chunk_map 函数创建块
-        let chunks = chunk_map(
-            shapes,
-            strides,
-            input_data.as_ptr(),
-            output_data.as_mut_ptr(),
-        );
-         */
 
         // 使用这些块和长度初始化 ArgmaxMap
         let mut operator = RMSMap::new(

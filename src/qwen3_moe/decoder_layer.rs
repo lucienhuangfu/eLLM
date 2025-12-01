@@ -8,13 +8,13 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::config::Config;
-
 use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
 use super::attention::Attention;
+use super::config::Config;
 use super::sparse_moe_block::SparseMoeBlock;
+use crate::init::record::TokenRecord;
 // use super::moe_layer::MoeLayer;
 // use crate::qwen3_moe::mlp;
 // use super::feedforward::FeedForward;
@@ -127,7 +127,8 @@ where
     pub fn forward(
         &self,
         hidden_states: &Tensor<T>,
-        input_sequences: *mut usize,
+        token_ptr: *const TokenRecord,
+        // input_sequences: *mut usize,
         // sequences: *mut usize,
         tensor_name: String,
     ) -> Tensor<T> {
@@ -140,7 +141,7 @@ where
             (hidden_states.clone(), norm_hidden)
         } else {
             Tensor::lookup_rms(
-                input_sequences,
+                token_ptr,
                 &*self.word_embedding,
                 // self.sequence_chunk_size,
                 self.batch_size,
@@ -202,6 +203,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::init::record::TokenRecord;
     use std::slice;
 
     #[test]
@@ -259,11 +261,16 @@ mod test {
             }
         }
 
-        let mut sequences = vec![0; batch_size];
+        let sequences: Vec<TokenRecord> = (0..batch_size)
+            .map(|i| TokenRecord {
+                token_id: 0,
+                batch_index: i,
+            })
+            .collect();
 
         let output_tensor = layer.forward(
             &input,
-            sequences.as_mut_ptr(),
+            sequences.as_ptr(),
             String::from("model.layers.1.output_tensor"),
         );
 

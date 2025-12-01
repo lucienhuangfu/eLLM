@@ -1,21 +1,17 @@
 use std::f16;
 use std::ptr;
 
-use nom::sequence;
-
 use super::super::super::kernel;
 use super::map_trait::MapTrait;
 use crate::compiler::assign::assign;
-use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::init::record::TokenRecord;
+use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::generic::sqrt::Sqrt;
 
 // Fuse embedding lookup with RMS normalization
 #[derive(Clone)]
 pub struct LookupRMSMap<T> {
-    // sequences 维度是 [batch]
-    sequences: MutPtr<usize>,
-    token_ptr: MutPtr<TokenRecord>,
+    token_ptr: ConstPtr<TokenRecord>,
     word_embedding: ConstPtr<T>,
     output_hidden_ptr: MutPtr<T>,
     output_normal_ptr: MutPtr<T>,
@@ -26,8 +22,8 @@ pub struct LookupRMSMap<T> {
 impl<T: Sqrt> LookupRMSMap<T> {
     // Constructor for LookupRMSMap
     pub fn new(
-        sequences: *mut usize,
-        token_ptr: *mut TokenRecord,
+        // sequences: *mut usize,
+        token_ptr: *const TokenRecord,
         word_embedding: *const T,
         output_hidden_ptr: *mut T,
         output_normal_ptr: *mut T,
@@ -35,8 +31,8 @@ impl<T: Sqrt> LookupRMSMap<T> {
         eps: T,
     ) -> Self {
         Self {
-            sequences: MutPtr { ptr: sequences },
-            token_ptr: MutPtr { ptr: token_ptr },
+            // sequences: MutPtr { ptr: sequences },
+            token_ptr: ConstPtr { ptr: token_ptr },
             output_hidden_ptr: MutPtr {
                 ptr: output_hidden_ptr,
             },
@@ -55,17 +51,19 @@ impl<T: Sqrt> LookupRMSMap<T> {
     pub fn run(&self, token_size: usize, thread_num: usize, thread_id: usize) {
         if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
             unsafe {
-                let sequences_ptr = self.sequences.ptr;
+                // let sequences_ptr = self.sequences.ptr;
                 let token_ptr = self.token_ptr.ptr;
                 let output_normal_ptr = self.output_normal_ptr.ptr;
                 let output_hidden_ptr = self.output_hidden_ptr.ptr;
 
                 for i in begin..end {
-                    let token_record = *token_ptr.add(i);
-                    let batch_index = token_record.batch_index;
-                    let sequence_index = token_record.sequence_index;
-                    let p = *sequences_ptr.add(sequence_index * self.batch_size + batch_index );
-                    let a_ptr = self.word_embedding.ptr.add(p * self.hidden_size);
+                    // let token_record = *token_ptr.add(i);
+                    // let batch_index = token_record.batch_index;
+                    // let sequence_index = token_record.sequence_index;
+                    // let p = *sequences_ptr.add(sequence_index * self.batch_size + batch_index );
+
+                    let token_id = (*token_ptr.add(i)).token_id;
+                    let a_ptr = self.word_embedding.ptr.add(token_id * self.hidden_size);
                     let offset = i * self.hidden_size;
 
                     let hidden_ptr = output_hidden_ptr.add(offset);
@@ -129,7 +127,12 @@ mod test {
         let length = shapes.iter().product(); // Total number of elements
 
         let eps = 1e-6;
-        let mut sequences: Vec<usize> = vec![1; batch_size];
+        let mut token_records: Vec<TokenRecord> = (0..batch_size)
+            .map(|i| TokenRecord {
+                token_id: 1,
+                batch_index: i,
+            })
+            .collect();
         let word_embedding: Vec<f32> = (1..=hidden_size)
             .cycle()
             .take(vocab_size * hidden_size)
@@ -141,7 +144,7 @@ mod test {
 
         // Initialize LookupRMSMap with these chunks and length
         let mut o = LookupRMSMap::new(
-            sequences.as_mut_ptr(),
+            token_records.as_mut_ptr(),
             word_embedding.as_ptr(),
             output_hidden_data.as_mut_ptr(),
             output_normal_data.as_mut_ptr(),
@@ -182,67 +185,4 @@ mod test {
         // Verify output_hidden_data (should contain copied embeddings)
         assert_ulps_eq!(output_hidden_data[18..36], expected_hidden, max_ulps = 1);
     }
-
-    /*
-    #[test]
-    fn test_lookup_f16() {
-        // let length = 64;
-        let batch_size = 64; // Each batch processes 2 elements
-        let hidden_size = 128;
-        let vocab_size = 512;
-        let thread_num = num_cpus::get();
-
-        let shapes = vec![batch_size, hidden_size];
-        let strides = vec![hidden_size, 1]; // Corresponding strides
-        let sequence_length: usize = 16;
-        let position = 8; // end position
-        let eps = 1e-6;
-
-        let input_data = allocate_init::<f16>(sequence_length, 0.0);
-        for i in 0..sequence_length {
-            unsafe {
-                ptr::write(input_data.wrapping_add(i), i as f16);
-            }
-        }
-        let sequences = allocate_init::<usize>(sequence_length, 1);
-        let word_embedding = allocate_init::<f16>(hidden_size*vocab_size, 0.0);
-        for i in 0..hidden_size*vocab_size {
-            unsafe {
-                ptr::write(word_embedding.wrapping_add(i), i as f16);
-            }
-        }
-        let weight = allocate_init::<f16>(hidden_size, 1.0);
-        let output_data = allocate_init::<f16>(hidden_size, 0.0);
-
-
-        // Create chunks using chunk_map function
-        let chunks = chunk_map(
-            shapes,
-            strides,
-            input_data,
-            output_data,
-        );
-        // Initialize LookupRMSMap with these chunks and length
-        let mut o = LookupRMSMap::new(
-            hidden_size,
-            weight,
-            eps,
-            thread_num,
-            word_embedding,
-            sequences,
-            hidden_size,
-            batch_size,
-        );
-        let mut expected: Vec<f16> = vec![0.0; hidden_size];
-
-        o.set_chunk(chunks);
-        let thread_num: usize = thread_num;
-        for i in 0..thread_num {
-            o.run(1, position, i);
-        }
-
-        // for j in 0..length {
-        //     assert!(f16::abs(output_data[j] - expected[j]) < 1e-6);
-        // }
-    }*/
 }
