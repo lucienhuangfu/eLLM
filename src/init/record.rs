@@ -1,14 +1,12 @@
 #[derive(Clone)]
 pub struct TokenRecord {
-    pub sequence_index: usize,
-    pub kv_batch_index: usize,
-    pub phase: Phase,
+    pub token_id: usize,
     pub batch_index: usize,
 }
 
 pub struct UserRecord {
     pub sequence_index: usize,
-    pub kv_batch_index: usize,
+    pub kv_index: usize,
     pub phase: Phase,
 }
 

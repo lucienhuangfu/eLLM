@@ -10,7 +10,7 @@ use std::ops::{AddAssign, Sub};
 
 #[derive(Clone)]
 pub struct ExpertsSoftmaxNorm<T> {
-    // [sequence_chunk_size, batch_size, num_experts]
+    // [token_size, num_experts]
     ptr1: ConstPtr<T>,
     topk_values_ptr: MutPtr<T>,
     topk_indices_ptr: MutPtr<usize>,

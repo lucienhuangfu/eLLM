@@ -16,6 +16,7 @@ use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
+use crate::init::record::TokenRecord;
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::attention::Attention;
 use super::super::compiler::mul::experts_matmul_mul::ExpertsMatmulMul;
@@ -67,7 +68,6 @@ where
             self.data,
             b_tensor.data,
             output_tensor.data,
-            
             // self.shape[0],
             self.shape[1],
             self.shape[2],
@@ -715,9 +715,8 @@ where
     }
 
     pub fn lookup_rms(
-        input_sequences: *mut usize,
+        token_ptr: *const TokenRecord,
         word_embedding: &Tensor<T>,
-        // sequence_chunk_size: usize,
         batch_size: usize,
         eps: T,
         scope_name: String,
@@ -739,7 +738,7 @@ where
         );
 
         let operator = Operator::LookupRMSMap(LookupRMSMap::new(
-            input_sequences,
+            token_ptr,
             word_embedding.data,
             output_hidden_tensor.data,
             output_normal_tensor.data,
@@ -909,7 +908,7 @@ mod test {
             .experts_softmax_norm(num_experts, num_experts_per_tok, "softmax_norm".to_string());
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run( batch_size, 1, 0);
+            op.run(batch_size, 1, 0);
         }
 
         let num_tokens = batch_size;
@@ -1024,8 +1023,8 @@ mod test {
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run( batch_size, 2, 0);
-            op.run( batch_size, 2, 1);
+            op.run(batch_size, 2, 0);
+            op.run(batch_size, 2, 1);
         }
 
         let num_tokens = batch_size;
