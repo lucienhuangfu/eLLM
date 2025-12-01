@@ -2,6 +2,7 @@
 pub struct TokenRecord {
     pub token_id: usize,
     pub batch_index: usize,
+    pub position_index: usize,
 }
 
 pub struct UserRecord {

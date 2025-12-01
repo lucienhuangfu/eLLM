@@ -131,6 +131,7 @@ mod test {
             .map(|i| TokenRecord {
                 token_id: 1,
                 batch_index: i,
+                position_index: 0,
             })
             .collect();
         let word_embedding: Vec<f32> = (1..=hidden_size)

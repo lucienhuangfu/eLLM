@@ -140,7 +140,9 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::init::record::TokenRecord;
     use approx::assert_ulps_eq;
+    use rand::seq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use std::sync::{Arc, Barrier};
     // use std::thread;
@@ -449,6 +451,7 @@ mod test {
         let batch_size = 2;
         let topk_size = 8;
         let thread_num = 4;
+        let sequence_length = 2;
         // let position_begin = 0;
         // let position_interval = 1;
 
@@ -457,8 +460,14 @@ mod test {
 
         let mut input_values = Vec::<f32>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
+        let mut token_records = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
+            token_records.push(TokenRecord {
+                token_id: 0,
+                batch_index: i,
+                position_index: 0,
+            });
             for j in 0..total_candidates_per_item {
                 input_values.push(5.0 - (j as f32 * 0.1) - (i as f32));
                 input_indices.push(i * 1000 + j);
@@ -468,12 +477,13 @@ mod test {
         let sums = vec![0.0f32; batch_size];
         let mut output_values = vec![0.0f32; batch_size * topk_size];
         let mut output_indices = vec![0usize; batch_size * topk_size];
-        let mut output_sequences = vec![0usize; batch_size];
+        let mut output_sequences = vec![0usize; batch_size * sequence_length];
 
         let operator = Operator::TopKSoftmax(TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
             input_values.as_ptr(),
             sums.as_ptr(),
+            token_records.as_ptr(),
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
@@ -513,7 +523,7 @@ mod test {
 
             assert_ulps_eq!(output_vals_slice, expected_probs.as_slice(), max_ulps = 4);
             assert_eq!(output_idx_slice, expected_indices.as_slice());
-            assert_eq!(output_sequences[i], expected_indices[0]);
+            assert_eq!(output_sequences[batch_size + i], expected_indices[0]);
         }
     }
 

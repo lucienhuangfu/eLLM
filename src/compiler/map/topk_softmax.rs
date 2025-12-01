@@ -3,10 +3,11 @@ use std::ops::{AddAssign, Sub};
 
 use super::map_trait::TopKSoftmaxTrait;
 use crate::compiler::assign::assign;
+use crate::init::record::{TokenRecord, UserRecord};
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::kernel::generic::exp::Exp;
-use crate::kernel::generic::from_usize::FromUsize;
+// use crate::kernel::generic::from_usize::FromUsize;
 use crate::kernel::generic::sqrt::Sqrt;
 
 // use crate::memory::allocator::allocate_init;
@@ -16,6 +17,7 @@ pub struct TopKSoftmax<T> {
     input_indices_ptr: ConstPtr<usize>,
     input_values_ptr: ConstPtr<T>,
     sums_ptr: ConstPtr<T>,
+    token_ptr: ConstPtr<TokenRecord>,
     output_indices_ptr: MutPtr<usize>,
     output_values_ptr: MutPtr<T>,
     output_sequences: MutPtr<usize>,
@@ -27,14 +29,14 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         input_indices_ptr: *const usize,
         input_values_ptr: *const T,
         sums_ptr: *const T,
+        token_ptr: *const TokenRecord,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
+        // user_ptr: *const UserRecord,
         output_sequences: *mut usize,
         batch_size: usize,
         topk_size: usize,
     ) -> Self {
-        // let max_positions_ptr: *mut usize = allocate_init::<usize>(batch_size, 0usize);
-
         Self {
             input_indices_ptr: ConstPtr {
                 ptr: input_indices_ptr,
@@ -43,6 +45,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
                 ptr: input_values_ptr,
             },
             sums_ptr: ConstPtr { ptr: sums_ptr },
+            token_ptr: ConstPtr { ptr: token_ptr },
             output_indices_ptr: MutPtr {
                 ptr: output_indices_ptr,
             },
@@ -57,27 +60,28 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         }
     }
 
-    pub fn run(&self, batch_size: usize, thread_num: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(batch_size, thread_num, thread_id) {
+    pub fn run(&self, token_size: usize, thread_num: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
             let mut input_indices_ptr = self.input_indices_ptr.ptr;
             let mut input_values_ptr = self.input_values_ptr.ptr;
             let mut sums_ptr = self.sums_ptr.ptr;
+            let mut token_ptr = self.token_ptr.ptr;
             let mut output_indices_ptr = self.output_indices_ptr.ptr;
             let mut output_values_ptr = self.output_values_ptr.ptr;
-
             let mut output_sequences_ptr = self.output_sequences.ptr;
 
             for i in begin..end {
-                let index = i;
                 unsafe {
-                    let input_stride = index * self.topk_size * thread_num;
-                    let output_stride = index * self.topk_size;
-                    let token_index = index;
-                    let token_ptr = output_sequences_ptr.add(token_index);
+                    let batch_index = (*token_ptr.add(i)).batch_index;
+                    let position_index = (*token_ptr.add(i)).position_index;
+                    let input_stride = batch_index * self.topk_size * thread_num;
+                    let output_stride = batch_index * self.topk_size;
+                    let token_ptr = output_sequences_ptr
+                        .add((position_index + 1) * self.batch_size + batch_index);
                     self.compute(
                         input_indices_ptr.add(input_stride),
                         input_values_ptr.add(input_stride),
-                        sums_ptr.add(index),
+                        sums_ptr.add(batch_index),
                         output_indices_ptr.add(output_stride),
                         output_values_ptr.add(output_stride),
                         token_ptr,
@@ -186,6 +190,7 @@ mod test {
 
     #[test]
     fn test_topk_softmax_f32() {
+        let sequence_length = 2;
         let batch_size = 2;
         let topk_size = 8;
         let thread_num = 4;
@@ -195,8 +200,14 @@ mod test {
 
         let mut input_values = Vec::<f32>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
+        let mut token_records = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
+            token_records.push(TokenRecord {
+                token_id: 0,
+                batch_index: i,
+                position_index: 0,
+            });
             for j in 0..total_candidates_per_item {
                 // Create some decreasing values for each batch item
                 input_values.push(5.0 - (j as f32 * 0.1) - (i as f32));
@@ -207,12 +218,13 @@ mod test {
         let sums = vec![0.0f32; batch_size];
         let mut output_values = vec![0.0f32; batch_size * topk_size];
         let mut output_indices = vec![0usize; batch_size * topk_size];
-        let mut output_sequences = vec![0usize; batch_size];
+        let mut output_sequences = vec![0usize; batch_size * sequence_length];
 
         let operator = TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
             input_values.as_ptr(),
             sums.as_ptr(),
+            token_records.as_ptr(),
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
@@ -220,17 +232,8 @@ mod test {
             topk_size,
         );
 
-        let mut handles = vec![];
         for i in 0..thread_num {
-            let op = operator.clone();
-            let handle = std::thread::spawn(move || {
-                op.run(batch_size, thread_num, i);
-            });
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            handle.join().unwrap();
+            operator.run(batch_size, thread_num, i);
         }
 
         // Verification
@@ -262,7 +265,7 @@ mod test {
 
             assert_ulps_eq!(output_vals_slice, expected_probs.as_slice(), max_ulps = 4);
             assert_eq!(output_idx_slice, expected_indices.as_slice());
-            assert_eq!(output_sequences[i], expected_indices[0]);
+            assert_eq!(output_sequences[batch_size + i], expected_indices[0]);
         }
     }
 
