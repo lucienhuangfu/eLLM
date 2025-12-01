@@ -28,6 +28,7 @@ use super::super::memory::cache::Cache;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
+use crate::init::record::TokenRecord;
 
 // use super::rope::precompute_freqs_cis;
 
@@ -125,7 +126,7 @@ where
         }
     }
 
-    pub fn forward(&mut self, sequences: *mut usize) -> (*const usize, Tensor<T>) {
+    pub fn forward(&mut self, sequences: *mut usize, token_ptr: *const TokenRecord) -> (*const usize, Tensor<T>) {
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
@@ -139,7 +140,7 @@ where
         for (i, layer_module) in self.layers.iter().enumerate() {
             hidden_state = layer_module.forward(
                 &hidden_state,
-                sequences,
+                token_ptr,
                 format!("{}.hidden_states.{}.output", self.scope_name, i),
             );
             // all_hidden_states.push(hidden_states);
@@ -166,7 +167,9 @@ where
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
             indices_ptr,
             &sum_tensor,
-            unsafe { sequences.add(self.batch_size) },
+            token_ptr,
+            user_ptr,
+            unsafe { sequences },
             self.topk_size,
             format!("{}.softmax", self.scope_name),
         );
@@ -180,9 +183,9 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use std::thread;
+    // use std::cell::RefCell;
+    // use std::rc::Rc;
+    // use std::thread;
 
     use super::*;
     // use crate::init::config::Config;

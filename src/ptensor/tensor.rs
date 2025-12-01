@@ -646,6 +646,7 @@ where
         &self,
         indices_ptr: *const usize,
         sums_tensor: &Tensor<T>,
+        token_ptr: *const TokenRecord,
         output_sequences: *mut usize,
         num_topk: usize,
         scope_name: String,
@@ -664,12 +665,12 @@ where
             indices_ptr,
             self.data,
             sums_tensor.data,
+            token_ptr,
             indice_ptr,
             value_tensor.data,
             output_sequences,
             self.shape[0],
             num_topk,
-            // self.shape[2],
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -988,7 +989,7 @@ mod test {
             operator_queue.clone(),
         );
 
-        let mut output_sequences = vec![0usize; batch_size];
+        let mut output_sequences = vec![0usize; batch_size * 2];
 
         // Data for token 0
         let values0: Vec<f32> = (0..num_candidates).map(|i| 5.0 - i as f32 * 0.1).collect();
@@ -1007,6 +1008,15 @@ mod test {
 
         let indices_ptr = all_indices.as_ptr();
 
+        let mut token_records = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            token_records.push(TokenRecord {
+                token_id: 0,
+                batch_index: i,
+                position_index: 0,
+            });
+        }
+
         unsafe {
             value_tensor
                 .data
@@ -1017,6 +1027,7 @@ mod test {
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
             &sums_tensor,
+            token_records.as_ptr(),
             output_sequences.as_mut_ptr(),
             num_topk,
             "model.layers.0.topk_softmax".to_string(),
@@ -1066,7 +1077,7 @@ mod test {
         }
 
         // Check output sequences (sampled tokens)
-        assert_eq!(output_sequences[0], *candidates0[0].0);
-        assert_eq!(output_sequences[1], *candidates1[0].0);
+        assert_eq!(output_sequences[batch_size + 0], *candidates0[0].0);
+        assert_eq!(output_sequences[batch_size + 1], *candidates1[0].0);
     }
 }
