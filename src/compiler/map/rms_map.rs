@@ -13,19 +13,21 @@ pub struct RMSMap<T> {
     output_ptr: MutPtr<T>,
     hidden_size: usize,
     eps: T,
+    decode_only_flag: bool,
 }
 
 impl<T: Sqrt> RMSMap<T> {
-    pub fn new(ptr1: *const T, output_ptr: *mut T, hidden_size: usize, eps: T) -> Self {
+    pub fn new(ptr1: *const T, output_ptr: *mut T, hidden_size: usize, eps: T, decode_only_flag: bool) -> Self {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             output_ptr: MutPtr { ptr: output_ptr },
             hidden_size,
             eps: eps,
+            decode_only_flag,
         }
     }
 
-    pub fn run(&self, token_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
         if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
             let mut ptr1 = self.ptr1.ptr;
             let mut output_ptr = self.output_ptr.ptr;

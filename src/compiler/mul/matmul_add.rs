@@ -21,10 +21,8 @@ pub struct MatmulAdd<T> {
     // sequence_length: usize,
     // output_to_kv: bool,
     pub params: MatmulParams,
+    decode_only_flag: bool,
     _marker: PhantomData<T>,
-    // sequence_stride: usize,
-    // batch_size: usize,
-    // hidden_size: usize,
 }
 impl<T> MatmulAdd<T>
 where
@@ -56,6 +54,7 @@ where
         // how they are determined is not clear
         a_row_step_micro: usize,
         b_row_step_micro: usize,
+        decode_only_flag: bool,
     ) -> Self {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
@@ -74,6 +73,7 @@ where
                 a_row_step_micro,
                 b_row_step_micro,
             },
+            decode_only_flag,
             _marker: PhantomData,
         }
     }
@@ -83,6 +83,7 @@ where
         // position_index: usize,
         // position_interval: usize,
         batch_size: usize,
+        decode_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {

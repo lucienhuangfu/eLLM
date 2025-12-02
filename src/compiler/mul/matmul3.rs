@@ -112,6 +112,7 @@ where
         // position_index: usize,
         // position_interval: usize,
         batch_size: usize, // M
+        decode_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {

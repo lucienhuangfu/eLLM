@@ -33,6 +33,7 @@ pub struct ExpertsMatmulSilu<T> {
     b_row: usize,
     column: usize,
     pub params: MatmulParams,
+    decode_only_flag: bool,
     _marker: PhantomData<T>,
 }
 impl<T> ExpertsMatmulSilu<T>
@@ -54,6 +55,7 @@ where
         column_step_macro: usize,
         a_row_step_micro: usize,
         b_row_step_micro: usize,
+        decode_only_flag: bool,
     ) -> Self {
         let macro_block_size = a_row_step_macro * column_step_macro;
         let macro_block = MutPtr {
@@ -82,15 +84,15 @@ where
                 a_row_step_micro,
                 b_row_step_micro,
             },
+            decode_only_flag,
             _marker: PhantomData,
         }
     }
 
     pub fn run(
         &self,
-        // position_index: usize,
-        // position_interval: usize,
         batch_size: usize,
+        decode_size: usize, 
         thread_num: usize,
         thread_id: usize,
     ) {

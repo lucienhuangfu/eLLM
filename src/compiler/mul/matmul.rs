@@ -84,7 +84,7 @@ where
     }
 
     /// 执行：S×M×N 的三分块调度 + 线程私有 KC×NR 面板（仅 packing，不做转置）
-    pub fn run(&self, batch_size: usize, cpu_num: usize, thread_id: usize) {
+    pub fn run(&self, batch_size: usize, decode_size: usize, cpu_num: usize, thread_id: usize) {
         unsafe {
             // ===== 维度 =====
             let m = batch_size; // 本次 M

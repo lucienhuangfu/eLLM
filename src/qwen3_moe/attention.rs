@@ -8,7 +8,6 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::memory::cache::Cache;
-// use crate::compiler::mul::attention_add::AttentionAdd;
 use super::super::init::matmul_params::MatmulParams;
 use crate::compiler::operator::Operator;
 // use super::super::ptensor::linear::Linear;
@@ -110,6 +109,7 @@ where
         hidden_states: &Tensor<T>,
         residual: &Tensor<T>,
         position_embedding: &Tensor<T>,
+        decode_only_flag: bool,
         // tensor_name: String,
     ) -> Tensor<T> {
         unsafe {
@@ -164,9 +164,8 @@ where
             let attn_output = view_query_states.attention(
                 &view_key_position_tensor,
                 &view_value_states2,
-                
-                // residual,
                 self.scaling,
+                decode_only_flag,
                 format!("{}.attn_output", self.scope_name),
             );
 
@@ -189,6 +188,7 @@ where
                     a_row_step_micro: 3,
                     b_row_step_micro: 128,
                 },
+                decode_only_flag,
                 self.scope_name.clone(),
             );
 

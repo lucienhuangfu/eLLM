@@ -60,8 +60,8 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         }
     }
 
-    pub fn run(&self, token_size: usize, thread_num: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
+    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(decode_size, thread_num, thread_id) {
             let mut input_indices_ptr = self.input_indices_ptr.ptr;
             let mut input_values_ptr = self.input_values_ptr.ptr;
             let mut sums_ptr = self.sums_ptr.ptr;

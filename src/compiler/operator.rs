@@ -64,66 +64,28 @@ where
         + Sqrt
         + AddAssign,
 {
-    pub fn run(&self, batch_size: usize, cpu_num: usize, thread_id: usize) {
+    pub fn run(&self, batch_size: usize, decode_size: usize, cpu_num: usize, thread_id: usize) {
         match self {
+            /*
             Self::AddRMSZipMap(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
             Self::AddZipMap(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
-            Self::Attention(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::ComplexZipMap(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::ExpertsMatmulMul(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::ExpertsMatmulSiluMulMatmul(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::ExpertsMergeAdd(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::ExpertsSoftmaxNorm(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::LookupRMSMap(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::Matmul(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            /*
-            Self::Matmul3(operator) => {
-                operator.run(
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
-            } */
-            Self::MatmulAdd(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::MatmulSiluMulMatmul(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::MatmulTopK(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::RMSMap(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::SiluMulZipMap(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
-            }
-            Self::TopKSoftmax(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
+                        Self::ComplexZipMap(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
 
-            /*
+                        Self::MatmulSiluMulMatmul(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+
+                        Self::SiluMulZipMap(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+
+
 
             Self::ArgmaxReduce(operator) => {
                 operator.run(batch_size, thread_id);
@@ -132,6 +94,55 @@ where
                 operator.run(batch_size, thread_id);
             }
              */
+
+
+            Self::Attention(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+
+            Self::ExpertsMatmulMul(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+            Self::ExpertsMatmulSiluMulMatmul(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+            Self::ExpertsMergeAdd(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+            Self::ExpertsSoftmaxNorm(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+            Self::LookupRMSMap(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+            Self::Matmul(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+            /*
+            Self::Matmul3(operator) => {
+                operator.run(
+                    batch_size,
+                    decode_size,
+                    cpu_num,
+                    thread_id,
+                );
+            } */
+            Self::MatmulAdd(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+
+            Self::MatmulTopK(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+            Self::RMSMap(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+
+            Self::TopKSoftmax(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+
+
             _ => panic!(),
         }
     }
@@ -174,7 +185,7 @@ mod test {
 
         // let position_index = 0;
         for i in 0..thread_num {
-            operator.run(batch_size, thread_num, i);
+            operator.run(batch_size, 1, thread_num, i);
         }
 
         assert_ulps_eq!(output_data[0..180], results[0..180], max_ulps = 4);
@@ -231,7 +242,7 @@ mod test {
         ];
         let thread_num: usize = cpu_num;
         for i in 0..thread_num {
-            operator.run(batch_size, cpu_num, i);
+            operator.run(batch_size, 1, cpu_num, i);
         }
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
         println!("{:?}", output_data);
@@ -282,7 +293,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(batch_size, thread_num, i);
+            operator.run(batch_size, 1, thread_num, i);
         }
 
         assert_eq!(output_data[3434..3468], expected);
@@ -337,7 +348,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(batch_size, thread_num, i);
+            operator.run(batch_size, 1, thread_num, i);
         }
         let result = vec![
             1.9444659948349,
@@ -407,7 +418,7 @@ mod test {
 
         let thread_num = 1;
         let thread_id = 0;
-        operator.run(batch_size, thread_num, thread_id);
+        operator.run(batch_size, 1, thread_num, thread_id);
 
         // Verification for token 0
         let mut expected1: Vec<(usize, f32)> = input_data1.iter().copied().enumerate().collect();
@@ -492,7 +503,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(batch_size, thread_num, i);
+            operator.run(batch_size, 1, thread_num, i);
         }
 
         for i in 0..batch_size {
