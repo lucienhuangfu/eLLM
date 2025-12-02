@@ -165,7 +165,7 @@ where
                 &view_key_position_tensor,
                 &view_value_states2,
                 self.scaling,
-                decode_only_flag,
+                // decode_only_flag,
                 format!("{}.attn_output", self.scope_name),
             );
 
@@ -262,7 +262,7 @@ mod test {
             operator_queue.clone(),
         );
 
-        let output = self_attention.forward(&hidden_states, &residual_tensor, &position_embedding);
+        let output = self_attention.forward(&hidden_states, &residual_tensor, &position_embedding, false);
 
         // Add assertions to validate the output
         debug_assert_eq!(
@@ -274,7 +274,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run( batch_size,  thread_num, i);
+                operator.run( batch_size,  0, thread_num, i);
             }
         }
 

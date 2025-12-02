@@ -137,6 +137,7 @@ where
         let (hidden_states_owned, norm_hidden) = if self.layer_idx != 0 {
             let norm_hidden = hidden_states.rms(
                 self.rms_norm_eps,
+                false,
                 format!("{}.norm_hidden", self.scope_name),
             );
             (hidden_states.clone(), norm_hidden)
@@ -258,6 +259,7 @@ mod test {
         let output_tensor = layer.forward(
             &input,
             sequences.as_ptr(),
+            false,
             String::from("model.layers.1.output_tensor"),
         );
 
@@ -269,7 +271,7 @@ mod test {
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(batch_size, thread_num, i);
+                operator.run(batch_size, 0, thread_num, i);
             }
         }
 

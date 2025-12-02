@@ -91,11 +91,16 @@ where
 
     pub fn run(
         &self,
-        batch_size: usize,
+        token_size: usize,
         decode_size: usize, 
         thread_num: usize,
         thread_id: usize,
     ) {
+        let task_size = if self.decode_only_flag == true {
+            decode_size
+        } else {
+            token_size
+        };
     }
 }
 

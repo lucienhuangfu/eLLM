@@ -1,9 +1,10 @@
 use std::f16;
 use std::ops::{AddAssign, Sub};
+use std::ptr;
 
 use super::map_trait::TopKSoftmaxTrait;
 use crate::compiler::assign::assign;
-use crate::init::record::{TokenRecord, UserRecord};
+use crate::init::record::{Phase, TokenRecord, UserRecord};
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::kernel::generic::exp::Exp;
@@ -18,11 +19,13 @@ pub struct TopKSoftmax<T> {
     input_values_ptr: ConstPtr<T>,
     sums_ptr: ConstPtr<T>,
     token_ptr: ConstPtr<TokenRecord>,
+    user_ptr: MutPtr<UserRecord>,
     output_indices_ptr: MutPtr<usize>,
     output_values_ptr: MutPtr<T>,
     output_sequences: MutPtr<usize>,
     batch_size: usize,
     topk_size: usize,
+    eos_id: usize,
 }
 impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T> {
     pub fn new(
@@ -30,12 +33,13 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         input_values_ptr: *const T,
         sums_ptr: *const T,
         token_ptr: *const TokenRecord,
+        user_ptr: *mut UserRecord,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
-        // user_ptr: *const UserRecord,
         output_sequences: *mut usize,
         batch_size: usize,
         topk_size: usize,
+        eos_id: usize,
     ) -> Self {
         Self {
             input_indices_ptr: ConstPtr {
@@ -46,6 +50,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
             },
             sums_ptr: ConstPtr { ptr: sums_ptr },
             token_ptr: ConstPtr { ptr: token_ptr },
+            user_ptr: MutPtr { ptr: user_ptr },
             output_indices_ptr: MutPtr {
                 ptr: output_indices_ptr,
             },
@@ -57,6 +62,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
             },
             batch_size,
             topk_size,
+            eos_id,
         }
     }
 
@@ -78,16 +84,23 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
                     let output_stride = batch_index * self.topk_size;
                     let token_ptr = output_sequences_ptr
                         .add((position_index + 1) * self.batch_size + batch_index);
+                    let _output_indices_ptr = output_indices_ptr.add(output_stride);
                     self.compute(
                         input_indices_ptr.add(input_stride),
                         input_values_ptr.add(input_stride),
                         sums_ptr.add(batch_index),
-                        output_indices_ptr.add(output_stride),
+                        _output_indices_ptr,
                         output_values_ptr.add(output_stride),
-                        token_ptr,
+                        // token_ptr,
                         thread_num,
                         self.topk_size,
                     );
+                    let predict_token = *_output_indices_ptr;
+                    ptr::write(token_ptr, predict_token);
+                    if predict_token == self.eos_id {
+                        let user_record = self.user_ptr.ptr.add(batch_index);
+                        (*user_record).phase = Phase::Eos;
+                    }
                 }
             }
         }
@@ -103,7 +116,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmaxTr
         sums_ptr: *const T,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
-        output_token_ptr: *mut usize,
+        // output_token_ptr: *mut usize,
         thread_num: usize,
         topk_size: usize,
     ) {
@@ -113,7 +126,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmaxTr
             // sums_ptr,
             output_values_ptr,
             output_indices_ptr,
-            output_token_ptr,
+            // output_token_ptr,
             thread_num,
             topk_size,
         );
@@ -128,7 +141,7 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
         sums_ptr: *const f16,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut f16,
-        output_token_ptr: *mut usize,
+        // output_token_ptr: *mut usize,
         thread_num: usize,
         topk_size: usize,
     ) {
@@ -139,7 +152,7 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
             // sums_ptr,
             output_values_ptr,
             output_indices_ptr,
-            output_token_ptr,
+           // output_token_ptr,
             thread_num,
             topk_size,
         );
@@ -163,7 +176,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
         sums_ptr: *const f32,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut f32,
-        output_token_ptr: *mut usize,
+        // output_token_ptr: *mut usize,
         thread_num: usize,
         topk_size: usize,
     ) {
@@ -173,7 +186,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
             sums_ptr,
             output_values_ptr,
             output_indices_ptr,
-            output_token_ptr,
+            // output_token_ptr,
             thread_num,
             topk_size,
         );
@@ -182,11 +195,8 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 
 #[cfg(test)]
 mod test {
-    use approx::assert_ulps_eq;
-    use num_cpus;
-    // use std::ptr;
-    // use crate::memory::allocator::allocate_init;
     use super::*;
+    use approx::assert_ulps_eq;
 
     #[test]
     fn test_topk_softmax_f32() {
@@ -194,6 +204,7 @@ mod test {
         let batch_size = 2;
         let topk_size = 8;
         let thread_num = 4;
+        let eos_id = 100;
 
         let total_candidates_per_item = topk_size * thread_num;
         let input_len = batch_size * total_candidates_per_item;
@@ -201,12 +212,18 @@ mod test {
         let mut input_values = Vec::<f32>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
         let mut token_records = Vec::with_capacity(batch_size);
+        let mut user_records = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
             token_records.push(TokenRecord {
                 token_id: 0,
                 batch_index: i,
                 position_index: 0,
+            });
+            user_records.push(UserRecord {
+                sequence_index: i,
+                kv_index: 0,
+                phase: Phase::Decode,
             });
             for j in 0..total_candidates_per_item {
                 // Create some decreasing values for each batch item
@@ -225,15 +242,17 @@ mod test {
             input_values.as_ptr(),
             sums.as_ptr(),
             token_records.as_ptr(),
+            user_records.as_mut_ptr(),
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             batch_size,
             topk_size,
+            eos_id,
         );
 
         for i in 0..thread_num {
-            operator.run(batch_size, thread_num, i);
+            operator.run(batch_size, batch_size, thread_num, i);
         }
 
         // Verification

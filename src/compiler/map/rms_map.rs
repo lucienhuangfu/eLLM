@@ -28,7 +28,13 @@ impl<T: Sqrt> RMSMap<T> {
     }
 
     pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
+        let task_size = if self.decode_only_flag == true {
+            decode_size
+        } else {
+            token_size
+        };
+
+        if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
             let mut ptr1 = self.ptr1.ptr;
             let mut output_ptr = self.output_ptr.ptr;
 
@@ -118,7 +124,7 @@ mod test {
             hidden_size,
             // weight.as_ptr(),
             eps,
-            // cpu_num,
+            false
         );
         let result = [
             0.09238425642251968,
@@ -144,7 +150,7 @@ mod test {
         let thread_num: usize = cpu_num;
 
         for i in 0..thread_num {
-            operator.run(batch_size, thread_num, i);
+            operator.run(batch_size, 0, thread_num, i);
         }
         // 如需打印输出数据，请取消以下注释
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);

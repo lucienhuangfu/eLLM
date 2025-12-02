@@ -64,8 +64,14 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
 }
 
 impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftmaxNorm<T> {
-    pub fn run(&self, batch_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(batch_size, thread_num, thread_id) {
+    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+        let task_size = if self.decode_only_flag == true {
+            decode_size
+        } else {
+            token_size
+        };
+
+        if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
             let ptr1 = self.ptr1.ptr;
             let topk_indices_ptr = self.topk_indices_ptr.ptr;
             let topk_values_ptr = self.topk_values_ptr.ptr;
@@ -228,11 +234,12 @@ mod test {
             batch_size,
             num_experts,
             num_topk,
+            false
         );
 
         let thread_num = 1;
         let thread_id = 0;
-        operator.run(batch_size, thread_num, thread_id);
+        operator.run(batch_size, 0, thread_num, thread_id);
 
         // Verification for token 0
         let mut expected1: Vec<(usize, f32)> = input_data1.iter().copied().enumerate().collect();

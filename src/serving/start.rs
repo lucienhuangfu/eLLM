@@ -1,16 +1,19 @@
 use core_affinity;
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::thread;
 use std::time::Instant;
-use std::sync::Barrier;
 
 // use hurdles::Barrier;
 // use super::barrier::Barrier;
 // use serde::{Deserialize, Serialize};
 // use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+
+use crate::init::record::{Phase, TokenRecord, UserRecord};
+use crate::init::send_sync_ptr::MutPtr;
 
 use super::super::compiler::operator::Operator;
 // use crate::kernel::generic::from_f32::FromF32;
@@ -19,26 +22,24 @@ use super::super::compiler::operator::Operator;
 // use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 // use super::state::State;
 
-
-pub fn start(operator_queue: Vec<Operator<f32>>) {
+pub fn start(
+    operator_queue: Vec<Operator<f32>>,
+    token_ptr: MutPtr<TokenRecord>,
+    user_ptr: MutPtr<UserRecord>,
+    max_token_size: usize,
+) {
     println!("start");
     // let prompt_operator_num;
     // let data = SyncUnsafeCell::new(DataReader::new(prompt_data));
     let thread_num = thread::available_parallelism().unwrap().get();
     let sync_operator_queue = Arc::new(operator_queue);
-
     let barrier = Arc::new(Barrier::new(thread_num));
-
-    let sequence_chunk_size = 64;
     let mut handles = Vec::with_capacity(thread_num);
     let core_ids = core_affinity::get_core_ids().unwrap();
+
+    let current_token_size = 10;
     for (i, core_id) in core_ids.into_iter().enumerate() {
         // println!("thread id {}", i);
-        // let _state = &state;
-        // let _prompt_begin = &prompt_begin;
-        // let _prompt_end = &prompt_end;
-        // let _generation_end = &generation_end;
-        // let _batch_size = &batch_size;
         let b = Arc::clone(&barrier);
         // let mut b = barrier .clone();
         let queue = Arc::clone(&sync_operator_queue);
@@ -46,6 +47,8 @@ pub fn start(operator_queue: Vec<Operator<f32>>) {
         // let start_pos = start_pos; // 显式捕获当前值
 
         // let decode_start = 40;
+
+        let user_ptr_addr = user_ptr.ptr as usize;
 
         let handle = thread::spawn(move || {
             let thread_id = i;
@@ -61,11 +64,30 @@ pub fn start(operator_queue: Vec<Operator<f32>>) {
 
             let s = Instant::now();
             let batch_size = 6;
+            let decode_size = 8;
             for p in 0..sequence_length {
                 println!("thread {} position {}", thread_id, p);
                 for operator in queue.iter() {
-                    operator.run(p, 1, batch_size, thread_num, thread_id);
+                    operator.run(batch_size, decode_size, thread_num, thread_id);
                     b.wait();
+                }
+                if thread_id == 0 {
+                    // let mut token_record = unsafe { &mut *token_ptr.add(p * batch_size) };
+                    unsafe {
+                        let user_raw_ptr = user_ptr_addr as *mut UserRecord;
+                        for i in 0..max_token_size {
+                            let user_record = &mut *user_raw_ptr.add(i);
+                            match user_record.phase {
+                                Phase::Prefill => {
+                                    user_record.phase = Phase::Decode;
+                                }
+                                Phase::Decode => {
+                                    user_record.kv_index += 1;
+                                }
+                                Phase::Eos => {}
+                            }
+                        }
+                    }
                 }
             }
             // only decode part
@@ -75,15 +97,12 @@ pub fn start(operator_queue: Vec<Operator<f32>>) {
             // }
             let t = s.elapsed();
             println!("thread {} decode time {:?}", thread_id, t);
-
-
         });
 
         // std::mem::forget(handle);
         handles.push(handle);
     }
 
-    
     for handle in handles {
         handle.join().unwrap();
     }
@@ -94,9 +113,9 @@ mod test {
     use approx::assert_relative_eq;
 
     use super::*;
-    use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
-    use crate::ptensor::tensor::Tensor;
     use crate::memory::cache::Cache;
+    use crate::ptensor::tensor::Tensor;
+    use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
 
     // use crate::memory::allocator::allocate_init;
 
@@ -162,7 +181,7 @@ mod test {
             String::from("model.layers.0.output_tensor"),
         );
 
-        /* 
+        /*
         let thread_num: usize = num_cpus::get();
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
@@ -171,7 +190,35 @@ mod test {
             }
         }*/
 
-        // output_tensor.operator_queue.borrow().to_vec()
-        start(output_tensor.operator_queue.take());
+        let max_token_size = 100;
+        let mut token_records = (0..max_token_size)
+            .map(|_| TokenRecord {
+                token_id: 0,
+                batch_index: 0,
+                position_index: 0,
+            })
+            .collect::<Vec<_>>();
+
+        let mut user_records = (0..max_token_size)
+            .map(|_| UserRecord {
+                sequence_index: 0,
+                kv_index: 0,
+                phase: Phase::Prefill,
+            })
+            .collect::<Vec<_>>();
+
+        let token_ptr = MutPtr {
+            ptr: token_records.as_mut_ptr(),
+        };
+        let user_ptr = MutPtr {
+            ptr: user_records.as_mut_ptr(),
+        };
+
+        start(
+            output_tensor.operator_queue.take(),
+            token_ptr,
+            user_ptr,
+            max_token_size,
+        );
     }
 }

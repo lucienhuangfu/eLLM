@@ -82,11 +82,16 @@ where
         &self,
         // position_index: usize,
         // position_interval: usize,
-        batch_size: usize,
+        token_size: usize,
         decode_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
+        let task_size = if self.decode_only_flag == true {
+            decode_size
+        } else {
+            token_size
+        };
 
         /*
         let (mut a_chunk_num, remainder) = (self.params.a_row / self.params.a_row_step_macro, self.params.a_row % self.params.a_row_step_macro);
