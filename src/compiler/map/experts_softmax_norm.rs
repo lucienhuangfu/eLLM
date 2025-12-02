@@ -1,3 +1,5 @@
+use serde::de;
+
 use super::map_trait::SoftmaxTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
@@ -18,11 +20,10 @@ pub struct ExpertsSoftmaxNorm<T> {
     experts_indicator: MutPtr<bool>,
     indice_ptr: MutPtr<bool>,
     weight_ptr: MutPtr<T>,
-
-    // num_tokens: usize,
     batch_size: usize,
     num_experts: usize,
     num_topk: usize,
+    decode_only_flag: bool,
 }
 
 impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
@@ -35,6 +36,7 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
         batch_size: usize,
         num_experts: usize,
         num_topk: usize,
+        decode_only_flag: bool,
     ) -> Self {
         let length = batch_size * num_topk;
         Self {
@@ -56,12 +58,13 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
             batch_size,
             num_experts,
             num_topk,
+            decode_only_flag,
         }
     }
 }
 
 impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftmaxNorm<T> {
-    pub fn run(&self, batch_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, batch_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
         if let Some((begin, end)) = assign(batch_size, thread_num, thread_id) {
             let ptr1 = self.ptr1.ptr;
             let topk_indices_ptr = self.topk_indices_ptr.ptr;

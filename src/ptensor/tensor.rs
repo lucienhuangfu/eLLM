@@ -3,9 +3,12 @@ use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
+use serde::de;
+
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+use crate::qwen3_moe::decoder_layer;
 
 use super::super::init::tensor_utils::get_strides;
 use super::super::memory::allocator::allocate_init;
@@ -175,6 +178,7 @@ where
         experts_indicator: *mut bool,
         indice_ptr: *mut bool,
         num_experts: usize,
+        decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
         // output [batch_size, hidden_size]
@@ -197,6 +201,7 @@ where
             num_experts,
             self.shape[1],
             self.shape[2],
+            decode_only_flag,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -210,10 +215,9 @@ where
         indice_ptr: *mut bool,
         weight_ptr: *mut T,
         topk_indices_ptr: *mut usize,
-        // sequence_chunk_size: usize,
-        // batch_size: usize,
         num_experts_per_tok: usize,
         params: MatmulParams,
+        decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
         // down_weights [num_experts, hidden_size, intermediate_size]
@@ -243,6 +247,7 @@ where
             params.column_step_macro,
             params.a_row_step_micro,
             params.b_row_step_micro,
+            decode_only_flag,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -257,6 +262,7 @@ where
         indice_ptr: *mut bool,
         // weight_ptr: *mut T,
         params: MatmulParams,
+        decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
         // gate_weights [num_experts, intermediate_size, hidden_size]
@@ -285,6 +291,7 @@ where
             params.column_step_macro,
             params.a_row_step_micro,
             params.b_row_step_micro,
+            decode_only_flag,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -295,6 +302,7 @@ where
         &self,
         num_experts: usize,
         num_experts_per_tok: usize,
+        decode_only_flag: bool,
         scope_name: String,
     ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
         // [(experts_id, [(token_id, weight)])]
@@ -320,6 +328,7 @@ where
             self.shape[0],
             num_experts,
             num_experts_per_tok,
+            decode_only_flag,
         ));
         self.operator_queue.borrow_mut().push(operator);
         (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr)
@@ -393,6 +402,7 @@ where
         tensor2: &Tensor<T>,
         tensor3: &Tensor<T>,
         params: MatmulParams,
+        decode_only_flag: bool,
         tensor_name: String,
     ) -> Self {
         let output_shape = vec![self.shape[0], tensor2.shape[0]];
@@ -421,6 +431,7 @@ where
             params.column_step_macro,
             params.a_row_step_micro,
             params.b_row_step_micro,
+            decode_only_flag,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -604,7 +615,9 @@ where
         }
     }
 
-    pub fn rms(&self, eps: T, scope_name: String) -> Self {
+    pub fn rms(&self, eps: T, 
+        decode_only_flag: bool,
+        scope_name: String) -> Self {
         let output_tensor = Tensor::<T>::from_cache(
             self.shape.clone(),
             format!("{}.output", scope_name),
@@ -618,6 +631,7 @@ where
             // self.shape[0],
             self.shape[1],
             eps,
+            decode_only_flag,
         ));
         self.operator_queue.borrow_mut().push(operator);
         output_tensor

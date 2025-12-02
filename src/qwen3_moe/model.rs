@@ -126,7 +126,11 @@ where
         }
     }
 
-    pub fn forward(&mut self, sequences: *mut usize, token_ptr: *const TokenRecord) -> (*const usize, Tensor<T>) {
+    pub fn forward(
+        &mut self,
+        sequences: *mut usize,
+        token_ptr: *const TokenRecord,
+    ) -> (*const usize, Tensor<T>) {
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
@@ -138,9 +142,16 @@ where
         );
 
         for (i, layer_module) in self.layers.iter().enumerate() {
+            let decode_only_flag =  if i == (self.layers.len() - 1) {
+                true
+            } else {
+                false
+            };
+            
             hidden_state = layer_module.forward(
                 &hidden_state,
                 token_ptr,
+                decode_only_flag,
                 format!("{}.hidden_states.{}.output", self.scope_name, i),
             );
             // all_hidden_states.push(hidden_states);
@@ -148,6 +159,7 @@ where
 
         let norm_state = hidden_state.rms(
             self.rms_norm_eps,
+            true,
             format!("{}.norm_hidden", self.scope_name),
         );
 
@@ -168,7 +180,6 @@ where
             indices_ptr,
             &sum_tensor,
             token_ptr,
-            user_ptr,
             unsafe { sequences },
             self.topk_size,
             format!("{}.softmax", self.scope_name),
@@ -218,7 +229,16 @@ mod test {
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
         let mut sequences =
             allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
-        let output_tensor = unsafe { model.forward(sequences) };
+
+        let token_records: Vec<TokenRecord> = (0..batch_size)
+            .map(|i| TokenRecord {
+                token_id: 0,
+                batch_index: i,
+                position_index: 0,
+            })
+            .collect();
+
+        let output_tensor = unsafe { model.forward(sequences, token_records.as_ptr()) };
 
         let thread_num: usize = num_cpus::get();
         for operator in model.operator_queue.borrow().iter() {

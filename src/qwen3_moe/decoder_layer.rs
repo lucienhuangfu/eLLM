@@ -130,6 +130,7 @@ where
         token_ptr: *const TokenRecord,
         // input_sequences: *mut usize,
         // sequences: *mut usize,
+        decode_only_flag: bool,
         tensor_name: String,
     ) -> Tensor<T> {
         // # Attention 层
@@ -158,12 +159,14 @@ where
             &norm_hidden,
             hidden_states,
             &*self.position_embedding,
+            decode_only_flag,
             // format!("{}.attention_hidden1", self.scope_name),
         );
 
         let norm_hidden_states = attention_hidden_states.rms(
             // self.layernorm_weight.data,
             self.rms_norm_eps,
+            decode_only_flag,
             format!("{}.norm_hidden2", self.scope_name),
         );
 
@@ -171,28 +174,11 @@ where
         let output_hidden_states = self.sparse_moe_block.forward(
             &norm_hidden_states,
             &attention_hidden_states,
+            decode_only_flag,
             format!("{}.attention_hidden3", self.scope_name),
             // num_cpus::get(),
         );
 
-        /*
-        let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],
-            attention_hidden2.shape[1]/self.head_dim,
-            self.head_dim]);
-
-        let view_attention_hidden3 = attention_hidden3.view(vec![attention_hidden3.shape[0],
-            attention_hidden3.shape[1]/self.head_dim,
-            self.head_dim]);
-
-
-        // [batch_size, head_num, head_size]
-        let out = view_attention_hidden2.add(
-            &view_attention_hidden3,
-            format!("{}.output", self.scope_name),
-        );
-
-        out.view(attention_hidden2.shape.clone())
-        */
         output_hidden_states
         // hidden_states.clone()
         // attention_hidden_states
@@ -265,6 +251,7 @@ mod test {
             .map(|i| TokenRecord {
                 token_id: 0,
                 batch_index: i,
+                position_index: 0,
             })
             .collect();
 

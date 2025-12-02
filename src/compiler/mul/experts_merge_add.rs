@@ -24,6 +24,7 @@ pub struct ExpertsMergeAdd<T> {
     num_experts: usize,
     num_experts_per_token: usize,
     hidden_size: usize,
+    decode_only_flag: bool,
     // _marker: PhantomData<T>,
 }
 impl<T> ExpertsMergeAdd<T>
@@ -40,6 +41,7 @@ where
         num_experts: usize,
         num_experts_per_token: usize,
         hidden_size: usize,
+        decode_only_flag: bool,
     ) -> Self {
         Self {
             input_ptr: ConstPtr { ptr: input_ptr },
@@ -53,15 +55,15 @@ where
             num_experts,
             num_experts_per_token,
             hidden_size,
+            decode_only_flag,
             // _marker: PhantomData,
         }
     }
 
     pub fn run(
         &self,
-        // position_index: usize,
-        // position_interval: usize,
         batch_size: usize,
+        decode_size: usize, 
         thread_num: usize,
         thread_id: usize,
     ) {
