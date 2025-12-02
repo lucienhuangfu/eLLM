@@ -62,12 +62,19 @@ where
 
     pub fn run(
         &self,
-        batch_size: usize,
+        token_size: usize,
         decode_size: usize, 
         thread_num: usize,
         thread_id: usize,
     ) {
-        let num_tokens = self.batch_size;
+        
+        let task_size = if self.decode_only_flag == true {
+            decode_size
+        } else {
+            token_size
+        };
+
+        // let num_tokens = self.batch_size;
         // 重置gate_routing数据结构
         if let Some((begin, end)) = assign(self.num_experts, thread_num, thread_id) {
             let experts_indicator_ptr = self.experts_indicator.ptr;
@@ -81,8 +88,8 @@ where
                         *experts_indicator_ptr.add(i) = false;
                         // reset indices_ptr using write_bytes for better performance
                         // write_bytes(p, 0, count) sets all bytes to 0, which means false for bool
-                        let p = indices_ptr.add(i * num_tokens);
-                        std::ptr::write_bytes(p, 0, num_tokens);
+                        let p = indices_ptr.add(i * self.batch_size);
+                        std::ptr::write_bytes(p, 0, task_size);
                     }
                 }
             }

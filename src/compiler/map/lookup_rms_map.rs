@@ -177,7 +177,7 @@ mod test {
         let expected_hidden: Vec<f32> = (1..=hidden_size).map(|x| x as f32).collect();
 
         for i in 0..thread_num {
-            o.run(batch_size, thread_num, i);
+            o.run(batch_size, 0, thread_num, i);
         }
 
         // Verify output_normal_data

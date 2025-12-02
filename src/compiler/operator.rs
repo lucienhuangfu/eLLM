@@ -94,8 +94,6 @@ where
                 operator.run(batch_size, thread_id);
             }
              */
-
-
             Self::Attention(operator) => {
                 operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
@@ -142,7 +140,6 @@ where
                 operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
 
-
             _ => panic!(),
         }
     }
@@ -151,7 +148,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::init::record::TokenRecord;
+    use crate::init::record::{Phase, TokenRecord, UserRecord};
     use approx::assert_ulps_eq;
     use rand::seq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
@@ -218,6 +215,7 @@ mod test {
             hidden_size,
             // weight.as_ptr(),
             eps,
+            false,
         ));
 
         let result = [
@@ -414,6 +412,7 @@ mod test {
             batch_size,
             num_experts,
             num_topk,
+            false,
         ));
 
         let thread_num = 1;
@@ -463,6 +462,7 @@ mod test {
         let topk_size = 8;
         let thread_num = 4;
         let sequence_length = 2;
+        let eos_id = 100;
         // let position_begin = 0;
         // let position_interval = 1;
 
@@ -472,12 +472,18 @@ mod test {
         let mut input_values = Vec::<f32>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
         let mut token_records = Vec::with_capacity(batch_size);
+        let mut user_records = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
             token_records.push(TokenRecord {
                 token_id: 0,
                 batch_index: i,
                 position_index: 0,
+            });
+            user_records.push(UserRecord {
+                sequence_index: i,
+                kv_index: 0,
+                phase: Phase::Decode,
             });
             for j in 0..total_candidates_per_item {
                 input_values.push(5.0 - (j as f32 * 0.1) - (i as f32));
@@ -495,15 +501,17 @@ mod test {
             input_values.as_ptr(),
             sums.as_ptr(),
             token_records.as_ptr(),
+            user_records.as_mut_ptr(),
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             batch_size,
             topk_size,
+            eos_id,
         ));
 
         for i in 0..thread_num {
-            operator.run(batch_size, 1, thread_num, i);
+            operator.run(batch_size, batch_size, thread_num, i);
         }
 
         for i in 0..batch_size {

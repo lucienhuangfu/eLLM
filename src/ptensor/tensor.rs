@@ -3,12 +3,9 @@ use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
-use serde::de;
-
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
-use crate::qwen3_moe::decoder_layer;
 
 use super::super::init::tensor_utils::get_strides;
 use super::super::memory::allocator::allocate_init;
@@ -19,7 +16,7 @@ use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
-use crate::init::record::TokenRecord;
+use crate::init::record::{Phase, TokenRecord, UserRecord};
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::attention::Attention;
 use super::super::compiler::mul::experts_matmul_mul::ExpertsMatmulMul;
@@ -358,6 +355,7 @@ where
         tensor2: &Tensor<T>,
         params: MatmulParams,
         sequence_length: usize,
+        decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
         let output_shape = vec![self.shape[0], tensor2.shape[0]];
@@ -389,6 +387,7 @@ where
                 self.shape[0],
                 tensor2.shape[0],
                 self.shape[1],
+                decode_only_flag,
             ))
         };
         println!("After matmul in Tensor matmul: {}", scope_name);
@@ -615,9 +614,7 @@ where
         }
     }
 
-    pub fn rms(&self, eps: T, 
-        decode_only_flag: bool,
-        scope_name: String) -> Self {
+    pub fn rms(&self, eps: T, decode_only_flag: bool, scope_name: String) -> Self {
         let output_tensor = Tensor::<T>::from_cache(
             self.shape.clone(),
             format!("{}.output", scope_name),
@@ -661,8 +658,10 @@ where
         indices_ptr: *const usize,
         sums_tensor: &Tensor<T>,
         token_ptr: *const TokenRecord,
+        user_ptr: *mut UserRecord,
         output_sequences: *mut usize,
         num_topk: usize,
+        eos_id: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
         let output_shape = vec![self.shape[0], num_topk];
@@ -680,11 +679,13 @@ where
             self.data,
             sums_tensor.data,
             token_ptr,
+            user_ptr,
             indice_ptr,
             value_tensor.data,
             output_sequences,
             self.shape[0],
             num_topk,
+            eos_id,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -920,10 +921,15 @@ mod test {
         }
 
         let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) = tensor
-            .experts_softmax_norm(num_experts, num_experts_per_tok, "softmax_norm".to_string());
+            .experts_softmax_norm(
+                num_experts,
+                num_experts_per_tok,
+                false,
+                "softmax_norm".to_string(),
+            );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(batch_size, 1, 0);
+            op.run(batch_size, batch_size, 1, 0);
         }
 
         let num_tokens = batch_size;
@@ -983,6 +989,7 @@ mod test {
         let thread_num = 2;
         let num_candidates_per_thread = num_topk;
         let num_candidates = num_candidates_per_thread * thread_num;
+        let eos_id = 100;
 
         // Mock inputs for topk_softmax, which would come from matmul_local_topk
         // value_tensor shape: [batch_size, num_candidates_per_thread * thread_num]
@@ -1023,11 +1030,17 @@ mod test {
         let indices_ptr = all_indices.as_ptr();
 
         let mut token_records = Vec::with_capacity(batch_size);
+        let mut user_records = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
             token_records.push(TokenRecord {
                 token_id: 0,
                 batch_index: i,
                 position_index: 0,
+            });
+            user_records.push(UserRecord {
+                sequence_index: i,
+                kv_index: 0,
+                phase: Phase::Decode,
             });
         }
 
@@ -1042,14 +1055,16 @@ mod test {
             indices_ptr,
             &sums_tensor,
             token_records.as_ptr(),
+            user_records.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             num_topk,
+            eos_id,
             "model.layers.0.topk_softmax".to_string(),
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(batch_size, 2, 0);
-            op.run(batch_size, 2, 1);
+            op.run(batch_size, batch_size, 2, 0);
+            op.run(batch_size, batch_size, 2, 1);
         }
 
         let num_tokens = batch_size;

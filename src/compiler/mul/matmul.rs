@@ -30,6 +30,7 @@ pub struct Matmul<T> {
 
     // 构造期转置得到的 B_nt（N×K，行主；行距=K）
     pub b_nt: Option<Box<[T]>>,
+    pub decode_only_flag: bool,
 }
 
 impl<T> Matmul<T>
@@ -48,6 +49,7 @@ where
         m_max: usize,
         n_max: usize,
         k_max: usize,
+        decode_only_flag: bool,
     ) -> Self {
         println!(
             "Matmul::new called with m_max={}, n_max={}, k_max={}",
@@ -80,6 +82,7 @@ where
             n_max,
             k_max,
             b_nt: Some(b_nt_vec.into_boxed_slice()),
+            decode_only_flag,
         }
     }
 

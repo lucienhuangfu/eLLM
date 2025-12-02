@@ -20,7 +20,7 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::compiler::map::rms_map::RMSMap;
+// use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::operator::Operator;
 use super::super::init::matmul_params::MatmulParams;
 use super::super::memory::cache::Cache;
@@ -243,7 +243,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(batch_size, thread_num, i);
+                operator.run(batch_size, 0,thread_num, i);
             }
         }
 
