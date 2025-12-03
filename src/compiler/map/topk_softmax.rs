@@ -222,6 +222,7 @@ mod test {
             });
             user_records.push(UserRecord {
                 sequence_index: i,
+                snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
             });
