@@ -7,13 +7,15 @@ pub struct TokenRecord {
 
 pub struct UserRecord {
     pub sequence_index: usize,
+    pub snapshot_sequence_index: usize,
     pub kv_index: usize,
     pub phase: Phase,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    Prefill,
+    Prefill_begin,
+    Prefill_end,
     Decode,
     Eos,
 }

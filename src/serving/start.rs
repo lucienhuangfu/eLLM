@@ -1,100 +1,130 @@
 use core_affinity;
-use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
-use std::time::Instant;
-
-// use hurdles::Barrier;
-// use super::barrier::Barrier;
-// use serde::{Deserialize, Serialize};
-// use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
-
-use crate::init::record::{Phase, TokenRecord, UserRecord};
-use crate::init::send_sync_ptr::MutPtr;
+use std::time::{Duration, Instant};
 
 use super::super::compiler::operator::Operator;
-// use crate::kernel::generic::from_f32::FromF32;
-// use crate::kernel::generic::sigmoid::Sigmoid;
-// use crate::kernel::generic::sqrt::Sqrt;
-// use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
-// use super::state::State;
+use crate::init::record::{Phase, TokenRecord, UserRecord};
+use crate::init::send_sync_ptr::MutPtr;
 
 pub fn start(
     operator_queue: Vec<Operator<f32>>,
     token_ptr: MutPtr<TokenRecord>,
     user_ptr: MutPtr<UserRecord>,
+    max_batch_size: usize,
     max_token_size: usize,
 ) {
     println!("start");
-    // let prompt_operator_num;
-    // let data = SyncUnsafeCell::new(DataReader::new(prompt_data));
     let thread_num = thread::available_parallelism().unwrap().get();
     let sync_operator_queue = Arc::new(operator_queue);
     let barrier = Arc::new(Barrier::new(thread_num));
+    let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
     let mut handles = Vec::with_capacity(thread_num);
     let core_ids = core_affinity::get_core_ids().unwrap();
 
-    let current_token_size = 10;
     for (i, core_id) in core_ids.into_iter().enumerate() {
         // println!("thread id {}", i);
         let b = Arc::clone(&barrier);
-        // let mut b = barrier .clone();
         let queue = Arc::clone(&sync_operator_queue);
+        let shared_sizes: Arc<SyncUnsafeCell<(usize, usize)>> = Arc::clone(&shared_sizes);
 
-        // let start_pos = start_pos; // 显式捕获当前值
+        let user_ptr_addr = SyncUnsafeCell::new(user_ptr);
 
-        // let decode_start = 40;
-
-        let user_ptr_addr = user_ptr.ptr as usize;
+        // let max_batch_size = 80;
+        // let max_token_size = max_token_size;
 
         let handle = thread::spawn(move || {
             let thread_id = i;
             core_affinity::set_for_current(core_id);
             println!("{} start", thread_id);
-            // let mut counter = 0;
-
-            // 预先创建子切片，避免在热循环中重复操作
-            // let prompt_queue_slice = &queue[..decode_start.min(queue.len())];
-            // let decode_queue_slice = &queue[decode_start.min(queue.len())..];
-
-            let sequence_length = 10;
-
             let s = Instant::now();
-            let batch_size = 6;
-            let decode_size = 8;
-            for p in 0..sequence_length {
-                println!("thread {} position {}", thread_id, p);
-                for operator in queue.iter() {
-                    operator.run(batch_size, decode_size, thread_num, thread_id);
-                    b.wait();
-                }
+            let sizes_ptr = shared_sizes.get();
+            loop {
                 if thread_id == 0 {
                     // let mut token_record = unsafe { &mut *token_ptr.add(p * batch_size) };
+                    let mut flag = false;
                     unsafe {
-                        let user_raw_ptr = user_ptr_addr as *mut UserRecord;
-                        for i in 0..max_token_size {
+                        let user_raw_ptr = (*user_ptr_addr.get()).ptr;
+                        loop {
+                            for i in 0..max_batch_size {
+                                let user_record = &mut *user_raw_ptr.add(i);
+                                match user_record.phase {
+                                    Phase::Prefill_begin => {
+                                        if user_record.sequence_index > user_record.kv_index + 1 {
+                                            flag = true;
+                                            break;
+                                        }
+                                    }
+                                    Phase::Prefill_end => {
+                                        if user_record.sequence_index > user_record.kv_index {
+                                            flag = true;
+                                            break;
+                                        }
+                                    }
+                                    Phase::Decode => {
+                                        flag = true;
+                                        break;
+                                    }
+                                    Phase::Eos => {}
+                                }
+                            }
+                            if flag {
+                                break;
+                            } else {
+                                thread::sleep(Duration::from_micros(1));
+                            }
+                        }
+                        let mut token_size = 0;
+                        let mut decode_size = 0;
+                        for i in 0..max_batch_size {
+                            if token_size >= max_token_size {
+                                break;
+                            }
                             let user_record = &mut *user_raw_ptr.add(i);
                             match user_record.phase {
-                                Phase::Prefill => {
-                                    user_record.phase = Phase::Decode;
+                                Phase::Prefill_begin => {
+                                    let sequence_index = user_record.sequence_index;
+                                    user_record.snapshot_sequence_index = sequence_index - 1;
+                                    let len = sequence_index - user_record.kv_index - 1;
+                                    if len > 0 {
+                                        let take = std::cmp::min(len, max_token_size - token_size);
+                                        user_record.kv_index = user_record.kv_index + take;
+                                        token_size += take;
+                                    }
+                                }
+
+                                Phase::Prefill_end => {
+                                    let len = user_record.sequence_index - user_record.kv_index;
+                                    if len > 0 {
+                                        let take = std::cmp::min(len, max_token_size - token_size);
+                                        user_record.kv_index = user_record.kv_index + take;
+                                        token_size += take;
+                                    }
                                 }
                                 Phase::Decode => {
                                     user_record.kv_index += 1;
+                                    user_record.sequence_index += 1;
+                                    token_size += 1;
+                                    decode_size += 1;
                                 }
                                 Phase::Eos => {}
                             }
                         }
+                        *sizes_ptr = (token_size, decode_size);
                     }
                 }
+                b.wait();
+
+                let (token_size, decode_size) = unsafe { *sizes_ptr };
+
+                for operator in queue.iter() {
+                    operator.run(token_size, decode_size, thread_num, thread_id);
+                    b.wait();
+                }
             }
-            // only decode part
-            // for operator in queue.iter() {
-            //    operator.run(0, 1, batch_size, thread_num, thread_id);
-            //    b.wait();
-            // }
+
             let t = s.elapsed();
             println!("thread {} decode time {:?}", thread_id, t);
         });
@@ -111,6 +141,8 @@ pub fn start(
 #[cfg(test)]
 mod test {
     use approx::assert_relative_eq;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     use super::*;
     use crate::memory::cache::Cache;
