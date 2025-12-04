@@ -1,12 +1,12 @@
-use std::f16;
-use std::ops::{AddAssign, Sub};
 use super::map_trait::SoftmaxTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::generic;
-use crate::memory::allocator::allocate_init;
 use crate::kernel::generic::{exp::Exp, sqrt::Sqrt};
 use crate::kernel::x86_64;
+use crate::memory::allocator::allocate_init;
+use std::f16;
+use std::ops::{AddAssign, Sub};
 
 #[derive(Clone)]
 pub struct ExpertsSoftmaxNorm<T> {
@@ -18,7 +18,6 @@ pub struct ExpertsSoftmaxNorm<T> {
     experts_indicator: MutPtr<bool>,
     indice_ptr: MutPtr<bool>,
     weight_ptr: MutPtr<T>,
-
     num_tokens: usize,
     batch_size: usize,
     num_experts: usize,
@@ -42,11 +41,11 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
             ptr1: ConstPtr { ptr: ptr1 },
 
             topk_values_ptr: MutPtr {
-                ptr: unsafe {
-                    allocate_init::<T>(length, T::default())
-                },
+                ptr: unsafe { allocate_init::<T>(length, T::default()) },
             },
-            topk_indices_ptr: MutPtr { ptr: topk_indices_ptr },
+            topk_indices_ptr: MutPtr {
+                ptr: topk_indices_ptr,
+            },
 
             experts_indicator: MutPtr {
                 ptr: experts_indicator,
@@ -160,7 +159,7 @@ impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
             self.num_tokens,
             input_length,
             output_length,
-            true
+            true,
         );
     }
 }
@@ -178,7 +177,6 @@ impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
         input_length: usize,
         output_length: usize,
     ) {
-        
         x86_64::f32_256::experts_topk_softmax_norm::experts_topk_softmax_norm(
             input_ptr,
             topk_values_ptr,
@@ -196,13 +194,8 @@ impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
 
 #[cfg(test)]
 mod test {
-    use approx::assert_ulps_eq;
-    use num_cpus;
-    // use std::ptr;
-
-    // use super::super::chunk_map::chunk_map;
-    // use crate::memory::allocator::allocate_init;
     use super::*;
+    use approx::assert_ulps_eq;
 
     #[test]
     fn test_experts_softmax_norm_f32() {
@@ -287,76 +280,105 @@ mod test {
         }
     }
 
-    /*
     #[test]
-    fn test_rms_map() {
-        let seq_threshold = 64; // 序列长度
-        let batch_size = 10; // 每个批次处理 10 个元素
-        let hidden_size = 18;
-
-        let shapes = vec![seq_threshold, batch_size, hidden_size];
-        let strides = vec![batch_size * hidden_size, hidden_size, 1]; // 对应的步长
-        let length = shapes.iter().product(); // 总元素数量
-                                              // let batch_size = 10; // 每次批处理 10 个元素
-        let position_index = 0; // 起始位置，根据实际情况可以修改
-        let position_interval = 4; // 间隔位置，根据实际情况可以修改
-
-        let cpu_num = num_cpus::get();
-
-        // 创建模拟的输入和输出数据
-        let input_data: Vec<f32> = (1..=18).cycle().take(180).map(|x| x as f32).collect();
-        let weight = vec![1.0f32; hidden_size];
-        let eps = 1e-6;
-        let mut output_data: Vec<f32> = vec![0.0; length];
-
-        /*
-        // 使用 chunk_map 函数创建块
-        let chunks = chunk_map(
-            shapes,
-            strides,
-            input_data.as_ptr(),
-            output_data.as_mut_ptr(),
-        );
-         */
-
-        // 使用这些块和长度初始化 ArgmaxMap
-        let mut operator = RMSMap::new(
-            input_data.as_ptr(),
-            output_data.as_mut_ptr(),
-            batch_size,
-            hidden_size,
-            weight.as_ptr(),
-            eps,
-            // cpu_num,
-        );
-        let result = [
-            0.09238425642251968,
-            0.18476851284503937,
-            0.27715277671813965,
-            0.36953702569007874,
-            0.4619212746620178,
-            0.5543055534362793,
-            0.646689772605896,
-            0.7390740513801575,
-            0.831458330154419,
-            0.9238425493240356,
-            1.0162267684936523,
-            1.1086111068725586,
-            1.2009953260421753,
-            1.293379545211792,
-            1.3857638835906982,
-            1.478148102760315,
-            1.5705323219299316,
-            1.662916660308838,
-        ];
-        // operator.set_chunk(chunks);
-        let thread_num: usize = cpu_num;
-
-        for i in 0..thread_num {
-            operator.run(position_index, position_interval, batch_size,  thread_num, i);
+    // #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    fn test_experts_softmax_norm_f16() {
+        if !std::arch::is_x86_feature_detected!("avx512fp16") {
+            println!("AVX512FP16 not supported, skipping test.");
+            return;
         }
-        // 如需打印输出数据，请取消以下注释
-        assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
-        // println!("{:?}", output_data);
-    }*/
+
+        let sequence_chunk_size = 1;
+        let batch_size = 6;
+        let num_experts = 128;
+        let num_topk = 8;
+        let num_tokens = sequence_chunk_size * batch_size;
+
+        // Generate input data for batch_size tokens * num_experts
+        let mut input_vals: Vec<f32> = Vec::with_capacity(num_tokens * num_experts);
+        for t in 0..num_tokens {
+            for i in 0..num_experts {
+                // Create some variation based on token index t and expert index i
+                let v = ((i as f32 + t as f32 * 13.0) * 1.1) % 20.0 - 10.0;
+                input_vals.push(v);
+            }
+            // Ensure distinct top values for this token to avoid sorting ambiguity in tests
+            let base = t * num_experts;
+            // Make index `t` the absolute winner to distinguish tokens slightly
+            input_vals[base + (t % num_experts)] = 30.0;
+            // Make index `(t+1)` second
+            input_vals[base + ((t + 1) % num_experts)] = 25.0;
+        }
+
+        let input_data: Vec<f16> = input_vals.iter().map(|&x| (x as f16)).collect();
+
+        let mut experts_indicator = vec![false; num_experts];
+        let mut indice_ptr = vec![false; num_experts * num_tokens];
+        let mut weight_ptr = vec![(0.0f16); num_experts * num_tokens];
+        let mut topk_indices_ptr = vec![0usize; num_topk * num_tokens];
+
+        let operator = ExpertsSoftmaxNorm::<f16>::new(
+            input_data.as_ptr(),
+            experts_indicator.as_mut_ptr(),
+            indice_ptr.as_mut_ptr(),
+            weight_ptr.as_mut_ptr(),
+            topk_indices_ptr.as_mut_ptr(),
+            sequence_chunk_size,
+            batch_size,
+            num_experts,
+            num_topk,
+        );
+
+        let thread_num = 8;
+        for thread_id in 0..thread_num {
+            operator.run(0, sequence_chunk_size, batch_size, thread_num, thread_id);
+        }
+
+        // Verification
+        for t in 0..num_tokens {
+            let start = t * num_experts;
+            let end = start + num_experts;
+            let token_input = &input_vals[start..end];
+
+            let mut expected: Vec<(usize, f32)> = token_input.iter().copied().enumerate().collect();
+            // Sort descending by value
+            expected.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+            let max_val = token_input
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max);
+            let denom: f32 = token_input.iter().map(|v| (v - max_val).exp()).sum();
+
+            for i in 0..num_topk {
+                let (idx, val) = expected[i];
+                let prob = (val - max_val).exp() / denom;
+
+                assert!(
+                    experts_indicator[idx],
+                    "Expert {} should be selected (token {})",
+                    idx, t
+                );
+
+                let offset = idx * num_tokens + t;
+                assert!(
+                    indice_ptr[offset],
+                    "Index ptr for expert {} token {} should be true",
+                    idx, t
+                );
+
+                let prob_f16 = (prob as f16);
+                let weight = weight_ptr[offset];
+
+                assert!(
+                    (weight - prob_f16).abs() < (1e-3f16),
+                    "Weight mismatch for expert {} token {}: expected {:?}, got {:?}",
+                    idx,
+                    t,
+                    prob_f16,
+                    weight
+                );
+            }
+        }
+    }
 }
