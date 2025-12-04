@@ -17,7 +17,7 @@ pub struct LastPrefillRecord {
     pub decode_index: usize,
 }
 
-pub struct TokenRecordList {
+pub struct TokenList {
     pub records: Vec<TokenRecord>,
     pub current_size: usize,
     pub max_size: usize,
