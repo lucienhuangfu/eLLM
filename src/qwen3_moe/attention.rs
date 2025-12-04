@@ -142,7 +142,7 @@ where
 
             let view_key_states = key_states.view(vec![
                 key_states.shape[0],
-                key_states.shape[0],
+                key_states.shape[1],
                 self.num_key_value_heads,
                 self.head_dim,
             ]);
@@ -164,22 +164,20 @@ where
             let attn_output = view_query_states.attention(
                 &view_key_position_tensor,
                 &view_value_states2,
-                
-                // residual,
                 self.scaling,
                 format!("{}.attn_output", self.scope_name),
             );
 
-            /*
+            
             let mut view_context_tensor = context_tensor.view(vec![
                 context_tensor.shape[0],
                 self.batch_size,
                 self.hidden_size,
-            ]); */
+            ]); 
 
-            // [batch_size, hidden_size]
+            // [sequence_chunk_size, batch_size, hidden_size]
             // matmul + add
-            let output_tensor = attn_output.matmul_add(
+            let output_tensor = view_context_tensor.matmul_add(
                 &self.o_weight,
                 &residual,
                 MatmulParams {
