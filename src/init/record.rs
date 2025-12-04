@@ -12,6 +12,29 @@ pub struct UserRecord {
     pub phase: Phase,
 }
 
+pub struct LastPrefillRecord {
+    pub prefill_index: usize,
+    pub decode_index: usize,
+}
+
+pub struct TokenRecordList {
+    pub records: Vec<TokenRecord>,
+    pub current_size: usize,
+    pub max_size: usize,
+}
+
+pub struct LastPrefillList {
+    pub records: Vec<LastPrefillRecord>,
+    pub current_size: usize,
+    pub max_size: usize,
+}
+
+pub struct UserList {
+    pub records: Vec<UserRecord>,
+    pub current_size: usize,
+    pub max_size: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Prefill_begin,
@@ -45,5 +68,3 @@ impl TokenRecord {
         (*ptr.add(index)).sequence_index
     }
 } */
-
-

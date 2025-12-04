@@ -6,6 +6,7 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use super::map::experts_softmax_norm::ExpertsSoftmaxNorm;
+use super::map::left_vector::LiftVector;
 use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
 use super::map::topk_softmax::TopKSoftmax;
@@ -39,6 +40,7 @@ pub enum Operator<T> {
     ExpertsMatmulSiluMulMatmul(ExpertsMatmulSilu<T>),
     ExpertsMergeAdd(ExpertsMergeAdd<T>),
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
+    LiftVector(LiftVector<T>),
     LookupRMSMap(LookupRMSMap<T>),
     Matmul(Matmul<T>),
     // Matmul3(Matmul3<T>),
@@ -108,6 +110,9 @@ where
                 operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
             Self::ExpertsSoftmaxNorm(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+            Self::LiftVector(operator) => {
                 operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
             Self::LookupRMSMap(operator) => {
