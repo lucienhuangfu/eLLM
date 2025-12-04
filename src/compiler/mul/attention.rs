@@ -13,7 +13,6 @@ pub struct Attention<T> {
     q_ptr: ConstPtr<T>,
     k_ptr: ConstPtr<T>,
     v_ptr: ConstPtr<T>,
-    // residual_ptr: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     batch_size: usize,
     attention_head_num: usize,
@@ -21,9 +20,7 @@ pub struct Attention<T> {
     head_size: usize,
     kv_strides: Vec<usize>,
     inverse_sqrt_head: T,
-    //v_strides: Vec<usize>,
-    // cpu_num: usize,
-    // stride: usize,
+    decode_only_flag: bool,
 }
 
 impl<T> Attention<T>
@@ -42,7 +39,6 @@ where
         q_ptr: *const T,
         k_ptr: *const T,
         v_ptr: *const T,
-        // residual_ptr: *const T,
         output_ptr: *mut T,
         batch_size: usize,
         attention_head_num: usize,
@@ -50,12 +46,12 @@ where
         head_size: usize,
         kv_strides: Vec<usize>,
         inverse_sqrt_head: T,
+        decode_only_flag: bool,
     ) -> Self {
         Self {
             q_ptr: ConstPtr { ptr: q_ptr },
             k_ptr: ConstPtr { ptr: k_ptr },
             v_ptr: ConstPtr { ptr: v_ptr },
-            // residual_ptr: ConstPtr { ptr: residual_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
             batch_size: batch_size,
             attention_head_num: attention_head_num,
@@ -63,13 +59,12 @@ where
             head_size: head_size,
             kv_strides: kv_strides,
             inverse_sqrt_head: inverse_sqrt_head,
+            decode_only_flag: decode_only_flag,
         }
     }
 
     pub fn run(
         &self,
-        // position_index: usize,
-        // position_interval: usize,
         batch_size: usize,
         decode_size: usize, 
         thread_num: usize,
