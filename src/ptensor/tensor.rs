@@ -108,8 +108,8 @@ where
         &self,
         k_tensor: &Tensor<T>,
         v_tensor: &Tensor<T>,
-        // residual: &Tensor<T>,
         inverse_sqrt_head: T,
+        decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
         let output_shape = self.shape.clone();
@@ -124,7 +124,6 @@ where
             self.data,
             k_tensor.data,
             v_tensor.data,
-            // residual.data,
             output_tensor.data,
             self.shape[0],
             self.shape[1],
@@ -132,6 +131,7 @@ where
             self.shape[2],
             k_tensor.strides.clone(),
             inverse_sqrt_head,
+            decode_only_flag,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -772,11 +772,10 @@ where
         &self,
         last_prefill_ptr: *const LastPrefillList,
         scope_name: String,
-    ) -> Self {
+    )  {
         let operator =
             Operator::LiftVector(LiftVector::new(last_prefill_ptr, self.data, self.shape[1]));
         self.operator_queue.borrow_mut().push(operator);
-        self.clone()
     }
 
     /*
