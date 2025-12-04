@@ -4,6 +4,7 @@ use std::ptr;
 use super::super::super::kernel;
 use super::map_trait::MapTrait;
 use crate::compiler::assign::assign;
+use crate::init::record::{UserList, TokenList};
 use crate::init::record::TokenRecord;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::generic::sqrt::Sqrt;
@@ -22,8 +23,8 @@ pub struct LookupRMSMap<T> {
 impl<T: Sqrt> LookupRMSMap<T> {
     // Constructor for LookupRMSMap
     pub fn new(
-        // sequences: *mut usize,
-        token_ptr: *const TokenRecord,
+        user_ptr: *const UserList,
+        token_ptr: *const TokenList,
         word_embedding: *const T,
         output_hidden_ptr: *mut T,
         output_normal_ptr: *mut T,
@@ -50,17 +51,47 @@ impl<T: Sqrt> LookupRMSMap<T> {
     // Run the map for a given batch size and thread ID
     pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
         if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
+
+            
             unsafe {
                 // let sequences_ptr = self.sequences.ptr;
                 let token_ptr = self.token_ptr.ptr;
                 let output_normal_ptr = self.output_normal_ptr.ptr;
                 let output_hidden_ptr = self.output_hidden_ptr.ptr;
 
+                let mut decode_postion = 0;
+                let mut prefill_position = 0;
+
+                let mut index = 0;
                 for i in begin..end {
-                    // let token_record = *token_ptr.add(i);
-                    // let batch_index = token_record.batch_index;
-                    // let sequence_index = token_record.sequence_index;
-                    // let p = *sequences_ptr.add(sequence_index * self.batch_size + batch_index );
+
+                    if begin < decode_size {
+                        for p in decode_postion..(*user_ptr).max_size {
+                            
+                            if (*user_ptr).records[p].phase == Phase::Decode {
+                                if index = begin {
+
+
+
+                                }
+                                index += 1;
+                            }
+                        }
+
+
+
+                    } else {
+
+
+
+                    }
+                }
+                
+                
+                
+                
+                for i in begin..end {
+                    
 
                     let token_id = (*token_ptr.add(i)).token_id;
                     let a_ptr = self.word_embedding.ptr.add(token_id * self.hidden_size);
