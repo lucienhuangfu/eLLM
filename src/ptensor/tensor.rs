@@ -13,10 +13,11 @@ use super::super::memory::cache::Cache;
 use crate::init::matmul_params::MatmulParams;
 
 use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
+use super::super::compiler::map::left_vector::LiftVector;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
-use crate::init::record::{Phase, TokenRecord, UserRecord};
+use crate::init::record::{LastPrefillList, Phase, TokenRecord, UserRecord};
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::attention::Attention;
 use super::super::compiler::mul::experts_matmul_mul::ExpertsMatmulMul;
@@ -765,6 +766,17 @@ where
 
         operator_queue.borrow_mut().push(operator);
         (output_hidden_tensor, output_normal_tensor)
+    }
+
+    pub fn lift_vector(
+        &self,
+        last_prefill_ptr: *const LastPrefillList,
+        scope_name: String,
+    ) -> Self {
+        let operator =
+            Operator::LiftVector(LiftVector::new(last_prefill_ptr, self.data, self.shape[1]));
+        self.operator_queue.borrow_mut().push(operator);
+        self.clone()
     }
 
     /*
