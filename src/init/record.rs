@@ -12,27 +12,25 @@ pub struct UserRecord {
     pub phase: Phase,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct LastPrefillRecord {
     pub prefill_index: usize,
-    pub decode_index: usize,
+    pub lift_index: usize,
 }
 
 pub struct TokenList {
-    pub records: Vec<TokenRecord>,
+    pub records: Box<[TokenRecord]>, // Optimized: Fixed size buffer
     pub current_size: usize,
-    pub max_size: usize,
 }
 
 pub struct LastPrefillList {
-    pub records: Vec<LastPrefillRecord>,
+    pub records: Box<[LastPrefillRecord]>, // Optimized: Fixed size buffer
     pub current_size: usize,
-    pub max_size: usize,
 }
 
 pub struct UserList {
-    pub records: Vec<UserRecord>,
+    pub records: Box<[UserRecord]>, // Optimized: Fixed size buffer
     pub current_size: usize,
-    pub max_size: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
