@@ -12,7 +12,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 // Fuse embedding lookup with RMS normalization
 #[derive(Clone)]
 pub struct LookupRMSMap<T> {
-    token_ptr: ConstPtr<TokenRecord>,
+    token_ptr: ConstPtr<TokenList>,
     word_embedding: ConstPtr<T>,
     output_hidden_ptr: MutPtr<T>,
     output_normal_ptr: MutPtr<T>,
@@ -23,7 +23,7 @@ pub struct LookupRMSMap<T> {
 impl<T: Sqrt> LookupRMSMap<T> {
     // Constructor for LookupRMSMap
     pub fn new(
-        user_ptr: *const UserList,
+        // user_ptr: *const UserList,
         token_ptr: *const TokenList,
         word_embedding: *const T,
         output_hidden_ptr: *mut T,
@@ -32,7 +32,6 @@ impl<T: Sqrt> LookupRMSMap<T> {
         eps: T,
     ) -> Self {
         Self {
-            // sequences: MutPtr { ptr: sequences },
             token_ptr: ConstPtr { ptr: token_ptr },
             output_hidden_ptr: MutPtr {
                 ptr: output_hidden_ptr,
@@ -55,44 +54,12 @@ impl<T: Sqrt> LookupRMSMap<T> {
             
             unsafe {
                 // let sequences_ptr = self.sequences.ptr;
-                let token_ptr = self.token_ptr.ptr;
+                let token_ptr = (*self.token_ptr.ptr).records.as_ptr();
                 let output_normal_ptr = self.output_normal_ptr.ptr;
                 let output_hidden_ptr = self.output_hidden_ptr.ptr;
 
-                let mut decode_postion = 0;
-                let mut prefill_position = 0;
-
-                let mut index = 0;
+              
                 for i in begin..end {
-
-                    if begin < decode_size {
-                        for p in decode_postion..(*user_ptr).max_size {
-                            
-                            if (*user_ptr).records[p].phase == Phase::Decode {
-                                if index = begin {
-
-
-
-                                }
-                                index += 1;
-                            }
-                        }
-
-
-
-                    } else {
-
-
-
-                    }
-                }
-                
-                
-                
-                
-                for i in begin..end {
-                    
-
                     let token_id = (*token_ptr.add(i)).token_id;
                     let a_ptr = self.word_embedding.ptr.add(token_id * self.hidden_size);
                     let offset = i * self.hidden_size;
