@@ -16,7 +16,7 @@ pub fn truncated_topk_softmax(
     // [topk_size]
     output_indices_ptr: *mut usize,
     // [1]
-    output_token_ptr: *mut usize,
+    // output_token_ptr: *mut usize,
     thread_num: usize,
     topk_size: usize,
 ) {
@@ -50,7 +50,7 @@ pub fn truncated_topk_softmax(
         _mm512_storeu_ph(buffer.as_mut_ptr(), normalized);
         ptr::copy_nonoverlapping(buffer.as_ptr(), output_values_ptr, len);
 
-        ptr::write(output_token_ptr, *output_indices_ptr);
+        // ptr::write(output_token_ptr, *output_indices_ptr);
     }
 }
 
@@ -91,7 +91,7 @@ mod tests {
                 indices.as_ptr(),
                 out_vals.as_mut_ptr(),
                 out_idx.as_mut_ptr(),
-                &mut out_token,
+                // &mut out_token,
                 thread_num,
                 topk_size,
             );

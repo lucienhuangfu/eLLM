@@ -20,11 +20,11 @@ pub struct ExpertsMergeAdd<T> {
     experts_indicator: MutPtr<bool>,
     indice_ptr: MutPtr<bool>,
     output_ptr: MutPtr<T>,
-    sequence_chunk_size: usize,
     batch_size: usize,
     num_experts: usize,
     num_experts_per_token: usize,
     hidden_size: usize,
+    decode_only_flag: bool,
     // _marker: PhantomData<T>,
 }
 impl<T> ExpertsMergeAdd<T>
@@ -37,11 +37,11 @@ where
         experts_indicator: *mut bool,
         indice_ptr: *mut bool,
         output_ptr: *mut T,
-        sequence_chunk_size: usize,
         batch_size: usize,
         num_experts: usize,
         num_experts_per_token: usize,
         hidden_size: usize,
+        decode_only_flag: bool,
     ) -> Self {
         Self {
             input_ptr: ConstPtr { ptr: input_ptr },
@@ -51,24 +51,30 @@ where
             },
             indice_ptr: MutPtr { ptr: indice_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
-            sequence_chunk_size,
             batch_size,
             num_experts,
             num_experts_per_token,
             hidden_size,
+            decode_only_flag,
             // _marker: PhantomData,
         }
     }
 
     pub fn run(
         &self,
-        position_index: usize,
-        position_interval: usize,
-        batch_size: usize,
+        token_size: usize,
+        decode_size: usize, 
         thread_num: usize,
         thread_id: usize,
     ) {
-        let num_tokens = self.sequence_chunk_size * self.batch_size;
+        
+        let task_size = if self.decode_only_flag == true {
+            decode_size
+        } else {
+            token_size
+        };
+
+        // let num_tokens = self.batch_size;
         // 重置gate_routing数据结构
         if let Some((begin, end)) = assign(self.num_experts, thread_num, thread_id) {
             let experts_indicator_ptr = self.experts_indicator.ptr;
@@ -82,8 +88,8 @@ where
                         *experts_indicator_ptr.add(i) = false;
                         // reset indices_ptr using write_bytes for better performance
                         // write_bytes(p, 0, count) sets all bytes to 0, which means false for bool
-                        let p = indices_ptr.add(i * num_tokens);
-                        std::ptr::write_bytes(p, 0, num_tokens);
+                        let p = indices_ptr.add(i * self.batch_size);
+                        std::ptr::write_bytes(p, 0, task_size);
                     }
                 }
             }

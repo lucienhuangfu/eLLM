@@ -21,10 +21,8 @@ pub struct MatmulAdd<T> {
     // sequence_length: usize,
     // output_to_kv: bool,
     pub params: MatmulParams,
+    decode_only_flag: bool,
     _marker: PhantomData<T>,
-    // sequence_stride: usize,
-    // batch_size: usize,
-    // hidden_size: usize,
 }
 impl<T> MatmulAdd<T>
 where
@@ -56,6 +54,7 @@ where
         // how they are determined is not clear
         a_row_step_micro: usize,
         b_row_step_micro: usize,
+        decode_only_flag: bool,
     ) -> Self {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
@@ -74,18 +73,25 @@ where
                 a_row_step_micro,
                 b_row_step_micro,
             },
+            decode_only_flag,
             _marker: PhantomData,
         }
     }
 
     pub fn run(
         &self,
-        position_index: usize,
-        position_interval: usize,
-        batch_size: usize,
-        cpu_num: usize,
+        // position_index: usize,
+        // position_interval: usize,
+        token_size: usize,
+        decode_size: usize,
+        thread_num: usize,
         thread_id: usize,
     ) {
+        let task_size = if self.decode_only_flag == true {
+            decode_size
+        } else {
+            token_size
+        };
 
         /*
         let (mut a_chunk_num, remainder) = (self.params.a_row / self.params.a_row_step_macro, self.params.a_row % self.params.a_row_step_macro);
