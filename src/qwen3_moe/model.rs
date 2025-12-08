@@ -1,8 +1,8 @@
 use core_affinity;
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::rc::Rc;
 
 use std::sync::Barrier;
 use std::sync::{Arc, RwLock};
@@ -20,7 +20,7 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::compiler::map::rms_map::RMSMap;
+// use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::operator::Operator;
 use super::super::init::matmul_params::MatmulParams;
 use super::super::memory::cache::Cache;
@@ -28,6 +28,7 @@ use super::super::memory::cache::Cache;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
+use crate::init::record::TokenRecord;
 
 // use super::rope::precompute_freqs_cis;
 
@@ -40,7 +41,6 @@ pub struct Model<T> {
     lm_head_weight: Tensor<T>,
     pub layers: Vec<DecoderLayer<T>>,
     rms_norm_eps: T,
-    pub sequence_chunk_size: usize,
     pub batch_size: usize,
     pub hidden_size: usize,
     pub topk_size: usize,
@@ -64,12 +64,7 @@ where
         + Send
         + Sync,
 {
-    pub fn new(
-        config: &Config,
-        sequence_length: usize,
-        sequence_chunk_size: usize,
-        batch_size: usize,
-    ) -> Self {
+    pub fn new(config: &Config, sequence_length: usize, batch_size: usize) -> Self {
         let scope_name = String::from("model");
 
         // let torch_file = String::from("D:/llama-3-chinese-8b-instruct-v3");
@@ -100,7 +95,7 @@ where
                 &config,
                 i,
                 sequence_length,
-                sequence_chunk_size,
+                // sequence_chunk_size,
                 batch_size,
                 word_embedding.clone(),
                 position_embedding.clone(),
@@ -123,7 +118,6 @@ where
             layers: layers,
             batch_size: batch_size,
             hidden_size: config.hidden_size,
-            sequence_chunk_size: sequence_chunk_size,
             topk_size: config.num_experts_per_tok,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
@@ -132,7 +126,11 @@ where
         }
     }
 
-    pub fn forward(&mut self, sequences: *mut usize) -> (*const usize, Tensor<T>) {
+    pub fn forward(
+        &mut self,
+        sequences: *mut usize,
+        token_ptr: *const TokenRecord,
+    ) -> (*const usize, Tensor<T>) {
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
@@ -144,9 +142,16 @@ where
         );
 
         for (i, layer_module) in self.layers.iter().enumerate() {
+            let decode_only_flag =  if i == (self.layers.len() - 1) {
+                true
+            } else {
+                false
+            };
+            
             hidden_state = layer_module.forward(
                 &hidden_state,
-                sequences,
+                token_ptr,
+                decode_only_flag,
                 format!("{}.hidden_states.{}.output", self.scope_name, i),
             );
             // all_hidden_states.push(hidden_states);
@@ -154,6 +159,7 @@ where
 
         let norm_state = hidden_state.rms(
             self.rms_norm_eps,
+            true,
             format!("{}.norm_hidden", self.scope_name),
         );
 
@@ -173,7 +179,8 @@ where
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
             indices_ptr,
             &sum_tensor,
-            unsafe {sequences.add(self.batch_size)},
+            token_ptr,
+            unsafe { sequences },
             self.topk_size,
             format!("{}.softmax", self.scope_name),
         );
@@ -187,9 +194,9 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use std::thread;
+    // use std::cell::RefCell;
+    // use std::rc::Rc;
+    // use std::thread;
 
     use super::*;
     // use crate::init::config::Config;
@@ -202,7 +209,6 @@ mod test {
     fn test_model_forward() {
         // let cpu_num =  thread::available_parallelism().unwrap().get();
         let sequence_length = 128;
-        let sequence_chunk_size = 4;
         let batch_size = 6;
 
         let config =
@@ -211,7 +217,6 @@ mod test {
         let mut model = Model::<f32>::new(
             &config,
             sequence_length,
-            sequence_chunk_size,
             batch_size,
             // word_embedding,
             // position_embedding,
@@ -222,16 +227,26 @@ mod test {
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-        let mut sequences = allocate_init::<usize>((config.max_position_embeddings + 1)*batch_size, 0);
-        let output_tensor = unsafe { model.forward(sequences) };
-        
+        let mut sequences =
+            allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
+
+        let token_records: Vec<TokenRecord> = (0..batch_size)
+            .map(|i| TokenRecord {
+                token_id: 0,
+                batch_index: i,
+                position_index: 0,
+            })
+            .collect();
+
+        let output_tensor = unsafe { model.forward(sequences, token_records.as_ptr()) };
+
         let thread_num: usize = num_cpus::get();
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(0, 1, batch_size, thread_num, i);
+                operator.run(batch_size, 0,thread_num, i);
             }
         }
-         
+
         // Add assertions to verify the output_tensor
         // For example:
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);

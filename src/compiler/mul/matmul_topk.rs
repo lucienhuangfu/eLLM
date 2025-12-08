@@ -66,10 +66,11 @@ where
 
     pub fn run(
         &self,
-        position_index: usize,
-        position_interval: usize,
+        // position_index: usize,
+        // position_interval: usize,
         batch_size: usize,
-        cpu_num: usize,
+        decode_size: usize,
+        thread_num: usize,
         thread_id: usize,
     ) {
         // 任务数远大于核数，每个核分配多个任务，但是只写一份结果

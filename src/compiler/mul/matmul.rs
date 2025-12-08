@@ -30,6 +30,7 @@ pub struct Matmul<T> {
 
     // 构造期转置得到的 B_nt（N×K，行主；行距=K）
     pub b_nt: Option<Box<[T]>>,
+    pub decode_only_flag: bool,
 }
 
 impl<T> Matmul<T>
@@ -48,6 +49,7 @@ where
         m_max: usize,
         n_max: usize,
         k_max: usize,
+        decode_only_flag: bool,
     ) -> Self {
         println!(
             "Matmul::new called with m_max={}, n_max={}, k_max={}",
@@ -80,19 +82,12 @@ where
             n_max,
             k_max,
             b_nt: Some(b_nt_vec.into_boxed_slice()),
+            decode_only_flag,
         }
     }
 
     /// 执行：S×M×N 的三分块调度 + 线程私有 KC×NR 面板（仅 packing，不做转置）
-    pub fn run(
-        &self,
-        position_index: usize,
-        position_interval: usize,
-        batch_size: usize,
-        cpu_num: usize,
-        thread_id: usize,
-    ) {
-        /*
+    pub fn run(&self, batch_size: usize, decode_size: usize, cpu_num: usize, thread_id: usize) {
         unsafe {
             // ===== 维度 =====
             let m = batch_size; // 本次 M
@@ -106,24 +101,17 @@ where
             let mr = self.params.a_row_step_micro.max(1);
             let nr = self.params.b_row_step_micro.max(1);
 
-            println!( "n = {}, nr = {}", n, nr);
+            // println!( "n = {}, nr = {}", n, nr);
 
             debug_assert!(m % mr == 0);
             debug_assert!(n % nr == 0);
             debug_assert!(k % kc == 0);
 
             // ===== 基址与行距（元素计）=====
-            let a_base = self.ptr1.ptr; // A[S×M×K]
-            let c_base = self.output_ptr.ptr; // C[S×M×N]
+            let a_base = self.ptr1.ptr; // A[M×K]
+            let c_base = self.output_ptr.ptr; // C[M×N]
             let lda = k; // A 每行跨度
             let ldc = n; // C 每行跨度
-
-            // ===== 序列范围 =====
-            let s_begin = position_index;
-            let s_end = position_index + position_interval;
-            let s_len = s_end - s_begin;
-            let a_seq_stride = m * k;
-            let c_seq_stride = m * n;
 
             // ===== 使用构造期转置的 B_nt（N×K，行主；行距=K）=====
             let (b_nt_ptr, ldb_row) = {
@@ -131,12 +119,12 @@ where
                 (bnt.as_ptr(), k)
             };
 
-            // ===== 任务切分：S × tiles_m × tiles_n =====
+            // ===== 任务切分：tiles_m × tiles_n =====
             let tiles_m = (m + mb - 1) / mb;
             let tiles_n = (n + nb - 1) / nb;
-            let tiles_sn = s_len * tiles_m * tiles_n;
+            let tiles_total = tiles_m * tiles_n;
 
-            if let Some((tb, te)) = assign(tiles_sn, cpu_num, thread_id) {
+            if let Some((tb, te)) = assign(tiles_total, cpu_num, thread_id) {
                 // 线程私有 KC×NR 面板（packing；不是转置）
                 let mut b_panel: Vec<T> = vec![T::default(); kc * nr];
 
@@ -163,21 +151,15 @@ where
                 }
 
                 for t in tb..te {
-                    let s_rel = t / (tiles_m * tiles_n);
-                    let rem = t % (tiles_m * tiles_n);
-                    let tm = rem / tiles_n;
-                    let tn = rem % tiles_n;
+                    let tm = t / tiles_n;
+                    let tn = t % tiles_n;
 
-                    let s = s_begin + s_rel;
                     let m0 = tm * mb;
                     let n0 = tn * nb;
 
                     let m_blk = (m - m0).min(mb);
                     let n_blk = (n - n0).min(nb);
                     debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
-
-                    let a_base_s = a_base.add(s * a_seq_stride);
-                    let c_base_s = c_base.add(s * c_seq_stride);
 
                     // Kc 循环
                     let mut k0 = 0;
@@ -199,8 +181,8 @@ where
                             // M 方向按 MR 行组走微核（保持 compute 调用）
                             let mut mi = 0;
                             while mi < m_blk {
-                                let a_tile = a_base_s.add((m0 + mi) * lda + k0);
-                                let c_tile = c_base_s.add((m0 + mi) * ldc + (n0 + nt));
+                                let a_tile = a_base.add((m0 + mi) * lda + k0);
+                                let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
 
                                 // 只调用 compute；真实 lda/ldc/kc/mr/nr 在 compute 内组装
                                 self.compute(a_tile, b_panel.as_ptr(), c_tile);
@@ -213,7 +195,7 @@ where
                     }
                 }
             }
-        }*/
+        }
     }
 }
 
@@ -374,7 +356,7 @@ mod innteg_tests {
                 k,
             );
 
-            op.run(0, 1, m, 1, 0);
+            op.run(m, 1, 0);
 
             let expected: Vec<f16> = (0..m * n).map(|_| f16v(k as f32)).collect();
             assert!(all_close(&c, &expected, 1e-3));
