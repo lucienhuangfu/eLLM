@@ -173,7 +173,7 @@ where
                 attn_output.shape[1] * attn_output.shape[2]
             ]); 
 
-            // [batch_size, hidden_size]
+            // [sequence_chunk_size, batch_size, hidden_size]
             // matmul + add
             let output_tensor = context_tensor.matmul_add(
                 &self.o_weight,
