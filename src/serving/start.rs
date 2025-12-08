@@ -207,6 +207,196 @@ mod test {
     // use crate::memory::allocator::allocate_init;
 
     #[test]
+    fn test_fill_token_batch() {
+        let mut records = vec![
+            TokenRecord {
+                token_id: 0,
+                batch_index: 0,
+                position_index: 0
+            };
+            10
+        ];
+
+        // Fill 3 tokens starting at index 2, for batch 5, starting position 100
+        fill_token_batch(&mut records, 2, 5, 100, 3);
+
+        // Verify modified range
+        for i in 2..5 {
+            assert_eq!(records[i].batch_index, 5);
+            assert_eq!(records[i].position_index, 100 + (i - 2));
+        }
+
+        // Verify untouched areas
+        assert_eq!(records[0].batch_index, 0);
+        assert_eq!(records[5].batch_index, 0);
+    }
+
+    #[test]
+    fn test_schedule_batch_mixed_phases() {
+        // Setup UserList with mixed phases
+        // User 0: Decode (should produce 1 token)
+        // User 1: Prefill_begin (should produce tokens up to max)
+        // User 2: Decode (should produce 1 token)
+        let user_records = vec![
+            UserRecord {
+                sequence_index: 100,
+                snapshot_sequence_index: 0,
+                kv_index: 10,
+                phase: Phase::Decode,
+            },
+            UserRecord {
+                sequence_index: 20,
+                snapshot_sequence_index: 0,
+                kv_index: 0,
+                phase: Phase::Prefill_begin,
+            },
+            UserRecord {
+                sequence_index: 100,
+                snapshot_sequence_index: 0,
+                kv_index: 50,
+                phase: Phase::Decode,
+            },
+        ]
+        .into_boxed_slice();
+
+        let mut user_list = UserList {
+            records: user_records,
+            current_size: 3,
+        };
+
+        // Setup TokenList
+        let token_records = vec![
+            TokenRecord {
+                token_id: 0,
+                batch_index: 0,
+                position_index: 0
+            };
+            100
+        ]
+        .into_boxed_slice();
+
+        let mut token_list = TokenList {
+            records: token_records,
+            current_size: 0,
+        };
+
+        // Setup LastPrefillList
+        let last_prefill_records = vec![
+            LastPrefillRecord {
+                prefill_index: 0,
+                lift_index: 0
+            };
+            10
+        ]
+        .into_boxed_slice();
+
+        let mut last_prefill_list = LastPrefillList {
+            records: last_prefill_records,
+            current_size: 0,
+        };
+
+        // Run schedule_batch
+        let (token_count, decode_count, lift_count) =
+            schedule_batch(&mut user_list, &mut token_list, &mut last_prefill_list);
+
+        // Verification:
+        // Pass 1 (Decode):
+        // - User 0: adds 1 token. kv_index -> 11.
+        // - User 2: adds 1 token. kv_index -> 51.
+        // decode_count should be 2.
+        assert_eq!(decode_count, 2);
+
+        // Pass 2 (Prefill):
+        // - User 1: len = 20 - 0 - 1 = 19.
+        // - Adds 19 tokens. kv_index -> 19.
+        // Total tokens = 2 (decode) + 19 (prefill) = 21.
+        assert_eq!(token_count, 21);
+
+        // Lift count starts at decode_count (2). User 1 is Prefill_begin, so no increment.
+        assert_eq!(lift_count, 2);
+
+        // Verify Token Content
+        // Token 0 (User 0)
+        assert_eq!(token_list.records[0].batch_index, 0);
+        assert_eq!(token_list.records[0].position_index, 11);
+
+        // Token 1 (User 2)
+        assert_eq!(token_list.records[1].batch_index, 2);
+        assert_eq!(token_list.records[1].position_index, 51);
+
+        // Token 2 (User 1 start)
+        assert_eq!(token_list.records[2].batch_index, 1);
+        assert_eq!(token_list.records[2].position_index, 0);
+
+        // Verify User State Updates
+        assert_eq!(user_list.records[0].kv_index, 11);
+        assert_eq!(user_list.records[1].kv_index, 19);
+        assert_eq!(user_list.records[2].kv_index, 51);
+    }
+
+    #[test]
+    fn test_schedule_batch_prefill_end() {
+        // Test specifically for Prefill_end logic which updates LastPrefillList
+        let user_records = vec![UserRecord {
+            sequence_index: 10,
+            snapshot_sequence_index: 0,
+            kv_index: 5,
+            phase: Phase::Prefill_end,
+        }]
+        .into_boxed_slice();
+
+        let mut user_list = UserList {
+            records: user_records,
+            current_size: 1,
+        };
+
+        let token_records = vec![
+            TokenRecord {
+                token_id: 0,
+                batch_index: 0,
+                position_index: 0
+            };
+            100
+        ]
+        .into_boxed_slice();
+        let mut token_list = TokenList {
+            records: token_records,
+            current_size: 0,
+        };
+
+        let last_prefill_records = vec![
+            LastPrefillRecord {
+                prefill_index: 0,
+                lift_index: 0
+            };
+            10
+        ]
+        .into_boxed_slice();
+        let mut last_prefill_list = LastPrefillList {
+            records: last_prefill_records,
+            current_size: 0,
+        };
+
+        let (token_count, decode_count, lift_count) =
+            schedule_batch(&mut user_list, &mut token_list, &mut last_prefill_list);
+
+        // Decode count = 0.
+        // Prefill len = 10 - 5 - 1 = 4.
+        // Token count = 4.
+        assert_eq!(decode_count, 0);
+        assert_eq!(token_count, 4);
+
+        // Prefill_end triggers:
+        // - last_prefill_list entry added.
+        // - lift_index increments (starts at 0, becomes 1).
+        assert_eq!(lift_count, 1);
+
+        assert_eq!(last_prefill_list.current_size, 1);
+        assert_eq!(last_prefill_list.records[0].prefill_index, 4); // token_index after adding
+        assert_eq!(last_prefill_list.records[0].lift_index, 0); // lift_index before increment
+    }
+
+    #[test]
     fn test_start() {
         let position_window_size = 4;
         let batch_size = 24;
