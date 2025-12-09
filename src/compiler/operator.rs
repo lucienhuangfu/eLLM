@@ -6,7 +6,7 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use super::map::experts_softmax_norm::ExpertsSoftmaxNorm;
-use super::map::left_vector::LiftVector;
+use super::left_vector::LiftVector;
 use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
 use super::map::topk_softmax::TopKSoftmax;
@@ -153,7 +153,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::init::record::{Phase, TokenRecord, UserRecord};
+    use crate::init::record::{Phase, TokenRecord, BatchRecord};
     use approx::assert_ulps_eq;
     use rand::seq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
@@ -485,7 +485,7 @@ mod test {
                 batch_index: i,
                 position_index: 0,
             });
-            user_records.push(UserRecord {
+            user_records.push(BatchRecord {
                 sequence_index: i,
                 kv_index: 0,
                 phase: Phase::Decode,
