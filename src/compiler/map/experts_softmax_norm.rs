@@ -328,15 +328,15 @@ mod test {
             indice_ptr.as_mut_ptr(),
             weight_ptr.as_mut_ptr(),
             topk_indices_ptr.as_mut_ptr(),
-            sequence_chunk_size,
             batch_size,
             num_experts,
             num_topk,
+            false,
         );
 
         let thread_num = 8;
         for thread_id in 0..thread_num {
-            operator.run(0, sequence_chunk_size, batch_size, thread_num, thread_id);
+            operator.run(batch_size, 0, thread_num, thread_id);
         }
 
         // Verification

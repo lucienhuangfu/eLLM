@@ -5,9 +5,9 @@ pub struct TokenRecord {
     pub position_index: usize,
 }
 
-pub struct UserRecord {
+pub struct BatchRecord {
     pub sequence_index: usize,
-    pub snapshot_sequence_index: usize,
+    // pub snapshot_sequence_index: usize,
     pub kv_index: usize,
     pub phase: Phase,
 }
@@ -29,7 +29,7 @@ pub struct LastPrefillList {
 }
 
 pub struct UserList {
-    pub records: Box<[UserRecord]>, // Optimized: Fixed size buffer
+    pub records: Box<[BatchRecord]>, // Optimized: Fixed size buffer
     pub current_size: usize,
 }
 

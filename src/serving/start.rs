@@ -203,7 +203,7 @@ mod test {
     use std::rc::Rc;
 
     use super::*;
-    use crate::init::record::{LastPrefillList, LastPrefillRecord, TokenRecord, UserRecord};
+    use crate::init::record::{BatchRecord, LastPrefillList, LastPrefillRecord, TokenRecord};
     use crate::memory::cache::Cache;
     use crate::ptensor::tensor::Tensor;
     use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
@@ -242,21 +242,21 @@ mod test {
         // User 1: Prefill_begin (should produce tokens up to max)
         // User 2: Decode (should produce 1 token)
         let user_records = vec![
-            UserRecord {
+            BatchRecord {
                 sequence_index: 100,
-                snapshot_sequence_index: 0,
+                // snapshot_sequence_index: 0,
                 kv_index: 10,
                 phase: Phase::Decode,
             },
-            UserRecord {
+            BatchRecord {
                 sequence_index: 20,
-                snapshot_sequence_index: 0,
+                // snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Prefill_begin,
             },
-            UserRecord {
+            BatchRecord {
                 sequence_index: 100,
-                snapshot_sequence_index: 0,
+                // snapshot_sequence_index: 0,
                 kv_index: 50,
                 phase: Phase::Decode,
             },
@@ -339,9 +339,9 @@ mod test {
     #[test]
     fn test_schedule_batch_prefill_end() {
         // Test specifically for Prefill_end logic which updates LastPrefillList
-        let user_records = vec![UserRecord {
+        let user_records = vec![BatchRecord {
             sequence_index: 10,
-            snapshot_sequence_index: 0,
+            // snapshot_sequence_index: 0,
             kv_index: 5,
             phase: Phase::Prefill_end,
         }]
@@ -484,9 +484,9 @@ mod test {
             .into_boxed_slice();
 
         let user_records = (0..batch_size)
-            .map(|_| UserRecord {
+            .map(|_| BatchRecord {
                 sequence_index: 0,
-                snapshot_sequence_index: 0,
+                // snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Prefill_begin,
             })

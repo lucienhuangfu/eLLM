@@ -4,7 +4,7 @@ use std::ptr;
 
 use super::map_trait::TopKSoftmaxTrait;
 use crate::compiler::assign::assign;
-use crate::init::record::{Phase, TokenRecord, UserRecord};
+use crate::init::record::{BatchRecord, Phase, TokenRecord};
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::kernel::generic::exp::Exp;
@@ -19,7 +19,7 @@ pub struct TopKSoftmax<T> {
     input_values_ptr: ConstPtr<T>,
     sums_ptr: ConstPtr<T>,
     token_ptr: ConstPtr<TokenRecord>,
-    user_ptr: MutPtr<UserRecord>,
+    user_ptr: MutPtr<BatchRecord>,
     output_indices_ptr: MutPtr<usize>,
     output_values_ptr: MutPtr<T>,
     output_sequences: MutPtr<usize>,
@@ -33,7 +33,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         input_values_ptr: *const T,
         sums_ptr: *const T,
         token_ptr: *const TokenRecord,
-        user_ptr: *mut UserRecord,
+        user_ptr: *mut BatchRecord,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
         output_sequences: *mut usize,
@@ -152,7 +152,7 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
             // sums_ptr,
             output_values_ptr,
             output_indices_ptr,
-           // output_token_ptr,
+            // output_token_ptr,
             thread_num,
             topk_size,
         );
@@ -220,9 +220,9 @@ mod test {
                 batch_index: i,
                 position_index: 0,
             });
-            user_records.push(UserRecord {
+            user_records.push(BatchRecord {
                 sequence_index: i,
-                snapshot_sequence_index: 0,
+                // snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
             });
@@ -296,19 +296,31 @@ mod test {
             return;
         }
 
+        let sequence_length = 2;
         let batch_size = 2;
         let topk_size = 8;
         let thread_num = 4;
-        let position_begin = 0;
-        let position_interval = 1;
+        let eos_id = 100;
 
         let total_candidates_per_item = topk_size * thread_num;
         let input_len = batch_size * total_candidates_per_item;
 
         let mut input_values = Vec::<f16>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
+        let mut token_records = Vec::with_capacity(batch_size);
+        let mut user_records = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
+            token_records.push(TokenRecord {
+                token_id: 0,
+                batch_index: i,
+                position_index: 0,
+            });
+            user_records.push(BatchRecord {
+                sequence_index: i,
+                kv_index: 0,
+                phase: Phase::Decode,
+            });
             for j in 0..total_candidates_per_item {
                 // Create some decreasing values for each batch item
                 let val = 5.0 - (j as f32 * 0.1) - (i as f32);
@@ -317,24 +329,27 @@ mod test {
             }
         }
 
-        let sums = vec![0.0 as f16; batch_size * position_interval];
+        let sums = vec![0.0 as f16; batch_size];
         let mut output_values = vec![0.0 as f16; batch_size * topk_size];
         let mut output_indices = vec![0usize; batch_size * topk_size];
-        let mut output_sequences = vec![0usize; batch_size * position_interval];
+        let mut output_sequences = vec![0usize; batch_size * sequence_length];
 
         let operator = TopKSoftmax::<f16>::new(
             input_indices.as_ptr(),
             input_values.as_ptr(),
             sums.as_ptr(),
+            token_records.as_ptr(),
+            user_records.as_mut_ptr(),
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             batch_size,
             topk_size,
+            eos_id,
         );
 
         for i in 0..thread_num {
-            operator.run(position_begin, position_interval, batch_size, thread_num, i);
+            operator.run(batch_size, batch_size, thread_num, i);
         }
 
         // Verification
@@ -380,7 +395,7 @@ mod test {
                 );
                 assert_eq!(output_idx_slice[k], expected_indices[k]);
             }
-            assert_eq!(output_sequences[i], expected_indices[0]);
+            assert_eq!(output_sequences[batch_size + i], expected_indices[0]);
         }
     }
 }

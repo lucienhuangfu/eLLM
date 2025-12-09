@@ -12,12 +12,12 @@ use super::super::memory::allocator::allocate_init;
 use super::super::memory::cache::Cache;
 use crate::init::matmul_params::MatmulParams;
 
-use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::left_vector::LiftVector;
+use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
-use crate::init::record::{LastPrefillList, Phase, TokenRecord, UserRecord};
+use crate::init::record::{BatchRecord, LastPrefillList, Phase, TokenRecord};
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::attention::Attention;
 use super::super::compiler::mul::experts_matmul_mul::ExpertsMatmulMul;
@@ -659,7 +659,7 @@ where
         indices_ptr: *const usize,
         sums_tensor: &Tensor<T>,
         token_ptr: *const TokenRecord,
-        user_ptr: *mut UserRecord,
+        user_ptr: *mut BatchRecord,
         output_sequences: *mut usize,
         num_topk: usize,
         eos_id: usize,
@@ -768,11 +768,7 @@ where
         (output_hidden_tensor, output_normal_tensor)
     }
 
-    pub fn lift_vector(
-        &self,
-        last_prefill_ptr: *const LastPrefillList,
-        scope_name: String,
-    )  {
+    pub fn lift_vector(&self, last_prefill_ptr: *const LastPrefillList, scope_name: String) {
         let operator =
             Operator::LiftVector(LiftVector::new(last_prefill_ptr, self.data, self.shape[1]));
         self.operator_queue.borrow_mut().push(operator);
@@ -1156,7 +1152,7 @@ mod test {
                 batch_index: i,
                 position_index: 0,
             });
-            user_records.push(UserRecord {
+            user_records.push(BatchRecord {
                 sequence_index: i,
                 kv_index: 0,
                 phase: Phase::Decode,
@@ -1245,6 +1241,7 @@ mod test {
         let thread_num = 2;
         let num_candidates_per_thread = num_topk;
         let num_candidates = num_candidates_per_thread * thread_num;
+        let eos_id = 100;
 
         // Mock inputs for topk_softmax
         let value_shape = vec![sequence_chunk_size, batch_size, num_candidates];
@@ -1283,6 +1280,21 @@ mod test {
 
         let indices_ptr = all_indices.as_ptr();
 
+        let mut token_records = Vec::with_capacity(batch_size);
+        let mut user_records = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            token_records.push(TokenRecord {
+                token_id: 0,
+                batch_index: i,
+                position_index: 0,
+            });
+            user_records.push(BatchRecord {
+                sequence_index: i,
+                kv_index: 0,
+                phase: Phase::Decode,
+            });
+        }
+
         unsafe {
             value_tensor
                 .data
@@ -1292,8 +1304,11 @@ mod test {
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
             &sums_tensor,
+            token_records.as_ptr(),
+            user_records.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             num_topk,
+            eos_id,
             "model.layers.0.topk_softmax".to_string(),
         );
 
