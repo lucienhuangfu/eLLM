@@ -216,7 +216,7 @@ mod test {
 
         for i in 0..batch_size {
             token_records.push(TokenRecord {
-                token_id: 0,
+                // token_id: 0,
                 batch_index: i,
                 position_index: 0,
             });
@@ -312,7 +312,7 @@ mod test {
 
         for i in 0..batch_size {
             token_records.push(TokenRecord {
-                token_id: 0,
+                // token_id: 0,
                 batch_index: i,
                 position_index: 0,
             });

@@ -1,68 +1,47 @@
 #[derive(Clone)]
 pub struct TokenRecord {
-    pub token_id: usize,
-    pub batch_index: usize,
-    pub position_index: usize,
+    // pub token_id: usize,
+    // 优化: 使用 u32 (4 bytes) 代替 usize (8 bytes)。
+    // 内存占用从 16 bytes -> 8 bytes。
+    pub batch_index: u32,
+    pub position_index: u32,
 }
 
 pub struct BatchRecord {
-    pub sequence_index: usize,
+    // 优化: 使用 u32
+    pub sequence_index: u32,
     // pub snapshot_sequence_index: usize,
-    pub kv_index: usize,
+    pub kv_index: u32,
     pub phase: Phase,
+    // 内存布局优化:
+    // 原来: 8 + 8 + 1 (+7 padding) = 24 bytes
+    // 现在: 4 + 4 + 1 (+3 padding) = 12 bytes
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct LastPrefillRecord {
-    pub prefill_index: usize,
-    pub lift_index: usize,
+    // 优化: 使用 u32
+    pub prefill_index: u32,
+    pub lift_index: u32,
 }
 
 pub struct TokenList {
-    pub records: Box<[TokenRecord]>, // Optimized: Fixed size buffer
-    pub current_size: usize,
-}
-
-pub struct LastPrefillList {
-    pub records: Box<[LastPrefillRecord]>, // Optimized: Fixed size buffer
-    pub current_size: usize,
+    pub token_records: Box<[TokenRecord]>,
+    pub current_token_size: usize, // 保留，表示有效长度
+    pub lift_records: Box<[LastPrefillRecord]>,
+    pub current_lift_size: usize, // 保留，表示有效长度
 }
 
 pub struct UserList {
-    pub records: Box<[BatchRecord]>, // Optimized: Fixed size buffer
-    pub current_size: usize,
+    pub records: Box<[BatchRecord]>,
+    pub current_size: usize, // 保留，表示有效长度
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)] // 优化: 显式指定为 u8，确保只占 1 字节
 pub enum Phase {
     Prefill_begin,
     Prefill_end,
     Decode,
     Eos,
 }
-
-/*
-impl TokenRecord {
-    /// Creates a raw pointer to an array of TokenRecords from a Vec.
-    /// The caller is responsible for freeing the memory.
-    pub fn new_raw_array(records: Vec<TokenRecord>) -> *mut TokenRecord {
-        let mut boxed_slice = records.into_boxed_slice();
-        let ptr = boxed_slice.as_mut_ptr();
-        std::mem::forget(boxed_slice); // Prevent deallocation
-        ptr
-    }
-
-    /// Access a record at a specific index from a raw pointer.
-    /// # Safety
-    /// The caller must ensure the pointer is valid and the index is within bounds.
-    pub unsafe fn get_from_raw<'a>(ptr: *mut TokenRecord, index: usize) -> &'a mut TokenRecord {
-        &mut *ptr.add(index)
-    }
-
-    /// Access a specific field (e.g., sequence_index) from a raw pointer at an index.
-    /// # Safety
-    /// The caller must ensure the pointer is valid and the index is within bounds.
-    pub unsafe fn get_sequence_index_from_raw(ptr: *mut TokenRecord, index: usize) -> usize {
-        (*ptr.add(index)).sequence_index
-    }
-} */
