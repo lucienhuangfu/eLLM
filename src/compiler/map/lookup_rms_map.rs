@@ -4,18 +4,20 @@ use std::ptr;
 use super::super::super::kernel;
 use super::map_trait::MapTrait;
 use crate::compiler::assign::assign;
-use crate::init::record::{UserList, TokenList};
-use crate::init::record::TokenRecord;
+
+use crate::init::record::{TokenList, UserList};
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::generic::sqrt::Sqrt;
 
 // Fuse embedding lookup with RMS normalization
 #[derive(Clone)]
 pub struct LookupRMSMap<T> {
+    sequences_ptr: ConstPtr<usize>,
     token_ptr: ConstPtr<TokenList>,
     word_embedding: ConstPtr<T>,
     output_hidden_ptr: MutPtr<T>,
     output_normal_ptr: MutPtr<T>,
+    batch_size: usize,
     hidden_size: usize,
     eps: T,
 }
@@ -23,15 +25,17 @@ pub struct LookupRMSMap<T> {
 impl<T: Sqrt> LookupRMSMap<T> {
     // Constructor for LookupRMSMap
     pub fn new(
-        // user_ptr: *const UserList,
+        sequnces_ptr: *const usize,
         token_ptr: *const TokenList,
         word_embedding: *const T,
         output_hidden_ptr: *mut T,
         output_normal_ptr: *mut T,
+        batch_size: usize,
         hidden_size: usize,
         eps: T,
     ) -> Self {
         Self {
+            sequences_ptr: ConstPtr { ptr: sequnces_ptr },
             token_ptr: ConstPtr { ptr: token_ptr },
             output_hidden_ptr: MutPtr {
                 ptr: output_hidden_ptr,
@@ -39,6 +43,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
             output_normal_ptr: MutPtr {
                 ptr: output_normal_ptr,
             },
+            batch_size,
             hidden_size,
             word_embedding: ConstPtr {
                 ptr: word_embedding,
@@ -48,26 +53,31 @@ impl<T: Sqrt> LookupRMSMap<T> {
     }
 
     // Run the map for a given batch size and thread ID
-    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, token_size: usize, thread_num: usize, thread_id: usize) {
         if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
-
-            
             unsafe {
-                // let sequences_ptr = self.sequences.ptr;
-                let token_ptr = (*self.token_ptr.ptr).records.as_ptr();
+                let sequences_ptr = self.sequences_ptr.ptr;
+                let token_records_ptr = (*self.token_ptr.ptr).token_records.as_ptr();
                 let output_normal_ptr = self.output_normal_ptr.ptr;
                 let output_hidden_ptr = self.output_hidden_ptr.ptr;
 
-              
                 for i in begin..end {
-                    let token_id = (*token_ptr.add(i)).token_id;
-                    let a_ptr = self.word_embedding.ptr.add(token_id * self.hidden_size);
+                    let token_record = &*token_records_ptr.add(i);
+                    let batch_index = token_record.batch_index as usize;
+                    let position_index = token_record.position_index as usize;
+                    let token_id =
+                        *sequences_ptr.add(batch_index * self.batch_size + position_index);
+                    let embedding_ptr = self.word_embedding.ptr.add(token_id * self.hidden_size);
                     let offset = i * self.hidden_size;
 
                     let hidden_ptr = output_hidden_ptr.add(offset);
                     // Copy embedding to output hidden
-                    ptr::copy_nonoverlapping(a_ptr, hidden_ptr, self.hidden_size);
-                    self.compute(a_ptr, output_normal_ptr.add(offset), self.hidden_size);
+                    ptr::copy_nonoverlapping(embedding_ptr, hidden_ptr, self.hidden_size);
+                    self.compute(
+                        embedding_ptr,
+                        output_normal_ptr.add(offset),
+                        self.hidden_size,
+                    );
                 }
             }
         }
@@ -111,27 +121,40 @@ impl MapTrait<f32> for LookupRMSMap<f32> {
 mod test {
     use super::*;
     use approx::assert_ulps_eq;
-    use num_cpus;
+
+    use crate::init::record::TokenRecord;
 
     #[test]
     fn test_lookup_f32() {
         let batch_size = 10; // Each batch processes 10 elements
         let hidden_size = 18;
         let vocab_size = 10;
-        let thread_num = num_cpus::get();
+        let thread_num = 4;
 
         let shapes = vec![batch_size, hidden_size];
-        // let strides = vec![batch_size * hidden_size, hidden_size, 1]; // Corresponding strides
         let length = shapes.iter().product(); // Total number of elements
 
         let eps = 1e-6;
-        let mut token_records: Vec<TokenRecord> = (0..batch_size)
+        let token_records: Vec<TokenRecord> = (0..batch_size)
             .map(|i| TokenRecord {
-                token_id: 1,
-                batch_index: i,
+                // token_id: 1,
+                batch_index: i as u32,
                 position_index: 0,
             })
             .collect();
+
+        let token_list = TokenList {
+            token_records: token_records.into_boxed_slice(),
+            lift_records: Box::new([]),
+            current_token_size: batch_size,
+            current_lift_size: 0,
+        };
+
+        let mut sequences = vec![0usize; batch_size * batch_size];
+        for i in 0..batch_size {
+            sequences[i * batch_size] = 1;
+        }
+
         let word_embedding: Vec<f32> = (1..=hidden_size)
             .cycle()
             .take(vocab_size * hidden_size)
@@ -142,11 +165,13 @@ mod test {
         let mut output_normal_data: Vec<f32> = vec![0.0; length];
 
         // Initialize LookupRMSMap with these chunks and length
-        let mut o = LookupRMSMap::new(
-            token_records.as_mut_ptr(),
+        let o = LookupRMSMap::new(
+            sequences.as_ptr(),
+            &token_list,
             word_embedding.as_ptr(),
             output_hidden_data.as_mut_ptr(),
             output_normal_data.as_mut_ptr(),
+            batch_size,
             hidden_size,
             eps,
         );
@@ -175,7 +200,7 @@ mod test {
         let expected_hidden: Vec<f32> = (1..=hidden_size).map(|x| x as f32).collect();
 
         for i in 0..thread_num {
-            o.run(batch_size, 0, thread_num, i);
+            o.run(batch_size, thread_num, i);
         }
 
         // Verify output_normal_data

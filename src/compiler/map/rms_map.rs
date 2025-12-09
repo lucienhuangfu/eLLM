@@ -4,7 +4,6 @@ use super::map_trait::MapTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
-// use crate::kernel::generic::from_usize::FromUsize;
 use crate::kernel::generic::sqrt::Sqrt;
 
 #[derive(Clone)]
