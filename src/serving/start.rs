@@ -60,7 +60,6 @@ fn schedule_batch(
                 let token_record = &mut token_raw_ptr[token_index];
                 token_record.batch_index = i;
                 token_record.position_index = user_record.kv_index;
-
                 token_index += 1;
             }
         }
@@ -86,7 +85,13 @@ fn schedule_batch(
             if len > 0 {
                 let take = std::cmp::min(len, max_token_size - token_index);
 
-                fill_token_batch(token_raw_ptr, token_index, i, user_record.kv_index, take);
+                fill_token_batch(
+                    token_raw_ptr,
+                    token_index,
+                    i,
+                    user_record.kv_index + 1,
+                    take,
+                );
 
                 user_record.kv_index += take;
 
@@ -115,7 +120,6 @@ fn schedule_batch(
 }
 
 /// Starts the inference serving loop.
-///
 /// This function initializes a thread pool where Thread 0 schedules tasks by monitoring
 /// user request phases (Prefill/Decode) and populating the token list. All threads
 /// then synchronize to execute the operators in the queue for the current batch.
@@ -306,9 +310,6 @@ mod test {
         // decode_count should be 2.
         assert_eq!(decode_count, 2);
 
-        // Pass 2 (Prefill):
-        // - User 1: len = 20 - 0 - 1 = 19.
-        // - Adds 19 tokens. kv_index -> 19.
         // Total tokens = 2 (decode) + 19 (prefill) = 21.
         assert_eq!(token_count, 21);
 
@@ -326,7 +327,8 @@ mod test {
 
         // Token 2 (User 1 start)
         assert_eq!(token_list.records[2].batch_index, 1);
-        assert_eq!(token_list.records[2].position_index, 0);
+        // kv_index is 0 (meaning token 0 processed), so start_pos is kv_index + 1 = 1
+        assert_eq!(token_list.records[2].position_index, 1);
 
         // Verify User State Updates
         assert_eq!(user_list.records[0].kv_index, 11);
@@ -394,6 +396,9 @@ mod test {
         assert_eq!(last_prefill_list.current_size, 1);
         assert_eq!(last_prefill_list.records[0].prefill_index, 4); // token_index after adding
         assert_eq!(last_prefill_list.records[0].lift_index, 0); // lift_index before increment
+
+        // Verify kv_index update: 5 + 4 = 9
+        assert_eq!(user_list.records[0].kv_index, 9);
     }
 
     #[test]
