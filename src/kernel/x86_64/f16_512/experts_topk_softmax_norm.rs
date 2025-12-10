@@ -60,7 +60,7 @@ pub unsafe fn get_topk(
         for i in 0..chunk_take {
             let val = chunk_vals[i];
             let local_idx = chunk_idx[i];
-            let global_idx = chunk_start + local_idx;
+            let global_idx = chunk_start + local_idx as usize;
             heap.push(val, global_idx);
         }
 

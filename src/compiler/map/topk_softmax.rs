@@ -2,8 +2,6 @@ use std::f16;
 use std::ops::{AddAssign, Sub};
 use std::ptr;
 
-use serde::de;
-
 use super::map_trait::TopKSoftmaxTrait;
 use crate::compiler::assign::assign;
 use crate::init::record::{BatchList, BatchRecord, Phase, TokenList, TokenRecord};
@@ -11,8 +9,6 @@ use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::kernel::generic::exp::Exp;
 use crate::kernel::generic::sqrt::Sqrt;
-
-// use crate::memory::allocator::allocate_init;
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {
@@ -28,6 +24,7 @@ pub struct TopKSoftmax<T> {
     topk_size: usize,
     eos_id: usize,
 }
+
 impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T> {
     pub fn new(
         input_indices_ptr: *const usize,
@@ -71,83 +68,91 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         // Assign a range of tasks [begin, end) to the current thread based on decode_size.
         // Note: decode_size here represents the total number of tokens to process in this batch (decode + lift).
         if let Some((begin, end)) = assign(decode_size, thread_num, thread_id) {
-            let mut input_indices_ptr = self.input_indices_ptr.ptr;
-            let mut input_values_ptr = self.input_values_ptr.ptr;
-            let mut sums_ptr = self.sums_ptr.ptr;
-            let mut output_indices_ptr = self.output_indices_ptr.ptr;
-            let mut output_values_ptr = self.output_values_ptr.ptr;
-            let mut output_sequences_ptr = self.output_sequences.ptr;
+            // Optimization: Cache pointers and constants in registers to avoid repeated self dereferencing
+            let input_indices_ptr = self.input_indices_ptr.ptr;
+            let input_values_ptr = self.input_values_ptr.ptr;
+            let sums_ptr = self.sums_ptr.ptr;
+            let output_indices_ptr = self.output_indices_ptr.ptr;
+            let output_values_ptr = self.output_values_ptr.ptr;
+            let output_sequences_ptr = self.output_sequences.ptr;
 
-            let mut token_ptr = unsafe { (*self.token_ptr.ptr).token_records.as_ptr() };
-            let mut batch_ptr = unsafe { (*self.batch_ptr.ptr).records.as_mut_ptr() };
+            let topk_size = self.topk_size;
+            let batch_size = self.batch_size;
+            let eos_id = self.eos_id;
 
-            // Retrieve the number of tokens in the "lift" phase (prefill/prompt processing).
+            // Optimization: Pre-calculate stride factor (topk_size * thread_num)
+            let input_stride_factor = topk_size * thread_num;
+
+            let token_ptr_base = unsafe { (*self.token_ptr.ptr).token_records.as_ptr() };
+            let batch_ptr_base = unsafe { (*self.batch_ptr.ptr).records.as_mut_ptr() };
+
+            // Retrieve the number of tokens in the "lift" phase.
             let lift_size = unsafe { (*self.token_ptr.ptr).current_lift_size };
 
-            // Calculate the boundary index where the "decode" phase ends and the "lift" phase begins.
-            // Tokens [0, decode_end_index) are decode tokens.
-            // Tokens [decode_end_index, decode_size) are lift tokens.
-            let decode_end_index = (decode_size - lift_size);
-
-            // Calculate the offset for lift tokens in the actual token storage.
-            // Lift tokens are stored at the end of the token buffer, starting at (token_size - lift_size).
-            // The logical index 'i' in the loop maps to physical index: (i - decode_end_index) + lift_offset.
-            let lift_offset = (token_size - lift_size);
+            // Calculate boundary
+            let decode_end_index = decode_size - lift_size;
 
             // --- Phase 1: Process Decode Tokens ---
-            // Determine the end of the range for the decode phase within the current thread's assignment.
             let decode_loop_end = std::cmp::min(end, decode_end_index);
 
-            // If the thread's assigned range starts before the lift phase, process decode tokens.
             if begin < decode_loop_end {
                 for i in begin..decode_loop_end {
                     unsafe {
-                        // For decode tokens, the logical index 'i' maps directly to the physical index in token_ptr.
-                        let batch_index = (*token_ptr.add(i)).batch_index;
-                        let position_index = (*token_ptr.add(i)).position_index;
+                        let token_record = &*token_ptr_base.add(i);
+                        let batch_index = token_record.batch_index;
+                        let position_index = token_record.position_index;
 
                         self.process_one(
                             batch_index,
                             position_index,
                             thread_num,
+                            input_stride_factor,
+                            topk_size,
+                            batch_size,
+                            eos_id,
                             input_indices_ptr,
                             input_values_ptr,
                             sums_ptr,
                             output_indices_ptr,
                             output_values_ptr,
                             output_sequences_ptr,
-                            batch_ptr,
+                            batch_ptr_base,
                         );
                     }
                 }
             }
 
             // --- Phase 2: Process Lift Tokens ---
-            // Determine the start of the range for the lift phase within the current thread's assignment.
             let lift_loop_begin = std::cmp::max(begin, decode_end_index);
 
-            // If the thread's assigned range extends into the lift phase, process lift tokens.
             if lift_loop_begin < end {
-                for i in lift_loop_begin..end {
-                    unsafe {
-                        // Map the logical loop index 'i' to the physical index in the token array.
-                        // 1. (i - decode_end_index): 0-based index within the lift segment.
-                        // 2. + lift_offset: Shift to the actual location of lift tokens in memory.
-                        let index = (i - decode_end_index) + lift_offset;
-                        let batch_index = (*token_ptr.add(index)).batch_index;
-                        let position_index = (*token_ptr.add(index)).position_index;
+                unsafe {
+                    let lift_records_ptr = (*self.token_ptr.ptr).lift_records.as_ptr();
+                    // Calculate offset into lift_records
+                    let lift_start_offset = lift_loop_begin - decode_end_index;
+                    let lift_count = end - lift_loop_begin;
+
+                    for i in 0..lift_count {
+                        let lift_record = &*lift_records_ptr.add(lift_start_offset + i);
+                        let batch_index = lift_record.prefill_end_index;
+                        // Double dereference is unavoidable here without changing data layout
+                        let position_index = (*token_ptr_base.add(batch_index)).position_index;
 
                         self.process_one(
                             batch_index,
                             position_index,
                             thread_num,
+                            input_stride_factor,
+                            topk_size,
+                            batch_size,
+                            eos_id,
                             input_indices_ptr,
                             input_values_ptr,
                             sums_ptr,
                             output_indices_ptr,
                             output_values_ptr,
                             output_sequences_ptr,
-                            batch_ptr,
+                            batch_ptr_base,
                         );
                     }
                 }
@@ -155,11 +160,16 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         }
     }
 
+    #[inline(always)]
     unsafe fn process_one(
         &self,
         batch_index: usize,
         position_index: usize,
         thread_num: usize,
+        input_stride_factor: usize,
+        topk_size: usize,
+        batch_size: usize,
+        eos_id: usize,
         input_indices_ptr: *const usize,
         input_values_ptr: *const T,
         sums_ptr: *const T,
@@ -168,24 +178,27 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         output_sequences_ptr: *mut usize,
         batch_ptr: *mut BatchRecord,
     ) {
-        let input_stride = (batch_index * self.topk_size * thread_num);
-        let output_stride = (batch_index * self.topk_size);
-        let token_ptr =
-            output_sequences_ptr.add(((position_index + 1) * self.batch_size + batch_index));
+        // Optimized stride calculation
+        let input_stride = batch_index * input_stride_factor;
+        let output_stride = batch_index * topk_size;
+
+        let token_ptr = output_sequences_ptr.add((position_index + 1) * batch_size + batch_index);
         let _output_indices_ptr = output_indices_ptr.add(output_stride);
+
         self.compute(
             input_indices_ptr.add(input_stride),
             input_values_ptr.add(input_stride),
             sums_ptr.add(batch_index),
             _output_indices_ptr,
             output_values_ptr.add(output_stride),
-            // token_ptr,
             thread_num,
-            self.topk_size,
+            topk_size,
         );
+
         let predict_token = *_output_indices_ptr;
         ptr::write(token_ptr, predict_token);
-        if predict_token == self.eos_id {
+
+        if predict_token == eos_id {
             let batch_record = batch_ptr.add(batch_index);
             (*batch_record).phase = Phase::Eos;
         }
@@ -281,6 +294,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::init::record::PrefillEndRecord;
     use approx::assert_ulps_eq;
 
     #[test]
@@ -296,16 +310,16 @@ mod test {
 
         let mut input_values = Vec::<f32>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
-        let mut token_records = Vec::with_capacity(batch_size);
-        let mut user_records = Vec::with_capacity(batch_size);
+        let mut token_records_vec = Vec::with_capacity(batch_size);
+        let mut user_records_vec = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
-            token_records.push(TokenRecord {
+            token_records_vec.push(TokenRecord {
                 // token_id: 0,
                 batch_index: i,
                 position_index: 0,
             });
-            user_records.push(BatchRecord {
+            user_records_vec.push(BatchRecord {
                 sequence_index: i,
                 // snapshot_sequence_index: 0,
                 kv_index: 0,
@@ -318,6 +332,18 @@ mod test {
             }
         }
 
+        let token_list = TokenList {
+            token_records: token_records_vec.into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: Box::new([]),
+            current_lift_size: 0,
+        };
+
+        let mut batch_list = BatchList {
+            records: user_records_vec.into_boxed_slice(),
+            current_size: batch_size,
+        };
+
         let sums = vec![0.0f32; batch_size];
         let mut output_values = vec![0.0f32; (batch_size * topk_size)];
         let mut output_indices = vec![0; (batch_size * topk_size)];
@@ -327,8 +353,8 @@ mod test {
             input_indices.as_ptr(),
             input_values.as_ptr(),
             sums.as_ptr(),
-            token_records.as_ptr(),
-            user_records.as_mut_ptr(),
+            &token_list,
+            &mut batch_list,
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
@@ -401,16 +427,16 @@ mod test {
 
         let mut input_values = Vec::<f16>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
-        let mut token_records = Vec::with_capacity(batch_size);
-        let mut user_records = Vec::with_capacity(batch_size);
+        let mut token_records_vec = Vec::with_capacity(batch_size);
+        let mut user_records_vec = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
-            token_records.push(TokenRecord {
+            token_records_vec.push(TokenRecord {
                 // token_id: 0,
                 batch_index: i,
                 position_index: 0,
             });
-            user_records.push(BatchRecord {
+            user_records_vec.push(BatchRecord {
                 sequence_index: i,
                 kv_index: 0,
                 phase: Phase::Decode,
@@ -423,6 +449,18 @@ mod test {
             }
         }
 
+        let token_list = TokenList {
+            token_records: token_records_vec.into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: Box::new([]),
+            current_lift_size: 0,
+        };
+
+        let mut batch_list = BatchList {
+            records: user_records_vec.into_boxed_slice(),
+            current_size: batch_size,
+        };
+
         let sums = vec![0.0 as f16; batch_size];
         let mut output_values = vec![0.0 as f16; (batch_size * topk_size)];
         let mut output_indices = vec![0; (batch_size * topk_size)];
@@ -432,8 +470,8 @@ mod test {
             input_indices.as_ptr(),
             input_values.as_ptr(),
             sums.as_ptr(),
-            token_records.as_ptr(),
-            user_records.as_mut_ptr(),
+            &token_list,
+            &mut batch_list,
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
