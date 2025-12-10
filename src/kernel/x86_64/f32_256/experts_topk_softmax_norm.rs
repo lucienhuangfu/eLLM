@@ -85,7 +85,7 @@ pub unsafe fn get_topk(
 
         let chunk_take = topk.min(8);
         for lane in 0..(chunk_take) {
-            heap.push(chunk_vals[lane], chunk_idx[lane]);
+            heap.push(chunk_vals[lane], chunk_idx[lane] as usize);
         }
     }
     debug_assert_eq!(heap.len(), topk);
