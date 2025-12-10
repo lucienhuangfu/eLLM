@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use super::super::compiler::operator::Operator;
 use crate::init::record::{
-    LastPrefillList, LastPrefillRecord, Phase, TokenList, TokenRecord, UserList,
+    BatchList, LastPrefillList, Phase, PrefillEndRecord, TokenList, TokenRecord,
 };
 use crate::init::send_sync_ptr::MutPtr;
 
@@ -29,13 +29,13 @@ fn fill_token_batch(
 }
 
 fn schedule_batch(
-    user_list: &mut UserList,
+    batch_list: &mut BatchList,
     token_list: &mut TokenList,
     last_prefill_list: &mut LastPrefillList,
-) -> (usize, usize, usize) {
+) -> (usize, usize) {
     let max_token_size = token_list.records.len();
-    let current_batch_size = user_list.current_size;
-    let user_raw_ptr = &mut user_list.records;
+    let current_batch_size = batch_list.current_size;
+    let batch_raw_ptr = &mut batch_list.records;
     let token_raw_ptr = &mut token_list.records;
 
     // Capture max size before mutable borrow of records to avoid borrow checker error
@@ -48,18 +48,22 @@ fn schedule_batch(
         last_prefill_list.current_size = 0;
 
         // Pass 1: Handle Decode Phase (Priority)
-        for (i, user_record) in user_raw_ptr.iter_mut().take(current_batch_size).enumerate() {
+        for (i, batch_record) in batch_raw_ptr
+            .iter_mut()
+            .take(current_batch_size)
+            .enumerate()
+        {
             if token_index >= max_token_size {
                 break;
             }
-            if let Phase::Decode = user_record.phase {
-                user_record.kv_index += 1;
+            if let Phase::Decode = batch_record.phase {
+                batch_record.kv_index += 1;
 
                 // Optimization: Inline single token write for Decode phase to avoid function call overhead
-                // fill_token_batch(token_raw_ptr, token_index, i, user_record.kv_index, 1);
+                // fill_token_batch(token_raw_ptr, token_index, i, batch_record.kv_index, 1);
                 let token_record = &mut token_raw_ptr[token_index];
                 token_record.batch_index = i;
-                token_record.position_index = user_record.kv_index;
+                token_record.position_index = batch_record.kv_index;
                 token_index += 1;
             }
         }
@@ -68,16 +72,20 @@ fn schedule_batch(
 
         // Pass 2: Handle Prefill Phase
         let mut lift_index = decode_index;
-        for (i, user_record) in user_raw_ptr.iter_mut().take(current_batch_size).enumerate() {
+        for (i, batch_record) in batch_raw_ptr
+            .iter_mut()
+            .take(current_batch_size)
+            .enumerate()
+        {
             if token_index >= max_token_size {
                 break;
             }
 
             // Calculate remaining length safely
-            let len = match user_record.phase {
-                Phase::Prefill_begin | Phase::Prefill_end => user_record
+            let len = match batch_record.phase {
+                Phase::Prefill_begin | Phase::Prefill_end => batch_record
                     .sequence_index
-                    .saturating_sub(user_record.kv_index)
+                    .saturating_sub(batch_record.kv_index)
                     .saturating_sub(1),
                 _ => 0,
             };
@@ -89,22 +97,23 @@ fn schedule_batch(
                     token_raw_ptr,
                     token_index,
                     i,
-                    user_record.kv_index + 1,
+                    batch_record.kv_index + 1,
                     take,
                 );
 
-                user_record.kv_index += take;
+                batch_record.kv_index += take;
 
-                if let Phase::Prefill_end = user_record.phase {
+                if let Phase::Prefill_end = batch_record.phase {
                     // Optimization: Direct indexing into pre-allocated buffer instead of push
                     if last_prefill_list.current_size < max_prefill_size {
-                        last_prefill_raw_ptr[last_prefill_list.current_size] = LastPrefillRecord {
-                            prefill_index: token_index,
+                        last_prefill_raw_ptr[last_prefill_list.current_size] = PrefillEndRecord {
+                            prefill_end_index: (token_index + take),
                             lift_index: lift_index,
                         };
                         last_prefill_list.current_size += 1;
                     }
                     lift_index += 1;
+                    decode_index += 1;
                 }
 
                 token_index += take;
@@ -112,7 +121,7 @@ fn schedule_batch(
         }
 
         if token_index > 0 {
-            return (token_index, decode_index, lift_index);
+            return (token_index, decode_index);
         } else {
             thread::sleep(Duration::from_micros(1));
         }
@@ -124,7 +133,7 @@ fn schedule_batch(
 /// user request phases (Prefill/Decode) and populating the token list. All threads
 /// then synchronize to execute the operators in the queue for the current batch.
 pub fn start(
-    user_list_ptr: MutPtr<UserList>,
+    batch_list_ptr: MutPtr<BatchList>,
     token_list_ptr: MutPtr<TokenList>,
     last_prefill_list_ptr: MutPtr<LastPrefillList>,
     operator_queue: Vec<Operator<f32>>,
@@ -144,11 +153,11 @@ pub fn start(
         // println!("thread id {}", i);
         let b = Arc::clone(&barrier);
         let queue = Arc::clone(&sync_operator_queue);
-        let shared_sizes: Arc<SyncUnsafeCell<(usize, usize, usize)>> = Arc::clone(&shared_sizes);
+        let shared_sizes: Arc<SyncUnsafeCell<(usize, usize)>> = Arc::clone(&shared_sizes);
 
         // Wrap pointers in SyncUnsafeCell to ensure safe transport across threads.
         // This creates a new cell for each thread containing a copy of the pointer.
-        let user_ptr_addr = SyncUnsafeCell::new(user_list_ptr);
+        let batch_list_ptr_addr = SyncUnsafeCell::new(batch_list_ptr);
         let token_list_ptr_addr = SyncUnsafeCell::new(token_list_ptr);
         let last_prefill_list_ptr_addr = SyncUnsafeCell::new(last_prefill_list_ptr);
 
@@ -164,17 +173,17 @@ pub fn start(
                 // Thread 0 acts as the scheduler: monitors user states and prepares the token batch
                 if thread_id == 0 {
                     unsafe {
-                        let user_list = &mut *(*user_ptr_addr.get()).ptr;
+                        let batch_list = &mut *(*batch_list_ptr_addr.get()).ptr;
                         let token_list = &mut *(*token_list_ptr_addr.get()).ptr;
                         let last_prefill_list = &mut *(*last_prefill_list_ptr_addr.get()).ptr;
-                        *sizes_ptr = schedule_batch(user_list, token_list, last_prefill_list);
+                        *sizes_ptr = schedule_batch(batch_list, token_list, last_prefill_list);
                     }
                 }
 
                 // Synchronization barrier: Wait for Thread 0 to finish scheduling
                 b.wait();
 
-                let (token_size, decode_size, lift_size) = unsafe { *sizes_ptr };
+                let (token_size, decode_size) = unsafe { *sizes_ptr };
 
                 // Execute the operator queue in parallel
                 for operator in queue.iter() {
@@ -203,7 +212,7 @@ mod test {
     use std::rc::Rc;
 
     use super::*;
-    use crate::init::record::{BatchRecord, LastPrefillList, LastPrefillRecord, TokenRecord};
+    use crate::init::record::{BatchRecord, LastPrefillList, PrefillEndRecord, TokenRecord};
     use crate::memory::cache::Cache;
     use crate::ptensor::tensor::Tensor;
     use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
@@ -237,11 +246,11 @@ mod test {
 
     #[test]
     fn test_schedule_batch_mixed_phases() {
-        // Setup UserList with mixed phases
+        // Setup BatchList with mixed phases
         // User 0: Decode (should produce 1 token)
         // User 1: Prefill_begin (should produce tokens up to max)
         // User 2: Decode (should produce 1 token)
-        let user_records = vec![
+        let batch_records = vec![
             BatchRecord {
                 sequence_index: 100,
                 // snapshot_sequence_index: 0,
@@ -263,8 +272,8 @@ mod test {
         ]
         .into_boxed_slice();
 
-        let mut user_list = UserList {
-            records: user_records,
+        let mut batch_list = BatchList {
+            records: batch_records,
             current_size: 3,
         };
 
@@ -286,8 +295,8 @@ mod test {
 
         // Setup LastPrefillList
         let last_prefill_records = vec![
-            LastPrefillRecord {
-                prefill_index: 0,
+            PrefillEndRecord {
+                prefill_end_index: 0,
                 lift_index: 0
             };
             10
@@ -301,7 +310,7 @@ mod test {
 
         // Run schedule_batch
         let (token_count, decode_count, lift_count) =
-            schedule_batch(&mut user_list, &mut token_list, &mut last_prefill_list);
+            schedule_batch(&mut batch_list, &mut token_list, &mut last_prefill_list);
 
         // Verification:
         // Pass 1 (Decode):
@@ -331,15 +340,15 @@ mod test {
         assert_eq!(token_list.records[2].position_index, 1);
 
         // Verify User State Updates
-        assert_eq!(user_list.records[0].kv_index, 11);
-        assert_eq!(user_list.records[1].kv_index, 19);
-        assert_eq!(user_list.records[2].kv_index, 51);
+        assert_eq!(batch_list.records[0].kv_index, 11);
+        assert_eq!(batch_list.records[1].kv_index, 19);
+        assert_eq!(batch_list.records[2].kv_index, 51);
     }
 
     #[test]
     fn test_schedule_batch_prefill_end() {
         // Test specifically for Prefill_end logic which updates LastPrefillList
-        let user_records = vec![BatchRecord {
+        let batch_records = vec![BatchRecord {
             sequence_index: 10,
             // snapshot_sequence_index: 0,
             kv_index: 5,
@@ -347,8 +356,8 @@ mod test {
         }]
         .into_boxed_slice();
 
-        let mut user_list = UserList {
-            records: user_records,
+        let mut batch_list = BatchList {
+            records: batch_records,
             current_size: 1,
         };
 
@@ -367,8 +376,8 @@ mod test {
         };
 
         let last_prefill_records = vec![
-            LastPrefillRecord {
-                prefill_index: 0,
+            PrefillEndRecord {
+                prefill_end_index: 0,
                 lift_index: 0
             };
             10
@@ -380,7 +389,7 @@ mod test {
         };
 
         let (token_count, decode_count, lift_count) =
-            schedule_batch(&mut user_list, &mut token_list, &mut last_prefill_list);
+            schedule_batch(&mut batch_list, &mut token_list, &mut last_prefill_list);
 
         // Decode count = 0.
         // Prefill len = 10 - 5 - 1 = 4.
@@ -394,11 +403,11 @@ mod test {
         assert_eq!(lift_count, 1);
 
         assert_eq!(last_prefill_list.current_size, 1);
-        assert_eq!(last_prefill_list.records[0].prefill_index, 4); // token_index after adding
+        assert_eq!(last_prefill_list.records[0].prefill_end_index, 3); // token_index (0) + take (4) - 1
         assert_eq!(last_prefill_list.records[0].lift_index, 0); // lift_index before increment
 
         // Verify kv_index update: 5 + 4 = 9
-        assert_eq!(user_list.records[0].kv_index, 9);
+        assert_eq!(batch_list.records[0].kv_index, 9);
     }
 
     #[test]
@@ -483,7 +492,7 @@ mod test {
             .collect::<Vec<_>>()
             .into_boxed_slice();
 
-        let user_records = (0..batch_size)
+        let batch_records = (0..batch_size)
             .map(|_| BatchRecord {
                 sequence_index: 0,
                 // snapshot_sequence_index: 0,
@@ -498,15 +507,15 @@ mod test {
             current_size: 0,
         };
 
-        let mut user_list = UserList {
-            records: user_records,
+        let mut batch_list = BatchList {
+            records: batch_records,
             current_size: batch_size,
         };
 
         // Pre-allocate LastPrefillList buffer
         let last_prefill_records = vec![
-            LastPrefillRecord {
-                prefill_index: 0,
+            PrefillEndRecord {
+                prefill_end_index: 0,
                 lift_index: 0
             };
             batch_size
@@ -521,15 +530,15 @@ mod test {
         let token_ptr = MutPtr {
             ptr: &mut token_list as *mut TokenList,
         };
-        let user_ptr = MutPtr {
-            ptr: &mut user_list as *mut UserList,
+        let batch_ptr = MutPtr {
+            ptr: &mut batch_list as *mut BatchList,
         };
         let last_prefill_ptr = MutPtr {
             ptr: &mut last_prefill_list as *mut LastPrefillList,
         };
 
         start(
-            user_ptr,
+            batch_ptr,
             token_ptr,
             last_prefill_ptr,
             output_tensor.operator_queue.take(),

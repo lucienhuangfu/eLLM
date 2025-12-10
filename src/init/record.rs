@@ -1,17 +1,17 @@
 #[derive(Clone)]
 pub struct TokenRecord {
     // pub token_id: usize,
-    // 优化: 使用 u32 (4 bytes) 代替 usize (8 bytes)。
+    // 优化: 使用 usize (4 bytes) 代替 usize (8 bytes)。
     // 内存占用从 16 bytes -> 8 bytes。
-    pub batch_index: u32,
-    pub position_index: u32,
+    pub batch_index: usize,
+    pub position_index: usize,
 }
 
 pub struct BatchRecord {
-    // 优化: 使用 u32
-    pub sequence_index: u32,
+    // 优化: 使用 usize
+    pub sequence_index: usize,
     // pub snapshot_sequence_index: usize,
-    pub kv_index: u32,
+    pub kv_index: usize,
     pub phase: Phase,
     // 内存布局优化:
     // 原来: 8 + 8 + 1 (+7 padding) = 24 bytes
@@ -19,20 +19,20 @@ pub struct BatchRecord {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct LastPrefillRecord {
-    // 优化: 使用 u32
-    pub prefill_index: u32,
-    pub lift_index: u32,
+pub struct PrefillEndRecord {
+    // 优化: 使用 usize
+    pub prefill_end_index: usize,
+    pub lift_index: usize,
 }
 
 pub struct TokenList {
     pub token_records: Box<[TokenRecord]>,
     pub current_token_size: usize, // 保留，表示有效长度
-    pub lift_records: Box<[LastPrefillRecord]>,
+    pub lift_records: Box<[PrefillEndRecord]>,
     pub current_lift_size: usize, // 保留，表示有效长度
 }
 
-pub struct UserList {
+pub struct BatchList {
     pub records: Box<[BatchRecord]>,
     pub current_size: usize, // 保留，表示有效长度
 }

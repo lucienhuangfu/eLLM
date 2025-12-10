@@ -45,7 +45,7 @@ pub fn experts_topk_softmax_norm(
         for i in 0..num_topk {
             let expert_idx = *topk_indices_ptr.add(i);
             *experts_indicator_ptr.add(expert_idx) = true;
-            let offset = expert_idx * num_token + index_token;
+            let offset = (expert_idx) * (num_token) + (index_token);
             *indices_ptr.add(offset) = true;
             *value_ptr.add(offset) = *topk_values_ptr.add(i);
         }
@@ -84,8 +84,8 @@ pub unsafe fn get_topk(
         _mm256_storeu_si256(chunk_idx.as_mut_ptr() as *mut __m256i, sorted_idx);
 
         let chunk_take = topk.min(8);
-        for lane in 0..chunk_take {
-            heap.push(chunk_vals[lane], chunk_idx[lane] as usize);
+        for lane in 0..(chunk_take) {
+            heap.push(chunk_vals[lane], chunk_idx[lane]);
         }
     }
     debug_assert_eq!(heap.len(), topk);
@@ -164,7 +164,7 @@ mod tests {
         ];
         let topk = 4;
         let mut out_vals = [0.0f32; 4];
-        let mut out_idx = [0usize; 4];
+        let mut out_idx = [0; 4];
         unsafe {
             get_topk(
                 data.as_ptr(),
@@ -187,13 +187,13 @@ mod tests {
             .map(|(idx, val)| (val, idx))
             .collect();
         expected.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for i in 0..topk {
+        for i in 0..(topk) {
             assert_ulps_eq!(raw_vals[i], expected[i].0);
             assert_eq!(out_idx[i], expected[i].1);
         }
         let max_val = expected[0].0;
         let denom = data.iter().map(|v| (v - max_val).exp()).sum::<f32>();
-        for i in 0..topk {
+        for i in 0..(topk) {
             let expected_prob = ((expected[i].0 - max_val).exp()) / denom;
             assert_relative_eq!(out_vals[i], expected_prob, epsilon = 1e-3);
         }
@@ -237,7 +237,7 @@ mod tests {
             softmax_topk_inplace(topk_vals.as_mut_ptr(), topk, max_val, denom);
         }
         let norm = denom;
-        for i in 0..topk {
+        for i in 0..(topk) {
             let expected_prob = ((expected[i].0 - max_val).exp()) / norm;
             assert_relative_eq!(topk_vals[i], expected_prob, epsilon = 1e-3);
         }
@@ -256,10 +256,10 @@ mod tests {
             0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
         ];
         let mut topk_vals = [0.0f32; NUM_TOPK];
-        let mut topk_idx = [0usize; NUM_TOPK];
+        let mut topk_idx = [0; NUM_TOPK];
         let mut expert_flags = [false; NUM_EXPERTS];
-        let mut indices = [false; NUM_EXPERTS * NUM_TOKEN];
-        let mut values = [0.0f32; NUM_EXPERTS * NUM_TOKEN];
+        let mut indices = [false; (NUM_EXPERTS * NUM_TOKEN)];
+        let mut values = [0.0f32; (NUM_EXPERTS * NUM_TOKEN)];
 
         unsafe {
             experts_topk_softmax_norm(
@@ -296,29 +296,29 @@ mod tests {
         let mut expected_indices: Vec<usize> =
             expected.iter().take(NUM_TOPK).map(|x| x.0).collect();
         expected_indices.sort_unstable();
-        for i in 0..NUM_TOPK {
+        for i in 0..(NUM_TOPK) {
             assert_eq!(topk_idx[i], expected_indices[i]);
         }
 
-        for i in 0..NUM_TOPK {
+        for i in 0..(NUM_TOPK) {
             let idx = expected[i].0;
             let prob = ((expected[i].1 - max_k).exp()) / denom_k;
 
             // Check sparse outputs
             assert!(expert_flags[idx]);
-            let offset = idx * NUM_TOKEN + INDEX_TOKEN;
+            let offset = (idx * NUM_TOKEN + INDEX_TOKEN);
             assert!(indices[offset]);
             assert_relative_eq!(values[offset], prob, epsilon = 1e-3);
             is_topk[idx] = true;
         }
 
-        for expert in 0..NUM_EXPERTS {
+        for expert in 0..(NUM_EXPERTS) {
             if !is_topk[expert] {
                 assert!(!expert_flags[expert]);
             }
-            for token in 0..NUM_TOKEN {
-                let offset = expert * NUM_TOKEN + token;
-                if is_topk[expert] && token == INDEX_TOKEN {
+            for token in 0..(NUM_TOKEN) {
+                let offset = expert * (NUM_TOKEN) + token;
+                if is_topk[expert] && token == (INDEX_TOKEN) {
                     continue;
                 }
                 assert!(!indices[offset]);

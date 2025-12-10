@@ -5,7 +5,7 @@ use super::super::super::kernel;
 use super::map_trait::MapTrait;
 use crate::compiler::assign::assign;
 
-use crate::init::record::{TokenList, UserList};
+use crate::init::record::TokenList;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::generic::sqrt::Sqrt;
 
@@ -63,12 +63,12 @@ impl<T: Sqrt> LookupRMSMap<T> {
 
                 for i in begin..end {
                     let token_record = &*token_records_ptr.add(i);
-                    let batch_index = token_record.batch_index as usize;
-                    let position_index = token_record.position_index as usize;
+                    let batch_index = token_record.batch_index;
+                    let position_index = token_record.position_index;
                     let token_id =
-                        *sequences_ptr.add(batch_index * self.batch_size + position_index);
-                    let embedding_ptr = self.word_embedding.ptr.add(token_id * self.hidden_size);
-                    let offset = i * self.hidden_size;
+                        *sequences_ptr.add((batch_index * self.batch_size + position_index));
+                    let embedding_ptr = self.word_embedding.ptr.add((token_id * self.hidden_size));
+                    let offset = i * (self.hidden_size);
 
                     let hidden_ptr = output_hidden_ptr.add(offset);
                     // Copy embedding to output hidden
@@ -132,13 +132,13 @@ mod test {
         let thread_num = 4;
 
         let shapes = vec![batch_size, hidden_size];
-        let length = shapes.iter().product(); // Total number of elements
+        let length = shapes.iter().product::<usize>(); // Total number of elements
 
         let eps = 1e-6;
         let token_records: Vec<TokenRecord> = (0..batch_size)
             .map(|i| TokenRecord {
                 // token_id: 1,
-                batch_index: i as u32,
+                batch_index: i,
                 position_index: 0,
             })
             .collect();
@@ -150,14 +150,14 @@ mod test {
             current_lift_size: 0,
         };
 
-        let mut sequences = vec![0usize; batch_size * batch_size];
+        let mut sequences = vec![0; (batch_size * batch_size)];
         for i in 0..batch_size {
-            sequences[i * batch_size] = 1;
+            sequences[(i * batch_size)] = 1;
         }
 
         let word_embedding: Vec<f32> = (1..=hidden_size)
             .cycle()
-            .take(vocab_size * hidden_size)
+            .take((vocab_size * hidden_size))
             .map(|x| x as f32)
             .collect();
         // let weight = vec![1.0f32; hidden_size];

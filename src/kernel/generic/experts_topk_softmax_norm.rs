@@ -34,7 +34,7 @@ pub fn experts_topk_softmax_norm<
         indexed_values.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
         // Take top-k
-        let topk_items = &indexed_values[..num_topk.min(num_experts)];
+        let topk_items = &indexed_values[..(num_topk).min(num_experts)];
 
         // Calculate sum of all input values for softmax normalization
         let mut sum = T::default();
@@ -48,11 +48,12 @@ pub fn experts_topk_softmax_norm<
         }
 
         let mut norm_sum = T::default();
-        for (k, &(_, value)) in topk_items.iter().enumerate() {
+        for (k, &(expert_idx, value)) in topk_items.iter().enumerate() {
             let softmax_value = value.exp() / sum;
             norm_sum += softmax_value;
             // Store top-k values and indices
             *topk_values_ptr.add(k) = softmax_value;
+            *topk_indices_ptr.add(k) = expert_idx;
         }
 
         // For each top-k expert, compute softmax and set outputs
@@ -61,9 +62,10 @@ pub fn experts_topk_softmax_norm<
             let softmax_value = *topk_values_ptr.add(k) / norm_sum;
             *experts_indicator_ptr.add(expert_idx) = true;
             // Set indices_ptr at [expert_idx * num_token + index_token]
-            *indices_ptr.add(expert_idx * num_token + index_token) = true;
+            let offset = (expert_idx) * (num_token) + (index_token);
+            *indices_ptr.add(offset) = true;
             // Set value_ptr at the same position as indices
-            *value_ptr.add(expert_idx * num_token + index_token) = softmax_value;
+            *value_ptr.add(offset) = softmax_value;
         }
     }
 }
@@ -84,9 +86,9 @@ mod tests {
         ];
         let mut experts_indicator = [false; NUM_EXPERTS];
         let mut topk_vals = [0.0f32; NUM_TOPK];
-        let mut topk_idx = [0usize; NUM_TOPK];
-        let mut indices = [false; NUM_EXPERTS * NUM_TOKEN];
-        let mut values = [0.0f32; NUM_EXPERTS * NUM_TOKEN];
+        let mut topk_idx = [0; NUM_TOPK];
+        let mut indices = [false; (NUM_EXPERTS * NUM_TOKEN)];
+        let mut values = [0.0f32; (NUM_EXPERTS * NUM_TOKEN)];
 
         unsafe {
             super::experts_topk_softmax_norm(
@@ -114,23 +116,23 @@ mod tests {
         let denom: f32 = expected.iter().take(NUM_TOPK).map(|(_, v)| v.exp()).sum();
         let mut is_topk = [false; NUM_EXPERTS];
 
-        for i in 0..NUM_TOPK {
+        for i in 0..(NUM_TOPK) {
             let (idx, val) = expected[i];
             // Store top-k values and indices
-            let offset = idx * NUM_TOKEN + INDEX_TOKEN;
+            let offset = (idx) * (NUM_TOKEN) + (INDEX_TOKEN);
             assert!(experts_indicator[idx]);
             assert!(indices[offset]);
             assert_relative_eq!(values[offset], val.exp() / denom, epsilon = 1e-6);
             is_topk[idx] = true;
         }
 
-        for expert in 0..NUM_EXPERTS {
+        for expert in 0..(NUM_EXPERTS) {
             if !is_topk[expert] {
                 assert!(!experts_indicator[expert]);
             }
-            for token in 0..NUM_TOKEN {
-                let offset = expert * NUM_TOKEN + token;
-                if is_topk[expert] && token == INDEX_TOKEN {
+            for token in 0..(NUM_TOKEN) {
+                let offset = expert * (NUM_TOKEN) + token;
+                if is_topk[expert] && token == (INDEX_TOKEN) {
                     continue;
                 }
                 assert!(!indices[offset]);
@@ -148,9 +150,9 @@ mod tests {
         let data = [1.0f32, -0.75, 2.5];
         let mut experts_indicator = [false; NUM_EXPERTS];
         let mut topk_vals = [0.0f32; NUM_TOPK];
-        let mut topk_idx = [0usize; NUM_TOPK];
-        let mut indices = [false; NUM_EXPERTS * NUM_TOKEN];
-        let mut values = [0.0f32; NUM_EXPERTS * NUM_TOKEN];
+        let mut topk_idx = [0; NUM_TOPK];
+        let mut indices = [false; (NUM_EXPERTS * NUM_TOKEN)];
+        let mut values = [0.0f32; (NUM_EXPERTS * NUM_TOKEN)];
 
         unsafe {
             super::experts_topk_softmax_norm(
@@ -178,18 +180,18 @@ mod tests {
         let denom: f32 = data.iter().map(|v| v.exp()).sum();
 
         for (idx, &val) in data.iter().enumerate() {
-            let offset = idx * NUM_TOKEN + INDEX_TOKEN;
+            let offset = idx * (NUM_TOKEN) + (INDEX_TOKEN);
             assert!(experts_indicator[idx]);
             assert!(indices[offset]);
             assert_relative_eq!(values[offset], val.exp() / denom, epsilon = 1e-6);
         }
 
-        for token in 0..NUM_TOKEN {
-            if token == INDEX_TOKEN {
+        for token in 0..(NUM_TOKEN) {
+            if token == (INDEX_TOKEN) {
                 continue;
             }
-            for expert in 0..NUM_EXPERTS {
-                let offset = expert * NUM_TOKEN + token;
+            for expert in 0..(NUM_EXPERTS) {
+                let offset = expert * (NUM_TOKEN) + token;
                 assert!(!indices[offset]);
                 assert_relative_eq!(values[offset], 0.0, epsilon = 1e-6);
             }

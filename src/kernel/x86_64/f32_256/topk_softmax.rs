@@ -78,7 +78,7 @@ pub unsafe fn get_topk_with_indices(
         ptr::copy_nonoverlapping(in_indices.add(chunk_start), chunk_idx_usize.as_mut_ptr(), 8);
         let mut idx_i32 = [0i32; 8];
         for lane in 0..8 {
-            debug_assert!(chunk_idx_usize[lane] <= i32::MAX as usize);
+            debug_assert!(chunk_idx_usize[lane] <= i32::MAX);
             idx_i32[lane] = chunk_idx_usize[lane] as i32;
         }
         let idx_vec = _mm256_loadu_si256(idx_i32.as_ptr() as *const __m256i);
@@ -91,7 +91,7 @@ pub unsafe fn get_topk_with_indices(
 
         let chunk_take = topk.min(8);
         for lane in 0..chunk_take {
-            heap.push(chunk_vals[lane], sorted_idx_i32[lane] as usize);
+            heap.push(chunk_vals[lane], sorted_idx_i32[lane]);
         }
     }
     debug_assert_eq!(heap.len(), topk);

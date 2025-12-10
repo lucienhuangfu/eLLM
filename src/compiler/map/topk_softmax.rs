@@ -2,13 +2,14 @@ use std::f16;
 use std::ops::{AddAssign, Sub};
 use std::ptr;
 
+use serde::de;
+
 use super::map_trait::TopKSoftmaxTrait;
 use crate::compiler::assign::assign;
-use crate::init::record::{BatchRecord, Phase, TokenRecord};
+use crate::init::record::{BatchList, BatchRecord, Phase, TokenList, TokenRecord};
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::kernel::generic::exp::Exp;
-// use crate::kernel::generic::from_usize::FromUsize;
 use crate::kernel::generic::sqrt::Sqrt;
 
 // use crate::memory::allocator::allocate_init;
@@ -18,8 +19,8 @@ pub struct TopKSoftmax<T> {
     input_indices_ptr: ConstPtr<usize>,
     input_values_ptr: ConstPtr<T>,
     sums_ptr: ConstPtr<T>,
-    token_ptr: ConstPtr<TokenRecord>,
-    user_ptr: MutPtr<BatchRecord>,
+    token_ptr: ConstPtr<TokenList>,
+    batch_ptr: MutPtr<BatchList>,
     output_indices_ptr: MutPtr<usize>,
     output_values_ptr: MutPtr<T>,
     output_sequences: MutPtr<usize>,
@@ -32,8 +33,8 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         input_indices_ptr: *const usize,
         input_values_ptr: *const T,
         sums_ptr: *const T,
-        token_ptr: *const TokenRecord,
-        user_ptr: *mut BatchRecord,
+        token_ptr: *const TokenList,
+        batch_ptr: *mut BatchList,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
         output_sequences: *mut usize,
@@ -50,7 +51,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
             },
             sums_ptr: ConstPtr { ptr: sums_ptr },
             token_ptr: ConstPtr { ptr: token_ptr },
-            user_ptr: MutPtr { ptr: user_ptr },
+            batch_ptr: MutPtr { ptr: batch_ptr },
             output_indices_ptr: MutPtr {
                 ptr: output_indices_ptr,
             },
@@ -67,42 +68,126 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
     }
 
     pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+        // Assign a range of tasks [begin, end) to the current thread based on decode_size.
+        // Note: decode_size here represents the total number of tokens to process in this batch (decode + lift).
         if let Some((begin, end)) = assign(decode_size, thread_num, thread_id) {
             let mut input_indices_ptr = self.input_indices_ptr.ptr;
             let mut input_values_ptr = self.input_values_ptr.ptr;
             let mut sums_ptr = self.sums_ptr.ptr;
-            let mut token_ptr = self.token_ptr.ptr;
             let mut output_indices_ptr = self.output_indices_ptr.ptr;
             let mut output_values_ptr = self.output_values_ptr.ptr;
             let mut output_sequences_ptr = self.output_sequences.ptr;
 
-            for i in begin..end {
-                unsafe {
-                    let batch_index = (*token_ptr.add(i)).batch_index;
-                    let position_index = (*token_ptr.add(i)).position_index;
-                    let input_stride = batch_index * self.topk_size * thread_num;
-                    let output_stride = batch_index * self.topk_size;
-                    let token_ptr = output_sequences_ptr
-                        .add((position_index + 1) * self.batch_size + batch_index);
-                    let _output_indices_ptr = output_indices_ptr.add(output_stride);
-                    self.compute(
-                        input_indices_ptr.add(input_stride),
-                        input_values_ptr.add(input_stride),
-                        sums_ptr.add(batch_index),
-                        _output_indices_ptr,
-                        output_values_ptr.add(output_stride),
-                        // token_ptr,
-                        thread_num,
-                        self.topk_size,
-                    );
-                    let predict_token = *_output_indices_ptr;
-                    ptr::write(token_ptr, predict_token);
-                    if predict_token == self.eos_id {
-                        let user_record = self.user_ptr.ptr.add(batch_index);
-                        (*user_record).phase = Phase::Eos;
+            let mut token_ptr = unsafe { (*self.token_ptr.ptr).token_records.as_ptr() };
+            let mut batch_ptr = unsafe { (*self.batch_ptr.ptr).records.as_mut_ptr() };
+
+            // Retrieve the number of tokens in the "lift" phase (prefill/prompt processing).
+            let lift_size = unsafe { (*self.token_ptr.ptr).current_lift_size };
+
+            // Calculate the boundary index where the "decode" phase ends and the "lift" phase begins.
+            // Tokens [0, decode_end_index) are decode tokens.
+            // Tokens [decode_end_index, decode_size) are lift tokens.
+            let decode_end_index = (decode_size - lift_size);
+
+            // Calculate the offset for lift tokens in the actual token storage.
+            // Lift tokens are stored at the end of the token buffer, starting at (token_size - lift_size).
+            // The logical index 'i' in the loop maps to physical index: (i - decode_end_index) + lift_offset.
+            let lift_offset = (token_size - lift_size);
+
+            // --- Phase 1: Process Decode Tokens ---
+            // Determine the end of the range for the decode phase within the current thread's assignment.
+            let decode_loop_end = std::cmp::min(end, decode_end_index);
+
+            // If the thread's assigned range starts before the lift phase, process decode tokens.
+            if begin < decode_loop_end {
+                for i in begin..decode_loop_end {
+                    unsafe {
+                        // For decode tokens, the logical index 'i' maps directly to the physical index in token_ptr.
+                        let batch_index = (*token_ptr.add(i)).batch_index;
+                        let position_index = (*token_ptr.add(i)).position_index;
+
+                        self.process_one(
+                            batch_index,
+                            position_index,
+                            thread_num,
+                            input_indices_ptr,
+                            input_values_ptr,
+                            sums_ptr,
+                            output_indices_ptr,
+                            output_values_ptr,
+                            output_sequences_ptr,
+                            batch_ptr,
+                        );
                     }
                 }
             }
+
+            // --- Phase 2: Process Lift Tokens ---
+            // Determine the start of the range for the lift phase within the current thread's assignment.
+            let lift_loop_begin = std::cmp::max(begin, decode_end_index);
+
+            // If the thread's assigned range extends into the lift phase, process lift tokens.
+            if lift_loop_begin < end {
+                for i in lift_loop_begin..end {
+                    unsafe {
+                        // Map the logical loop index 'i' to the physical index in the token array.
+                        // 1. (i - decode_end_index): 0-based index within the lift segment.
+                        // 2. + lift_offset: Shift to the actual location of lift tokens in memory.
+                        let index = (i - decode_end_index) + lift_offset;
+                        let batch_index = (*token_ptr.add(index)).batch_index;
+                        let position_index = (*token_ptr.add(index)).position_index;
+
+                        self.process_one(
+                            batch_index,
+                            position_index,
+                            thread_num,
+                            input_indices_ptr,
+                            input_values_ptr,
+                            sums_ptr,
+                            output_indices_ptr,
+                            output_values_ptr,
+                            output_sequences_ptr,
+                            batch_ptr,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    unsafe fn process_one(
+        &self,
+        batch_index: usize,
+        position_index: usize,
+        thread_num: usize,
+        input_indices_ptr: *const usize,
+        input_values_ptr: *const T,
+        sums_ptr: *const T,
+        output_indices_ptr: *mut usize,
+        output_values_ptr: *mut T,
+        output_sequences_ptr: *mut usize,
+        batch_ptr: *mut BatchRecord,
+    ) {
+        let input_stride = (batch_index * self.topk_size * thread_num);
+        let output_stride = (batch_index * self.topk_size);
+        let token_ptr =
+            output_sequences_ptr.add(((position_index + 1) * self.batch_size + batch_index));
+        let _output_indices_ptr = output_indices_ptr.add(output_stride);
+        self.compute(
+            input_indices_ptr.add(input_stride),
+            input_values_ptr.add(input_stride),
+            sums_ptr.add(batch_index),
+            _output_indices_ptr,
+            output_values_ptr.add(output_stride),
+            // token_ptr,
+            thread_num,
+            self.topk_size,
+        );
+        let predict_token = *_output_indices_ptr;
+        ptr::write(token_ptr, predict_token);
+        if predict_token == self.eos_id {
+            let batch_record = batch_ptr.add(batch_index);
+            (*batch_record).phase = Phase::Eos;
         }
     }
 }
@@ -207,7 +292,7 @@ mod test {
         let eos_id = 100;
 
         let total_candidates_per_item = topk_size * thread_num;
-        let input_len = batch_size * total_candidates_per_item;
+        let input_len = (batch_size * total_candidates_per_item);
 
         let mut input_values = Vec::<f32>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
@@ -234,9 +319,9 @@ mod test {
         }
 
         let sums = vec![0.0f32; batch_size];
-        let mut output_values = vec![0.0f32; batch_size * topk_size];
-        let mut output_indices = vec![0usize; batch_size * topk_size];
-        let mut output_sequences = vec![0usize; batch_size * sequence_length];
+        let mut output_values = vec![0.0f32; (batch_size * topk_size)];
+        let mut output_indices = vec![0; (batch_size * topk_size)];
+        let mut output_sequences = vec![0; (batch_size * sequence_length)];
 
         let operator = TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
@@ -258,10 +343,14 @@ mod test {
 
         // Verification
         for i in 0..batch_size {
-            let item_input_values =
-                &input_values[i * total_candidates_per_item..(i + 1) * total_candidates_per_item];
-            let item_input_indices =
-                &input_indices[i * total_candidates_per_item..(i + 1) * total_candidates_per_item];
+            let i_usize = i;
+            let total_candidates_per_item_usize = total_candidates_per_item;
+            let topk_size_usize = topk_size;
+
+            let item_input_values = &input_values[i_usize * total_candidates_per_item_usize
+                ..(i_usize + 1) * total_candidates_per_item_usize];
+            let item_input_indices = &input_indices[i_usize * total_candidates_per_item_usize
+                ..(i_usize + 1) * total_candidates_per_item_usize];
 
             let mut paired: Vec<_> = item_input_values
                 .iter()
@@ -270,7 +359,7 @@ mod test {
                 .collect();
             paired.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
 
-            let topk = &paired[..topk_size];
+            let topk = &paired[..topk_size_usize];
             let max_val = topk[0].0;
             let denom: f32 = topk.iter().map(|(v, _)| (v - max_val).exp()).sum();
 
@@ -280,12 +369,17 @@ mod test {
                 .collect();
             let expected_indices: Vec<usize> = topk.iter().map(|(_, idx)| *idx).collect();
 
-            let output_vals_slice = &output_values[i * topk_size..(i + 1) * topk_size];
-            let output_idx_slice = &output_indices[i * topk_size..(i + 1) * topk_size];
+            let output_vals_slice =
+                &output_values[i_usize * topk_size_usize..(i_usize + 1) * topk_size_usize];
+            let output_idx_slice =
+                &output_indices[i_usize * topk_size_usize..(i_usize + 1) * topk_size_usize];
 
             assert_ulps_eq!(output_vals_slice, expected_probs.as_slice(), max_ulps = 4);
             assert_eq!(output_idx_slice, expected_indices.as_slice());
-            assert_eq!(output_sequences[batch_size + i], expected_indices[0]);
+            assert_eq!(
+                output_sequences[(batch_size) + i_usize],
+                expected_indices[0]
+            );
         }
     }
 
@@ -303,7 +397,7 @@ mod test {
         let eos_id = 100;
 
         let total_candidates_per_item = topk_size * thread_num;
-        let input_len = batch_size * total_candidates_per_item;
+        let input_len = (batch_size * total_candidates_per_item);
 
         let mut input_values = Vec::<f16>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
@@ -330,9 +424,9 @@ mod test {
         }
 
         let sums = vec![0.0 as f16; batch_size];
-        let mut output_values = vec![0.0 as f16; batch_size * topk_size];
-        let mut output_indices = vec![0usize; batch_size * topk_size];
-        let mut output_sequences = vec![0usize; batch_size * sequence_length];
+        let mut output_values = vec![0.0 as f16; (batch_size * topk_size)];
+        let mut output_indices = vec![0; (batch_size * topk_size)];
+        let mut output_sequences = vec![0; (batch_size * sequence_length)];
 
         let operator = TopKSoftmax::<f16>::new(
             input_indices.as_ptr(),
@@ -354,10 +448,14 @@ mod test {
 
         // Verification
         for i in 0..batch_size {
-            let item_input_values =
-                &input_values[i * total_candidates_per_item..(i + 1) * total_candidates_per_item];
-            let item_input_indices =
-                &input_indices[i * total_candidates_per_item..(i + 1) * total_candidates_per_item];
+            let i_usize = i;
+            let total_candidates_per_item_usize = total_candidates_per_item;
+            let topk_size_usize = topk_size;
+
+            let item_input_values = &input_values[i_usize * total_candidates_per_item_usize
+                ..(i_usize + 1) * total_candidates_per_item_usize];
+            let item_input_indices = &input_indices[i_usize * total_candidates_per_item_usize
+                ..(i_usize + 1) * total_candidates_per_item_usize];
 
             let mut paired: Vec<_> = item_input_values
                 .iter()
@@ -366,7 +464,7 @@ mod test {
                 .collect();
             paired.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
 
-            let topk = &paired[..topk_size];
+            let topk = &paired[..topk_size_usize];
             let max_val = topk[0].0 as f32;
 
             let topk_f32: Vec<(f32, usize)> =
@@ -379,10 +477,12 @@ mod test {
                 .collect();
             let expected_indices: Vec<usize> = topk.iter().map(|(_, idx)| *idx).collect();
 
-            let output_vals_slice = &output_values[i * topk_size..(i + 1) * topk_size];
-            let output_idx_slice = &output_indices[i * topk_size..(i + 1) * topk_size];
+            let output_vals_slice =
+                &output_values[i_usize * topk_size_usize..(i_usize + 1) * topk_size_usize];
+            let output_idx_slice =
+                &output_indices[i_usize * topk_size_usize..(i_usize + 1) * topk_size_usize];
 
-            for k in 0..topk_size {
+            for k in 0..topk_size_usize {
                 let out_val = (output_vals_slice[k] as f32);
                 let expected = expected_probs[k];
                 assert!(
@@ -395,7 +495,10 @@ mod test {
                 );
                 assert_eq!(output_idx_slice[k], expected_indices[k]);
             }
-            assert_eq!(output_sequences[batch_size + i], expected_indices[0]);
+            assert_eq!(
+                output_sequences[(batch_size) + i_usize],
+                expected_indices[0]
+            );
         }
     }
 }
