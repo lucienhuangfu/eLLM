@@ -16,7 +16,13 @@ pub struct RMSMap<T> {
 }
 
 impl<T: Sqrt> RMSMap<T> {
-    pub fn new(ptr1: *const T, output_ptr: *mut T, hidden_size: usize, eps: T, decode_only_flag: bool) -> Self {
+    pub fn new(
+        ptr1: *const T,
+        output_ptr: *mut T,
+        hidden_size: usize,
+        eps: T,
+        decode_only_flag: bool,
+    ) -> Self {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             output_ptr: MutPtr { ptr: output_ptr },
@@ -39,7 +45,7 @@ impl<T: Sqrt> RMSMap<T> {
 
             for index in begin..end {
                 unsafe {
-                    let p = index * self.hidden_size;
+                    let p = index * (self.hidden_size);
                     self.compute(ptr1.add(p), output_ptr.add(p), self.hidden_size);
                 }
             }
@@ -93,7 +99,7 @@ impl MapTrait<f64> for RMSMap<f64> {
 #[cfg(test)]
 mod test {
     use approx::assert_ulps_eq;
-    use num_cpus;
+    // use num_cpus;
 
     use super::*;
 
@@ -104,17 +110,17 @@ mod test {
 
         let shapes = vec![batch_size, hidden_size];
         // let strides = vec![batch_size * hidden_size, hidden_size, 1]; // 对应的步长
-        let length = shapes.iter().product(); // 总元素数量
-                                              // let batch_size = 10; // 每次批处理 10 个元素
+        let length = shapes.iter().product::<usize>(); // 总元素数量
+                                                       // let batch_size = 10; // 每次批处理 10 个元素
 
-        let cpu_num = num_cpus::get();
+        // let cpu_num = num_cpus::get();
 
+        let cpu_num = 4;
         // 创建模拟的输入和输出数据
         let input_data: Vec<f32> = (1..=18).cycle().take(180).map(|x| x as f32).collect();
         let weight = vec![1.0f32; hidden_size];
         let eps = 1e-6f32;
         let mut output_data: Vec<f32> = vec![0.0; length];
-
 
         // 使用这些块和长度初始化 ArgmaxMap
         let mut operator = RMSMap::new(
@@ -123,7 +129,7 @@ mod test {
             hidden_size,
             // weight.as_ptr(),
             eps,
-            false
+            false,
         );
         let result = [
             0.09238425642251968,

@@ -27,6 +27,6 @@ pub trait TopKSoftmaxTrait<T> {
         output_values_ptr: *mut T,
         // output_token_ptr: *mut usize,
         thread_num: usize,
-        topk_size: usize
+        topk_size: usize,
     );
 }

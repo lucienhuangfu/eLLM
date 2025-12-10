@@ -1,4 +1,5 @@
-use serde::de;
+use std::f16;
+use std::ops::{AddAssign, Sub};
 
 use super::map_trait::SoftmaxTrait;
 use crate::compiler::assign::assign;
@@ -7,8 +8,6 @@ use crate::kernel::generic;
 use crate::kernel::generic::{exp::Exp, sqrt::Sqrt};
 use crate::kernel::x86_64;
 use crate::memory::allocator::allocate_init;
-use std::f16;
-use std::ops::{AddAssign, Sub};
 
 #[derive(Clone)]
 pub struct ExpertsSoftmaxNorm<T> {
@@ -38,7 +37,7 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
         num_topk: usize,
         decode_only_flag: bool,
     ) -> Self {
-        let length = batch_size * num_topk;
+        let length = (batch_size * num_topk);
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
 
@@ -78,8 +77,8 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
 
             for i in begin..end {
                 unsafe {
-                    let p1 = i * self.num_experts;
-                    let p2 = i * self.num_topk;
+                    let p1 = i * (self.num_experts);
+                    let p2 = i * (self.num_topk);
                     let token_index = i;
                     self.compute(
                         ptr1.add(p1),
@@ -215,10 +214,10 @@ mod test {
         input_data.extend_from_slice(&input_data2);
 
         let mut experts_indicator = vec![false; num_experts];
-        let mut indice_ptr = vec![false; num_experts * num_tokens];
-        let mut weight_ptr = vec![0.0f32; num_experts * num_tokens];
+        let mut indice_ptr = vec![false; (num_experts * num_tokens)];
+        let mut weight_ptr = vec![0.0f32; (num_experts * num_tokens)];
 
-        let mut topk_indices_ptr = vec![0usize; num_topk * num_tokens];
+        let mut topk_indices_ptr = vec![0; (num_topk * num_tokens)];
 
         let operator = ExpertsSoftmaxNorm::<f32>::new(
             input_data.as_ptr(),
@@ -229,7 +228,7 @@ mod test {
             batch_size,
             num_experts,
             num_topk,
-            false
+            false,
         );
 
         let thread_num = 1;
@@ -255,7 +254,7 @@ mod test {
             let (idx, val) = expected1[i];
             let prob = (val - max_val1).exp() / denom1;
             assert!(experts_indicator[idx]);
-            let offset = idx * num_tokens + 0;
+            let offset = idx * (num_tokens) + 0;
             assert!(indice_ptr[offset]);
             assert_ulps_eq!(weight_ptr[offset], prob, epsilon = 1e-4);
         }
@@ -279,7 +278,7 @@ mod test {
             let (idx, val) = expected2[i];
             let prob = (val - max_val2).exp() / denom2;
             assert!(experts_indicator[idx]);
-            let offset = idx * num_tokens + 1;
+            let offset = idx * (num_tokens) + 1;
             assert!(indice_ptr[offset]);
             assert_ulps_eq!(weight_ptr[offset], prob, epsilon = 1e-4);
         }
@@ -300,7 +299,7 @@ mod test {
         let num_tokens = sequence_chunk_size * batch_size;
 
         // Generate input data for batch_size tokens * num_experts
-        let mut input_vals: Vec<f32> = Vec::with_capacity(num_tokens * num_experts);
+        let mut input_vals: Vec<f32> = Vec::with_capacity((num_tokens * num_experts));
         for t in 0..num_tokens {
             for i in 0..num_experts {
                 // Create some variation based on token index t and expert index i
@@ -310,17 +309,17 @@ mod test {
             // Ensure distinct top values for this token to avoid sorting ambiguity in tests
             let base = t * num_experts;
             // Make index `t` the absolute winner to distinguish tokens slightly
-            input_vals[base + (t % num_experts)] = 30.0;
+            input_vals[(base + (t % num_experts))] = 30.0;
             // Make index `(t+1)` second
-            input_vals[base + ((t + 1) % num_experts)] = 25.0;
+            input_vals[(base + ((t + 1) % num_experts))] = 25.0;
         }
 
         let input_data: Vec<f16> = input_vals.iter().map(|&x| (x as f16)).collect();
 
         let mut experts_indicator = vec![false; num_experts];
-        let mut indice_ptr = vec![false; num_experts * num_tokens];
-        let mut weight_ptr = vec![(0.0f16); num_experts * num_tokens];
-        let mut topk_indices_ptr = vec![0usize; num_topk * num_tokens];
+        let mut indice_ptr = vec![false; (num_experts * num_tokens)];
+        let mut weight_ptr = vec![(0.0f16); (num_experts * num_tokens)];
+        let mut topk_indices_ptr = vec![0; (num_topk * num_tokens)];
 
         let operator = ExpertsSoftmaxNorm::<f16>::new(
             input_data.as_ptr(),
@@ -341,8 +340,8 @@ mod test {
 
         // Verification
         for t in 0..num_tokens {
-            let start = t * num_experts;
-            let end = start + num_experts;
+            let start = (t * num_experts);
+            let end = start + (num_experts);
             let token_input = &input_vals[start..end];
 
             let mut expected: Vec<(usize, f32)> = token_input.iter().copied().enumerate().collect();
@@ -365,7 +364,7 @@ mod test {
                     idx, t
                 );
 
-                let offset = idx * num_tokens + t;
+                let offset = idx * (num_tokens) + (t);
                 assert!(
                     indice_ptr[offset],
                     "Index ptr for expert {} token {} should be true",

@@ -3,6 +3,7 @@ use std::ops::{Add, Div, Mul, Sub};
 
 use super::super::super::init::send_sync_ptr::{ConstPtr, MutPtr};
 use super::super::super::kernel;
+use crate::init::record::TokenList;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::mul_trait::AttentionTrait;
@@ -14,6 +15,7 @@ pub struct Attention<T> {
     k_ptr: ConstPtr<T>,
     v_ptr: ConstPtr<T>,
     output_ptr: MutPtr<T>,
+    token_list_ptr: ConstPtr<TokenList>,
     batch_size: usize,
     attention_head_num: usize,
     kv_head_num: usize,
@@ -40,6 +42,7 @@ where
         k_ptr: *const T,
         v_ptr: *const T,
         output_ptr: *mut T,
+        token_list_ptr: *const TokenList,
         batch_size: usize,
         attention_head_num: usize,
         kv_head_num: usize,
@@ -53,6 +56,9 @@ where
             k_ptr: ConstPtr { ptr: k_ptr },
             v_ptr: ConstPtr { ptr: v_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
+            token_list_ptr: ConstPtr {
+                ptr: token_list_ptr,
+            },
             batch_size: batch_size,
             attention_head_num: attention_head_num,
             kv_head_num: kv_head_num,
@@ -63,13 +69,7 @@ where
         }
     }
 
-    pub fn run(
-        &self,
-        batch_size: usize,
-        decode_size: usize, 
-        thread_num: usize,
-        thread_id: usize,
-    ) {
+    pub fn run(&self, batch_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
         /*
         // q [sequence, batch, head_num, head_size]
         // q [sequence_chunk_size, batch, kv_head_num, group_num, head_size] * k [sequence_length, batch_size, kv_head_num, head_size]
