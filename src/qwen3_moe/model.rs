@@ -28,7 +28,7 @@ use super::super::memory::cache::Cache;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
-use crate::init::record::TokenRecord;
+use crate::init::record::{BatchList, TokenList, TokenRecord};
 
 // use super::rope::precompute_freqs_cis;
 
@@ -128,8 +128,10 @@ where
 
     pub fn forward(
         &mut self,
-        sequences: *mut usize,
-        token_ptr: *const TokenRecord,
+        input_sequences: *mut usize,
+        token_list_ptr: *const TokenList,
+        batch_list_ptr: *mut BatchList,
+        eos_id: usize,
     ) -> (*const usize, Tensor<T>) {
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
@@ -142,15 +144,16 @@ where
         );
 
         for (i, layer_module) in self.layers.iter().enumerate() {
-            let decode_only_flag =  if i == (self.layers.len() - 1) {
+            let decode_only_flag = if i == (self.layers.len() - 1) {
                 true
             } else {
                 false
             };
-            
+
             hidden_state = layer_module.forward(
                 &hidden_state,
-                token_ptr,
+                input_sequences,
+                token_list_ptr,
                 decode_only_flag,
                 format!("{}.hidden_states.{}.output", self.scope_name, i),
             );
@@ -179,9 +182,11 @@ where
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
             indices_ptr,
             &sum_tensor,
-            token_ptr,
-            unsafe { sequences },
+            token_list_ptr,
+            batch_list_ptr,
+            unsafe { input_sequences },
             self.topk_size,
+            eos_id,
             format!("{}.softmax", self.scope_name),
         );
 
@@ -194,13 +199,13 @@ where
 
 #[cfg(test)]
 mod test {
-    // use std::cell::RefCell;
-    // use std::rc::Rc;
-    // use std::thread;
 
     use super::*;
     // use crate::init::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
+    use crate::init::record::{
+        BatchList, BatchRecord, Phase, PrefillEndRecord, TokenList, TokenRecord,
+    };
     use crate::memory::allocator::allocate_init;
     use crate::memory::cache::Cache;
     use crate::ptensor::tensor::Tensor;
@@ -232,18 +237,49 @@ mod test {
 
         let token_records: Vec<TokenRecord> = (0..batch_size)
             .map(|i| TokenRecord {
-                token_id: 0,
+                // token_id: 0,
                 batch_index: i,
                 position_index: 0,
             })
             .collect();
 
-        let output_tensor = unsafe { model.forward(sequences, token_records.as_ptr()) };
+        let lift_records: Vec<PrefillEndRecord> = Vec::new();
+
+        let token_list = TokenList {
+            token_records: token_records.into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: lift_records.into_boxed_slice(),
+            current_lift_size: 0,
+        };
+
+        let batch_records: Vec<BatchRecord> = (0..batch_size)
+            .map(|i| BatchRecord {
+                sequence_index: i,
+                kv_index: i,
+                phase: Phase::Decode,
+            })
+            .collect();
+
+        let mut batch_list = BatchList {
+            records: batch_records.into_boxed_slice(),
+            current_size: batch_size,
+        };
+
+        let eos_id = 151643;
+
+        let (output_indices, output_tensor) = unsafe {
+            model.forward(
+                sequences,
+                &token_list as *const TokenList,
+                &mut batch_list as *mut BatchList,
+                eos_id,
+            )
+        };
 
         let thread_num: usize = num_cpus::get();
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(batch_size, 0,thread_num, i);
+                operator.run(batch_size, 0, thread_num, i);
             }
         }
 
