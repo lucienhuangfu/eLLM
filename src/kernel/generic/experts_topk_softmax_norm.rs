@@ -2,7 +2,6 @@ use crate::kernel::generic::exp::Exp;
 use std::ops::{AddAssign, Div, Sub};
 use std::ptr;
 
-// 还未实现norm
 pub fn experts_topk_softmax_norm<
     T: Exp + Default + AddAssign + PartialOrd + Copy + Sub<Output = T> + Div<Output = T>,
 >(
@@ -18,6 +17,7 @@ pub fn experts_topk_softmax_norm<
     num_token: usize,
     num_experts: usize,
     num_topk: usize,
+    norm_topk_prob: bool,
 ) {
     unsafe {
         // Read input values
@@ -50,16 +50,33 @@ pub fn experts_topk_softmax_norm<
         let mut norm_sum = T::default();
         for (k, &(expert_idx, value)) in topk_items.iter().enumerate() {
             let softmax_value = value.exp() / sum;
-            norm_sum += softmax_value;
+            // if norm_topk_prob {
+            //     norm_sum += softmax_value;
+            // }
             // Store top-k values and indices
             *topk_values_ptr.add(k) = softmax_value;
             *topk_indices_ptr.add(k) = expert_idx;
         }
 
+        if norm_topk_prob {
+            let mut norm_sum = T::default();
+            for i in 0..num_topk {
+                norm_sum += *topk_values_ptr.add(i);
+            }
+            // let scale = 1.0 / norm_sum;
+            for i in 0..num_topk {
+                let val = *topk_values_ptr.add(i);
+                *topk_values_ptr.add(i) = val / norm_sum;
+            }
+        }
+
         // For each top-k expert, compute softmax and set outputs
         for (k, &(expert_idx, _)) in topk_items.iter().enumerate() {
             // Compute softmax: exp(x) / sum
-            let softmax_value = *topk_values_ptr.add(k) / norm_sum;
+            let mut softmax_value = *topk_values_ptr.add(k);
+            // if norm_topk_prob {
+            //     softmax_value = softmax_value / norm_sum;
+            //}
             *experts_indicator_ptr.add(expert_idx) = true;
             // Set indices_ptr at [expert_idx * num_token + index_token]
             let offset = (expert_idx) * (num_token) + (index_token);
@@ -102,6 +119,7 @@ mod tests {
                 NUM_TOKEN,
                 NUM_EXPERTS,
                 NUM_TOPK,
+                true,
             );
         }
 
@@ -166,6 +184,7 @@ mod tests {
                 NUM_TOKEN,
                 NUM_EXPERTS,
                 NUM_TOPK,
+                true,
             );
         }
 

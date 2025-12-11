@@ -21,6 +21,7 @@ pub fn experts_topk_softmax_norm(
     num_token: usize,
     num_experts: usize,
     num_topk: usize,
+    norm_topk_prob: bool,
 ) {
     unsafe {
         get_topk(
@@ -33,13 +34,16 @@ pub fn experts_topk_softmax_norm(
         let (max_val, denom) = softmax_stats_avx(input_ptr, num_experts);
         softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
 
-        let mut sum = 0.0;
-        for i in 0..num_topk {
-            sum += *topk_values_ptr.add(i);
-        }
-        let scale = sum.recip();
-        for i in 0..num_topk {
-            *topk_values_ptr.add(i) *= scale;
+        if norm_topk_prob == true {
+            // Normalize top-k probabilities to sum to 1
+            let mut sum = 0.0;
+            for i in 0..num_topk {
+                sum += *topk_values_ptr.add(i);
+            }
+            let scale = sum.recip();
+            for i in 0..num_topk {
+                *topk_values_ptr.add(i) *= scale;
+            }
         }
 
         for i in 0..num_topk {
@@ -273,6 +277,7 @@ mod tests {
                 NUM_TOKEN,
                 NUM_EXPERTS,
                 NUM_TOPK,
+                true,
             );
         }
 

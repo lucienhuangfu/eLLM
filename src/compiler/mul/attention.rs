@@ -1,5 +1,6 @@
 use std::f16;
 use std::ops::{Add, Div, Mul, Sub};
+use std::ptr;
 
 use super::super::super::init::send_sync_ptr::{ConstPtr, MutPtr};
 use super::super::super::kernel;
@@ -69,86 +70,49 @@ where
         }
     }
 
-    pub fn run(&self, batch_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
-        /*
-        // q [sequence, batch, head_num, head_size]
-        // q [sequence_chunk_size, batch, kv_head_num, group_num, head_size] * k [sequence_length, batch_size, kv_head_num, head_size]
-        // permute [batch_size, kv_head_num, sequence_chunk_size, group_num, head_size] * [batch_size, sequence_length,  kv_head_num, head_size]
-        // -> [batch_size, sequence_length, kv_head_num, sequence_chunk_size, group_num, head_size]
-
-        let stride = batch_size * self.attention_head_num;
-
-        if let Some((begin, end)) = assign(position_interval * stride, cpu_num, thread_id) {
-            let max_stride = self.batch_size * self.attention_head_num;
-            // 从begin得到对应的坐标
-            let (mut high_index, mut _index) = (begin / stride, begin % stride);
-            let (mut row_index, mut col_index) = (
-                _index / self.attention_head_num,
-                _index % self.attention_head_num,
-            );
-
+    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
             unsafe {
-                let mut q_ptr = self.q_ptr.ptr;
-                let mut k_ptr = self
-                    .k_ptr
-                    .ptr
-                    .add(position_index * self.kv_strides[position_index]);
-                let mut v_ptr = self
-                    .v_ptr
-                    .ptr
-                    .add(position_index * self.kv_strides[position_index]);
-                let mut output_ptr = self.output_ptr.ptr;
+                let q_ptr = self.q_ptr.ptr;
+                let k_ptr = self.k_ptr.ptr;
+                let v_ptr = self.v_ptr.ptr;
+                let output_ptr = self.output_ptr.ptr;
+                let token_records_ptr = (*self.token_list_ptr.ptr).token_records.as_ptr();
+                let lift_records_ptr = (*self.token_list_ptr.ptr).lift_records.as_ptr();
+                let lift_size = (*self.token_list_ptr.ptr).current_lift_size;
+                let decode_end_index = token_size - lift_size;
 
+                for i in begin..end {
+                    let (batch_index, position_index) = if i < decode_end_index {
+                        let record = &*token_records_ptr.add(i);
+                        (record.batch_index, record.position_index)
+                    } else {
+                        let lift_offset = i - decode_end_index;
+                        let lift_record = &*lift_records_ptr.add(lift_offset);
+                        let batch_idx = lift_record.prefill_end_index;
+                        let pos_idx = (*token_records_ptr.add(batch_idx)).position_index;
+                        (batch_idx, pos_idx)
+                    };
 
-                // 遍历每个chunk;
-                println!(
-                    "thread_id: {}, begin: {}, end: {}",
-                    thread_id,
-                    begin,
-                    end,
-                    // self.chunks.len()
-                );
+                    let q_offset = i * self.attention_head_num * self.head_size;
+                    let out_offset = i * self.attention_head_num * self.head_size;
 
-                // [sequence, batch, head_num, head_size]
-                for _ in begin..end {
-                    let index = (high_index * max_stride + row_index * self.attention_head_num + col_index)
-                        * self.head_size;
-
-                    // println!(
-                    //     " high_index: {}, row_index: {}, col_index: {}, index: {}",
-                    //     high_index, row_index, col_index, index
-                    // );
-                    // Print values from self.ptr1 as slice
-                    // let slice = std::slice::from_raw_parts(ptr1.add(index), self.head_size);
-                    // println!("self.ptr1 slice at index {}: {:?}", index, slice);
-                    // self.compute(ptr1.add(index), ptr2, output_ptr.add(index));
-                    let _col_index = col_index / self.kv_head_num;
-
-                    // [batch_size, head_num, sequence, head_size]
-                    let kv_index = row_index * self.kv_strides[0]
-                        + _col_index * self.kv_strides[1];
+                    // K/V cache offset
+                    // Assuming kv_strides[1] is batch stride.
+                    let k_offset = batch_index * self.kv_strides[1];
+                    let v_offset = batch_index * self.kv_strides[1];
 
                     self.compute(
-                        q_ptr.add(index),
-                        k_ptr.add(kv_index),
-                        v_ptr.add(kv_index),
-                        output_ptr.add(index),
-                        position_index + high_index,
+                        q_ptr.add(q_offset),
+                        k_ptr.add(k_offset),
+                        v_ptr.add(v_offset),
+                        // ptr::null(),
+                        output_ptr.add(out_offset),
+                        position_index,
                     );
-
-                    col_index += 1;
-                    if col_index == self.attention_head_num {
-                        col_index = 0;
-                        row_index += 1;
-                    }
-                    if row_index == batch_size {
-                        row_index = 0;
-                        high_index += 1;
-                        // ptr2 = ptr2.add(self.head_size);
-                    }
                 }
             }
-        }*/
+        }
     }
 }
 
@@ -169,22 +133,21 @@ where
         q_ptr: *const T,
         k_ptr: *const T,
         v_ptr: *const T,
-        residual_ptr: *const T,
+        // residual_ptr: *const T,
         output_ptr: *mut T,
         position: usize,
     ) {
-        /*
         kernel::generic::flash_attention::flash_attention(
             q_ptr,
             k_ptr,
             v_ptr,
-            residual_ptr,
+            // residual_ptr,
             output_ptr,
             self.inverse_sqrt_head,
             self.head_size,
-           self.kv_strides[2],
+            self.kv_strides[2],
             position,
-        );*/
+        );
     }
 }
 
@@ -194,16 +157,16 @@ impl AttentionTrait<f16> for Attention<f16> {
         q_ptr: *const f16,
         k_ptr: *const f16,
         v_ptr: *const f16,
-        residual_ptr: *const f16,
+        // residual_ptr: // *const f16,
         output_ptr: *mut f16,
         position: usize,
     ) {
-        /*
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::flash_attention::flash_attention(
-            input_ptr1,
-            input_ptr2,
-            input_ptr3,
+            q_ptr,
+            k_ptr,
+            v_ptr,
+            // residual_ptr,
             output_ptr,
             self.inverse_sqrt_head,
             self.head_size,
@@ -213,15 +176,16 @@ impl AttentionTrait<f16> for Attention<f16> {
 
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::generic::flash_attention::flash_attention(
-            input_ptr1,
-            input_ptr2,
-            input_ptr3,
+            q_ptr,
+            k_ptr,
+            v_ptr,
+            // residual_ptr,
             output_ptr,
             self.inverse_sqrt_head,
             self.head_size,
-              self.kv_strides[2],
+            self.kv_strides[2],
             position,
-        ); */
+        );
     }
 }
 
@@ -231,22 +195,21 @@ impl AttentionTrait<f32> for Attention<f32> {
         q_ptr: *const f32,
         k_ptr: *const f32,
         v_ptr: *const f32,
-        residual_ptr: *const f32,
+        // residual_ptr: // *const f32,
         output_ptr: *mut f32,
         position: usize,
     ) {
-        /*
         kernel::generic::flash_attention::flash_attention(
             q_ptr,
             k_ptr,
             v_ptr,
-            residual_ptr,
+            // residual_ptr,
             output_ptr,
             self.inverse_sqrt_head,
             self.head_size,
             self.kv_strides[2],
             position,
-        );*/
+        );
     }
 }
 

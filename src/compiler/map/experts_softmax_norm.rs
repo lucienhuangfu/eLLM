@@ -123,6 +123,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<
             self.batch_size,
             input_length,
             output_length,
+            true,
         );
     }
 }
@@ -181,6 +182,7 @@ impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
             self.batch_size,
             input_length,
             output_length,
+            true,
         );
     }
 }
@@ -243,20 +245,25 @@ mod test {
             .copied()
             .fold(f32::NEG_INFINITY, f32::max);
 
-        // Calculate denominator using only top-k values
-        let denom1: f32 = expected1
-            .iter()
-            .take(num_topk)
-            .map(|(_, v)| (v - max_val1).exp())
-            .sum();
+        // Calculate denominator using all values (standard softmax)
+        let denom1: f32 = input_data1.iter().map(|v| (v - max_val1).exp()).sum();
+
+        // Calculate sum of probabilities for top-k
+        let mut prob_sum1 = 0.0;
+        for i in 0..num_topk {
+            let (_, val) = expected1[i];
+            prob_sum1 += (val - max_val1).exp() / denom1;
+        }
 
         for i in 0..num_topk {
             let (idx, val) = expected1[i];
             let prob = (val - max_val1).exp() / denom1;
+            let normalized_prob = prob / prob_sum1;
+
             assert!(experts_indicator[idx]);
             let offset = idx * (num_tokens) + 0;
             assert!(indice_ptr[offset]);
-            assert_ulps_eq!(weight_ptr[offset], prob, epsilon = 1e-4);
+            assert_ulps_eq!(weight_ptr[offset], normalized_prob, epsilon = 1e-4);
         }
 
         // Verification for token 1
@@ -267,20 +274,25 @@ mod test {
             .copied()
             .fold(f32::NEG_INFINITY, f32::max);
 
-        // Calculate denominator using only top-k values
-        let denom2: f32 = expected2
-            .iter()
-            .take(num_topk)
-            .map(|(_, v)| (v - max_val2).exp())
-            .sum();
+        // Calculate denominator using all values (standard softmax)
+        let denom2: f32 = input_data2.iter().map(|v| (v - max_val2).exp()).sum();
+
+        // Calculate sum of probabilities for top-k
+        let mut prob_sum2 = 0.0;
+        for i in 0..num_topk {
+            let (_, val) = expected2[i];
+            prob_sum2 += (val - max_val2).exp() / denom2;
+        }
 
         for i in 0..num_topk {
             let (idx, val) = expected2[i];
             let prob = (val - max_val2).exp() / denom2;
+            let normalized_prob = prob / prob_sum2;
+
             assert!(experts_indicator[idx]);
             let offset = idx * (num_tokens) + 1;
             assert!(indice_ptr[offset]);
-            assert_ulps_eq!(weight_ptr[offset], prob, epsilon = 1e-4);
+            assert_ulps_eq!(weight_ptr[offset], normalized_prob, epsilon = 1e-4);
         }
     }
 

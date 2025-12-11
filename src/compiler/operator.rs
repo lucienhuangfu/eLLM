@@ -1,12 +1,10 @@
-//use std::arch::x86_64::_MM_EXCEPT_DENORM;
-// use num_traits::{Float, FromPrimitive};
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
-use super::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::left_vector::LiftVector;
+use super::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
 use super::map::topk_softmax::TopKSoftmax;
@@ -153,7 +151,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::init::record::{Phase, TokenRecord, BatchRecord};
+    use crate::init::record::{BatchList, BatchRecord, Phase, TokenList, TokenRecord};
     use approx::assert_ulps_eq;
     use rand::seq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
@@ -481,7 +479,7 @@ mod test {
 
         for i in 0..batch_size {
             token_records.push(TokenRecord {
-                token_id: 0,
+                // token_id: 0,
                 batch_index: i,
                 position_index: 0,
             });
@@ -496,6 +494,18 @@ mod test {
             }
         }
 
+        let token_list = TokenList {
+            token_records: token_records.into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: Box::new([]),
+            current_lift_size: 0,
+        };
+
+        let mut batch_list = BatchList {
+            records: user_records.into_boxed_slice(),
+            current_size: batch_size,
+        };
+
         let sums = vec![0.0f32; batch_size];
         let mut output_values = vec![0.0f32; batch_size * topk_size];
         let mut output_indices = vec![0usize; batch_size * topk_size];
@@ -505,8 +515,8 @@ mod test {
             input_indices.as_ptr(),
             input_values.as_ptr(),
             sums.as_ptr(),
-            token_records.as_ptr(),
-            user_records.as_mut_ptr(),
+            &token_list,
+            &mut batch_list,
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
