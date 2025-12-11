@@ -1,4 +1,3 @@
-use std::f16;
 use std::ptr;
 
 use crate::compiler::assign::assign;

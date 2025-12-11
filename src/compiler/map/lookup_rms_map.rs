@@ -25,7 +25,7 @@ pub struct LookupRMSMap<T> {
 impl<T: Sqrt> LookupRMSMap<T> {
     // Constructor for LookupRMSMap
     pub fn new(
-        sequnces_ptr: *const usize,
+        sequences_ptr: *const usize,
         token_ptr: *const TokenList,
         word_embedding: *const T,
         output_hidden_ptr: *mut T,
@@ -35,7 +35,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
         eps: T,
     ) -> Self {
         Self {
-            sequences_ptr: ConstPtr { ptr: sequnces_ptr },
+            sequences_ptr: ConstPtr { ptr: sequences_ptr },
             token_ptr: ConstPtr { ptr: token_ptr },
             output_hidden_ptr: MutPtr {
                 ptr: output_hidden_ptr,
@@ -53,7 +53,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
     }
 
     // Run the map for a given batch size and thread ID
-    pub fn run(&self, token_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
         if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
             unsafe {
                 let sequences_ptr = self.sequences_ptr.ptr;
@@ -66,7 +66,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
                     let batch_index = token_record.batch_index;
                     let position_index = token_record.position_index;
                     let token_id =
-                        *sequences_ptr.add((batch_index * self.batch_size + position_index));
+                        *sequences_ptr.add((position_index * self.batch_size + batch_index));
                     let embedding_ptr = self.word_embedding.ptr.add((token_id * self.hidden_size));
                     let offset = i * (self.hidden_size);
 
@@ -152,7 +152,7 @@ mod test {
 
         let mut sequences = vec![0; (batch_size * batch_size)];
         for i in 0..batch_size {
-            sequences[(i * batch_size)] = 1;
+            sequences[i] = 1;
         }
 
         let word_embedding: Vec<f32> = (1..=hidden_size)
@@ -200,7 +200,7 @@ mod test {
         let expected_hidden: Vec<f32> = (1..=hidden_size).map(|x| x as f32).collect();
 
         for i in 0..thread_num {
-            o.run(batch_size, thread_num, i);
+            o.run(batch_size, batch_size, thread_num, i);
         }
 
         // Verify output_normal_data

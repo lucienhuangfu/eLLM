@@ -17,7 +17,7 @@ use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
-use crate::init::record::{BatchRecord, LastPrefillList, Phase, TokenRecord};
+use crate::init::record::{BatchList, BatchRecord, Phase, TokenList, TokenRecord};
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::attention::Attention;
 use super::super::compiler::mul::experts_matmul_mul::ExpertsMatmulMul;
@@ -108,6 +108,7 @@ where
         &self,
         k_tensor: &Tensor<T>,
         v_tensor: &Tensor<T>,
+        token_list_ptr: *const TokenList,
         inverse_sqrt_head: T,
         decode_only_flag: bool,
         scope_name: String,
@@ -125,6 +126,7 @@ where
             k_tensor.data,
             v_tensor.data,
             output_tensor.data,
+            token_list_ptr,
             self.shape[0],
             self.shape[1],
             k_tensor.shape[1],
@@ -658,8 +660,8 @@ where
         &self,
         indices_ptr: *const usize,
         sums_tensor: &Tensor<T>,
-        token_ptr: *const TokenRecord,
-        user_ptr: *mut BatchRecord,
+        token_list_ptr: *const TokenList,
+        batch_list_ptr: *mut BatchList,
         output_sequences: *mut usize,
         num_topk: usize,
         eos_id: usize,
@@ -679,8 +681,8 @@ where
             indices_ptr,
             self.data,
             sums_tensor.data,
-            token_ptr,
-            user_ptr,
+            token_list_ptr,
+            batch_list_ptr,
             indice_ptr,
             value_tensor.data,
             output_sequences,
@@ -732,7 +734,8 @@ where
     }
 
     pub fn lookup_rms(
-        token_ptr: *const TokenRecord,
+        sequences_ptr: *const usize,
+        token_list_ptr: *const TokenList,
         word_embedding: &Tensor<T>,
         batch_size: usize,
         eps: T,
@@ -755,11 +758,12 @@ where
         );
 
         let operator = Operator::LookupRMSMap(LookupRMSMap::new(
-            token_ptr,
+            sequences_ptr,
+            token_list_ptr,
             word_embedding.data,
             output_hidden_tensor.data,
             output_normal_tensor.data,
-            // batch_size,
+            batch_size,
             word_embedding.shape[1],
             eps,
         ));
@@ -768,119 +772,12 @@ where
         (output_hidden_tensor, output_normal_tensor)
     }
 
-    pub fn lift_vector(&self, last_prefill_ptr: *const LastPrefillList, scope_name: String) {
+    pub fn lift_vector(&self, token_list_ptr: *const TokenList, scope_name: String) {
         let operator =
-            Operator::LiftVector(LiftVector::new(last_prefill_ptr, self.data, self.shape[1]));
+            Operator::LiftVector(LiftVector::new(token_list_ptr, self.data, self.shape[1]));
         self.operator_queue.borrow_mut().push(operator);
     }
 
-    /*
-    pub fn reduce(
-        &self,
-        sequences: *mut usize,
-        sequence_length: usize,
-        mut operator: Operator<T>,
-        tensor_name: String,
-        // cache: &mut Cache<T>,
-        // operator_queue: &mut Vec<Operator<T>>,
-    ) {
-        /*
-        let output_shape = vec![sequence_length, self.shape[0]];
-        let output_tensor = Tensor::from_cache(
-            output_shape.clone(),
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        ); */
-
-        let chunks = chunk_reduce(
-            self.shape.clone(),
-            self.data,
-            self.strides.clone(),
-            sequences,
-            vec![1],
-        );
-        let mut extended_chunks = vec![];
-        for step in (0..self.shape[0] * sequence_length).step_by(self.shape[0]) {
-            for (a_ptr, mut b_ptr) in chunks.iter().cloned() {
-                unsafe {
-                    b_ptr.ptr = b_ptr.ptr.add(step);
-                    extended_chunks.push((a_ptr, b_ptr));
-                }
-            }
-        }
-        operator.set_reduce_chunk(extended_chunks);
-        self.operator_queue.borrow_mut().push(operator);
-        // output_tensor
-    }
-    pub fn mapv(
-        &self,
-        mut operator: Operator<T>,
-        tensor_name: String,
-        // cache: &mut Cache<T>,
-        // operator_queue: &mut Vec<Operator<T>>,
-    ) -> Self {
-        let output_tensor = Tensor::from_cache(
-            self.shape.clone(),
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-        let chunks = chunk_map(
-            self.shape.clone(),
-            self.strides.clone(),
-            self.data,
-            output_tensor.data,
-        );
-        operator.set_map_chunk(chunks);
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
-    }
-
-    pub fn zip_mapv(
-        &self,
-        b_tensor: &Tensor<T>,
-        mut operator: Operator<T>,
-        partial_broadcast: bool,
-        tensor_name: String,
-        // cache: &mut Cache<T>,
-        // operator_queue: &mut Vec<Operator<T>>,
-    ) -> Self {
-        let broadcast_shape = get_broadcast_shape(&self.shape, &b_tensor.shape);
-        let a_strides = get_aligned_strides(&self.shape, &broadcast_shape);
-        let b_strides = get_aligned_strides(&b_tensor.shape, &broadcast_shape);
-
-        let (output_shape, output_strides) = if partial_broadcast == true {
-            let offset = broadcast_shape.len() - self.shape.len();
-            let mut output_strides: Vec<usize> = vec![0; offset];
-            output_strides.extend(self.strides.iter().cloned());
-
-            (self.shape.clone(), output_strides)
-        } else {
-            (broadcast_shape.clone(), get_strides(&broadcast_shape))
-        };
-
-        let output_tensor = Tensor::from_cache(
-            output_shape,
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-
-        let chunks = chunk_zipmap(
-            broadcast_shape,
-            self.data,
-            a_strides,
-            b_tensor.data,
-            b_strides,
-            output_tensor.data,
-            output_strides,
-        );
-        operator.set_zipmap_chunk(chunks);
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
-    }
-    }*/
 }
 
 unsafe impl<T: Copy + Default + Send + Sync> Send for Tensor<T> {}
@@ -893,9 +790,6 @@ mod test {
     use std::f16;
     use std::thread;
 
-    // use num_cpus;
-    // use std::sync::Arc;
-    // use std::sync::Barrier;
     use super::*;
 
     #[test]
@@ -947,19 +841,31 @@ mod test {
 
         // Token 0: input [1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5], topk indices 3, 7
         let data0 = &data[0..num_experts];
-        let exps0: Vec<f32> = data0.iter().map(|v| v.exp()).collect();
+        let max0 = data0.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let exps0: Vec<f32> = data0.iter().map(|v| (v - max0).exp()).collect();
         let sum0: f32 = exps0.iter().sum();
-        assert_ulps_eq!(weights[3 * num_tokens + 0], exps0[3] / sum0);
-        assert_ulps_eq!(weights[7 * num_tokens + 0], exps0[7] / sum0);
+
+        let prob3 = exps0[3] / sum0;
+        let prob7 = exps0[7] / sum0;
+        let topk_sum0 = prob3 + prob7;
+
+        assert_ulps_eq!(weights[3 * num_tokens + 0], prob3 / topk_sum0);
+        assert_ulps_eq!(weights[7 * num_tokens + 0], prob7 / topk_sum0);
         assert!(indices[3 * num_tokens + 0]);
         assert!(indices[7 * num_tokens + 0]);
 
         // Token 1: input [5.0, 6.0, 7.0, 8.0, 4.5, 5.5, 6.5, 7.5], topk indices 3, 7
         let data1 = &data[num_experts..2 * num_experts];
-        let exps1: Vec<f32> = data1.iter().map(|v| v.exp()).collect();
+        let max1 = data1.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let exps1: Vec<f32> = data1.iter().map(|v| (v - max1).exp()).collect();
         let sum1: f32 = exps1.iter().sum();
-        assert_ulps_eq!(weights[3 * num_tokens + 1], exps1[3] / sum1);
-        assert_ulps_eq!(weights[7 * num_tokens + 1], exps1[7] / sum1);
+
+        let prob3_1 = exps1[3] / sum1;
+        let prob7_1 = exps1[7] / sum1;
+        let topk_sum1 = prob3_1 + prob7_1;
+
+        assert_ulps_eq!(weights[3 * num_tokens + 1], prob3_1 / topk_sum1);
+        assert_ulps_eq!(weights[7 * num_tokens + 1], prob7_1 / topk_sum1);
         assert!(indices[3 * num_tokens + 1]);
         assert!(indices[7 * num_tokens + 1]);
 
@@ -1037,11 +943,16 @@ mod test {
         }
 
         let (experts_indicator, indice_ptr, weight_ptr, _topk_indices_ptr) = tensor
-            .experts_softmax_norm(num_experts, num_experts_per_tok, "softmax_norm".to_string());
+            .experts_softmax_norm(
+                num_experts,
+                num_experts_per_tok,
+                false,
+                "softmax_norm".to_string(),
+            );
 
         for op in operator_queue.borrow_mut().iter() {
             for i in 0..thread_num {
-                op.run(0, sequence_chunk_size, batch_size, thread_num, i);
+                op.run(batch_size, batch_size, thread_num, i);
             }
         }
 
@@ -1148,7 +1059,7 @@ mod test {
         let mut user_records = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
             token_records.push(TokenRecord {
-                token_id: 0,
+                // token_id: 0,
                 batch_index: i,
                 position_index: 0,
             });
@@ -1158,6 +1069,18 @@ mod test {
                 phase: Phase::Decode,
             });
         }
+
+        let token_list = TokenList {
+            token_records: token_records.into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: Box::new([]),
+            current_lift_size: 0,
+        };
+
+        let mut batch_list = BatchList {
+            records: user_records.into_boxed_slice(),
+            current_size: batch_size,
+        };
 
         unsafe {
             value_tensor
@@ -1169,8 +1092,8 @@ mod test {
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
             &sums_tensor,
-            token_records.as_ptr(),
-            user_records.as_mut_ptr(),
+            &token_list,
+            &mut batch_list,
             output_sequences.as_mut_ptr(),
             num_topk,
             eos_id,
@@ -1284,7 +1207,7 @@ mod test {
         let mut user_records = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
             token_records.push(TokenRecord {
-                token_id: 0,
+                // token_id: 0,
                 batch_index: i,
                 position_index: 0,
             });
@@ -1295,6 +1218,18 @@ mod test {
             });
         }
 
+        let token_list = TokenList {
+            token_records: token_records.into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: Box::new([]),
+            current_lift_size: 0,
+        };
+
+        let mut batch_list = BatchList {
+            records: user_records.into_boxed_slice(),
+            current_size: batch_size,
+        };
+
         unsafe {
             value_tensor
                 .data
@@ -1304,8 +1239,8 @@ mod test {
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
             &sums_tensor,
-            token_records.as_ptr(),
-            user_records.as_mut_ptr(),
+            &token_list,
+            &mut batch_list,
             output_sequences.as_mut_ptr(),
             num_topk,
             eos_id,
@@ -1313,8 +1248,8 @@ mod test {
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(0, sequence_chunk_size, batch_size, 2, 0);
-            op.run(0, sequence_chunk_size, batch_size, 2, 1);
+            op.run(batch_size, batch_size, thread_num, 0);
+            op.run(batch_size, batch_size, thread_num, 1);
         }
 
         let num_tokens = sequence_chunk_size * batch_size;

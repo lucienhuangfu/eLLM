@@ -4,7 +4,7 @@ pub trait AttentionTrait<T> {
         q_ptr1: *const T,
         k_ptr2: *const T,
         v_ptr3: *const T,
-        residual_ptr: *const T,
+        // residual_ptr: *const T,
         output_ptr: *mut T,
         position: usize,
     );
