@@ -14,13 +14,14 @@ use super::super::ptensor::tensor::Tensor;
 use super::attention::Attention;
 use super::config::Config;
 use super::sparse_moe_block::SparseMoeBlock;
-use crate::init::record::TokenRecord;
+use crate::init::record::{TokenList, TokenRecord};
 // use super::moe_layer::MoeLayer;
 // use crate::qwen3_moe::mlp;
 // use super::feedforward::FeedForward;
 
 #[derive(Clone)]
 pub struct DecoderLayer<T> {
+    // sequences: *mut usize,
     sequence_length: usize,
     // sequence_chunk_size: usize,
     batch_size: usize,
@@ -54,8 +55,8 @@ where
     pub fn new(
         config: &Config,
         layer_idx: usize,
+        // sequences: *mut usize,
         sequence_length: usize,
-        // sequence_chunk_size: usize,
         batch_size: usize,
         word_embedding: Rc<Tensor<T>>,
         position_embedding: Rc<Tensor<T>>,
@@ -92,8 +93,8 @@ where
             };*/
 
         Self {
+            // sequences,
             sequence_length: config.max_position_embeddings,
-            // sequence_chunk_size: sequence_chunk_size,
             batch_size: batch_size,
             hidden_size: config.hidden_size,
             head_dim: config.head_dim,
@@ -127,9 +128,8 @@ where
     pub fn forward(
         &self,
         hidden_states: &Tensor<T>,
-        token_ptr: *const TokenRecord,
-        // input_sequences: *mut usize,
-        // sequences: *mut usize,
+        input_sequences: *mut usize,
+        token_list_ptr: *const TokenList,
         decode_only_flag: bool,
         tensor_name: String,
     ) -> Tensor<T> {
@@ -142,16 +142,19 @@ where
             );
             (hidden_states.clone(), norm_hidden)
         } else {
-            Tensor::lookup_rms(
-                token_ptr,
-                &*self.word_embedding,
-                // self.sequence_chunk_size,
-                self.batch_size,
-                self.rms_norm_eps,
-                self.scope_name.clone(),
-                self.cache.clone(),
-                self.operator_queue.clone(),
-            )
+            unsafe {
+                // let token_ptr = (*token_list_ptr).token_records.as_ptr();
+                Tensor::lookup_rms(
+                    input_sequences,
+                    token_list_ptr,
+                    &*self.word_embedding,
+                    self.batch_size,
+                    self.rms_norm_eps,
+                    self.scope_name.clone(),
+                    self.cache.clone(),
+                    self.operator_queue.clone(),
+                )
+            }
         };
         let hidden_states = &hidden_states_owned;
 
@@ -160,6 +163,7 @@ where
             &norm_hidden,
             hidden_states,
             &*self.position_embedding,
+            token_list_ptr,
             decode_only_flag,
             // format!("{}.attention_hidden1", self.scope_name),
         );
@@ -177,7 +181,6 @@ where
             &attention_hidden_states,
             decode_only_flag,
             format!("{}.attention_hidden3", self.scope_name),
-            // num_cpus::get(),
         );
 
         output_hidden_states
@@ -191,7 +194,7 @@ where
 mod test {
     use super::*;
     use crate::init::record::TokenRecord;
-    use std::slice;
+    // use std::slice;
 
     #[test]
     fn test_decoder_layer_f32() {
@@ -250,15 +253,23 @@ mod test {
 
         let sequences: Vec<TokenRecord> = (0..batch_size)
             .map(|i| TokenRecord {
-                token_id: 0,
                 batch_index: i,
                 position_index: 0,
             })
             .collect();
 
+        let token_list = TokenList {
+            token_records: sequences.into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: vec![].into_boxed_slice(),
+            current_lift_size: 0,
+        };
+
+        let mut input_sequences = vec![0; batch_size];
         let output_tensor = layer.forward(
             &input,
-            sequences.as_ptr(),
+            input_sequences.as_mut_ptr(),
+            &token_list,
             false,
             String::from("model.layers.1.output_tensor"),
         );

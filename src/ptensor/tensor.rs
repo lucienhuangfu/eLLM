@@ -788,7 +788,7 @@ mod test {
     use approx::assert_ulps_eq;
     use std::collections::HashMap;
     use std::f16;
-    use std::thread;
+    // use std::thread;
 
     use super::*;
 

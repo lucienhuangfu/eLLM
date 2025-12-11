@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
 
 use crate::kernel::generic::from_f32::FromF32;
@@ -7,10 +7,10 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use crate::init::record::LastPrefillList;
-use super::super::memory::cache::Cache;
 use super::super::init::matmul_params::MatmulParams;
+use super::super::memory::cache::Cache;
 use crate::compiler::operator::Operator;
+use crate::init::record::TokenList;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 
@@ -106,101 +106,99 @@ where
         hidden_states: &Tensor<T>,
         residual: &Tensor<T>,
         position_embedding: &Tensor<T>,
-        last_prefill_ptr: *const LastPrefillList,
+        token_list_ptr: *const TokenList,
         decode_only_flag: bool,
         // tensor_name: String,
     ) -> Tensor<T> {
-        unsafe {
-            // mul_rms_complex 合并operators
-            // [batch_size, hidden_size]
-            // [sequence_chunk_size, batch_size, kv_hidden_size]
-            let (query_states, key_states, value_states) = hidden_states.matmul3(
-                &self.q_weight,
-                &self.k_weight,
-                &self.v_weight,
-                position_embedding,
-                self.head_dim,
-                MatmulParams {
-      a_row_step_macro: 6,
-                    b_row_step_macro: 256,
-                    column_step_macro: 16,
-                    a_row_step_micro: 3,
-                    b_row_step_micro: 128,
-                },
-                self.scope_name.clone(),
-            );
+        // unsafe {
+        // mul_rms_complex 合并operators
+        // [batch_size, hidden_size]
+        // [sequence_chunk_size, batch_size, kv_hidden_size]
+        let (query_states, key_states, value_states) = hidden_states.matmul3(
+            &self.q_weight,
+            &self.k_weight,
+            &self.v_weight,
+            position_embedding,
+            self.head_dim,
+            MatmulParams {
+                a_row_step_macro: 6,
+                b_row_step_macro: 256,
+                column_step_macro: 16,
+                a_row_step_micro: 3,
+                b_row_step_micro: 128,
+            },
+            self.scope_name.clone(),
+        );
 
-            query_states.lift_vector(last_prefill_ptr, self.scope_name.clone());
+        query_states.lift_vector(token_list_ptr, self.scope_name.clone());
 
-            let view_query_states = query_states.view(vec![
-                query_states.shape[0],
-                self.num_attention_heads,
-                self.head_dim,
-            ]);
+        let view_query_states = query_states.view(vec![
+            query_states.shape[0],
+            self.num_attention_heads,
+            self.head_dim,
+        ]);
 
-            let view_key_states = key_states.view(vec![
-                key_states.shape[0],
-                key_states.shape[1],
-                self.num_key_value_heads,
-                self.head_dim,
-            ]);
+        let view_key_states = key_states.view(vec![
+            key_states.shape[0],
+            key_states.shape[1],
+            self.num_key_value_heads,
+            self.head_dim,
+        ]);
 
-            //[batch_size, head_num, sequence_num,  head_size] < - [sequence_num, batch_size, head_num, head_size]
-            let mut view_key_tensor = view_key_states.permute(vec![1, 2, 0, 3]);
+        //[batch_size, head_num, sequence_num,  head_size] < - [sequence_num, batch_size, head_num, head_size]
+        let view_key_tensor = view_key_states.permute(vec![1, 2, 0, 3]);
 
-        
-            let mut view_value_states = value_states.view(vec![
-                value_states.shape[0],
-                value_states.shape[1],
-                self.num_key_value_heads,
-                self.head_dim,
-            ]); 
+        let view_value_states = value_states.view(vec![
+            value_states.shape[0],
+            value_states.shape[1],
+            self.num_key_value_heads,
+            self.head_dim,
+        ]);
 
-            let mut view_value_states2 = view_value_states.permute(vec![1, 2, 0, 3]);
+        let view_value_states2 = view_value_states.permute(vec![1, 2, 0, 3]);
 
-            // [batch_size, head_num, head_size] <- [batch_size, head_num, head_size] [batch_size, head_num, sequence_num, head_size] [batch_size, head_num, sequence_num, head_size]
-            let attn_output = view_query_states.attention(
-                &view_key_tensor,
-                &view_value_states2,
-                self.scaling,
-                decode_only_flag,
-                format!("{}.attn_output", self.scope_name),
-            );
+        // [batch_size, head_num, head_size] <- [batch_size, head_num, head_size] [batch_size, head_num, sequence_num, head_size] [batch_size, head_num, sequence_num, head_size]
+        let attn_output = view_query_states.attention(
+            &view_key_tensor,
+            &view_value_states2,
+            token_list_ptr,
+            self.scaling,
+            decode_only_flag,
+            format!("{}.attn_output", self.scope_name),
+        );
 
-        
-            let mut context_tensor = attn_output.view(vec![
-                attn_output.shape[0],
-                attn_output.shape[1] * attn_output.shape[2]
-            ]); 
+        let context_tensor = attn_output.view(vec![
+            attn_output.shape[0],
+            attn_output.shape[1] * attn_output.shape[2],
+        ]);
 
-            // [sequence_chunk_size, batch_size, hidden_size]
-            // matmul + add
-            let output_tensor = context_tensor.matmul_add(
-                &self.o_weight,
-                &residual,
-                MatmulParams {
-                    a_row_step_macro: 6,
-                    b_row_step_macro: 256,
-                    column_step_macro: 16,
-                    a_row_step_micro: 3,
-                    b_row_step_micro: 128,
-                },
-                decode_only_flag,
-                self.scope_name.clone(),
-            );
+        // [sequence_chunk_size, batch_size, hidden_size]
+        // matmul + add
+        let output_tensor = context_tensor.matmul_add(
+            &self.o_weight,
+            &residual,
+            MatmulParams {
+                a_row_step_macro: 6,
+                b_row_step_macro: 256,
+                column_step_macro: 16,
+                a_row_step_micro: 3,
+                b_row_step_micro: 128,
+            },
+            decode_only_flag,
+            self.scope_name.clone(),
+        );
 
-            // let output_tensor = self.wo.forward(&hidden_states, format!("{}.output_tensor", self.scope_name));
-            output_tensor
-        }
+        // let output_tensor = self.wo.forward(&hidden_states, format!("{}.output_tensor", self.scope_name));
+        output_tensor
+        // }
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use approx::assert_ulps_eq;
+    use crate::init::record::{TokenList, TokenRecord};
 
-    
     #[test]
     fn test_self_attention() {
         // let position_window_size = 4;
@@ -210,19 +208,20 @@ mod test {
         // let num_kv_heads = 8;
         // let sequence_length = 10;
 
-        let config = Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+        let config =
+            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-
-        let inverse_sqrt_head = 1.0 / (config.hidden_size as f32).sqrt();
+        // let inverse_sqrt_head = 1.0 / (config.hidden_size as f32).sqrt();
         let attention_head_size: usize = config.head_dim;
         // config.hidden_size / config.num_attention_heads;
 
-        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::<String, Vec<f32>>::new())));
+        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::<
+            String,
+            Vec<f32>,
+        >::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let self_attention = Attention::new(
-            
-            
             // hidden_size,
             // num_attention_heads,
             // num_kv_heads,
@@ -238,19 +237,18 @@ mod test {
         );
 
         let hidden_states = Tensor::zeros(
-            vec![ batch_size, config.hidden_size],
+            vec![batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
             cache.clone(),
             operator_queue.clone(),
         );
 
         let residual_tensor = Tensor::zeros(
-            vec![ batch_size, config.hidden_size],
+            vec![batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
             cache.clone(),
             operator_queue.clone(),
         );
-
 
         let position_embedding = Tensor::zeros(
             vec![config.max_position_embeddings, 1, 1, attention_head_size],
@@ -259,19 +257,39 @@ mod test {
             operator_queue.clone(),
         );
 
-        let output = self_attention.forward(&hidden_states, &residual_tensor, &position_embedding, false);
+        let token_list = TokenList {
+            token_records: vec![
+                TokenRecord {
+                    batch_index: 0,
+                    position_index: 0,
+                };
+                batch_size
+            ]
+            .into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: vec![].into_boxed_slice(),
+            current_lift_size: 0,
+        };
+
+        let output = self_attention.forward(
+            &hidden_states,
+            &residual_tensor,
+            &position_embedding,
+            &token_list,
+            false,
+        );
 
         // Add assertions to validate the output
         debug_assert_eq!(
             output.shape,
-            vec![ batch_size, config.num_attention_heads * config.head_dim]
+            vec![batch_size, config.num_attention_heads * config.head_dim]
         );
 
         // Execute the operator queue
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run( batch_size,  0, thread_num, i);
+                operator.run(batch_size, 0, thread_num, i);
             }
         }
 
@@ -323,7 +341,27 @@ mod test {
             operator_queue.clone(),
         );
 
-        let output = self_attention.forward(&hidden_states, &position_embedding);
+        let token_list = TokenList {
+            token_records: vec![
+                TokenRecord {
+                    batch_index: 0,
+                    position_index: 0,
+                };
+                batch_size
+            ]
+            .into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: vec![].into_boxed_slice(),
+            current_lift_size: 0,
+        };
+
+        let output = self_attention.forward(
+            &hidden_states,
+            &residual_tensor,
+            &position_embedding,
+            &token_list,
+            false,
+        );
 
         // Add assertions to validate the output
         // assert_eq!(output.shape, vec![batch_size, hidden_size]);
