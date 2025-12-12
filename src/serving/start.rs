@@ -6,7 +6,7 @@ use std::sync::Barrier;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::super::compiler::operator::{Operator};
+use super::super::compiler::operator::Operator;
 
 use super::super::kernel::generic::{exp::Exp, neg_infinity::NegInfinity, sqrt::Sqrt};
 use crate::init::record::{BatchList, Phase, PrefillEndRecord, TokenList, TokenRecord};
@@ -156,7 +156,9 @@ pub fn start<T>(
         + NegInfinity,
 {
     println!("start");
-    let thread_num = thread::available_parallelism().unwrap().get();
+    // let thread_num = thread::available_parallelism().unwrap().get();
+    let core_ids = core_affinity::get_core_ids().unwrap();
+    let thread_num = core_ids.len();
 
     // Optimization: Convert Vec to Arc<[T]> to reduce one level of indirection compared to Arc<Vec<T>>
     let sync_operator_queue: Arc<[Operator<T>]> = operator_queue.into();
@@ -164,7 +166,7 @@ pub fn start<T>(
     let barrier = Arc::new(Barrier::new(thread_num));
     let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
     let mut handles = Vec::with_capacity(thread_num);
-    let core_ids = core_affinity::get_core_ids().unwrap();
+    // let core_ids = core_affinity::get_core_ids().unwrap();
 
     for (i, core_id) in core_ids.into_iter().enumerate() {
         // println!("thread id {}", i);
@@ -208,8 +210,8 @@ pub fn start<T>(
                 }
             }
 
-            let t = s.elapsed();
-            println!("thread {} decode time {:?}", thread_id, t);
+            // let t = s.elapsed();
+            // println!("thread {} decode time {:?}", thread_id, t);
         });
 
         // std::mem::forget(handle);
@@ -508,7 +510,7 @@ mod test {
 
         let batch_records = (0..batch_size)
             .map(|_| BatchRecord {
-                sequence_index: 0,
+                sequence_index: 50,
                 // snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Prefill_begin,
