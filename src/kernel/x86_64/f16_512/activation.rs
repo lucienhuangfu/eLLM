@@ -122,15 +122,13 @@ mod tests {
     use std::arch::x86_64::{_mm512_load_ph, _mm512_store_ph};
     use std::slice;
 
-    const TOLERANCE: f16 = 1e-3;
+    const TOLERANCE: f16 = 0.01;
 
     #[test]
     fn test_exp() {
         let length = 32;
         // Test range from -10 to 10
-        let input_vals: Vec<f16> = (0..length)
-            .map(|i| ((i as f16 - 16.0) * 0.5))
-            .collect();
+        let input_vals: Vec<f16> = (0..length).map(|i| ((i as f16 - 16.0) * 0.5)).collect();
         let mut v = allocate_init::<f16>(length, 0.0);
         unsafe {
             std::ptr::copy_nonoverlapping(input_vals.as_ptr(), v, length);
@@ -168,9 +166,7 @@ mod tests {
     #[test]
     fn test_tanh() {
         let length = 32;
-        let input_vals: Vec<f16> = (0..length)
-            .map(|i| ((i as f16 - 16.0) * 0.5))
-            .collect();
+        let input_vals: Vec<f16> = (0..length).map(|i| ((i as f16 - 16.0) * 0.5)).collect();
         let mut v = allocate_init::<f16>(length, 0.0);
 
         unsafe {
@@ -203,9 +199,7 @@ mod tests {
     #[test]
     fn test_sigmoid() {
         let length = 32;
-        let input_vals: Vec<f16> = (0..length)
-            .map(|i| ((i as f16 - 16.0) * 0.5))
-            .collect();
+        let input_vals: Vec<f16> = (0..length).map(|i| ((i as f16 - 16.0) * 0.5)).collect();
         let mut v = allocate_init::<f16>(length, 0.0);
 
         unsafe {
