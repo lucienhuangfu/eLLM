@@ -1,11 +1,14 @@
 use core_affinity;
 use std::cell::SyncUnsafeCell;
+use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::super::compiler::operator::Operator;
+use super::super::compiler::operator::{Operator};
+
+use super::super::kernel::generic::{exp::Exp, neg_infinity::NegInfinity, sqrt::Sqrt};
 use crate::init::record::{BatchList, Phase, PrefillEndRecord, TokenList, TokenRecord};
 use crate::init::send_sync_ptr::MutPtr;
 
@@ -137,7 +140,20 @@ pub fn start<T>(
     token_list_ptr: MutPtr<TokenList>,
     operator_queue: Vec<Operator<T>>,
 ) where
-    T: Send + Sync + 'static,
+    T: Send
+        + Sync
+        + 'static
+        + Copy
+        + Default
+        + Add<Output = T>
+        + Sub<Output = T>
+        + Mul<Output = T>
+        + Div<Output = T>
+        + Neg<Output = T>
+        + AddAssign
+        + Exp
+        + Sqrt
+        + NegInfinity,
 {
     println!("start");
     let thread_num = thread::available_parallelism().unwrap().get();
