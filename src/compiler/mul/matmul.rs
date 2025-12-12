@@ -15,9 +15,10 @@ use super::mul_trait::MatMulTrait;
 
 #[derive(Clone)]
 pub struct MatMul<T> {
-    pub ptr1: ConstPtr<T>,       // A[S×M×K] 首地址
+    pub ptr1: ConstPtr<T>,       // A[M×K] 首地址（原来是 A[S×M×K]，现在去掉 S）
     pub ptr2: ConstPtr<T>,       // 构造后即指向 B_nt[N×K]
-    pub output_ptr: MutPtr<T>,   // C[S×M×N] 首地址
+    pub output_ptr: MutPtr<T>,   // C[M×N] 首地址（原来是 C[S×M×N]）
+
     pub output_to_kv: bool,      // 保持兼容（你的旧逻辑）
 
     /// 仅承载 step 形状（MB/NB/KC/MR/NR）
@@ -49,9 +50,9 @@ where
     ///
     /// Safety：假定传入裸指针的可读写范围满足后续访问
     pub unsafe fn new(
-        ptr1: *const T,              // A
+        ptr1: *const T,              // A[M×K]
         ptr2_b_kxn: *const T,        // B[K×N]（只在构造期使用一次）
-        output_ptr: *mut T,          // C
+        output_ptr: *mut T,          // C[M×N]
         output_to_kv: bool,
         params: MatMulParams,        // 仅 step 形状：MB/NB/KC/MR/NR
         m_max: usize,
@@ -110,18 +111,18 @@ where
         }
     }
 
-    /// 执行：S×M×N 的三分块调度 + 使用预分配的线程面板
+    /// 执行：单个 M×N 矩阵乘（A[M×K] × B[K×N] → C[M×N]）
+    /// 不再有 sequence 维度，任务在 M×N tiles 上切给多线程
     pub fn run(
         &self,
-        position_index: usize,
-        position_interval: usize,
-        batch_size: usize,
+        batch_size: usize, // 这里就是 M（保留参数名兼容原调用）
         cpu_num: usize,
         thread_id: usize,
+        // position_index / position_interval 去掉了
     ) {
         unsafe {
             // ===== 维度 =====
-            let m = batch_size;     // 本次 M
+            let m = batch_size;     // M
             let n = self.n_max;     // N
             let k = self.k_max;     // K
 
@@ -139,17 +140,10 @@ where
             debug_assert!(thread_id < cpu_num);
 
             // ===== 基址与行距（元素计）=====
-            let a_base = self.ptr1.ptr;       // A[S×M×K]
-            let c_base = self.output_ptr.ptr; // C[S×M×N]
+            let a_base = self.ptr1.ptr;       // A[M×K]
+            let c_base = self.output_ptr.ptr; // C[M×N]
             let lda = k; // A 每行跨度
             let ldc = n; // C 每行跨度
-
-            // ===== 序列范围 =====
-            let s_begin = position_index;
-            let s_end = position_index + position_interval;
-            let s_len = s_end - s_begin;
-            let a_seq_stride = m * k;
-            let c_seq_stride = m * n;
 
             // ===== 使用构造期转置的 B_nt（N×K，行主；行距=K）=====
             let b_nt_ptr = self.ptr2.ptr; // 已经是 B_nt
@@ -179,19 +173,16 @@ where
                 }
             }
 
-            // ===== 任务切分：S × tiles_m × tiles_n =====
+            // ===== 任务切分：tiles_m × tiles_n =====
             let tiles_m = (m + mb - 1) / mb;
             let tiles_n = (n + nb - 1) / nb;
-            let tiles_sn = s_len * tiles_m * tiles_n;
+            let tiles = tiles_m * tiles_n;
 
-            if let Some((tb, te)) = assign(tiles_sn, cpu_num, thread_id) {
+            if let Some((tb, te)) = assign(tiles, cpu_num, thread_id) {
                 for t in tb..te {
-                    let s_rel = t / (tiles_m * tiles_n);
-                    let rem   = t % (tiles_m * tiles_n);
-                    let tm    = rem / tiles_n;
-                    let tn    = rem % tiles_n;
+                    let tm = t / tiles_n;
+                    let tn = t % tiles_n;
 
-                    let s  = s_begin + s_rel;
                     let m0 = tm * mb;
                     let n0 = tn * nb;
 
@@ -199,8 +190,9 @@ where
                     let n_blk = (n - n0).min(nb);
                     debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
 
-                    let a_base_s = a_base.add(s * a_seq_stride);
-                    let c_base_s = c_base.add(s * c_seq_stride);
+                    // 没有 sequence 维度了，直接用全局 base
+                    let a_base_s = a_base;
+                    let c_base_s = c_base;
 
                     // Kc 循环
                     let mut k0 = 0;
@@ -319,4 +311,157 @@ impl MatMulTrait<f32> for MatMul<f32> {
     fn compute2(
         &self, a: *const f32, b: *const f32, c: *mut f32, length: usize,
     ) { kernel::generic::dot_product::dot_product(a, b, c, length); }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem;
+
+    use crate::kernel::generic::from_f32::FromF32; // f16::from_f32 用的 trait
+
+    #[inline]
+    fn f16_from_f32(x: f32) -> f16 {
+        f16::from_f32(x)
+    }
+
+    /// 手写 f16 -> f32，只在测试里做误差比较 / 打印用
+    #[inline]
+    fn f32_from_f16(x: f16) -> f32 {
+        let bits: u16 = unsafe { mem::transmute(x) };
+        let sign = ((bits & 0x8000) as u32) << 16;
+        let exp = (bits & 0x7C00) >> 10;
+        let mant = bits & 0x03FF;
+
+        let f_bits: u32 = if exp == 0 {
+            if mant == 0 {
+                sign
+            } else {
+                let mut e: i32 = -14;
+                let mut m = mant as u32;
+                while (m & 0x0400) == 0 {
+                    m <<= 1;
+                    e -= 1;
+                }
+                m &= 0x03FF;
+                let exp_f = (e + 127) as u32;
+                sign | (exp_f << 23) | (m << 13)
+            }
+        } else if exp == 0x1F {
+            let exp_f = 0xFFu32;
+            sign | (exp_f << 23) | ((mant as u32) << 13)
+        } else {
+            let exp_f = (exp as i32 - 15 + 127) as u32;
+            sign | (exp_f << 23) | ((mant as u32) << 13)
+        };
+
+        f32::from_bits(f_bits)
+    }
+
+    fn approx_eq(a: f16, b: f16, tol: f32) -> bool {
+        let da = f32_from_f16(a);
+        let db = f32_from_f16(b);
+        (da - db).abs() <= tol
+    }
+
+    /// 标量参考：用 f32 做 A[3×K] × B[K×32]
+    fn reference_matmul_3xk_kx32(
+        a_f16: &[f16],
+        b_f16: &[f16],
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> Vec<f16> {
+        let mut c = vec![f16_from_f32(0.0); m * n];
+
+        for i in 0..m {
+            for j in 0..n {
+                let mut acc = 0.0f32;
+                for kk in 0..k {
+                    let av = f32_from_f16(a_f16[i * k + kk]);
+                    let bv = f32_from_f16(b_f16[kk * n + j]);
+                    acc += av * bv;
+                }
+                c[i * n + j] = f16_from_f32(acc);
+            }
+        }
+        c
+    }
+
+    #[test]
+    fn test_matmul_runner_f16_3x64x32() {
+        // 维度选择和 block 参数：
+        // MR=3, NR=32, MB=3, NB=32, KC=64 → 正好 1 个 tile，1 个 K block
+        const M: usize = 3;
+        const K: usize = 64;
+        const N: usize = 32;
+
+        // 构造 A[M×K] 和 B[K×N]，行主
+        let mut a = vec![f16_from_f32(0.0); M * K];
+        let mut b = vec![f16_from_f32(0.0); K * N];
+        let mut c = vec![f16_from_f32(0.0); M * N];
+
+        for i in 0..M {
+            for kk in 0..K {
+                // A[i,kk]
+                let v = 0.01f32 * (i as f32) + 0.001f32 * (kk as f32);
+                a[i * K + kk] = f16_from_f32(v);
+            }
+        }
+        for kk in 0..K {
+            for j in 0..N {
+                // B[kk,j]
+                let v = 0.02f32 * (kk as f32) + 0.003f32 * (j as f32);
+                b[kk * N + j] = f16_from_f32(v);
+            }
+        }
+
+        // MatMulParams：这里只用于 run() 里的 blocking（MB/NB/KC/MR/NR）
+        let params = MatMulParams {
+            a_row_step_macro: 3,   // MB
+            b_row_step_macro: 32,  // NB
+            column_step_macro: 64, // KC
+            a_row_step_micro: 3,   // MR
+            b_row_step_micro: 32,  // NR
+        };
+
+        // 构造 MatMul<f16>，内部会把 B[K×N] 转置成 B_nt[N×K]，并预分配 panel pool
+        let matmul = unsafe {
+            MatMul::<f16>::new(
+                a.as_ptr(),
+                b.as_ptr(),
+                c.as_mut_ptr(),
+                false,      // output_to_kv：这里不用旧逻辑
+                params,
+                M,          // m_max
+                N,          // n_max
+                K,          // k_max
+                1,          // cpu_max_for_scratch
+            )
+        };
+
+        // 单线程执行：batch_size = M
+        matmul.run(
+            M,   // batch_size = M
+            1,   // cpu_num
+            0,   // thread_id
+        );
+
+        // 用参考实现算一份结果
+        let c_ref = reference_matmul_3xk_kx32(&a, &b, M, K, N);
+
+        // 对比 C 和 C_ref
+        for idx in 0..(M * N) {
+            let got = c[idx];
+            let exp = c_ref[idx];
+            assert!(
+                approx_eq(got, exp, 1e-1),
+                "mismatch at idx {}: got {:?} (f32={}), expected {:?} (f32={})",
+                idx,
+                got,
+                f32_from_f16(got),
+                exp,
+                f32_from_f16(exp),
+            );
+        }
+    }
 }

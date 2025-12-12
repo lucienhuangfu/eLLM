@@ -1,50 +1,84 @@
 // === runner/matmul_kqv.rs ===
 #![allow(non_snake_case)]
 
-use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
+use std::f16;
 
 use super::super::super::init::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::assign::assign;
-use super::mul_trait::MatMul4Trait; // 外部提供：compute1/compute2 的 trait
+use super::mul_trait::MatMulkqvTrait; 
 
-/// Q/K/V 线性（不打包 B），Q/K tile 尾部做 RMS + RoPE（原位）
-/// 约定：MR=3，NR=128，head_dim=128，N 是 128 的倍数
+#[inline]
+unsafe fn transpose_kxn_to_nxk<T: Copy + Default>(
+    w_kxn: *const T,
+    k: usize,
+    n: usize,
+) -> Box<[T]> {
+    // 输入: W[K×N] 行主；输出: W_nt[N×K] 行主（行距=K）
+    let mut out = vec![T::default(); n * k];
+    for kk in 0..k {
+        let src_row = w_kxn.add(kk * n);
+        for jj in 0..n {
+            *out.as_mut_ptr().add(jj * k + kk) = *src_row.add(jj);
+        }
+    }
+    out.into_boxed_slice()
+}
+
+/// K/Q/V 三个 GEMM（不含 sequence 维度）
+///
+/// 约定:
+/// - A:  [M×K]
+/// - Wq: [K×Nq] （构造期会转成 [Nq×K]）
+/// - Wk: [K×Nkv]（构造期转 [Nkv×K]）
+/// - Wv: 同上
+/// - Cq: [M×Nq]
+/// - Ck: [M×Nkv]
+/// - Cv: [M×Nkv]
+///
+/// 分块空间:
+///   对 Q:  tiles_m_q = ceil(M/MB), tiles_n_q = ceil(Nq/NB)
+///   对 KV: tiles_m_kv = ceil(M/MB), tiles_n_kv = ceil(Nkv/NB)
+///
+/// 三条路径各自用自己的 tiles 做 assign(total_tiles, cpu_num, thread_id)。
 #[derive(Clone)]
 pub struct MatMul3<T> {
     // A / W / C
-    hidden_ptr: ConstPtr<T>,   // A[S×M×K]
-    q_weight_ptr: ConstPtr<T>, // Wq[K×N]
-    q_state_ptr: MutPtr<T>,    // Cq[S×M×N]
-    k_weight_ptr: ConstPtr<T>, // Wk[K×N]
-    k_state_ptr: MutPtr<T>,    // Ck[S×M×N]
-    v_weight_ptr: ConstPtr<T>, // Wv[K×N]
-    v_state_ptr: MutPtr<T>,    // Cv[S×M×N]
+    hidden_ptr: ConstPtr<T>,   // A[M×K]
+    q_weight_ptr: ConstPtr<T>, // Wq_nt[Nq×K]
+    q_state_ptr: MutPtr<T>,    // Cq[M×Nq]
+    k_weight_ptr: ConstPtr<T>, // Wk_nt[Nkv×K]
+    k_state_ptr: MutPtr<T>,    // Ck[M×Nkv]
+    v_weight_ptr: ConstPtr<T>, // Wv_nt[Nkv×K]
+    v_state_ptr: MutPtr<T>,    // Cv[M×Nkv]
 
-    // RoPE 相位表：[max_seq_len × head_dim]，交错 (cos0, sin0, cos1, sin1, ...)
-    position_embedding_ptr: ConstPtr<T>,
+    // RoPE 相位表（按 N 方向拉平或按 head×dim 展开）
+    rope_ptr: ConstPtr<T>,     // 由外部保证布局一致
 
     // 形状
-    head_dim: usize, // =128（必须偶数）
-    a_h_row: usize,  // M
+    head_dim: usize, // 比如 128（要求 head_dim % 32 == 0）
+    m_row: usize,    // M
     col: usize,      // K
-    b_q_row: usize,  // N (Wq 同形)
-    b_kv_row: usize, // N (Wk/Wv 同形)
+    b_q_row: usize,  // Nq
+    b_kv_row: usize, // Nkv
 
-    // 分块（仅承载 MB/NB/KC/MR/NR）
+    // 分块参数（MB/NB/KC/MR/NR=32）
     pub params: MatMulParams,
     _marker: PhantomData<T>,
 
-    // —— compute1/2 从“本地字段”取调用形状 —— //
-    active_ldc: Cell<usize>, // 当前路径的 N（Q/K/V）
-    lda_fixed: usize,        // = K
-    kc_fixed: usize,         // = params.column_step_macro
-    mr_fixed: usize,         // = params.a_row_step_micro (应=3)
-    nr_fixed: usize,         // = params.b_row_step_micro (应=128)
+    // 持有转置后权重缓冲
+    wq_buf: Box<[T]>,
+    wk_buf: Box<[T]>,
+    wv_buf: Box<[T]>,
+
+    // 线程私有 KC×NR 面板池
+    b_panel_pool: Box<[T]>,
+    b_panel_stride_elems: usize,
+    cpu_max_for_scratch: usize,
 }
 
 impl<T> MatMul3<T>
@@ -52,42 +86,60 @@ where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     #[inline]
-    pub fn new(
-        hidden_ptr: *const T,
-        q_weight_ptr: *const T,
-        q_state_ptr: *mut T,
-        k_weight_ptr: *const T,
-        k_state_ptr: *mut T,
-        v_weight_ptr: *const T,
-        v_state_ptr: *mut T,
-        position_embedding_ptr: *const T,
+    pub unsafe fn new(
+        hidden_ptr: *const T,    // A[M×K]
+        q_weight_ptr: *const T,  // [K×Nq]
+        q_state_ptr: *mut T,     // [M×Nq]
+        k_weight_ptr: *const T,  // [K×Nkv]
+        k_state_ptr: *mut T,     // [M×Nkv]
+        v_weight_ptr: *const T,  // [K×Nkv]
+        v_state_ptr: *mut T,     // [M×Nkv]
+        rope_ptr: *const T,      // RoPE 基址（按 N 方向拉平）
         head_dim: usize,
-        a_h_row: usize, // M
-        col: usize,     // K
-        b_q_row: usize,  // N 
-        b_kv_row: usize, // N
+        m_row: usize,  // M
+        col: usize,    // K
+        b_q_row: usize,  // Nq
+        b_kv_row: usize, // Nkv
         a_row_step_macro: usize,
         b_row_step_macro: usize,
         column_step_macro: usize,
         a_row_step_micro: usize, // 3
-        b_row_step_micro: usize, // 128
+        b_row_step_micro: usize, // 32（3×32 微核）
+        cpu_max_for_scratch: usize,
     ) -> Self {
+        // 预转置 W: [K×N] -> [N×K]
+        let wq_buf = transpose_kxn_to_nxk::<T>(q_weight_ptr, col, b_q_row);
+        let wk_buf = transpose_kxn_to_nxk::<T>(k_weight_ptr, col, b_kv_row);
+        let wv_buf = transpose_kxn_to_nxk::<T>(v_weight_ptr, col, b_kv_row);
+
+        let q_weight_ptr = ConstPtr { ptr: wq_buf.as_ptr() };
+        let k_weight_ptr = ConstPtr { ptr: wk_buf.as_ptr() };
+        let v_weight_ptr = ConstPtr { ptr: wv_buf.as_ptr() };
+
+        // 线程面板池：cpu_max_for_scratch × (KC×NR)
+        let kc = column_step_macro.max(1);
+        let nr = b_row_step_micro.max(1);
+        let b_panel_stride_elems = kc * nr;
+        let pool_len = cpu_max_for_scratch * b_panel_stride_elems;
+        let b_panel_pool = vec![T::default(); pool_len].into_boxed_slice();
+
         Self {
             hidden_ptr: ConstPtr { ptr: hidden_ptr },
-            q_weight_ptr: ConstPtr { ptr: q_weight_ptr },
+            q_weight_ptr,
             q_state_ptr: MutPtr { ptr: q_state_ptr },
-            k_weight_ptr: ConstPtr { ptr: k_weight_ptr },
+            k_weight_ptr,
             k_state_ptr: MutPtr { ptr: k_state_ptr },
-            v_weight_ptr: ConstPtr { ptr: v_weight_ptr },
+            v_weight_ptr,
             v_state_ptr: MutPtr { ptr: v_state_ptr },
-            position_embedding_ptr: ConstPtr {
-                ptr: position_embedding_ptr,
-            },
+
+            rope_ptr: ConstPtr { ptr: rope_ptr },
+
             head_dim,
-            a_h_row,
+            m_row,
             col,
             b_q_row,
             b_kv_row,
+
             params: MatMulParams {
                 a_row_step_macro,
                 b_row_step_macro,
@@ -96,271 +148,354 @@ where
                 b_row_step_micro,
             },
             _marker: PhantomData,
-            active_ldc: Cell::new(0),
-            lda_fixed: col,
-            kc_fixed: column_step_macro,
-            mr_fixed: a_row_step_micro,
-            nr_fixed: b_row_step_micro,
+
+            wq_buf,
+            wk_buf,
+            wv_buf,
+
+            b_panel_pool,
+            b_panel_stride_elems,
+            cpu_max_for_scratch,
         }
     }
 
-    /// 不打包 B：B 为行主 K×N。内核 compute1 直接从 B 的行上读 128 宽向量。
-    /// Q/K 在该 tile 的最后一个 kc 后执行 compute2（RMSNorm weight=1 + RoPE），原位。
-    /// V 不做 compute2。
-    pub fn run(
+    #[inline(always)]
+    fn thread_b_panel_ptr(&self, thread_id: usize) -> *mut T {
+        debug_assert!(thread_id < self.cpu_max_for_scratch);
+        unsafe {
+            self.b_panel_pool
+                .as_ptr()
+                .add(thread_id * self.b_panel_stride_elems) as *mut T
+        }
+    }
+
+    /// 从 B_nt[N×K] 打 kc×32 连续面板
+    #[inline(always)]
+    unsafe fn pack_b_panel_from_bnt(
         &self,
-        position_index: usize,
-        position_interval: usize,
-        batch_size: usize, // M
+        b_nt: *const T, // N×K 行主
+        ldb_row: usize, // = K
+        n0: usize,      // N 起点
+        k0: usize,      // K 起点
+        kc: usize,
+        nr: usize,      // = 32
+        out: *mut T,    // 输出: kc×nr 行主（每行 32 连续）
+    ) {
+        for p in 0..kc {
+            let dst_row = out.add(p * nr);
+            let col_k = k0 + p;
+            for lane in 0..nr {
+                let n = n0 + lane;
+                let src = b_nt.add(n * ldb_row + col_k); // b_nt[n, col_k]
+                *dst_row.add(lane) = *src;
+            }
+        }
+    }
+
+    /// 某一条路径的 M×N×K 分块 + assign(total_tiles) + 3×32 GEMM +（可选）3×128 finalize
+    ///
+    /// 要求 MatMulkqvTrait 已经扩展为：
+    ///   fn compute1(&self, a, b_panel, c, lda, ldc, kc);
+    ///   fn compute2(&self, c_head, rope_head, ldc);
+    #[inline(always)]
+    unsafe fn gemm_one_path_tiles(
+        &self,
+        a: *const T,       // A[M×K]
+        c: *mut T,         // C[M×N]
+        b_nt: *const T,    // B_nt[N×K]
+        m: usize,
+        n: usize,
+        k: usize,
+        ldc: usize,
+        rope_base: *const T, // 与 C 同行布局的 RoPE，相同 N 方向
         cpu_num: usize,
         thread_id: usize,
-    ) {
-        unsafe {
-            // 维度
-            let m = batch_size;
-            let k = self.col;
-            let n = self.b_q_row;
+        finalize: bool,      // 是否做 RMS+RoPE（3×128）
+    )
+    where
+        Self: MatMulkqvTrait<T>,
+    {
+        let mb = self.params.a_row_step_macro;
+        let nb = self.params.b_row_step_macro;
+        let kc_block = self.params.column_step_macro;
+        let mr = self.params.a_row_step_micro; // 3
+        let nr = self.params.b_row_step_micro; // 32
 
-            // 分块
-            let mb = self.params.a_row_step_macro.max(1);
-            let nb = self.params.b_row_step_macro.max(1);
-            let kc = self.params.column_step_macro.max(1);
-            let mr = self.params.a_row_step_micro.max(1);
-            let nr = self.params.b_row_step_micro.max(1);
+        debug_assert_eq!(mr, 3);
+        debug_assert_eq!(nr, 32);
+        debug_assert!(k % kc_block == 0);
+        debug_assert!(n % nr == 0);
+        debug_assert!(self.head_dim % nr == 0); // 比如 128 = 4×32
 
-            debug_assert_eq!(mr, 3, "MR must be 3");
-            debug_assert_eq!(nr, 128, "NR must be 128");
-            debug_assert!(k % kc == 0, "K must be divisible by KC");
-            debug_assert!(n % nr == 0, "N must be multiple of 128");
-            debug_assert_eq!(self.head_dim, 128, "head_dim must be 128");
+        let tiles_m = (m + mb - 1) / mb;
+        let tiles_n = (n + nb - 1) / nb;
+        let total_tiles = tiles_m * tiles_n;
 
-            // 指针与行距
-            let a_base = self.hidden_ptr.ptr; // A[S×M×K]，lda = k
-            let lda = k;
+        let b_panel_ptr = self.thread_b_panel_ptr(thread_id);
+        let head_dim = self.head_dim;
 
-            let wq = self.q_weight_ptr.ptr; // K×N 行主
-            let wk = self.k_weight_ptr.ptr;
-            let wv = self.v_weight_ptr.ptr;
+        if let Some((tb, te)) = assign(total_tiles, cpu_num, thread_id) {
+            for t in tb..te {
+                let tm = t / tiles_n;
+                let tn = t % tiles_n;
 
-            let cq_base = self.q_state_ptr.ptr;
-            let ldq = n;
-            let ck_base = self.k_state_ptr.ptr;
-            let ldk = n;
-            let cv_base = self.v_state_ptr.ptr;
-            let ldv = n;
+                let m0 = tm * mb;
+                let n0 = tn * nb;
 
-            // RoPE 预表（交错），行距=head_dim=128
-            let rope_tab = self.position_embedding_ptr.ptr;
-            let rope_stride = self.head_dim;
+                let m_blk = (m - m0).min(mb);
+                let n_blk = (n - n0).min(nb);
 
-            // 序列范围
-            let s_begin = position_index;
-            let s_end = position_index + position_interval;
-            let s_len = s_end - s_begin;
+                debug_assert!(m_blk % mr == 0);
+                debug_assert!(n_blk % nr == 0);
 
-            // 把 S 维切片给线程
-            if let Some((tb, te)) = assign(s_len, cpu_num, thread_id) {
-                for s_rel in tb..te {
-                    let s = s_begin + s_rel;
-                    let a_s = a_base.add(s * m * k);
-                    let rope_row_ptr = rope_tab.add(s * rope_stride);
+                let mut k0 = 0;
+                while k0 < k {
+                    let kc_cur = kc_block.min(k - k0);
 
-                    // ===== Q 路径 =====
-                    self.active_ldc.set(ldq);
-                    {
-                        let c_s = cq_base.add(s * m * n);
-                        let tiles_m = (m + mb - 1) / mb;
-                        let tiles_n = (n + nb - 1) / nb;
+                    let mut nt = 0;
+                    while nt < n_blk {
+                        // 打一个 kc×32 面板
+                        self.pack_b_panel_from_bnt(
+                            b_nt,
+                            k,          // ldb_row_nt = K
+                            n0 + nt,
+                            k0,
+                            kc_cur,
+                            nr,
+                            b_panel_ptr,
+                        );
 
-                        for tm in 0..tiles_m {
-                            for tn in 0..tiles_n {
-                                let m0 = tm * mb;
-                                let n0 = tn * nb;
+                        let mut mi = 0;
+                        while mi < m_blk {
+                            let a_tile = a.add((m0 + mi) * k + k0);           // 3×kc
+                            let c_tile = c.add((m0 + mi) * ldc + (n0 + nt));  // 3×32
 
-                                let m_blk = (m - m0).min(mb);
-                                let n_blk = (n - n0).min(nb);
-                                debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
+                            // ✅ GEMM 微核：3×32
+                            self.compute1(
+                                a_tile,
+                                b_panel_ptr as *const T,
+                                c_tile,
+                                k,        // lda = K
+                                ldc,
+                                kc_cur,
+                            );
 
-                                let mut k0 = 0;
-                                while k0 < k {
-                                    let mut nt = 0;
-                                    while nt < n_blk {
-                                        let mut mi = 0;
-                                        while mi < m_blk {
-                                            let a_tile = a_s.add((m0 + mi) * lda + k0); // 3×kc
-                                            let c_tile = c_s.add((m0 + mi) * ldq + (n0 + nt)); // 3×128
-                                            let b_row = wq.add(k0 * ldq + (n0 + nt)); // B[k0, n0+nt]
+                            // ✅ 在 K 尾部 + 这一块是某个 head 的最后 32 列 => 做 3×128 finalize
+                            if finalize && (k0 + kc_cur == k) {
+                                let global_col = n0 + nt;           // 当前这块 32 的起始列
+                                let offset_in_head = global_col % head_dim;
 
-                                            // 3×128 累加
-                                            self.compute1(a_tile, b_row, c_tile);
+                                // 只有当 offset+32 == head_dim 时，这块是该 head 的最后 32 列
+                                if offset_in_head + nr == head_dim {
+                                    let head_col0 = global_col - offset_in_head; // head 的起始列
 
-                                            // 尾 kc：RMS + RoPE（原位）
-                                            if k0 + kc == k {
-                                                self.compute2(c_tile, rope_row_ptr);
-                                            }
+                                    let c_head_ptr = c.add((m0 + mi) * ldc + head_col0);
+                                    let rope_head_ptr = rope_base.add(head_col0);
 
-                                            mi += mr;
-                                        }
-                                        nt += nr;
-                                    }
-                                    k0 += kc;
+                                    // ✅ 这里调用 trait 的 compute2，内部去用 3×128 内核
+                                    self.compute2(
+                                        c_head_ptr,   // 3×128 的起点
+                                        rope_head_ptr,
+                                        ldc,
+                                    );
                                 }
                             }
+
+                            mi += mr;
                         }
+
+                        nt += nr;
                     }
-
-                    // ===== K 路径 =====
-                    self.active_ldc.set(ldk);
-                    {
-                        let c_s = ck_base.add(s * m * n);
-                        let tiles_m = (m + mb - 1) / mb;
-                        let tiles_n = (n + nb - 1) / nb;
-
-                        for tm in 0..tiles_m {
-                            for tn in 0..tiles_n {
-                                let m0 = tm * mb;
-                                let n0 = tn * nb;
-
-                                let m_blk = (m - m0).min(mb);
-                                let n_blk = (n - n0).min(nb);
-                                debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
-
-                                let mut k0 = 0;
-                                while k0 < k {
-                                    let mut nt = 0;
-                                    while nt < n_blk {
-                                        let mut mi = 0;
-                                        while mi < m_blk {
-                                            let a_tile = a_s.add((m0 + mi) * lda + k0);
-                                            let c_tile = c_s.add((m0 + mi) * ldk + (n0 + nt));
-                                            let b_row = wk.add(k0 * ldk + (n0 + nt));
-
-                                            self.compute1(a_tile, b_row, c_tile);
-
-                                            if k0 + kc == k {
-                                                self.compute2(c_tile, rope_row_ptr);
-                                            }
-
-                                            mi += mr;
-                                        }
-                                        nt += nr;
-                                    }
-                                    k0 += kc;
-                                }
-                            }
-                        }
-                    }
-
-                    // ===== V 路径（无 finalize）=====
-                    self.active_ldc.set(ldv);
-                    {
-                        let c_s = cv_base.add(s * m * n);
-                        let tiles_m = (m + mb - 1) / mb;
-                        let tiles_n = (n + nb - 1) / nb;
-
-                        for tm in 0..tiles_m {
-                            for tn in 0..tiles_n {
-                                let m0 = tm * mb;
-                                let n0 = tn * nb;
-
-                                let m_blk = (m - m0).min(mb);
-                                let n_blk = (n - n0).min(nb);
-                                debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
-
-                                let mut k0 = 0;
-                                while k0 < k {
-                                    let mut nt = 0;
-                                    while nt < n_blk {
-                                        let mut mi = 0;
-                                        while mi < m_blk {
-                                            let a_tile = a_s.add((m0 + mi) * lda + k0);
-                                            let c_tile = c_s.add((m0 + mi) * ldv + (n0 + nt));
-                                            let b_row = wv.add(k0 * ldv + (n0 + nt));
-
-                                            self.compute1(a_tile, b_row, c_tile);
-                                            // V 不做 finalize
-
-                                            mi += mr;
-                                        }
-                                        nt += nr;
-                                    }
-                                    k0 += kc;
-                                }
-                            }
-                        }
-                    }
+                    k0 += kc_cur;
                 }
             }
         }
     }
-}
-impl<T> MatMul4Trait<T> for MatMul3<T>
+
+    /// 入口：不再有 S 维度，只针对当前 A[M×K] 做一次 K/Q/V。
+    pub fn run(
+        &self,
+        batch_size: usize, // M
+        cpu_num: usize,
+        thread_id: usize,
+    )
+    where
+        Self: MatMulkqvTrait<T>,
+    {
+        unsafe {
+            let m   = batch_size;
+            let k   = self.col;
+            let n_q = self.b_q_row;
+            let n_kv= self.b_kv_row;
+
+            debug_assert_eq!(m, self.m_row);
+
+            let a_base = self.hidden_ptr.ptr;
+            let cq_base = self.q_state_ptr.ptr;
+            let ck_base = self.k_state_ptr.ptr;
+            let cv_base = self.v_state_ptr.ptr;
+
+            let wq_nt = self.q_weight_ptr.ptr;
+            let wk_nt = self.k_weight_ptr.ptr;
+            let wv_nt = self.v_weight_ptr.ptr;
+
+            let ldq = n_q;
+            let ldk = n_kv;
+            let ldv = n_kv;
+
+            let rope_base = self.rope_ptr.ptr;
+
+            // === 1) V 路径：通常不做 RMS+RoPE ===
+            self.gemm_one_path_tiles(
+                a_base,
+                cv_base,
+                wv_nt,
+                m,
+                n_kv,
+                k,
+                ldv,
+                rope_base,
+                cpu_num,
+                thread_id,
+                false, // V 不 finalize
+            );
+
+            // === 2) K 路径：做 RMS+RoPE（3×128） ===
+            self.gemm_one_path_tiles(
+                a_base,
+                ck_base,
+                wk_nt,
+                m,
+                n_kv,
+                k,
+                ldk,
+                rope_base,
+                cpu_num,
+                thread_id,
+                true,  // K finalize
+            );
+
+            // === 3) Q 路径：看你模型需要，这里暂时 true ===
+            self.gemm_one_path_tiles(
+                a_base,
+                cq_base,
+                wq_nt,
+                m,
+                n_q,
+                k,
+                ldq,
+                rope_base,
+                cpu_num,
+                thread_id,
+                true,  // 如果 Q 不需要 RMS+RoPE，可以改成 false
+            );
+        }
+    }
+    
+}impl<T> MatMulkqvTrait<T> for MatMul3<T>
 where
-    T: Copy + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
-    default fn compute1(&self, _a: *const T, _b: *const T, _c: *mut T) {
-        // generic 占位，暂时什么都不做
+    #[inline]
+    default fn compute1(
+        &self,
+        _a: *const T,
+        _b_panel: *const T,
+        _c: *mut T,
+        _lda: usize,
+        _ldc: usize,
+        _kc: usize,
+    ) {
+        // generic 占位，不做事
     }
 
-    default fn compute2(&self, _c: *mut T, _rope_ptr: *const T) {
-        // generic 占位
+    #[inline]
+    default fn compute2(
+        &self,
+        _c_head: *mut T,
+        _rope_head: *const T,
+        _ldc: usize,
+    ) {
+        // generic 占位，不做事
     }
 }
 
-impl MatMul4Trait<f16> for MatMul3<f16> {
-    fn compute1(&self, a: *const f16, b_row: *const f16, c: *mut f16) {
-        let call_param = MatMulParams {
-            a_row_step_macro: self.lda_fixed,
-            b_row_step_macro: self.active_ldc.get(),
-            column_step_macro: self.kc_fixed,
-            a_row_step_micro: self.mr_fixed, // 3
-            b_row_step_micro: self.nr_fixed, // 128
-        };
-
+// ===== f16 特化：真正调用 AVX-512 微核 =====
+impl MatMulkqvTrait <f16> for MatMul3<f16> {
+    #[inline]
+    fn compute1(
+        &self,
+        a: *const f16,
+        b_panel: *const f16,
+        c: *mut f16,
+        lda: usize,
+        ldc: usize,
+        kc: usize,
+    ) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            crate::kernel::x86_64::f16_512::matmul_rms_complex::matmul_update_inplace_3x128_accum(
+            // 3×32 GEMM 微核
+            crate::kernel::x86_64::f16_512::matmul_rms_complex::matmul_update_inplace_3x32_accum(
                 a,
-                b_row,
+                b_panel,
                 c,
-                &call_param,
+                lda,
+                ldc,
+                kc,
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
-            // fallback generic 或者留空
+            // TODO: fallback 标量/通用实现
         }
     }
 
-    fn compute2(&self, c: *mut f16, rope_ptr: *const f16) {
-        let call_param = MatMulParams {
-            a_row_step_macro: self.lda_fixed,
-            b_row_step_macro: self.active_ldc.get(),
-            column_step_macro: self.kc_fixed,
-            a_row_step_micro: self.mr_fixed,
-            b_row_step_micro: self.nr_fixed,
-        };
-
+    #[inline]
+    fn compute2(
+        &self,
+        c_head: *mut f16,      // 指向 3×128 的起点（某个 head 的整行）
+        rope_head: *const f16, // 对应这个 head 的 128 维 RoPE 相位
+        ldc: usize,
+    ) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
             let eps: f16 = 1e-6f32 as f16;
             crate::kernel::x86_64::f16_512::matmul_rms_complex::matmul_finalize_rmsnorm_rope_inplace_3x128(
-                c, rope_ptr, eps, &call_param,
+                c_head,
+                rope_head,
+                ldc,
+                eps,
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
-            // fallback generic 或者留空
+            // TODO: fallback 实现
         }
     }
 }
 
-impl MatMul4Trait<f32> for MatMul3<f32> {
-    fn compute1(&self, _a: *const f32, _b: *const f32, _c: *mut f32) {
+// ===== f32 占位版本（以后要的话再补微核） =====
+impl MatMulkqvTrait<f32> for MatMul3<f32> {
+    #[inline]
+    fn compute1(
+        &self,
+        _a: *const f32,
+        _b_panel: *const f32,
+        _c: *mut f32,
+        _lda: usize,
+        _ldc: usize,
+        _kc: usize,
+    ) {
         // TODO: f32 版本
     }
 
-    fn compute2(&self, _c: *mut f32, _rope_ptr: *const f32) {
+    #[inline]
+    fn compute2(
+        &self,
+        _c_head: *mut f32,
+        _rope_head: *const f32,
+        _ldc: usize,
+    ) {
         // TODO: f32 版本
     }
 }
