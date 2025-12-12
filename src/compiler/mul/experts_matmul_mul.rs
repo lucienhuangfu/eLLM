@@ -10,7 +10,7 @@ use super::super::super::init::{
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::MatMul4Trait;
+use super::mul_trait::ExpertsDownTrait; // ← 新 trait
 
 /// Experts Down Projection:
 ///   NONLIN[e, b, Hmid]   ×  W_down[e, Hmid, H]   → OUT[b, slot, H]
@@ -150,7 +150,7 @@ where
                 return s;
             }
         }
-        // 理论上不应走到这里
+        // 理论上不应走到这里（因为 e 对这个 b 激活时，一定在 topk 里）
         0
     }
 
@@ -234,7 +234,7 @@ where
                 let a_tile  = self.a_tile.as_ptr() as *mut T;
                 let acc     = self.acc_tile.as_ptr() as *mut T;
 
-                // 临时 idx buffer
+                // 临时 idx buffer（每线程一次分配）
                 let mut idx_buf = vec![0usize; mb];
 
                 for t in tb..te {
@@ -245,13 +245,15 @@ where
                     let n0    = tn * nb;
 
                     let n_blk = (n - n0).min(nb);
+                    // 这里默认 nb == nr（即 N 方向分块与微核宽度一致）
+                    debug_assert!(n_blk <= nr);
 
                     // === 遍历 experts ===
                     for e in 0..self.num_experts {
 
                         if !*self.experts_indicator.ptr.add(e) { continue; }
 
-                        // 该 expert 的 token 数 cnt_e（从 indice_ptr[e,*] 数）
+                        // 该 expert 的 token 数 cnt_e
                         let mut cnt_e = 0usize;
                         for b in 0..batch_size {
                             if *self.indice_ptr.ptr.add(e * batch_size + b) {
@@ -278,7 +280,15 @@ where
                             }
                         }
 
+                        // 如果这个宏块内没有 token 命中，跳过
+                        if be == 0 {
+                            continue;
+                        }
+
                         // === Kc×NR + MR×Kc → MR×NR ===
+                        // 1) 先清零整个 acc（MR×NR），再在 K 维累加
+                        for u in 0..(mr * nr) { *acc.add(u) = T::default(); }
+
                         let mut k0 = 0usize;
                         while k0 < k {
                             // pack A (be 行)
@@ -290,7 +300,7 @@ where
                                 a_tile,
                             );
 
-                            // pack B
+                            // pack B（当前 expert 的 N×K 中的一段）
                             let b_nt = self.wdown_nt_ptr.ptr
                                 .add(e * (self.h * self.hmid));
                             Self::pack_b_panel(
@@ -303,10 +313,7 @@ where
                                 b_panel,
                             );
 
-                            // acc 清零
-                            for u in 0..(mr * nr) { *acc.add(u) = T::default(); }
-
-                            // compute1: (MR×KC) * (KC×NR)
+                            // compute1: (MR×KC) * (KC×NR)，累加到 acc
                             self.compute1(
                                 a_tile as *const T,
                                 b_panel as *const T,
@@ -329,13 +336,15 @@ where
                                      + slot * n
                                      + n0);
 
-                            // acc 行地址
-                            let acc_row = acc.add(r * nr);
+                            // acc 中第 r 行的起点
+                            let acc_row = acc.add(r * nr) as *const T;
 
-                            // compute2(acc_row, factor)
+                            // compute2: out_row += acc_row * factor
                             self.compute2(
                                 out_row,
+                                acc_row,
                                 &factor as *const T,
+                                n_blk, // 当前 tile 宽度
                             );
                         }
                     }
@@ -345,12 +354,100 @@ where
     }
 }
 
-/* ---------------- Trait 默认实现 ---------------- */
+/* ---------------- ExpertsDownTrait 默认实现 ---------------- */
 
-impl<T> MatMul4Trait<T> for ExpertsMatmulDown<T>
+impl<T> ExpertsDownTrait<T> for ExpertsMatmulDown<T>
 where
-    T: Copy + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
-    default fn compute1(&self, _a: *const T, _b: *const T, _c: *mut T) {}
-    default fn compute2(&self, _c: *mut T, _factor: *const T) {}
+    // compute1: GEMM micro-kernel，占位（generic 不做事）
+    default fn compute1(
+        &self,
+        _a_tile: *const T,
+        _b_panel: *const T,
+        _acc: *mut T,
+    ) {
+        // 默认空实现，真正的 f16 专用内核在下面特化
+    }
+
+    // compute2: out_row += acc_row * factor，占位（generic 不做事）
+    default fn compute2(
+        &self,
+        _out_row: *mut T,
+        _acc_row: *const T,
+        _factor: *const T,
+        _len: usize,
+    ) {
+        // 默认空实现
+    }
+}
+
+/* ---------------- f16 专用实现（AVX-512 FP16） ---------------- */
+
+impl ExpertsDownTrait<f16> for ExpertsMatmulDown<f16> {
+    /// compute1: 用通用 3×32 GEMM 微核 matmul_block 累加到 acc
+    fn compute1(
+        &self,
+        a_tile: *const f16,
+        b_panel: *const f16,
+        acc: *mut f16,
+    ) {
+        // 对 matmul_block 的参数映射：
+        // - A_tile: MR×KC，行距 lda = KC
+        // - B_panel: KC×NR，行距 32（微核内部固定）
+        // - C(acc): MR×NR，行距 ldc = NR
+        let kc = self.params.column_step_macro;
+        let mr = self.params.a_row_step_micro;
+        let nr = self.params.b_row_step_micro;
+
+        debug_assert_eq!(mr, 3);
+        debug_assert_eq!(nr, 32);
+
+        let call_param = MatMulParams {
+            a_row_step_macro: kc,      // lda = KC
+            b_row_step_macro: nr,      // ldc = NR
+            column_step_macro: kc,     // kc
+            a_row_step_micro: mr,      // MR
+            b_row_step_micro: nr,      // NR
+        };
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            kernel::x86_64::f16_512::matmul_block::matmul_block(
+                a_tile,
+                b_panel,
+                acc,
+                &call_param,
+            );
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        {
+            unreachable!("avx512fp16 required for ExpertsDownTrait<f16>::compute1");
+        }
+    }
+
+    /// compute2: out_row[j] += acc_row[j] * factor，长度 len
+    fn compute2(
+        &self,
+        out_row: *mut f16,
+        acc_row: *const f16,
+        factor: *const f16,
+        len: usize,
+    ) {
+        let factor_val = unsafe { *factor };
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            kernel::x86_64::f16_512::moe_down::moe_down_scale_add(
+                out_row,
+                acc_row,
+                factor_val,
+                len,
+            );
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        {
+            unreachable!("avx512fp16 required for ExpertsDownTrait<f16>::compute2");
+        }
+    }
 }
