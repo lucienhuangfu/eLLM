@@ -7,6 +7,8 @@ pub mod flash_attention;
 pub mod matmul_block;
 pub mod rms_norm;
 pub mod silu;
+pub mod moe_merge;
+// pub mod vec_mat_mul;
 pub mod bitonic_sort;
 
 pub mod experts_topk_softmax_norm;
