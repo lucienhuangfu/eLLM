@@ -168,7 +168,7 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
-        /*
+        
         unsafe {
             // 维度
             let m = batch_size;
@@ -273,7 +273,7 @@ where
                     }
                 }
             }
-        }*/
+        }
     } 
 }
 
@@ -311,7 +311,7 @@ impl Matmul3Trait<f16> for MatmulSilu<f16> {
         gate_acc: *mut f16,
         up_acc: *mut f16,
     ) {
-        /*
+        
         // 调用期参数映射（update 阶段）：
         // - lda = K                -> a_row_step_macro = self.k_max
         // - ldc_acc = 32 (NR)     -> b_row_step_macro = self.params.b_row_step_micro
@@ -339,12 +339,12 @@ impl Matmul3Trait<f16> for MatmulSilu<f16> {
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
             unreachable!("avx512fp16 required for f16 path");
-        } */
+        } 
     }
 
     /// finalize：C = SiLU(gate_acc) ⊙ up_acc
     fn compute2(&self, gate_acc: *const f16, up_acc: *const f16, c_tile: *mut f16) {
-        /* 
+        
         // 调用期参数映射（finalize 阶段）：
         // - ldc_out = N           -> b_row_step_macro = self.n_max
         // - mr/nr 来自 params
@@ -365,6 +365,6 @@ impl Matmul3Trait<f16> for MatmulSilu<f16> {
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
             unreachable!("avx512fp16 required for f16 path");
-        }*/
+        }
     }
 }

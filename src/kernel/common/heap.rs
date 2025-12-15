@@ -141,7 +141,6 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
             }
         }
     }
-    
 }
 
 #[cfg(test)]
@@ -169,5 +168,4 @@ mod tests {
             assert_eq!(indices[i], exp.1);
         }
     }
-}
 }
