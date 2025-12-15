@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::ptr;
+#[derive(Clone)]
 
 pub struct FixedMinHeap<T: PartialOrd + Copy> {
     values: *mut T,
@@ -40,6 +41,9 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
                 self.sift_down(0);
             }
         }
+    }
+    pub fn clear(&mut self) {
+        self.len = 0;
     }
 
     pub fn sort_desc(&mut self) {
@@ -137,6 +141,7 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
             }
         }
     }
+    
 }
 
 #[cfg(test)]
@@ -164,4 +169,5 @@ mod tests {
             assert_eq!(indices[i], exp.1);
         }
     }
+}
 }

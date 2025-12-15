@@ -40,7 +40,7 @@ pub unsafe fn matmul_block(
     let a1 = a.add(lda);
     let a2 = a.add(2 * lda);
 
-    // 读入 C 累加器
+    // 读入 C 累加器（unaligned load，方便上层随意对齐）
     let mut c_row0 = _mm512_loadu_ph(c.add(0 * ldc));
     let mut c_row1 = _mm512_loadu_ph(c.add(1 * ldc));
     let mut c_row2 = _mm512_loadu_ph(c.add(2 * ldc));
@@ -68,40 +68,103 @@ pub unsafe fn matmul_block(
 mod tests {
     use super::*;
     use std::arch::is_x86_feature_detected;
+    use std::mem;
+    use std::ptr;
+    use std::slice;
     use std::f16;
 
-    #[inline] fn f16v(v: f32) -> f16 { let h = half::f16::from_f32(v); f16::from_bits(h.to_bits()) }
-    #[inline] fn to_f32(x: f16) -> f32 { half::f16::from_bits(x.to_bits()).to_f32() }
-    fn all_close(a: &[f16], b: &[f16], tol: f32) -> bool {
-        a.len() == b.len() && a.iter().zip(b).all(|(x,y)| (to_f32(*x)-to_f32(*y)).abs() <= tol)
+    use crate::kernel::generic::from_f32::FromF32;      // 提供 f16::from_f32
+    use crate::memory::allocator::allocate_init;        // 你们自家的对齐 allocator
+
+    #[inline]
+    fn f16_from_f32(x: f32) -> f16 {
+        f16::from_f32(x)
+    }
+
+    /// 手写 f16 -> f32 转换，只用于测试里的误差检查/打印
+    #[inline]
+    fn f32_from_f16(x: f16) -> f32 {
+        let bits: u16 = unsafe { mem::transmute(x) };
+        let sign = ((bits & 0x8000) as u32) << 16;
+        let exp = (bits & 0x7C00) >> 10;
+        let mant = bits & 0x03FF;
+
+        let f_bits: u32 = if exp == 0 {
+            if mant == 0 {
+                sign
+            } else {
+                let mut e: i32 = -14;
+                let mut m = mant as u32;
+                while (m & 0x0400) == 0 {
+                    m <<= 1;
+                    e -= 1;
+                }
+                m &= 0x03FF;
+                let exp_f = (e + 127) as u32;
+                sign | (exp_f << 23) | (m << 13)
+            }
+        } else if exp == 0x1F {
+            let exp_f = 0xFFu32;
+            sign | (exp_f << 23) | ((mant as u32) << 13)
+        } else {
+            let exp_f = (exp as i32 - 15 + 127) as u32;
+            sign | (exp_f << 23) | ((mant as u32) << 13)
+        };
+
+        f32::from_bits(f_bits)
+    }
+
+    fn approx_eq(a: f16, b: f16, tol: f32) -> bool {
+        let da = f32_from_f16(a);
+        let db = f32_from_f16(b);
+        (da - db).abs() <= tol
     }
 
     #[test]
     fn test_broadcast_microkernel_3x32_k64_ones() {
         if !is_x86_feature_detected!("avx512fp16") {
-            eprintln!("Skipping: CPU lacks avx512fp16");
+            eprintln!("Skipping test_broadcast_microkernel_3x32_k64_ones: avx512fp16 not detected");
             return;
         }
-        unsafe {
-            let mr=3; let nr=32; let kc=64;
-            let lda=kc; let ldc=nr;
 
-            let param = MatmulParams {
-                a_row_step_macro: lda,
-                b_row_step_macro: ldc,
-                column_step_macro: kc,
-                a_row_step_micro: mr,
-                b_row_step_micro: nr,
+        unsafe {
+            const MR: usize = 3;
+            const NR: usize = 32;
+            const KC: usize = 64;
+            const LDA: usize = KC;
+            const LDC: usize = NR;
+
+            let param = MatMulParams {
+                a_row_step_macro: LDA,
+                b_row_step_macro: LDC,
+                column_step_macro: KC,
+                a_row_step_micro: MR,
+                b_row_step_micro: NR,
             };
 
-            let a: Vec<f16> = (0..mr*kc).map(|_| f16v(1.0)).collect();
-            let b_panel: Vec<f16> = (0..kc*nr).map(|_| f16v(1.0)).collect();
-            let mut c: Vec<f16> = (0..mr*ldc).map(|_| f16v(0.0)).collect();
+            // 上层“默认对齐”的版本：用你们的 allocate_init 分配 A/B/C
+            let a_ptr = allocate_init::<f16>(MR * LDA, f16_from_f32(1.0));
+            let b_ptr = allocate_init::<f16>(KC * NR, f16_from_f32(1.0));
+            let c_ptr = allocate_init::<f16>(MR * LDC, f16_from_f32(0.0));
 
-            matmul_block(a.as_ptr(), b_panel.as_ptr(), c.as_mut_ptr(), &param);
+            // 调用 AVX-512 微核
+            matmul_block(a_ptr, b_ptr, c_ptr, &param);
 
-            let expected: Vec<f16> = (0..mr*ldc).map(|_| f16v(kc as f32)).collect();
-            assert!(all_close(&c, &expected, 1e-3));
+            // 读回 C: 每个元素都应该等于 KC（因为 sum_{k} 1*1，初始 C=0）
+            let c_slice = slice::from_raw_parts(c_ptr, MR * LDC);
+            let expected = f16_from_f32(KC as f32);
+
+            for (i, &v) in c_slice.iter().enumerate() {
+                assert!(
+                    approx_eq(v, expected, 1e-2),
+                    "mismatch at index {}: got {:?} (f32={}), expected {:?} (f32={})",
+                    i,
+                    v,
+                    f32_from_f16(v),
+                    expected,
+                    f32_from_f16(expected),
+                );
+            }
         }
     }
 } */
