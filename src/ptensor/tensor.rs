@@ -7,24 +7,25 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::memory::cache::Cache;
+use super::super::init::tensor_utils::get_strides;
 use super::super::memory::allocator::allocate_init;
-use super::tensor_utils::get_strides;
-use crate::init::matmul_params::MatMulParams;
+use super::super::memory::cache::Cache;
+use crate::init::matmul_params::MatmulParams;
 
 use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
-use super::super::compiler::mul::attention_add::AttentionAdd;
-use super::super::compiler::mul::experts_matmul_merge_add::ExpertsMatMulMergeAdd;
-use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
-use super::super::compiler::mul::matmul::MatMul;
-use super::super::compiler::mul::matmul3::MatMul3;
-use super::super::compiler::mul::matmul_add::MatMulAdd;
-use super::super::compiler::mul::matmul_silu_mul_matmul::MatMulSilu;
-use super::super::compiler::mul::matmul_topk::MatMulTopK;
+use super::super::compiler::mul::attention::Attention;
+use super::super::compiler::mul::experts_matmul_mul::ExpertsMatmulMul;
+use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsMatmulSilu;
+use super::super::compiler::mul::experts_merge_add::ExpertsMergeAdd;
+use super::super::compiler::mul::matmul::Matmul;
+use super::super::compiler::mul::matmul3::Matmul3;
+use super::super::compiler::mul::matmul_add::MatmulAdd;
+use super::super::compiler::mul::matmul_silu_mul_matmul::MatmulSilu;
+use super::super::compiler::mul::matmul_topk::MatmulTopK;
 use super::super::compiler::operator::Operator;
 use super::super::compiler::zip_map::add_zip::AddZipMap;
 use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
@@ -45,7 +46,15 @@ pub struct Tensor<T> {
 
 impl<T> Tensor<T>
 where
-    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
+    T: Copy
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid<T>
+        + Sqrt
+        + AddAssign,
 {
     pub fn add(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
         let output_tensor = <Tensor<T>>::from_cache(
@@ -65,7 +74,6 @@ where
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
-
 
     pub fn add_rms(
         &self,
@@ -94,11 +102,11 @@ where
         output_tensor
     }
 
-    pub fn attention_add(
+    pub fn attention(
         &self,
         k_tensor: &Tensor<T>,
         v_tensor: &Tensor<T>,
-        residual: &Tensor<T>,
+        // residual: &Tensor<T>,
         inverse_sqrt_head: T,
         scope_name: String,
     ) -> Self {
@@ -110,11 +118,11 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::AttentionAdd(AttentionAdd::new(
+        let operator = Operator::Attention(Attention::new(
             self.data,
             k_tensor.data,
             v_tensor.data,
-            residual.data,
+            // residual.data,
             output_tensor.data,
             self.shape[1],
             self.shape[2],
@@ -160,18 +168,16 @@ where
         output_tensor
     }
 
-    pub fn experts_matmul_merge_add(
+    pub fn experts_merge_add(
         &self,
-        down_weights: &Tensor<T>,
-        topk_indice: &Tensor<T>,
-        topk_value: &Tensor<T>,
         residual: &Tensor<T>,
-        params: MatMulParams,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        num_experts: usize,
         scope_name: String,
     ) -> Self {
-        // down_weights [num_experts, hidden_size, intermediate_size]
         // output [sequence_chunk_size, batch_size, hidden_size]
-        let output_shape = vec![self.shape[0], self.shape[1], down_weights.shape[1]];
+        let output_shape = vec![self.shape[0], self.shape[1], self.shape[3]];
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
@@ -180,16 +186,63 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::ExpertsMatMulMergeAdd(ExpertsMatMulMergeAdd::new(
+        let operator = Operator::ExpertsMergeAdd(ExpertsMergeAdd::new(
+            self.data,
+            residual.data,
+            experts_indicator,
+            indice_ptr,
+            output_tensor.data,
+            self.shape[0],
+            self.shape[1],
+            num_experts,
+            self.shape[2],
+            self.shape[3],
+        ));
+
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+    pub fn experts_matmul_mul(
+        &self,
+        down_weights: &Tensor<T>,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        weight_ptr: *mut T,
+        topk_indices_ptr: *mut usize,
+        // sequence_chunk_size: usize,
+        // batch_size: usize,
+        num_experts_per_tok: usize,
+        params: MatmulParams,
+        scope_name: String,
+    ) -> Self {
+        // down_weights [num_experts, hidden_size, intermediate_size]
+        // output [sequence_chunk_size, batch_size, num_experts_per_token, hidden_size]
+        let output_shape = vec![
+            self.shape[1],
+            self.shape[2],
+            num_experts_per_tok,
+            down_weights.shape[1],
+        ];
+
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            format!("{}.output", scope_name),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::ExpertsMatmulMul(ExpertsMatmulMul::new(
             self.data,
             down_weights.data,
-            topk_indice.data,
-            topk_value.data,
-            residual.data,
+            experts_indicator,
+            indice_ptr,
+            weight_ptr,
+            topk_indices_ptr,
             output_tensor.data,
-            self.shape[1],
-            down_weights.shape[1],
             self.shape[2],
+            down_weights.shape[1],
+            down_weights.shape[0],
             params.a_row_step_macro,
             params.b_row_step_macro,
             params.column_step_macro,
@@ -205,30 +258,38 @@ where
         &self,
         gate_weights: &Tensor<T>,
         up_weights: &Tensor<T>,
-        topk: &Tensor<T>,
-        params: MatMulParams,
-        tensor_name: String,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        // weight_ptr: *mut T,
+        params: MatmulParams,
+        scope_name: String,
     ) -> Self {
         // gate_weights [num_experts, intermediate_size, hidden_size]
-        // output [sequence_chunk_size, batch_size, intermediate_size]
-        let output_shape = vec![self.shape[0], self.shape[1], gate_weights.shape[1]];
+        // output [num_experts, sequence_chunk_size , batch_size, intermediate_size]
+        let output_shape = vec![
+            gate_weights.shape[0],
+            self.shape[0],
+            self.shape[1],
+            gate_weights.shape[1],
+        ];
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
-            tensor_name,
+            format!("{}.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::ExpertsMatMulSiluMulMatMul(ExpertsMatMulSilu::new(
+        let operator = Operator::ExpertsMatmulSiluMulMatmul(ExpertsMatmulSilu::new(
             self.data,
             gate_weights.data,
             up_weights.data,
-            topk.data,
+            experts_indicator,
+            indice_ptr,
             output_tensor.data,
             self.shape[1],
             gate_weights.shape[1],
-            self.shape[2],
+            gate_weights.shape[0],
             params.a_row_step_macro,
             params.b_row_step_macro,
             params.column_step_macro,
@@ -240,31 +301,39 @@ where
         output_tensor
     }
 
-    pub fn experts_softmax_norm(&self, topk_size: usize, scope_name: String) -> (Self, Self) {
-        let indice_tensor = Tensor::from_cache(
-            vec![self.shape[0], self.shape[1], topk_size],
-            format!("{}.indice", scope_name),
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
+    pub fn experts_softmax_norm(
+        &self,
+        num_experts: usize,
+        num_experts_per_tok: usize,
+        scope_name: String,
+    ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
+        // [(experts_id, [(token_id, weight)])]
+        // sorted_ids: Vec<(usize, Vec<(usize, T)>)>,
 
-        let value_tensor = Tensor::from_cache(
-            vec![self.shape[0], self.shape[1], topk_size],
-            format!("{}.value", scope_name),
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
+        // [expert_num] bool
+        let experts_indicator = unsafe { allocate_init(num_experts, false) };
+        // [expert_num, sequence_chunk_size * batch_size] indice bool vec<bool>
+        // [expert_num, sequence_chunk_size * batch_size] weight f16
+        let length = num_experts * self.shape[0] * self.shape[1];
+        let indice_ptr = unsafe { allocate_init(length, false) };
+        let weight_ptr = unsafe { allocate_init(length, T::default()) };
+        let mut topk_indices_ptr =
+            unsafe { allocate_init(num_experts_per_tok * self.shape[0] * self.shape[1], 0usize) };
+        // vec![0usize; num_experts * self.shape[0] * self.shape[1]];
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
             self.data,
-            indice_tensor.data,
-            value_tensor.data,
+            experts_indicator,
+            indice_ptr,
+            weight_ptr,
+            topk_indices_ptr,
+            self.shape[0],
             self.shape[1],
-            topk_size,
+            num_experts,
+            num_experts_per_tok,
         ));
-
         self.operator_queue.borrow_mut().push(operator);
-        (indice_tensor, value_tensor)
+        (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr)
     }
 
     pub fn from_cache(
@@ -289,9 +358,9 @@ where
     pub fn matmul(
         &self,
         tensor2: &Tensor<T>,
-        params: MatMulParams,
+        params: MatmulParams,
         sequence_length: usize,
-        tensor_name: String,
+        scope_name: String,
     ) -> Self {
         let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
 
@@ -302,13 +371,18 @@ where
         };
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
-            tensor_name,
+            format!("{}.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
+        tensor2.data;
+        println!(
+            "Before matmul operator creation in Tensor matmul: {}",
+            scope_name
+        );
 
         let operator = unsafe {
-            Operator::MatMul(MatMul::new(
+            Operator::Matmul(Matmul::new(
                 self.data,
                 tensor2.data,
                 output_tensor.data,
@@ -319,6 +393,7 @@ where
                 self.shape[2],
             ))
         };
+        println!("After matmul in Tensor matmul: {}", scope_name);
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
@@ -328,7 +403,7 @@ where
         &self,
         tensor2: &Tensor<T>,
         tensor3: &Tensor<T>,
-        params: MatMulParams,
+        params: MatmulParams,
         tensor_name: String,
     ) -> Self {
         let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
@@ -344,7 +419,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMulAdd(MatMulAdd::new(
+        let operator = Operator::MatmulAdd(MatmulAdd::new(
             self.data,
             tensor2.data,
             tensor3.data,
@@ -363,6 +438,7 @@ where
         output_tensor
     }
 
+    /*
     pub fn matmul3(
         &self,
         q_weight: &Tensor<T>,
@@ -370,7 +446,7 @@ where
         v_weight: &Tensor<T>,
         position_embedding: &Tensor<T>,
         head_dim: usize,
-        params: MatMulParams,
+        params: MatmulParams,
         scope_name: String,
     ) -> (Self, Self, Self) {
         // let head_dim = 128; // Fixed head dimension
@@ -399,7 +475,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMul3(MatMul3::new(
+        let operator = Operator::Matmul3(Matmul3::new(
             self.data,
             q_weight.data,
             q_state.data,
@@ -422,13 +498,13 @@ where
 
         self.operator_queue.borrow_mut().push(operator);
         (q_state, k_state, v_state)
-    }
+    }*/
 
     pub fn matmul_silu_mul_matmul(
         &self,
         tensor2: &Tensor<T>,
         tensor3: &Tensor<T>,
-        params: MatMulParams,
+        params: MatmulParams,
         tensor_name: String,
     ) -> Self {
         // hidden_tensor [sequence_chunk_size, batch_size, hidden_size]
@@ -448,7 +524,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMulSiluMulMatMul(MatMulSilu::new(
+        let operator = Operator::MatmulSiluMulMatmul(MatmulSilu::new(
             self.data,
             tensor2.data,
             tensor3.data,
@@ -467,10 +543,10 @@ where
         output_tensor
     }
 
-    pub fn matmul_topk(
+    pub fn matmul_local_topk(
         &self,
         tensor2: &Tensor<T>,
-        params: MatMulParams,
+        params: MatmulParams,
         thread_num: usize,
         scope_name: String,
     ) -> (*const usize, Self, Self) {
@@ -480,32 +556,23 @@ where
 
         let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
 
-        /*
-        let indice_tensor = Tensor::from_cache(
-            output_shape.clone(),
-            format!("{}.indices", scope_name),
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        ); */
-
         let indice_ptr = allocate_init(output_shape.iter().product(), 0usize);
-        //  = self.cache.borrow_mut().get(&format!("{}.indices", scope_name), output_shape.iter().product());
 
         let value_tensor = Tensor::<T>::from_cache(
             output_shape.clone(),
-            format!("{}.values", scope_name),
+            format!("{}.values.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
         let sum_tensor = Tensor::from_cache(
             vec![self.shape[0], self.shape[1], thread_num],
-            format!("{}.sums", scope_name),
+            format!("{}.sums.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMulTopK(MatMulTopK::new(
+        let operator = Operator::MatmulTopK(MatmulTopK::new(
             self.data,
             tensor2.data,
             indice_ptr,
@@ -552,7 +619,7 @@ where
     pub fn rms(&self, eps: T, scope_name: String) -> Self {
         let output_tensor = Tensor::<T>::from_cache(
             self.shape.clone(),
-            format!("{}.rms_output", scope_name),
+            format!("{}.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
@@ -590,42 +657,31 @@ where
     pub fn topk_softmax(
         &self,
         indices_ptr: *const usize,
-        // values_tensor: &Tensor<T>,
         sums_tensor: &Tensor<T>,
-        topk_size: usize,
+        output_sequences: *mut usize,
+        num_topk: usize,
         scope_name: String,
-        // value_tensor_name: String,
     ) -> (*const usize, Self) {
-        /* 
-        let indice_tensor = Tensor::from_cache(
-            vec![self.shape[0], self.shape[1], topk_size],
-            format!("{}.output_indice", scope_name),
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );*/
-
-        let output_shape = vec![self.shape[0], self.shape[1], topk_size];
+        let output_shape = vec![self.shape[0], self.shape[1], num_topk];
         let indice_ptr = allocate_init(output_shape.iter().product(), 0usize);
 
         let value_tensor = Tensor::from_cache(
-            vec![self.shape[0], self.shape[1], topk_size],
-            format!("{}.output_value", scope_name),
+            vec![self.shape[0], self.shape[1], num_topk],
+            format!("{}.output_value.output", scope_name),
             self.cache.clone(),
             self.operator_queue.clone(),
         );
 
-        
-
         let operator = Operator::TopKSoftmax(TopKSoftmax::new(
-            //indices_tensor.data,
             indices_ptr,
             self.data,
-            // values_tensor.data,
             sums_tensor.data,
             indice_ptr,
             value_tensor.data,
+            output_sequences,
             self.shape[1],
-            topk_size,
+            num_topk,
+            // self.shape[2],
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -673,30 +729,22 @@ where
     pub fn lookup_rms(
         input_sequences: *mut usize,
         word_embedding: &Tensor<T>,
+        sequence_chunk_size: usize,
         batch_size: usize,
         eps: T,
-        sequence_chunk_size: usize,
         scope_name: String,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> (Self, Self) {
         let output_hidden_tensor = Tensor::from_cache(
-            vec![
-                sequence_chunk_size,
-                batch_size,
-                word_embedding.shape[1],
-            ],
+            vec![sequence_chunk_size, batch_size, word_embedding.shape[1]],
             format!("{}.output_hidden", scope_name),
             cache.clone(),
             operator_queue.clone(),
         );
 
         let output_normal_tensor = Tensor::from_cache(
-            vec![
-                sequence_chunk_size,
-                batch_size,
-                word_embedding.shape[1],
-            ],
+            vec![sequence_chunk_size, batch_size, word_embedding.shape[1]],
             format!("{}.output_normal", scope_name),
             cache.clone(),
             operator_queue.clone(),
@@ -822,55 +870,6 @@ where
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
-
-    pub fn colmul(&self, tensor2: &Tensor<T>, mut operator: Operator<T>, tensor_name: String) -> Self {
-        let output_shape = [self.shape[..2].to_vec(), tensor2.shape[3..4].to_vec()].concat();
-        let output_tensor = Tensor::from_cache(
-            output_shape.clone(),
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-        let chunks = chunk_colmul(
-            self.data,
-            self.shape.clone(),
-            self.strides.clone(),
-            tensor2.data,
-            tensor2.shape.clone(),
-            tensor2.strides.clone(),
-            output_tensor.data,
-            output_tensor.shape.clone(),
-            output_tensor.strides.clone(),
-        );
-        operator.set_zipmap_chunk(chunks);
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
-        //重点！
-    }
-
-
-    pub fn vecmul(&self, tensor2: &Tensor<T> ,mut  operator: Operator<T>, tensor_name: String) -> Self {
-        let output_shape = [self.shape[..3].to_vec(), tensor2.shape[2..3].to_vec()].concat();
-        let output_tensor = Tensor::from_cache(
-            output_shape.clone(),
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-        let chunks = chunk_colmul(
-            self.data,
-            self.shape.clone(),
-            self.strides.clone(),
-            tensor2.data,
-            tensor2.shape.clone(),
-            tensor2.strides.clone(),
-            output_tensor.data,
-            output_tensor.shape.clone(),
-            output_tensor.strides.clone(),
-        );
-        operator.set_zipmap_chunk(chunks);
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
     }*/
 }
 
@@ -880,932 +879,443 @@ unsafe impl<T: Copy + Default + Send + Sync> Sync for Tensor<T> {}
 #[cfg(test)]
 mod test {
     use approx::assert_ulps_eq;
-    use num_cpus;
-    // use std::sync::Arc;
-    // use std::sync::Barrier;
     use std::collections::HashMap;
+    use std::f16;
     use std::thread;
 
+    // use num_cpus;
+    // use std::sync::Arc;
+    // use std::sync::Barrier;
     use super::*;
 
-    /*
     #[test]
-    fn test_add_zip() {
+    fn test_experts_softmax_norm_f32() {
+        let cache: Rc<RefCell<Cache<f32>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f32>>>> = Rc::new(RefCell::new(Vec::new()));
+
         let sequence_chunk_size = 1;
-        // let batch_size = 10; // 每次批处理 10 个元素
-        let batch_size = 10;
-        let head_num = 3;
-        let head_size = 6;
+        let batch_size = 2;
+        let num_experts = 8;
+        let num_experts_per_tok = 2;
 
-        let hidden_size = head_num * head_size;
-
-        let position_size = 0; // 起始位置，根据实际情况可以修改
-
-        let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
-        let length = shapes.iter().product(); // 总元素数量
-
-        // 创建模拟的输入和输出数据
-        let input_data1: Vec<f32> = (0..=(hidden_size - 1))
-            .cycle()
-            .take(length)
-            .map(|x| x as f32)
-            .collect();
-        let input_data2: Vec<f32> = vec![1.0; length];
-        let results: Vec<f32> = (1..=hidden_size)
-            .cycle()
-            .take(length)
-            .map(|x| x as f32)
-            .collect();
-        //println!("{:?}", input_data2);
-        // let mut output_data: Vec<f32> = vec![0.0; length];
-        let mut cache: Cache<f32> = Cache::new(HashMap::new());
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let cache_rc = Rc::new(RefCell::new(cache));
-        let input_tensor = Tensor::from_cache(
-            shapes.clone(),
-            String::from("model.layers.0.self_attn.value_tensor"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            input_tensor
-                .data
-                .copy_from(input_data1.as_ptr(), input_data1.len());
-        }
-        let input_tensor2 = Tensor::from_cache(
-            shapes.clone(),
-            String::from("model.layers.0.self_attn.value_tensor"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue)),
-        );
-        unsafe {
-            input_tensor2
-                .data
-                .copy_from(input_data2.as_ptr(), input_data2.len());
-        }
-        // 使用 chunk_map 函数创建块
-        // let chunks = chunk_zipmap(shapes,  input_data1.as_ptr(),input_strides1,input_data2.as_ptr(),input_strides2, output_data.as_mut_ptr(),output_strides);
-        // 使用这些块和长度初始化 ArgmaxMap
-        let thread_num: usize = num_cpus::get();
-        // let mut operator = Operator::AddZipMap(AddZipMap::new(18, thread_num));
-        let output_tensor = input_tensor.add(
-            &input_tensor2,
-            String::from("model.layers.0.self_attn.value_tensor"),
-        );
-        // input_tensor.operator_queue.borrow_mut()[0].set_zipmap_chunk(chunks);
-
-        for i in 0..thread_num {
-            input_tensor.operator_queue.borrow()[0].run(
-                0,
-                sequence_chunk_size,
-                batch_size,
-                thread_num,
-                i,
-            );
-        }
-
-        // 如需打印输出数据，请取消以下注释
-        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, results.len()) };
-        assert_ulps_eq!(output_slice[0..180], results[0..180], max_ulps = 4);
-        // println!("{:?}", output_tensor.data);
-
-        // println!("{:?}", output);
-    }
-
-    #[test]
-    fn test_silu() {
-        let sequence_chunk_size = 1;
-        let batch_size = 10;
-        let head_num = 1;
-        let head_size = 19;
-
-        let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
-        let length = shapes.iter().product();
-
-        let input_data1: Vec<f32> = vec![
-            2.1671206951141357,
-            1.4490455389022827,
-            -2.002431631088257,
-            0.5662149786949158,
-            0.3909946382045746,
-            0.9437483549118042,
-            -0.37030690908432007,
-            0.7542704939842224,
-            0.5875813961029053,
-            1.6026240587234497,
-            2.2485475540161133,
-            -0.6622593402862549,
-            -0.0015666020335629582,
-            -0.5069465041160583,
-            -0.37254711985588074,
-            0.4420417249202728,
-            -0.9305257201194763,
-            0.5145581364631653,
-            0.6260590553283691,
-        ]
-        .repeat(10);
-
-        let input_data2: Vec<f32> = vec![1.0; length];
-
-        let mut cache: Cache<f32> = Cache::new(HashMap::new());
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let cache_rc = Rc::new(RefCell::new(cache));
-
-        let input_tensor = Tensor::from_cache(
-            shapes.clone(),
-            String::from("model.layers.0.self_attn.value_tensor1"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            input_tensor
-                .data
-                .copy_from(input_data1.as_ptr(), input_data1.len());
-        }
-
-        let input_tensor2 = Tensor::from_cache(
-            shapes.clone(),
-            String::from("model.layers.0.self_attn.value_tensor2"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue)),
-        );
-        unsafe {
-            input_tensor2
-                .data
-                .copy_from(input_data2.as_ptr(), input_data2.len());
-        }
-
-        let thread_num: usize = num_cpus::get();
-
-        let output_tensor = input_tensor.silu_mul(
-            &input_tensor2,
-            String::from("model.layers.0.self_attn.value_tensor_output"),
-        );
-
-        for i in 0..thread_num {
-            input_tensor.operator_queue.borrow()[0].run(
-                0,
-                sequence_chunk_size,
-                batch_size,
-                thread_num,
-                i,
-            );
-        }
-
-        let result = [
-            1.9444659948349,
-            1.1735117435455322,
-            -0.23818494379520416,
-            0.36118248105049133,
-            0.23323695361614227,
-            0.6793630719184875,
-            -0.15125809609889984,
-            0.5129857659339905,
-            0.3777032196521759,
-            1.3339999914169312,
-            2.033867835998535,
-            -0.22532200813293457,
-            -0.0007826874498277903,
-            -0.1905660629272461,
-            -0.15197153389453888,
-            0.269090861082077,
-            -0.2631694972515106,
-            0.32204875349998474,
-            0.4079371392726898,
-        ]
-        .repeat(10);
-
-        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, result.len()) };
-        assert_ulps_eq!(output_slice[..], result[..], max_ulps = 4);
-    }
-
-    #[test]
-    fn test_rms() {
-        let sequence_chunk_size = 1;
-        let batch_size = 10; // 每次批处理 10 个元素
-        let hidden_size = 18;
-        let shape = vec![sequence_chunk_size, batch_size, hidden_size];
-        // let strides = vec![hidden_size, 1]; // 对应的步长
-        // let length = shape.iter().product(); // 总元素数量
-
-        let position_index = 0; // 起始位置，根据实际情况可以修改
-        let cpu_num = num_cpus::get();
-        let length = shape.iter().product();
-        // 创建模拟的输入和输出数据
-        //let input_data: Vec<f32> = (0..length).map(|x| x as f32).collect();
-        let input_data: Vec<f32> = (1i32..=18i32)
-            .cycle()
-            .take(length)
-            .map(|x| x as f32)
-            .collect();
-
-        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let mut output_data: Vec<f32> = vec![0.0; length];
-        let cache_rc = Rc::new(RefCell::new(cache));
-        let input_tensor = Tensor::from_cache(
-            shape.clone(),
-            String::from("model.input_tensor.weight"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue)),
-        );
-
-        unsafe {
-            input_tensor
-                .data
-                .copy_from(input_data.as_ptr(), input_data.len());
-        }
-
-        let weight = vec![1.0f32; hidden_size];
-        let eps = 1e-6;
-
-        let output_tensor = input_tensor.rms(
-            weight.as_ptr(),
-            eps,
-            String::from("model.output_tensor.weight"),
-        );
-
-        let result = [
-            0.09238425642251968,
-            0.18476851284503937,
-            0.27715277671813965,
-            0.36953702569007874,
-            0.4619212746620178,
-            0.5543055534362793,
-            0.646689772605896,
-            0.7390740513801575,
-            0.831458330154419,
-            0.9238425493240356,
-            1.0162267684936523,
-            1.1086111068725586,
-            1.2009953260421753,
-            1.293379545211792,
-            1.3857638835906982,
-            1.478148102760315,
-            1.5705323219299316,
-            1.662916660308838,
-        ];
-
-        // 使用 chunk_map 函数创建块
-        //let chunks = chunk_map(shape, strides, input_data.as_ptr(), output_data.as_mut_ptr());
-        // 使用这些块和长度初始化 ArgmaxMap
-        //input_tensor.operator_queue.borrow_mut()[0].set_map_chunk(chunks);
-        let thread_num: usize = cpu_num;
-        for i in 0..thread_num {
-            input_tensor.operator_queue.borrow()[0].run(
-                0,
-                sequence_chunk_size,
-                batch_size,
-                thread_num,
-                i,
-            );
-        }
-
-        // 如需打印输出数据，请取消以下注释
-        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, length) };
-        assert_ulps_eq!(output_slice[18..36], result, max_ulps = 4);
-        //println!("{:?}", output_data);
-    }
-
-    /*
-    #[test]
-    fn test_complex_mul_with_broadcast() {
-        let head_size = 34;
-        let head_num = 10;
-        let batch_size = 10;
-        let sequence_length = 10;
-
-        let shape1 = vec![batch_size, head_num, head_size];
-        let shape2 = vec![sequence_length, 1, 1, head_size];
-        let broadcast_shape = get_broadcast_shape(&shape1, &shape2);
-
-        let length: usize = broadcast_shape.iter().product();
-        let input_strides1 = get_aligned_strides(&shape1, &broadcast_shape);
-        let input_strides2 = get_aligned_strides(&shape2, &broadcast_shape);
-        let output_strides = get_strides(&broadcast_shape);
-
-        let length1: usize = shape1.iter().product();
-        let length2: usize = shape2.iter().product();
-        let input_data1: Vec<f32> = (1..=34).cycle().take(length1).map(|x| x as f32).collect();
-        let input_data2: Vec<f32> = (1..=34).cycle().take(length2).map(|x| x as f32).collect();
-        let mut output_data: Vec<f32> = vec![0.0; length];
-
-        let expected: Vec<f32> = vec![
-            -3.0, 4.0, -7.0, 24.0, -11.0, 60.0, -15.0, 112.0, -19.0, 180.0, -23.0, 264.0, -27.0,
-            364.0, -31.0, 480.0, -35.0, 612.0, -39.0, 760.0, -43.0, 924.0, -47.0, 1104.0, -51.0,
-            1300.0, -55.0, 1512.0, -59.0, 1740.0, -63.0, 1984.0, -67.0, 2244.0,
-        ];
-
-        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let cache_rc = Rc::new(RefCell::new(cache));
-
-        let tensor1 = Tensor::from_cache(
-            shape1.clone(),
-            String::from("model.layer.0.hidden_tensor"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            tensor1
-                .data
-                .copy_from(input_data1.as_ptr(), input_data1.len());
-        }
-
-        let tensor2 = Tensor::from_cache(
-            shape2.clone(),
-            String::from("model.tensor2.weight"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            tensor2
-                .data
-                .copy_from(input_data2.as_ptr(), input_data2.len());
-        }
-
-        let operator = Operator::ComplexZip(ComplexZipMap::<f32>::new(
-            head_size,
-            head_num,
-            batch_size,
-            num_cpus::get(),
-        ));
-
-        let output_tensor = tensor1.zip_mapv(
-            &tensor2,
-            operator,
-            false,
-            String::from("model.layer.0.self_attn.value_tensor"),
-        );
-
-        let thread_num: usize = num_cpus::get();
-        for i in 0..thread_num {
-            output_tensor.operator_queue.borrow()[0].run(batch_size, 1, i);
-        }
-
-        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, length) };
-        assert_eq!(output_slice[3434..3468], expected);
-    }
-
-    #[test]
-    fn test_complex_mul_with_partial_broadcast() {
-        let head_size = 34;
-        let head_num = 10;
-        let batch_size = 10;
-        let sequence_length = 10;
-
-        let shape1 = vec![batch_size, head_num, head_size];
-        let shape2 = vec![sequence_length, 1, 1, head_size];
-        // let broadcast_shape = get_broadcast_shape(&shape1, &shape2);
-
-        // let length: usize = broadcast_shape.iter().product();
-        // let input_strides1 = get_aligned_strides(&shape1, &broadcast_shape);
-        // let input_strides2 = get_aligned_strides(&shape2, &broadcast_shape);
-        // let output_strides = get_strides(&broadcast_shape);
-
-        let length1: usize = shape1.iter().product();
-        let length2: usize = shape2.iter().product();
-        let output_length: usize = length1;
-        let input_data1: Vec<f32> = (1..=34).cycle().take(length1).map(|x| x as f32).collect();
-        let input_data2: Vec<f32> = (1..=34).cycle().take(length2).map(|x| x as f32).collect();
-        // let mut output_data: Vec<f32> = vec![0.0; output_length];
-
-        let expected: Vec<f32> = vec![
-            -3.0, 4.0, -7.0, 24.0, -11.0, 60.0, -15.0, 112.0, -19.0, 180.0, -23.0, 264.0, -27.0,
-            364.0, -31.0, 480.0, -35.0, 612.0, -39.0, 760.0, -43.0, 924.0, -47.0, 1104.0, -51.0,
-            1300.0, -55.0, 1512.0, -59.0, 1740.0, -63.0, 1984.0, -67.0, 2244.0,
-        ];
-
-        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let cache_rc = Rc::new(RefCell::new(cache));
-
-        let tensor1 = Tensor::from_cache(
-            shape1.clone(),
-            String::from("model.layer.0.hidden_tensor"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            tensor1
-                .data
-                .copy_from(input_data1.as_ptr(), input_data1.len());
-        }
-
-        let tensor2 = Tensor::from_cache(
-            shape2.clone(),
-            String::from("model.tensor2.weight"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            tensor2
-                .data
-                .copy_from(input_data2.as_ptr(), input_data2.len());
-        }
-
-        let operator = Operator::ComplexZip(ComplexZipMap::<f32>::new(
-            head_size,
-            head_num,
-            batch_size,
-            num_cpus::get(),
-        ));
-
-        let output_tensor = tensor1.zip_mapv(
-            &tensor2,
-            operator,
-            true,
-            String::from("model.layer.0.self_attn.value_tensor"),
-        );
-
-        let thread_num: usize = num_cpus::get();
-        for i in 0..thread_num {
-            output_tensor.operator_queue.borrow()[0].run(batch_size, 1, i);
-        }
-
-        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, output_length) };
-        assert_eq!(output_slice[34..68], expected);
-    } */
-
-
-
-
-
-
-    */
-
-    #[test]
-    fn test_permute() {
-        let shape = vec![3, 4, 5];
+        let shape = vec![sequence_chunk_size, batch_size, num_experts];
         let tensor = Tensor::<f32>::from_cache(
-            shape,
-            String::from("modelweight"),
-            Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new()))),
-            Rc::new(RefCell::new(Vec::new())),
+            shape.clone(),
+            "model.layers.0.logits".to_string(),
+            //"input".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
         );
 
-        let size: usize = tensor.shape.iter().product();
-        (0..size).for_each(|x| {
-            unsafe {
-                // *tensor.data.add(x) = (x+1) as f32);
-                *tensor.data.add(x) = (x + 1) as f32;
+        let data: Vec<f32> = vec![
+            // token 0
+            1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5, // token 1
+            5.0, 6.0, 7.0, 8.0, 4.5, 5.5, 6.5, 7.5,
+        ];
+        unsafe {
+            tensor
+                .data
+                .copy_from_nonoverlapping(data.as_ptr(), data.len());
+        }
+
+        let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) = tensor
+            .experts_softmax_norm(num_experts, num_experts_per_tok, "softmax_norm".to_string());
+
+        for op in operator_queue.borrow_mut().iter() {
+            op.run(0, sequence_chunk_size, batch_size, 1, 0);
+        }
+
+        let num_tokens = sequence_chunk_size * batch_size;
+        let indices = unsafe { std::slice::from_raw_parts(indice_ptr, num_experts * num_tokens) };
+        let weights = unsafe { std::slice::from_raw_parts(weight_ptr, num_experts * num_tokens) };
+        let indicators = unsafe { std::slice::from_raw_parts(experts_indicator, num_experts) };
+
+        // Token 0: input [1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5], topk indices 3, 7
+        let data0 = &data[0..num_experts];
+        let exps0: Vec<f32> = data0.iter().map(|v| v.exp()).collect();
+        let sum0: f32 = exps0.iter().sum();
+        assert_ulps_eq!(weights[3 * num_tokens + 0], exps0[3] / sum0);
+        assert_ulps_eq!(weights[7 * num_tokens + 0], exps0[7] / sum0);
+        assert!(indices[3 * num_tokens + 0]);
+        assert!(indices[7 * num_tokens + 0]);
+
+        // Token 1: input [5.0, 6.0, 7.0, 8.0, 4.5, 5.5, 6.5, 7.5], topk indices 3, 7
+        let data1 = &data[num_experts..2 * num_experts];
+        let exps1: Vec<f32> = data1.iter().map(|v| v.exp()).collect();
+        let sum1: f32 = exps1.iter().sum();
+        assert_ulps_eq!(weights[3 * num_tokens + 1], exps1[3] / sum1);
+        assert_ulps_eq!(weights[7 * num_tokens + 1], exps1[7] / sum1);
+        assert!(indices[3 * num_tokens + 1]);
+        assert!(indices[7 * num_tokens + 1]);
+
+        // Check indicators
+        assert!(!indicators[0]);
+        assert!(!indicators[1]);
+        assert!(!indicators[2]);
+        assert!(indicators[3]);
+        assert!(!indicators[4]);
+        assert!(!indicators[5]);
+        assert!(!indicators[6]);
+        assert!(indicators[7]);
+
+        // Check other indices and weights are false/zero
+        for e in 0..num_experts {
+            for t in 0..num_tokens {
+                let offset = e * num_tokens + t;
+                if (e == 3 && (t == 0 || t == 1)) || (e == 7 && (t == 0 || t == 1)) {
+                    continue;
+                }
+                assert!(!indices[offset]);
+                assert_ulps_eq!(weights[offset], 0.0);
             }
-        });
-
-        let m = tensor.permute(vec![1, 2, 0]);
-        println!("{:?} {:?}", m.shape, m.strides);
-    }
-
-    /*
-        #[test]
-    fn test_attention() {
-        let head_size = 128;
-        let head_num = 64;
-        let batch_size = 16;
-        let sequence_length = 256;
-
-        let q_shape = vec![batch_size, head_num, head_size];
-        let k_shape = vec![sequence_length, batch_size, head_num, head_size];
-        let v_shape = vec![sequence_length, batch_size, head_num, head_size];
-        let output_shape = q_shape.clone();
-
-        let q_size = q_shape.iter().product();
-        let k_size = k_shape.iter().product();
-        let v_size = v_shape.iter().product();
-        let output_size = output_shape.iter().product();
-
-        let q_data: Vec<f32> = vec![1.0; q_size];
-        let k_data: Vec<f32> = vec![1.0; k_size];
-        let v_data: Vec<f32> = vec![1.0; v_size];
-        let mut output_data: Vec<f32> = vec![0.0; output_size];
-
-        let q_strides = get_strides(&q_shape);
-        let k_strides = get_strides(&k_shape);
-        let v_strides = get_strides(&v_shape);
-        let output_strides = get_strides(&output_shape);
-
-        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let cache_rc = Rc::new(RefCell::new(cache));
-
-        let q_tensor = Tensor::from_cache(
-            q_shape.clone(),
-            String::from("model.q_tensor.weight"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            q_tensor.data.copy_from(q_data.as_ptr(), q_data.len());
         }
-
-        let k_tensor = Tensor::from_cache(
-            k_shape.clone(),
-            String::from("model.k_tensor.weight"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            k_tensor.data.copy_from(k_data.as_ptr(), k_data.len());
-        }
-
-        let v_tensor = Tensor::from_cache(
-            v_shape.clone(),
-            String::from("model.v_tensor.weight"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            v_tensor.data.copy_from(v_data.as_ptr(), v_data.len());
-        }
-
-        let mut operator = Operator::AttentionMul(AttentionMul::<f32>::new(
-            head_size,
-            head_num,
-            k_strides[2],
-            1.0,
-            num_cpus::get(),
-        ));
-
-        let mut view_k_tensor = k_tensor.permute(vec![1, 2, 0, 3]);
-        let mut view_v_tensor = v_tensor.permute(vec![1, 2, 0, 3]);
-
-        let output_tensor = q_tensor.attention(
-            &view_k_tensor,
-            &view_v_tensor,
-            operator,
-            String::from("model.output_tensor.weight"),
-        );
-
-        let thread_num: usize = num_cpus::get();
-        for i in 0..thread_num {
-            output_tensor.operator_queue.borrow()[0].run(batch_size, sequence_length, i);
-        }
-
-        let result: Vec<f32> = vec![1.0; output_size];
-        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, output_size) };
-        assert_ulps_eq!(output_slice, &result[..], max_ulps = 4);
     }
 
     #[test]
-    fn test_matmul_batch_size_1() {
-        let batch_size = 8;
-        let hidden_size = 16;
-        let sequence_length = 1;
-
-        let shape1 = vec![batch_size, hidden_size];
-        let size1 = shape1.iter().product();
-        let data1: Vec<f32> = vec![1.0; size1];
-
-        let shape2 = vec![hidden_size, hidden_size];
-        let size2 = shape2.iter().product();
-        let data2: Vec<f32> = vec![1.0; size2];
-
-        let output_shape = vec![batch_size, hidden_size];
-        let size3 = output_shape.iter().product();
-        let mut data3: Vec<f32> = vec![0.0; size3];
-        let mut result = vec![0.0; size3];
-        for i in 0..hidden_size {
-            result[i] = hidden_size as f32;
+    fn test_experts_softmax_norm_f16() {
+        if !std::arch::is_x86_feature_detected!("avx512fp16") {
+            println!("AVX512FP16 not supported, skipping test.");
+            return;
         }
 
-        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let cache_rc = Rc::new(RefCell::new(cache));
+        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let tensor1 = Tensor::from_cache(
-            shape1.clone(),
-            String::from("model.tensor1.weight"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
+        let sequence_chunk_size = 1;
+        let batch_size = 2;
+        let num_experts = 128;
+        let num_experts_per_tok = 8;
+        let thread_num = 8;
+
+        let shape = vec![sequence_chunk_size, batch_size, num_experts];
+        let tensor = Tensor::<f16>::from_cache(
+            shape.clone(),
+            "model.layers.0.logits".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
         );
+
+        let num_tokens = sequence_chunk_size * batch_size;
+        let mut data_f32: Vec<f32> = Vec::with_capacity(num_tokens * num_experts);
+
+        // Generate data
+        for t in 0..num_tokens {
+            for i in 0..num_experts {
+                // Base value
+                let v = ((i as f32 + t as f32 * 13.0) * 1.1) % 20.0 - 10.0;
+                data_f32.push(v);
+            }
+            // Set top values explicitly to ensure stability
+            let base = t * num_experts;
+            for k in 0..num_experts_per_tok {
+                // Set experts [0..k] to high values to ensure they are selected
+                // Using distinct values to avoid sorting ambiguity
+                data_f32[base + k] = 20.0 + (num_experts_per_tok - k) as f32;
+            }
+        }
+
+        let data: Vec<f16> = data_f32.iter().map(|&x| x as f16).collect();
         unsafe {
-            tensor1.data.copy_from(data1.as_ptr(), data1.len());
+            tensor
+                .data
+                .copy_from_nonoverlapping(data.as_ptr(), data.len());
         }
 
-        let tensor2 = Tensor::from_cache(
-            shape2.clone(),
-            String::from("model.tensor2.weight"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            tensor2.data.copy_from(data2.as_ptr(), data2.len());
+        let (experts_indicator, indice_ptr, weight_ptr, _topk_indices_ptr) = tensor
+            .experts_softmax_norm(num_experts, num_experts_per_tok, "softmax_norm".to_string());
+
+        for op in operator_queue.borrow_mut().iter() {
+            for i in 0..thread_num {
+                op.run(0, sequence_chunk_size, batch_size, thread_num, i);
+            }
         }
 
-        let params = MatMulParams {
-            a_row: batch_size,
-            b_row: hidden_size,
-            column: hidden_size,
-            a_row_step_macro: 1,
-            b_row_step_macro: 1,
-            column_step_macro: hidden_size,
-            a_row_step_micro: 1,
-            b_row_step_micro: 1,
-        };
-        let thread_num: usize = num_cpus::get();
-        let barrier = Barrier::new(thread_num);
-        let barrier_arc = Arc::new(barrier);
-        let operator = Operator::MatMul(MatMul::<f32>::new(
-            batch_size,
-            hidden_size,
-            hidden_size,
-            1,
-            1,
-            hidden_size,
-            1,
-            1,
-            1,
-            thread_num,
-            barrier_arc,
-        ));
+        let indices = unsafe { std::slice::from_raw_parts(indice_ptr, num_experts * num_tokens) };
+        let weights = unsafe { std::slice::from_raw_parts(weight_ptr, num_experts * num_tokens) };
+        let indicators = unsafe { std::slice::from_raw_parts(experts_indicator, num_experts) };
 
-        let output_tensor = tensor1.matmul(
-            &tensor2,
-            operator,
-            params,
-            sequence_length,
-            String::from("model.tensor3.weight"),
-        );
+        for t in 0..num_tokens {
+            let start = t * num_experts;
+            let end = start + num_experts;
+            let token_input = &data_f32[start..end];
 
-        for i in 0..thread_num {
-            output_tensor.operator_queue.borrow()[0].run(1, 0, i);
+            let mut expected: Vec<(usize, f32)> = token_input.iter().copied().enumerate().collect();
+            // Sort descending by value
+            expected.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+            let topk = &expected[0..num_experts_per_tok];
+            let max_val = topk.iter().map(|x| x.1).fold(f32::NEG_INFINITY, f32::max);
+            let denom: f32 = topk.iter().map(|v| (v.1 - max_val).exp()).sum();
+
+            for i in 0..num_experts_per_tok {
+                let (idx, val) = topk[i];
+                let prob = (val - max_val).exp() / denom;
+
+                assert!(
+                    indicators[idx],
+                    "Expert {} should be selected (token {})",
+                    idx, t
+                );
+
+                let offset = idx * num_tokens + t;
+                assert!(
+                    indices[offset],
+                    "Index ptr for expert {} token {} should be true",
+                    idx, t
+                );
+
+                let weight = weights[offset];
+
+                assert!(
+                    ((weight as f32) - prob).abs() < 1e-3,
+                    "Weight mismatch for expert {} token {}: expected {:?}, got {:?}",
+                    idx,
+                    t,
+                    prob,
+                    weight
+                );
+            }
         }
-
-        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, size3) };
-        assert_ulps_eq!(output_slice, &result[..], max_ulps = 4);
     }
 
     #[test]
-    fn test_matmul_sequence() {
-        let batch_size = 8;
-        let hidden_size = 16;
-        let sequence_length = 16;
-        let position_index = 8;
+    fn test_topk_softmax_f32() {
+        let cache: Rc<RefCell<Cache<f32>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f32>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let shape1 = vec![batch_size, hidden_size];
-        let size1 = shape1.iter().product();
-        let data1: Vec<f32> = vec![1.0; size1];
+        let sequence_chunk_size = 1;
+        let batch_size = 2;
+        let num_topk = 8;
+        let thread_num = 2;
+        let num_candidates_per_thread = num_topk;
+        let num_candidates = num_candidates_per_thread * thread_num;
 
-        let shape2 = vec![hidden_size, hidden_size];
-        let size2 = shape2.iter().product();
-        let data2: Vec<f32> = vec![1.0; size2];
-
-        let output_shape = vec![sequence_length, batch_size, hidden_size];
-        let size3 = output_shape.iter().product();
-        let mut data3: Vec<f32> = vec![0.0; size3];
-
-        let mut result = vec![0.0; size3];
-        let offset = position_index * batch_size * hidden_size;
-        for i in 0..hidden_size {
-            result[i + offset] = hidden_size as f32;
-        }
-
-        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let cache_rc = Rc::new(RefCell::new(cache));
-
-        let tensor1 = Tensor::from_cache(
-            shape1.clone(),
-            String::from("model.tensor1.weight"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
+        // Mock inputs for topk_softmax, which would come from matmul_local_topk
+        // value_tensor shape: [sequence_chunk_size, batch_size, num_candidates_per_thread * thread_num]
+        let value_shape = vec![sequence_chunk_size, batch_size, num_candidates];
+        let value_tensor = Tensor::<f32>::from_cache(
+            value_shape,
+            "model.layers.0.values".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
         );
+
+        // sums_tensor shape: [sequence_chunk_size, batch_size, thread_num]
+        let sums_shape = vec![sequence_chunk_size, batch_size, thread_num];
+        let sums_tensor = Tensor::<f32>::from_cache(
+            sums_shape,
+            "model.layers.0.sums".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        let mut output_sequences = vec![0usize; sequence_chunk_size * batch_size];
+
+        // Data for token 0
+        let values0: Vec<f32> = (0..num_candidates).map(|i| 5.0 - i as f32 * 0.1).collect();
+        let indices0: Vec<usize> = (0..num_candidates).collect();
+        // Data for token 1
+        let values1: Vec<f32> = (0..num_candidates).map(|i| 8.0 - i as f32 * 0.2).collect();
+        let indices1: Vec<usize> = (100..(100 + num_candidates)).collect();
+
+        let mut all_values = Vec::new();
+        all_values.extend_from_slice(&values0);
+        all_values.extend_from_slice(&values1);
+
+        let mut all_indices = Vec::new();
+        all_indices.extend_from_slice(&indices0);
+        all_indices.extend_from_slice(&indices1);
+
+        let indices_ptr = all_indices.as_ptr();
+
         unsafe {
-            tensor1.data.copy_from(data1.as_ptr(), data1.len());
-        }
-
-        let tensor2 = Tensor::from_cache(
-            shape2.clone(),
-            String::from("model.tensor2.weight"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            tensor2.data.copy_from(data2.as_ptr(), data2.len());
-        }
-
-        let params = MatMulParams {
-            a_row: batch_size,
-            b_row: hidden_size,
-            column: hidden_size,
-            a_row_step_macro: 1,
-            b_row_step_macro: 1,
-            column_step_macro: hidden_size,
-            a_row_step_micro: 1,
-            b_row_step_micro: 1,
-        };
-        let thread_num: usize = num_cpus::get();
-        let barrier = Barrier::new(thread_num);
-        let barrier_arc = Arc::new(barrier);
-        let operator = Operator::MatMul(MatMul::<f32>::new(
-            batch_size,
-            hidden_size,
-            hidden_size,
-            1,
-            1,
-            hidden_size,
-            1,
-            1,
-            sequence_length,
-            thread_num,
-            barrier_arc,
-        ));
-
-        let output_tensor = tensor1.matmul(
-            &tensor2,
-            operator,
-            params,
-            sequence_length,
-            String::from("model.tensor3.weight"),
-        );
-
-        for i in 0..thread_num {
-            output_tensor.operator_queue.borrow()[0].run(1, position_index, i);
-        }
-
-        let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, size3) };
-        assert_ulps_eq!(output_slice, &result[..], max_ulps = 4);
-    }
-
-        #[test]
-    fn test_lookup_rms_map() {
-
-        let batch_size = 10; // 每次批处理 10 个元素
-        let hidden_size = 18;
-        let vocab_size = 10;
-        let cpu_num = num_cpus::get();
-
-        let shapes = vec![batch_size, hidden_size];
-        let strides = vec![hidden_size, 1]; // 对应的步长
-        let length = shapes.iter().product(); // 总元素数量
-        let sequence_length = 16;
-        let position = 0; // 起始位置，根据实际情况可以修改
-
-        // 创建模拟的输入和输出数据
-        let input_data: Vec<f32> = (1..=hidden_size).cycle().take(length).map(|x| x as f32).collect();
-        let sequences = vec![1; sequence_length];
-        let word_embedding: Vec<f32> = (1..=18).cycle().take(vocab_size * hidden_size).map(|x| x as f32).collect();
-        let mut cache: Cache<f32> = Cache::new();
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let input_tensor = Tensor::from_cache(
-            shapes.clone(),
-            String::from("model.layers.0.self_attn.value_tensor"),
-            Rc::new(RefCell::new(cache)),
-            Rc::new(RefCell::new(operator_queue)),
-        );
-        unsafe {
-            input_tensor
+            value_tensor
                 .data
-                .copy_from(input_data.as_ptr(), input_data.len());
+                .copy_from_nonoverlapping(all_values.as_ptr(), all_values.len());
+            // sums_tensor is not used in the current implementation of TopKSoftmax, so we can leave it as 0.
         }
-        let weight = vec![1.0f32; length];
-        let eps = 1e-6;
-        let mut output_data: Vec<f32> = vec![0.0; length];
 
-        // 使用 chunk_map 函数创建块
-        let chunks = chunk_map(shapes, strides, input_data.as_ptr(), output_data.as_mut_ptr());
-        // 使用这些块和长度初始化 ArgmaxMap
-        let mut Operator = Operator::LookupRMSMap(LookupRMSMap::new(hidden_size,
-                                    weight.as_ptr(),
-                                    eps,
-                                    cpu_num,
-                                    word_embedding.as_ptr(),
-                                    sequences.as_ptr(),
-                                    hidden_size,
-                                    batch_size
-                                ));
-        input_tensor.mapv(
-            Operator,
-            String::from("model.layers.0.self_attn.value_tensor"),
+        let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
+            indices_ptr,
+            &sums_tensor,
+            output_sequences.as_mut_ptr(),
+            num_topk,
+            "model.layers.0.topk_softmax".to_string(),
         );
-        let result = [0.09238425642251968,
-        0.18476851284503937,
-        0.27715277671813965,
-        0.36953702569007874,
-        0.4619212746620178,
-        0.5543055534362793,
-        0.646689772605896,
-        0.7390740513801575,
-        0.831458330154419,
-        0.9238425493240356,
-        1.0162267684936523,
-        1.1086111068725586,
-        1.2009953260421753,
-        1.293379545211792,
-        1.3857638835906982,
-        1.478148102760315,
-        1.5705323219299316,
-        1.662916660308838];
-        input_tensor.operator_queue.borrow_mut()[0].set_map_chunk(chunks);
 
-        let thread_num: usize = cpu_num;
-        for i in 0..thread_num {
-            input_tensor.operator_queue.borrow()[0].run(batch_size, position, i);
+        for op in operator_queue.borrow_mut().iter() {
+            op.run(0, sequence_chunk_size, batch_size, 2, 0);
+            op.run(0, sequence_chunk_size, batch_size, 2, 1);
         }
 
-            // 如需打印输出数据，请取消以下注释
-        assert_ulps_eq!(output_data[18..36], result, max_ulps=4);
-        //println!("{:?}", output_data);
+        let num_tokens = sequence_chunk_size * batch_size;
+        let output_indices =
+            unsafe { std::slice::from_raw_parts(output_indices_ptr, num_tokens * num_topk) };
+        let output_values =
+            unsafe { std::slice::from_raw_parts(output_value_tensor.data, num_tokens * num_topk) };
+
+        // Verification for token 0
+        let mut candidates0: Vec<_> = indices0.iter().zip(values0.iter()).collect();
+        candidates0.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap().then_with(|| a.0.cmp(b.0)));
+
+        let top_values0: Vec<f32> = candidates0.iter().take(num_topk).map(|c| *c.1).collect();
+        let max_val0 = top_values0[0];
+        let exps0: Vec<f32> = top_values0.iter().map(|v| (v - max_val0).exp()).collect();
+        let sum_exps0: f32 = exps0.iter().sum();
+
+        for i in 0..num_topk {
+            assert_eq!(output_indices[i], *candidates0[i].0);
+            assert_ulps_eq!(output_values[i], exps0[i] / sum_exps0, max_ulps = 4);
+        }
+
+        // Verification for token 1
+        let mut candidates1: Vec<_> = indices1.iter().zip(values1.iter()).collect();
+        candidates1.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap().then_with(|| a.0.cmp(b.0)));
+
+        let top_values1: Vec<f32> = candidates1.iter().take(num_topk).map(|c| *c.1).collect();
+        let max_val1 = top_values1[0];
+        let exps1: Vec<f32> = top_values1.iter().map(|v| (v - max_val1).exp()).collect();
+        let sum_exps1: f32 = exps1.iter().sum();
+
+        for i in 0..num_topk {
+            assert_eq!(output_indices[num_topk + i], *candidates1[i].0);
+            assert_ulps_eq!(
+                output_values[num_topk + i],
+                exps1[i] / sum_exps1,
+                max_ulps = 4
+            );
+        }
+
+        // Check output sequences (sampled tokens)
+        assert_eq!(output_sequences[0], *candidates0[0].0);
+        assert_eq!(output_sequences[1], *candidates1[0].0);
     }
 
     #[test]
-    fn test_softmax_map() {
-        let batch_size = 10;
-        let head_num = 10;
-        let sequence_size = 18;
-        let shapes = vec![batch_size,head_num, sequence_size];
-        let strides = get_strides(&shapes);
-        let length = shapes.iter().product(); // 总元素数量
-        let position_index = 18; // 起始位置，根据实际情况可以修改
-        let cpu_num = num_cpus::get();
-        let input_data: Vec<f32> = (1..=18).cycle().take(1800).map(|x| x as f32).collect();
-        let mut output_data: Vec<f32> = vec![0.0; length];
-        let mut cache: Cache<f32> = Cache::new();
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let input_tensor = Tensor::from_cache(
-            shapes.clone(),
-            String::from("model.layers.0.self_attn.value_tensor"),
-            Rc::new(RefCell::new(cache)),
-            Rc::new(RefCell::new(operator_queue)),
+    fn test_topk_softmax_f16() {
+        if !std::arch::is_x86_feature_detected!("avx512fp16") {
+            println!("AVX512FP16 not supported, skipping test.");
+            return;
+        }
+
+        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let sequence_chunk_size = 1;
+        let batch_size = 2;
+        let num_topk = 8;
+        let thread_num = 2;
+        let num_candidates_per_thread = num_topk;
+        let num_candidates = num_candidates_per_thread * thread_num;
+
+        // Mock inputs for topk_softmax
+        let value_shape = vec![sequence_chunk_size, batch_size, num_candidates];
+        let value_tensor = Tensor::<f16>::from_cache(
+            value_shape,
+            "model.layers.0.values".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
         );
+
+        let sums_shape = vec![sequence_chunk_size, batch_size, thread_num];
+        let sums_tensor = Tensor::<f16>::from_cache(
+            sums_shape,
+            "model.layers.0.sums".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        let mut output_sequences = vec![0usize; sequence_chunk_size * batch_size];
+
+        // Data for token 0
+        let values0: Vec<f32> = (0..num_candidates).map(|i| 5.0 - i as f32 * 0.1).collect();
+        let indices0: Vec<usize> = (0..num_candidates).collect();
+        // Data for token 1
+        let values1: Vec<f32> = (0..num_candidates).map(|i| 8.0 - i as f32 * 0.2).collect();
+        let indices1: Vec<usize> = (100..(100 + num_candidates)).collect();
+
+        let mut all_values_f32 = Vec::new();
+        all_values_f32.extend_from_slice(&values0);
+        all_values_f32.extend_from_slice(&values1);
+        let all_values: Vec<f16> = all_values_f32.iter().map(|&x| x as f16).collect();
+
+        let mut all_indices = Vec::new();
+        all_indices.extend_from_slice(&indices0);
+        all_indices.extend_from_slice(&indices1);
+
+        let indices_ptr = all_indices.as_ptr();
+
         unsafe {
-            input_tensor
+            value_tensor
                 .data
-                .copy_from(input_data.as_ptr(), input_data.len());
+                .copy_from_nonoverlapping(all_values.as_ptr(), all_values.len());
         }
-        let chunks = chunk_map(shapes, strides, input_data.as_ptr(), output_data.as_mut_ptr());
-        let mut operator = Operator::SoftmaxMap(SoftmaxMap::new(head_num, cpu_num));
-        input_tensor.mapv(
-            operator,
-            String::from("model.layers.0.self_attn.value_tensor"),
+
+        let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
+            indices_ptr,
+            &sums_tensor,
+            output_sequences.as_mut_ptr(),
+            num_topk,
+            "model.layers.0.topk_softmax".to_string(),
         );
-        let result = [0.0012586231, 0.0017267587, 0.0023690138, 0.0032501512, 0.0044590216, 0.006117522, 0.00839289, 0.011514563, 0.015797319, 0.02167302, 0.02973414, 0.040793534, 0.0559664, 0.0767827, 0.105341434, 0.14452243, 0.19827652, 0.27202395];
-        input_tensor.operator_queue.borrow_mut()[0].set_map_chunk(chunks);
 
-        let thread_num: usize = cpu_num;
-            // 运行 ArgmaxMap 操作
-        for i in 0..thread_num {
-            input_tensor.operator_queue.borrow()[0].run(batch_size, position_index, i);
+        for op in operator_queue.borrow_mut().iter() {
+            op.run(0, sequence_chunk_size, batch_size, 2, 0);
+            op.run(0, sequence_chunk_size, batch_size, 2, 1);
         }
-            // 如需打印输出数据，请取消以下注释
-        assert_ulps_eq!(output_data[0..18], result, max_ulps=4);
-        //println!("{:?}", output_data);
 
-        // println!("{:?}", output);
+        let num_tokens = sequence_chunk_size * batch_size;
+        let output_indices =
+            unsafe { std::slice::from_raw_parts(output_indices_ptr, num_tokens * num_topk) };
+        let output_values =
+            unsafe { std::slice::from_raw_parts(output_value_tensor.data, num_tokens * num_topk) };
+
+        // Verification for token 0
+        let mut candidates0: Vec<_> = indices0.iter().zip(values0.iter()).collect();
+        candidates0.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap().then_with(|| a.0.cmp(b.0)));
+
+        let top_values0: Vec<f32> = candidates0.iter().take(num_topk).map(|c| *c.1).collect();
+        let max_val0 = top_values0[0];
+        let exps0: Vec<f32> = top_values0.iter().map(|v| (v - max_val0).exp()).collect();
+        let sum_exps0: f32 = exps0.iter().sum();
+
+        for i in 0..num_topk {
+            assert_eq!(output_indices[i], *candidates0[i].0);
+            let val = (output_values[i] as f32);
+            let expected = exps0[i] / sum_exps0;
+            assert!(
+                (val - expected).abs() < 1e-3,
+                "Mismatch at token 0 index {}: got {}, expected {}",
+                i,
+                val,
+                expected
+            );
+        }
+
+        // Verification for token 1
+        let mut candidates1: Vec<_> = indices1.iter().zip(values1.iter()).collect();
+        candidates1.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap().then_with(|| a.0.cmp(b.0)));
+
+        let top_values1: Vec<f32> = candidates1.iter().take(num_topk).map(|c| *c.1).collect();
+        let max_val1 = top_values1[0];
+        let exps1: Vec<f32> = top_values1.iter().map(|v| (v - max_val1).exp()).collect();
+        let sum_exps1: f32 = exps1.iter().sum();
+
+        for i in 0..num_topk {
+            assert_eq!(output_indices[num_topk + i], *candidates1[i].0);
+            let val = (output_values[num_topk + i] as f32);
+            let expected = exps1[i] / sum_exps1;
+            assert!(
+                (val - expected).abs() < 1e-3,
+                "Mismatch at token 1 index {}: got {}, expected {}",
+                i,
+                val,
+                expected
+            );
+        }
+
+        // Check output sequences (sampled tokens)
+        assert_eq!(output_sequences[0], *candidates0[0].0);
+        assert_eq!(output_sequences[1], *candidates1[0].0);
     }
-
-        #[test]
-    fn test_reduce() {
-        let batch_size = 10;
-        let vocab_size = 64;
-        let sequence_length = 16;
-
-        let shapes = vec![batch_size, vocab_size];
-        let strides = vec![vocab_size, 1];
-        let length: usize = shapes.iter().product();
-
-        let input_data: Vec<f32> = (1..=vocab_size)
-            .cycle()
-            .take(vocab_size * batch_size)
-            .map(|x| x as f32)
-            .collect();
-        let mut output_data: Vec<usize> = vec![0usize; batch_size * sequence_length];
-
-        let mut cache: Cache<f32> = Cache::new(std::collections::HashMap::new());
-        let mut operator_queue: Vec<Operator<f32>> = Vec::new();
-        let cache_rc = Rc::new(RefCell::new(cache));
-
-        let input_tensor = Tensor::from_cache(
-            shapes.clone(),
-            String::from("model.input_tensor.weight"),
-            cache_rc.clone(),
-            Rc::new(RefCell::new(operator_queue.clone())),
-        );
-        unsafe {
-            input_tensor
-                .data
-                .copy_from(input_data.as_ptr(), input_data.len());
-        }
-
-        let mut operator = Operator::ArgmaxReduce(ArgmaxReduce::<f32>::new(
-            vocab_size,
-            batch_size,
-            num_cpus::get(),
-        ));
-        let output_tensor = input_tensor.reduce(
-            output_data.as_mut_ptr(),
-            sequence_length,
-            operator,
-            String::from("model.output_tensor.weight"),
-        );
-
-        let thread_num: usize = num_cpus::get();
-        for i in 0..thread_num {
-            input_tensor.operator_queue.borrow()[0].run(batch_size, 0, i);
-        }
-
-        let result: Vec<usize> = vec![63; batch_size];
-        assert_eq!(&output_data[..batch_size], &result[..]);
-    }
-    */
 }

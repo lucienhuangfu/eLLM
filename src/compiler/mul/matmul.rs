@@ -6,12 +6,12 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatMulParams,
+    matmul_params::MatmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::MatMulTrait;
+use super::mul_trait::MatmulTrait;
 
 #[derive(Clone)]
 pub struct MatMul<T> {
@@ -40,7 +40,7 @@ pub struct MatMul<T> {
     cpu_max_for_scratch: usize,    // 允许的最大线程数
 }
 
-impl<T> MatMul<T>
+impl<T> Matmul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -120,6 +120,7 @@ where
         thread_id: usize,
         // position_index / position_interval 去掉了
     ) {
+        /*
         unsafe {
             // ===== 维度 =====
             let m = batch_size;     // M
@@ -132,6 +133,8 @@ where
             let kc = self.params.column_step_macro.max(1);
             let mr = self.params.a_row_step_micro.max(1);
             let nr = self.params.b_row_step_micro.max(1);
+
+            println!( "n = {}, nr = {}", n, nr);
 
             debug_assert!(m % mr == 0);
             debug_assert!(n % nr == 0);
@@ -222,18 +225,18 @@ where
                     }
                 }
             }
-        }
+        }*/
     }
 }
 
 /* ------------------ compute/compute2：保持你的调用风格 ------------------ */
 
-impl<T> MatMulTrait<T> for MatMul<T>
+impl<T> MatmulTrait<T> for Matmul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
     default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T) {
-        let call_param = MatMulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.k_max,                     // lda = K
             b_row_step_macro: self.n_max,                     // ldc = N
             column_step_macro: self.params.column_step_macro, // kc
@@ -262,7 +265,7 @@ where
 
 impl MatMulTrait<f16> for MatMul<f16> {
     fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
-        let call_param = MatMulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.k_max,                     // lda = K
             b_row_step_macro: self.n_max,                     // ldc = N
             column_step_macro: self.params.column_step_macro, // kc
@@ -306,11 +309,12 @@ impl MatMulTrait<f16> for MatMul<f16> {
     }
 }
 
-impl MatMulTrait<f32> for MatMul<f32> {
-    fn compute(&self, _a: *const f32, _b: *const f32, _c: *mut f32) { /* TODO */ }
-    fn compute2(
-        &self, a: *const f32, b: *const f32, c: *mut f32, length: usize,
-    ) { kernel::generic::dot_product::dot_product(a, b, c, length); }
+impl MatmulTrait<f32> for Matmul<f32> {
+    fn compute(&self, _a: *const f32, _b: *const f32, _c: *mut f32) { /* TODO */
+    }
+    fn compute2(&self, a: *const f32, b: *const f32, c: *mut f32, length: usize) {
+        // kernel::generic::dot_product::dot_product(a, b, c, length);
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -464,4 +468,4 @@ mod tests {
             );
         }
     }
-}
+}*/

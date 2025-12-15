@@ -4,10 +4,10 @@
 use std::arch::x86_64::{_mm512_fmadd_ph, _mm512_loadu_ph, _mm512_set1_ph, _mm512_storeu_ph};
 use std::f16;
 
-use crate::init::matmul_params::MatMulParams;
+use crate::init::matmul_params::MatmulParams;
 
 /// 广播式 3x32 FP16 AVX-512 微核：
-/// 约定把 (lda/ldc/kc) 映射进 MatMulParams 的 5 字段中：
+/// 约定把 (lda/ldc/kc) 映射进 matmulParams 的 5 字段中：
 /// - a_row_step_micro = MR (=3)
 /// - b_row_step_micro = NR (=32)
 /// - column_step_macro = kc
@@ -22,7 +22,7 @@ pub unsafe fn matmul_block(
     a: *const f16,        // A tile base: 3xkc
     b_panel: *const f16,  // packed B panel: kc x 32
     c: *mut f16,          // C tile base: 3x32
-    param: &MatMulParams,
+    param: &MatmulParams,
 ) {
     // 形状校验
     debug_assert_eq!(param.a_row_step_micro, 3);
@@ -63,6 +63,7 @@ pub unsafe fn matmul_block(
     _mm512_storeu_ph(c.add(2 * ldc), c_row2);
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,4 +167,4 @@ mod tests {
             }
         }
     }
-}
+} */

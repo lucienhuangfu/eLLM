@@ -121,7 +121,7 @@ impl ZipMapTrait<f16> for AddZipMap<f16> {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
             kernel::x86_64::f16_512::add::add(
-                input_ptr1, input_ptr2, output_ptr, self.length,
+                input_ptr1, input_ptr2, output_ptr, self.head_size,
             );
         };
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
@@ -151,7 +151,7 @@ mod test {
     
     use super::*;
     // use super::super::chunk_zipmap::chunk_zipmap;
-    use crate::ptensor::tensor_utils::get_strides;
+    use crate::init::tensor_utils::get_strides;
     use approx::assert_ulps_eq;
     // use nom::sequence;
     // use rand::seq;

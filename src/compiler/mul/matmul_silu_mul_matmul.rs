@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatMulParams,
+    matmul_params::MatmulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
@@ -28,13 +28,13 @@ unsafe fn make_b_nt<T: Copy + Default>(ptr2: *const T, n: usize, k: usize) -> Bo
 
 /// Runner：A·W_gate 与 A·W_up 的 fused 计算；最终输出 SiLU(gate) ⊙ up
 #[derive(Clone)]
-pub struct MatMulSilu<T> {
+pub struct MatmulSilu<T> {
     pub ptr1: ConstPtr<T>,     // A[M×K]
     pub ptr2: ConstPtr<T>,     // W_gate[N×K] —— 已转置后的首地址
     pub ptr3: ConstPtr<T>,     // W_up  [N×K] —— 已转置后的首地址
     pub output_ptr: MutPtr<T>, // C[M×N]
     /// params 只承载 step 形状（MB/NB/KC/MR/NR）
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     pub m_max: usize,
     pub n_max: usize,
     pub k_max: usize,
@@ -56,7 +56,7 @@ pub struct MatMulSilu<T> {
     up_acc_pool:     Box<[T]>,
 }
 
-impl<T> MatMulSilu<T>
+impl<T> MatmulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -100,7 +100,7 @@ where
             ptr2,
             ptr3,
             output_ptr: MutPtr { ptr: out_ptr },
-            params: MatMulParams {
+            params: MatmulParams {
                 a_row_step_macro: mb,
                 b_row_step_macro: nb,
                 column_step_macro: kc,
@@ -168,6 +168,7 @@ where
         cpu_num: usize,
         thread_id: usize,
     ) {
+        /*
         unsafe {
             // 维度
             let m = batch_size;
@@ -272,13 +273,13 @@ where
                     }
                 }
             }
-        }
-    }
+        }*/
+    } 
 }
 
-/* -------------------- 默认实现（占位，保持与 MatMul 一致的模式） -------------------- */
+/* -------------------- 默认实现（占位，保持与 matmul 一致的模式） -------------------- */
 
-impl<T> MatMul3Trait<T> for MatMulSilu<T>
+impl<T> Matmul3Trait<T> for MatmulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -300,7 +301,7 @@ where
 
 /* -------------------------- f16 专用实现（AVX-512 FP16） -------------------------- */
 
-impl MatMul3Trait<f16> for MatMulSilu<f16> {
+impl Matmul3Trait<f16> for MatmulSilu<f16> {
     /// per-kc 累加：把 A×W_gate 与 A×W_up 的部分和累加进两个 3×32 的 acc
     fn compute1(
         &self,
@@ -310,12 +311,13 @@ impl MatMul3Trait<f16> for MatMulSilu<f16> {
         gate_acc: *mut f16,
         up_acc: *mut f16,
     ) {
+        /*
         // 调用期参数映射（update 阶段）：
         // - lda = K                -> a_row_step_macro = self.k_max
         // - ldc_acc = 32 (NR)     -> b_row_step_macro = self.params.b_row_step_micro
         // - kc = self.params.column_step_macro
         // - mr/nr 来自 params
-        let call_param = MatMulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.k_max,                     // lda (=K)
             b_row_step_macro: self.params.b_row_step_micro,   // ldc_acc (=NR=32)
             column_step_macro: self.params.column_step_macro, // kc
@@ -337,15 +339,16 @@ impl MatMul3Trait<f16> for MatMulSilu<f16> {
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
             unreachable!("avx512fp16 required for f16 path");
-        }
+        } */
     }
 
     /// finalize：C = SiLU(gate_acc) ⊙ up_acc
     fn compute2(&self, gate_acc: *const f16, up_acc: *const f16, c_tile: *mut f16) {
+        /* 
         // 调用期参数映射（finalize 阶段）：
         // - ldc_out = N           -> b_row_step_macro = self.n_max
         // - mr/nr 来自 params
-        let call_param = MatMulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.k_max,                     // unused here
             b_row_step_macro: self.n_max,                     // ldc_out (=N)
             column_step_macro: self.params.column_step_macro, // unused here
@@ -362,6 +365,6 @@ impl MatMul3Trait<f16> for MatMulSilu<f16> {
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
             unreachable!("avx512fp16 required for f16 path");
-        }
+        }*/
     }
 }
