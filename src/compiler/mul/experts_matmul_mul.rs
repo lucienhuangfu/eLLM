@@ -121,7 +121,6 @@ where
             hmid,
             h,
             num_topk,
-
             params,
             _marker: PhantomData,
 
