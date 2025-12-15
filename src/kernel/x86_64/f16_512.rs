@@ -9,6 +9,11 @@ pub mod rms_norm;
 pub mod silu;
 pub mod moe_merge;
 // pub mod vec_mat_mul;
+pub mod bitonic_sort;
+
+pub mod experts_topk_softmax_norm;
+pub mod truncated_topk_softmax;
+
 
 // pub mod exp512;
 // pub mod asmsimd;

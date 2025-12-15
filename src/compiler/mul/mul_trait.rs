@@ -1,4 +1,4 @@
-pub trait AttentionAddTrait<T> {
+pub trait AttentionTrait<T> {
     fn compute(
         &self,
         q_ptr1: *const T,
@@ -10,7 +10,7 @@ pub trait AttentionAddTrait<T> {
     );
 }
 
-pub trait MatMulTrait<T> {
+pub trait MatmulTrait<T> {
     fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T);
     fn compute2(
         &self,
@@ -21,7 +21,7 @@ pub trait MatMulTrait<T> {
     );
 }
 
-pub trait MatMulAddTrait<T> {
+pub trait MatmulAddTrait<T> {
     fn compute(
         &self,
         input_ptr1: *const T,
@@ -31,7 +31,7 @@ pub trait MatMulAddTrait<T> {
     );
 }
 
-pub trait MatMulTopKTrait<T> {
+pub trait MatmulTopKTrait<T> {
     fn compute(
         &self,
         input_ptr1: *const T,
@@ -41,7 +41,7 @@ pub trait MatMulTopKTrait<T> {
 }
 
 // === runner/mul_trait.rs ===
-pub trait MatMul3Trait<T> {
+pub trait Matmul3Trait<T> {
     fn compute1(
         &self,
         input_ptr1: *const T,
@@ -96,7 +96,7 @@ pub trait MatMulkqvTrait<T> {
 }
 
 // === runner/mul_trait.rs ===
-pub trait MatMul5Trait<T> {
+pub trait Matmul5Trait<T> {
     fn compute(
         &self,
         input_ptr1: *const T,

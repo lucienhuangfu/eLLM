@@ -9,8 +9,8 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
-// use crate::compiler::mul::mat_mul::MatMul;
-use crate::init::matmul_params::MatMulParams;
+// use crate::compiler::mul::mat_mul::matmul;
+use crate::init::matmul_params::MatmulParams;
 use crate::compiler::operator::Operator;
 
 #[derive(Clone)]
@@ -69,7 +69,7 @@ where T: Copy
         let a_row_step_micro = 8;
         let b_row_step_micro = 8;
 
-        let params: MatMulParams = MatMulParams {
+        let params: MatmulParams = MatmulParams {
 
             a_row_step_macro,
             b_row_step_macro,

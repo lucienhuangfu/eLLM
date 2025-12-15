@@ -6,8 +6,8 @@ use std::ops::{Add, Mul};
 use std::f16;
 
 use super::super::super::init::{
-    matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
+    matmul_params::MatmulParams,
 };
 use super::super::assign::assign;
 use super::mul_trait::MatMulkqvTrait; 
@@ -46,7 +46,7 @@ unsafe fn transpose_kxn_to_nxk<T: Copy + Default>(
 ///
 /// 三条路径各自用自己的 tiles 做 assign(total_tiles, cpu_num, thread_id)。
 #[derive(Clone)]
-pub struct MatMul3<T> {
+pub struct Matmul3<T> {
     // A / W / C
     hidden_ptr: ConstPtr<T>,   // A[M×K]
     q_weight_ptr: ConstPtr<T>, // Wq_nt[Nq×K]
@@ -81,7 +81,7 @@ pub struct MatMul3<T> {
     cpu_max_for_scratch: usize,
 }
 
-impl<T> MatMul3<T>
+impl<T> Matmul3<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {

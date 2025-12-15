@@ -29,7 +29,7 @@ pub struct Config {
     pub rope_scaling: Option<HashMap<String, String>>,
     pub rope_theta: usize,
     pub router_aux_loss_coef: f32,
-    pub shared_expert_intermediate_size: usize,
+    pub shared_experts_intermediate_size: usize,
     pub sliding_window: Option<usize>,
     pub tie_word_embeddings: bool,
     pub torch_dtype: String,
