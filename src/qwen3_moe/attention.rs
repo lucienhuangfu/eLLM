@@ -9,7 +9,7 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::memory::cache::Cache;
 // use crate::compiler::mul::attention_add::AttentionAdd;
-use super::super::init::matmul_params::MatmulParams;
+use super::super::init::matmul_params::MatMulParams;
 use crate::compiler::operator::Operator;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
@@ -122,7 +122,7 @@ where
                 &self.v_weight,
                 position_embedding,
                 self.head_dim,
-                MatmulParams {
+                MatMulParams {
       a_row_step_macro: 6,
                     b_row_step_macro: 256,
                     column_step_macro: 16,
@@ -180,7 +180,7 @@ where
             let output_tensor = view_context_tensor.matmul_add(
                 &self.o_weight,
                 &residual,
-                MatmulParams {
+                MatMulParams {
                     a_row_step_macro: 6,
                     b_row_step_macro: 256,
                     column_step_macro: 16,

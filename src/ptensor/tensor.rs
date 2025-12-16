@@ -10,7 +10,7 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use super::super::init::tensor_utils::get_strides;
 use super::super::memory::allocator::allocate_init;
 use super::super::memory::cache::Cache;
-use crate::init::matmul_params::MatmulParams;
+use crate::init::matmul_params::MatMulParams;
 
 use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
@@ -18,14 +18,14 @@ use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
 // use super::super::compiler::mul::attention_mul_add::AttentionMul;
 use super::super::compiler::mul::attention::Attention;
-use super::super::compiler::mul::experts_matmul_mul::ExpertsMatmulMul;
-use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsMatmulSilu;
+use super::super::compiler::mul::experts_matmul_mul::ExpertsMatMulMul;
+use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
 use super::super::compiler::mul::experts_merge_add::ExpertsMergeAdd;
-use super::super::compiler::mul::matmul::Matmul;
-use super::super::compiler::mul::matmul3::Matmul3;
-use super::super::compiler::mul::matmul_add::MatmulAdd;
-use super::super::compiler::mul::matmul_silu_mul_matmul::MatmulSilu;
-use super::super::compiler::mul::matmul_topk::MatmulTopK;
+use super::super::compiler::mul::matmul::MatMul;
+use super::super::compiler::mul::matmul3::MatMul3;
+use super::super::compiler::mul::matmul_add::MatMulAdd;
+use super::super::compiler::mul::matmul_silu_mul_matmul::MatMulSilu;
+use super::super::compiler::mul::matmul_topk::MatMulTopK;
 use super::super::compiler::operator::Operator;
 use super::super::compiler::zip_map::add_zip::AddZipMap;
 use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
@@ -213,7 +213,7 @@ where
         // sequence_chunk_size: usize,
         // batch_size: usize,
         num_experts_per_tok: usize,
-        params: MatmulParams,
+        params: MatMulParams,
         scope_name: String,
     ) -> Self {
         // down_weights [num_experts, hidden_size, intermediate_size]
@@ -232,7 +232,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::ExpertsMatmulMul(ExpertsMatmulMul::new(
+        let operator = Operator::ExpertsMatMulMul(ExpertsMatMulMul::new(
             self.data,
             down_weights.data,
             experts_indicator,
@@ -261,7 +261,7 @@ where
         experts_indicator: *mut bool,
         indice_ptr: *mut bool,
         // weight_ptr: *mut T,
-        params: MatmulParams,
+        params: MatMulParams,
         scope_name: String,
     ) -> Self {
         // gate_weights [num_experts, intermediate_size, hidden_size]
@@ -280,7 +280,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::ExpertsMatmulSiluMulMatmul(ExpertsMatmulSilu::new(
+        let operator = Operator::ExpertsMatMulSiluMulMatMul(ExpertsMatMulSilu::new(
             self.data,
             gate_weights.data,
             up_weights.data,
@@ -358,7 +358,7 @@ where
     pub fn matmul(
         &self,
         tensor2: &Tensor<T>,
-        params: MatmulParams,
+        params: MatMulParams,
         sequence_length: usize,
         scope_name: String,
     ) -> Self {
@@ -382,7 +382,7 @@ where
         );
 
         let operator = unsafe {
-            Operator::Matmul(Matmul::new(
+            Operator::MatMul(MatMul::new(
                 self.data,
                 tensor2.data,
                 output_tensor.data,
@@ -403,7 +403,7 @@ where
         &self,
         tensor2: &Tensor<T>,
         tensor3: &Tensor<T>,
-        params: MatmulParams,
+        params: MatMulParams,
         tensor_name: String,
     ) -> Self {
         let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
@@ -419,7 +419,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatmulAdd(MatmulAdd::new(
+        let operator = Operator::MatMulAdd(MatMulAdd::new(
             self.data,
             tensor2.data,
             tensor3.data,
@@ -446,7 +446,7 @@ where
         v_weight: &Tensor<T>,
         position_embedding: &Tensor<T>,
         head_dim: usize,
-        params: MatmulParams,
+        params: MatMulParams,
         scope_name: String,
     ) -> (Self, Self, Self) {
         // let head_dim = 128; // Fixed head dimension
@@ -475,7 +475,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::Matmul3(Matmul3::new(
+        let operator = Operator::MatMul3(MatMul3::new(
             self.data,
             q_weight.data,
             q_state.data,
@@ -504,7 +504,7 @@ where
         &self,
         tensor2: &Tensor<T>,
         tensor3: &Tensor<T>,
-        params: MatmulParams,
+        params: MatMulParams,
         tensor_name: String,
     ) -> Self {
         // hidden_tensor [sequence_chunk_size, batch_size, hidden_size]
@@ -524,7 +524,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatmulSiluMulMatmul(MatmulSilu::new(
+        let operator = Operator::MatMulSiluMulMatMul(MatMulSilu::new(
             self.data,
             tensor2.data,
             tensor3.data,
@@ -546,7 +546,7 @@ where
     pub fn matmul_local_topk(
         &self,
         tensor2: &Tensor<T>,
-        params: MatmulParams,
+        params: MatMulParams,
         thread_num: usize,
         scope_name: String,
     ) -> (*const usize, Self, Self) {
@@ -572,7 +572,7 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatmulTopK(MatmulTopK::new(
+        let operator = Operator::MatMulTopK(MatMulTopK::new(
             self.data,
             tensor2.data,
             indice_ptr,
