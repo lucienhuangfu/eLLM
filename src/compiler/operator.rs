@@ -1,5 +1,3 @@
-//use std::arch::x86_64::_MM_EXCEPT_DENORM;
-// use num_traits::{Float, FromPrimitive};
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
@@ -13,20 +11,20 @@ use super::map::topk_softmax::TopKSoftmax;
 use super::mul::matmul::MatMul;
 use super::mul::matmul3::MatMul3;
 use super::mul::matmul_add::MatMulAdd;
-use super::mul::matmul_silu_mul_matmul::MatMulSilu;
+// use super::mul::matmul_silu_mul_matmul::MatMulSilu;
 use super::mul::matmul_topk::MatMulTopK;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
 use super::zip_map::add_zip::AddZipMap;
 use super::zip_map::complex_zip::ComplexZipMap;
 use super::zip_map::silu_mul_zip::SiluMulZipMap;
-// use super::map::softmax_map::SoftmaxMap;
-// use super::reduce::argmax_reduce::ArgmaxReduce;
 use super::mul::attention::Attention;
 use super::mul::experts_matmul_mul::ExpertsMatMulDown;
 use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
 use super::mul::experts_merge_add::ExpertsMergeAdd;
 // use crate::init::matmul_params::MatMulParams;
 // use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+// use super::map::softmax_map::SoftmaxMap;
+// use super::reduce::argmax_reduce::ArgmaxReduce;
 
 #[derive(Clone)]
 pub enum Operator<T>
@@ -35,7 +33,6 @@ where
 {
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
-
     Attention(Attention<T>),
     ComplexZipMap(ComplexZipMap<T>),
     ExpertsMatMulDown(ExpertsMatMulDown<T>),
@@ -44,7 +41,7 @@ where
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
     LookupRMSMap(LookupRMSMap<T>),
     MatMul(MatMul<T>),
-    // MatMul3(MatMul3<T>),
+    MatMul3(MatMul3<T>),
     MatMulAdd(MatMulAdd<T>),
     // MatMulSiluMulMatMul(MatMulSilu<T>),
     MatMulTopK(MatMulTopK<T>),
@@ -122,7 +119,8 @@ where
                     thread_id,
                 );
             }
-            Self::ExpertsMatMulSiluMulMatMul(operator) => {
+            /* 
+            Self::MatMulSiluMulMatMul(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -130,7 +128,7 @@ where
                     cpu_num,
                     thread_id,
                 );
-            }
+            }*/
             Self::ExpertsMergeAdd(operator) => {
                 operator.run(
                     position_index,

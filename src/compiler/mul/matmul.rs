@@ -115,7 +115,7 @@ where
     /// 不再有 sequence 维度，任务在 M×N tiles 上切给多线程
     pub fn run(
         &self,
-                position_index: usize,
+        position_index: usize,
         position_interval: usize,
         batch_size: usize, // 这里就是 M（保留参数名兼容原调用）
         cpu_num: usize,
@@ -325,6 +325,8 @@ mod tests {
         const K: usize = 64;
         const N: usize = 32;
 
+        let thread_num = 4;
+
         // 构造 A[M×K] 和 B[K×N]，行主
         let mut a = vec![0.0f16; M * K];
         let mut b = vec![0.0f16; K * N];
@@ -362,19 +364,20 @@ mod tests {
                 c.as_mut_ptr(),
                 false, // output_to_kv：这里不用旧逻辑
                 params,
-                M, // m_max
-                N, // n_max
-                K, // k_max
-                1, // cpu_max_for_scratch
+                M,          // m_max
+                N,          // n_max
+                K,          // k_max
+                thread_num, // cpu_max_for_scratch
             )
         };
 
-        // 单线程执行：batch_size = M
-        matmul.run(
-            M, // batch_size = M
-            1, // cpu_num
-            0, // thread_id
-        );
+        for i in 0..thread_num {
+            matmul.run(
+                0, 1, M,          // batch_size = M
+                thread_num, // cpu_num
+                i,          // thread_id
+            );
+        }
 
         // 验证结果
         for i in 0..M {
@@ -392,11 +395,13 @@ mod tests {
     }
 
     #[test]
-    fn test_matmul_runner_f16_128x2048x2048() {
-        // M=128, K=2048, N=2048
-        const M: usize = 128;
+    fn test_matmul_runner_f16_144x2048x2048() {
+        // M=144, K=2048, N=2048
+        const M: usize = 144;
         const K: usize = 2048;
         const N: usize = 2048;
+
+        let thread_num = 8;
 
         let mut a = vec![0.0f16; M * K];
         let mut b = vec![0.0f16; K * N];
@@ -418,7 +423,7 @@ mod tests {
 
         // MatMulParams
         let params = MatMulParams {
-            a_row_step_macro: 64,  // MB
+            a_row_step_macro: 24,  // MB: 修改为 24
             b_row_step_macro: 128, // NB
             column_step_macro: 64, // KC
             a_row_step_micro: 3,   // MR
@@ -435,11 +440,16 @@ mod tests {
                 M,
                 N,
                 K,
-                1,
+                thread_num, // 修正: 传入实际线程数，而非 1
             )
         };
-
-        matmul.run(M, 1, 0);
+        for i in 0..thread_num {
+            matmul.run(
+                0, 1, M,          // batch_size = M
+                thread_num, // cpu_num
+                i,          // thread_id
+            );
+        }
 
         // 验证结果
         for i in 0..M {

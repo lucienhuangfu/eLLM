@@ -345,6 +345,8 @@ mod tests {
         const K: usize = 64;
         const N: usize = 32;
 
+        let thread_num = 4;
+
         let mut a = vec![0.0f16; S * M * K];
         let mut b = vec![0.0f16; K * N];
         let mut residual = vec![0.0f16; S * M * N];
@@ -396,11 +398,13 @@ mod tests {
                 M,
                 N,
                 K,
-                1,
+                thread_num,
             )
         };
 
-        matmul_add.run(0, S, M, 1, 0);
+        for i in 0..thread_num {
+            matmul_add.run(0, S, M, thread_num, i);
+        }
 
         // Verify
         for s in 0..S {
@@ -424,11 +428,13 @@ mod tests {
     }
 
     #[test]
-    fn test_matmul_add_runner_f16_128x2048x2048() {
+    fn test_matmul_add_runner_f16_144x2048x2048() {
         const S: usize = 1;
-        const M: usize = 128;
+        const M: usize = 144;
         const K: usize = 2048;
         const N: usize = 2048;
+
+        let thread_num = 8;
 
         let mut a = vec![0.0f16; S * M * K];
         let mut b = vec![0.0f16; K * N];
@@ -464,7 +470,7 @@ mod tests {
         }
 
         let params = MatMulParams {
-            a_row_step_macro: 64,
+            a_row_step_macro: 24,
             b_row_step_macro: 128,
             column_step_macro: 64,
             a_row_step_micro: 3,
@@ -481,11 +487,13 @@ mod tests {
                 M,
                 N,
                 K,
-                1,
+                thread_num,
             )
         };
 
-        matmul_add.run(0, S, M, 1, 0);
+        for i in 0..thread_num {
+            matmul_add.run(0, S, M, thread_num, i);
+        }
 
         // Verify
         for s in 0..S {
