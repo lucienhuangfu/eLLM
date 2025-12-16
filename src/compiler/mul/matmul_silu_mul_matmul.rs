@@ -11,7 +11,7 @@ use super::super::super::init::{
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::MatMul3Trait; // compute1/compute2
+use super::mul_trait::Matmul3Trait; // compute1/compute2
 
 /// 构造期：把 B[K×N] 转置为 B_nt[N×K]（行主，行距=K）
 #[inline]

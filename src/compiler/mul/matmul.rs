@@ -14,7 +14,7 @@ use super::super::assign::assign;
 use super::mul_trait::MatmulTrait;
 
 #[derive(Clone)]
-pub struct MatMul<T> {
+pub struct Matmul<T> {
     pub ptr1: ConstPtr<T>,     // A[M×K] 首地址（原来是 A[S×M×K]，现在去掉 S）
     pub ptr2: ConstPtr<T>,     // 构造后即指向 B_nt[N×K]
     pub output_ptr: MutPtr<T>, // C[M×N] 首地址（原来是 C[S×M×N]）
@@ -22,7 +22,7 @@ pub struct MatMul<T> {
     pub output_to_kv: bool, // 保持兼容（你的旧逻辑）
 
     /// 仅承载 step 形状（MB/NB/KC/MR/NR）
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     pub _marker: PhantomData<T>,
 
     // “最大维度” M/N/K（替代旧 params.a_row/b_row/column）
@@ -54,7 +54,7 @@ where
         ptr2_b_kxn: *const T, // B[K×N]（只在构造期使用一次）
         output_ptr: *mut T,   // C[M×N]
         output_to_kv: bool,
-        params: MatMulParams, // 仅 step 形状：MB/NB/KC/MR/NR
+        params: MatulParams, // 仅 step 形状：MB/NB/KC/MR/NR
         m_max: usize,
         n_max: usize,
         k_max: usize,
@@ -257,7 +257,7 @@ where
     }
 }
 
-impl MatMulTrait<f16> for MatMul<f16> {
+impl MatmulTrait<f16> for Matmul<f16> {
     fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
         let call_param = MatmulParams {
             a_row_step_macro: self.k_max,                     // lda = K
@@ -344,7 +344,7 @@ mod tests {
         }
 
         // MatMulParams：这里只用于 run() 里的 blocking（MB/NB/KC/MR/NR）
-        let params = MatMulParams {
+        let params = MatmulParams {
             a_row_step_macro: 3,   // MB
             b_row_step_macro: 32,  // NB
             column_step_macro: 64, // KC

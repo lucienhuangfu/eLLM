@@ -94,7 +94,7 @@ mod tests {
         // 初始化 A
         for i in 0..3 {
             for k in 0..kc {
-                let val = (i + k)  * 0.1;
+                let val = (i + k) as f32 * 0.1;
                 a_vec[i * lda + k] = val as f16;
             }
         }
@@ -102,7 +102,7 @@ mod tests {
         // 初始化 B
         for k in 0..kc {
             for j in 0..32 {
-                let val = (k + j)  * 0.1;
+                let val = (k + j) as f32 * 0.1;
                 b_vec[k * 32 + j] = val as f16;
             }
         }

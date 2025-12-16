@@ -1,13 +1,12 @@
-
 #![allow(non_snake_case)]
 
 use std::arch::x86_64::{
-    _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_set1_ph,
-    _mm512_storeu_ph, _mm512_setzero_ph,
+    _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_set1_ph, _mm512_setzero_ph,
+    _mm512_storeu_ph,
 };
 use std::f16;
 
-use crate::init::matmul_params::matmulParams;
+use crate::init::matmul_params::MatmulParams;
 use crate::kernel::x86_64::f16_512::activation::sigmoid512;
 
 /// 逐 kc 累加：把 A×W_gate 与 A×W_up 的部分和累加到各自的 3×32 累加缓冲。
@@ -25,15 +24,15 @@ pub unsafe fn fused_update_gate_up_acc_block(
     b_up_panel: *const f16,   // W_up   panel: kc×32
     gate_acc: *mut f16,       // acc buffer: 3×32, row stride = 32
     up_acc: *mut f16,         // acc buffer: 3×32, row stride = 32
-    param: &matmulParams,
+    param: &MatmulParams,
 ) {
     debug_assert_eq!(param.a_row_step_micro, 3);
     debug_assert_eq!(param.b_row_step_micro, 32);
     debug_assert!(param.column_step_macro > 0);
 
-    let lda = param.a_row_step_macro;   // A row stride (=K)
+    let lda = param.a_row_step_macro; // A row stride (=K)
     let ldc_acc = param.b_row_step_macro; // = 32 (for acc)
-    let kc  = param.column_step_macro;  // panel width
+    let kc = param.column_step_macro; // panel width
     let b_stride = 32usize;
 
     // A rows
@@ -53,7 +52,7 @@ pub unsafe fn fused_update_gate_up_acc_block(
     // main loop over kc
     for k in 0..kc {
         let bg = _mm512_loadu_ph(b_gate_panel.add(k * b_stride));
-        let bu = _mm512_loadu_ph(b_up_panel  .add(k * b_stride));
+        let bu = _mm512_loadu_ph(b_up_panel.add(k * b_stride));
 
         let a0k = _mm512_set1_ph(*a0.add(k));
         let a1k = _mm512_set1_ph(*a1.add(k));
@@ -86,7 +85,7 @@ pub unsafe fn fused_finalize_gate_up_silu_mul_block(
     gate_acc: *const f16, // 3×32, row stride = 32
     up_acc: *const f16,   // 3×32, row stride = 32
     c: *mut f16,          // 3×32, row stride = ldc_out (=N)
-    param: &matmulParams,
+    param: &MatmulParams,
 ) {
     debug_assert_eq!(param.a_row_step_micro, 3);
     debug_assert_eq!(param.b_row_step_micro, 32);
@@ -120,14 +119,10 @@ pub unsafe fn fused_finalize_gate_up_silu_mul_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_relative_eq;
     use std::arch::is_x86_feature_detected;
 
-    // f16 <-> f32 转换（与你现有风格一致）
-    #[inline] fn f16v(v: f32) -> f16 { let h = half::f16::from_f32(v); f16::from_bits(h.to_bits()) }
-    #[inline] fn to_f32(x: f16) -> f32 { half::f16::from_bits(x.to_bits()).to_f32() }
-    fn all_close(a: &[f16], b: &[f16], tol: f32) -> bool {
-        a.len() == b.len() && a.iter().zip(b).all(|(x,y)| (to_f32(*x)-to_f32(*y)).abs() <= tol)
-    }
+
 
     // 用例 1：单次 kc=K，A/W_gate/W_up 全 1
     // 期望：G = K, U = K => C = SiLU(K) * K
@@ -138,25 +133,26 @@ mod tests {
             return;
         }
         unsafe {
-            let mr=3usize; let nr=32usize;
-            let kc=64usize; let k_total=64usize; // kc == K
-            let lda=k_total;         // A 行距
-            let ldc_acc=32usize;     // 累加缓冲行距（固定 32）
-            let ldc_out=32usize;     // 输出 C 的行距（本 tile 的 N=32）
+            let mr = 3usize;
+            let nr = 32usize;
+            let kc = 64usize;
+            let k_total = 64usize; // kc == K
+            let lda = k_total; // A 行距
+            let ldc_acc = 32usize; // 累加缓冲行距（固定 32）
+            let ldc_out = 32usize; // 输出 C 的行距（本 tile 的 N=32）
 
             // A: 3×K，全 1
-            let a: Vec<f16> = (0..mr*lda).map(|_| f16v(1.0)).collect();
+            let a: Vec<f16> = (0..mr * lda).map(|_| 1.0f16).collect();
 
             // 面板：kc×32，全 1
-            let gate_panel: Vec<f16> = (0..kc*nr).map(|_| f16v(1.0)).collect();
-            let up_panel:   Vec<f16> = (0..kc*nr).map(|_| f16v(1.0)).collect();
-
+            let gate_panel: Vec<f16> = (0..kc * nr).map(|_| 1.0f16).collect();
+            let up_panel: Vec<f16> = (0..kc * nr).map(|_| 1.0f16).collect();
             // 累加缓冲：3×32，清零
-            let mut gate_acc: Vec<f16> = vec![f16v(0.0); mr*ldc_acc];
-            let mut up_acc:   Vec<f16> = vec![f16v(0.0); mr*ldc_acc];
+            let mut gate_acc: Vec<f16> = vec![0.0f16; mr * ldc_acc];
+            let mut up_acc: Vec<f16> = vec![0.0f16; mr * ldc_acc];
 
             // 调用期参数（update）：lda=K, ldc_acc=32, kc
-            let param_update = matmulParams {
+            let param_update = MatmulParams {
                 a_row_step_macro: lda,
                 b_row_step_macro: ldc_acc,
                 column_step_macro: kc,
@@ -175,13 +171,13 @@ mod tests {
             );
 
             // 输出 C：3×32
-            let mut c: Vec<f16> = vec![f16v(0.0); mr*ldc_out];
+            let mut c: Vec<f16> = vec![0.0f16; mr * ldc_out];
 
             // 调用期参数（finalize）：ldc_out = 32
-            let param_finalize = matmulParams {
-                a_row_step_macro: lda,       // 未用
-                b_row_step_macro: ldc_out,   // C 的行距（=N_tile=32）
-                column_step_macro: kc,       // 未用
+            let param_finalize = MatmulParams {
+                a_row_step_macro: lda,     // 未用
+                b_row_step_macro: ldc_out, // C 的行距（=N_tile=32）
+                column_step_macro: kc,     // 未用
                 a_row_step_micro: mr,
                 b_row_step_micro: nr,
             };
@@ -198,9 +194,11 @@ mod tests {
             let g = k_total as f32;
             let u = k_total as f32;
             let expected_val = (g / (1.0 + (-g).exp())) * g; // SiLU(g) * u, 且 u=g
-            let expected: Vec<f16> = (0..mr*ldc_out).map(|_| f16v(expected_val)).collect();
+            let expected: Vec<f16> = (0..mr * ldc_out).map(|_| expected_val as f16).collect();
 
-            assert!(all_close(&c, &expected, 1e-2), "mismatch: got ~{:?}, expect ~{}", to_f32(c[0]), expected_val);
+            for (val_c, val_exp) in c.iter().zip(expected.iter()) {
+                assert_relative_eq!((*val_c as f32) , (*val_exp as f32), epsilon = 1e-2);
+            }
         }
     }
 
@@ -213,25 +211,27 @@ mod tests {
             return;
         }
         unsafe {
-            let mr=3usize; let nr=32usize;
-            let kc=64usize; let k_total=128usize; // 两次 update
-            let lda=k_total;
-            let ldc_acc=32usize;
-            let ldc_out=32usize;
+            let mr = 3usize;
+            let nr = 32usize;
+            let kc = 64usize;
+            let k_total = 128usize; // 两次 update
+            let lda = k_total;
+            let ldc_acc = 32usize;
+            let ldc_out = 32usize;
 
             // A: 3×K，全 1（注意 A 的行距=K）
-            let a: Vec<f16> = (0..mr*lda).map(|_| f16v(1.0)).collect();
+            let a: Vec<f16> = (0..mr * lda).map(|_| 1.0f16).collect();
 
             // 面板：kc×32
-            let gate_panel: Vec<f16> = (0..kc*nr).map(|_| f16v(1.0)).collect();  // 1.0
-            let up_panel:   Vec<f16> = (0..kc*nr).map(|_| f16v(2.0)).collect();  // 2.0
+            let gate_panel: Vec<f16> = (0..kc * nr).map(|_| 1.0f16).collect(); // 1.0
+            let up_panel: Vec<f16> = (0..kc * nr).map(|_| 2.0f16).collect(); // 2.0
 
             // 累加缓冲
-            let mut gate_acc: Vec<f16> = vec![f16v(0.0); mr*ldc_acc];
-            let mut up_acc:   Vec<f16> = vec![f16v(0.0); mr*ldc_acc];
+            let mut gate_acc: Vec<f16> = vec![0.0f16; mr * ldc_acc];
+            let mut up_acc: Vec<f16> = vec![0.0f16; mr * ldc_acc];
 
             // 参数（update）
-            let param_update = matmulParams {
+            let param_update = MatmulParams {
                 a_row_step_macro: lda,
                 b_row_step_macro: ldc_acc,
                 column_step_macro: kc,
@@ -241,7 +241,7 @@ mod tests {
 
             // 两次 update（模拟 k0=0..64, 64..128 的两片）
             fused_update_gate_up_acc_block(
-                a.as_ptr().add(0),             // A 的 k 偏移在内核里用列索引处理，这里直接同一 a_tile
+                a.as_ptr().add(0), // A 的 k 偏移在内核里用列索引处理，这里直接同一 a_tile
                 gate_panel.as_ptr(),
                 up_panel.as_ptr(),
                 gate_acc.as_mut_ptr(),
@@ -249,8 +249,8 @@ mod tests {
                 &param_update,
             );
             fused_update_gate_up_acc_block(
-                a.as_ptr().add(64),            // A 第二段的列在 update 内核通过列 k 访问；这里传 a+64 起点即可
-                gate_panel.as_ptr(),           // 为了简单，仍然用同一面板数据（值相同即可）
+                a.as_ptr().add(64), // A 第二段的列在 update 内核通过列 k 访问；这里传 a+64 起点即可
+                gate_panel.as_ptr(), // 为了简单，仍然用同一面板数据（值相同即可）
                 up_panel.as_ptr(),
                 gate_acc.as_mut_ptr(),
                 up_acc.as_mut_ptr(),
@@ -258,13 +258,13 @@ mod tests {
             );
 
             // 输出 C：3×32
-            let mut c: Vec<f16> = vec![f16v(0.0); mr*ldc_out];
+            let mut c: Vec<f16> = vec![0.0f16; mr * ldc_out];
 
             // 参数（finalize）
-            let param_finalize = matmulParams {
-                a_row_step_macro: lda,      // 未用
-                b_row_step_macro: ldc_out,  // C 的行距
-                column_step_macro: kc,      // 未用
+            let param_finalize = MatmulParams {
+                a_row_step_macro: lda,     // 未用
+                b_row_step_macro: ldc_out, // C 的行距
+                column_step_macro: kc,     // 未用
                 a_row_step_micro: mr,
                 b_row_step_micro: nr,
             };
@@ -280,9 +280,11 @@ mod tests {
             let g = 128.0_f32;
             let u = 256.0_f32;
             let expected_val = (g / (1.0 + (-g).exp())) * u; // SiLU(g) * U
-            let expected: Vec<f16> = (0..mr*ldc_out).map(|_| f16v(expected_val)).collect();
+            let expected: Vec<f32> = (0..mr * ldc_out).map(|_| expected_val).collect();
 
-            assert!(all_close(&c, &expected, 5e-2), "mismatch: got ~{:?}, expect ~{}", to_f32(c[0]), expected_val);
+            for (val_c, val_exp) in c.iter().zip(expected.iter()) {
+                assert_relative_eq!((*val_c as f32) , *val_exp, epsilon = 5e-2);
+            }
         }
     }
 }

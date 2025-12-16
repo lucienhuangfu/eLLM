@@ -12,9 +12,9 @@ use super::map::topk_softmax::TopKSoftmax;
 // Add missing imports for zip map operations
 use super::mul::matmul::Matmul;
 use super::mul::matmul3::Matmul3;
-use super::mul::matmul_add::MatmulAdd;
+use super::mul::matmul_add::MatMulAdd;
 use super::mul::matmul_silu_mul_matmul::MatmulSilu;
-use super::mul::matmul_topk::MatmulTopK;
+use super::mul::matmul_topk::MatMulTopK;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
 use super::zip_map::add_zip::AddZipMap;
 use super::zip_map::complex_zip::ComplexZipMap;
