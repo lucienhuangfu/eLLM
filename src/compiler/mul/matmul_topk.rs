@@ -10,9 +10,9 @@ use super::super::super::init::{
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
+use super::super::super::kernel::common::heap::FixedMinHeap;
 use super::super::assign::assign;
-use super::mul_trait::MatMulTopKTrait;
-use super::super::super::kernel::common::heap::FixedMinHeap; // 只在这里 use 一次
+use super::mul_trait::MatmulTopKTrait; // 只在这里 use 一次
 
 /// Top-K 版本的 MatMul：
 /// - A: [batch_max, K]
@@ -24,20 +24,23 @@ use super::super::super::kernel::common::heap::FixedMinHeap; // 只在这里 use
 /// - 用 2D 分块 + 3×32 微核计算 C 的每个小 tile
 /// - tile 完成后，把 tile 中的标量丢进对应 heap 里
 #[derive(Clone)]
-pub struct MatMulTopK<T> {
+pub struct MatMulTopK<T>
+where
+    T: PartialOrd + Copy,
+{
     // A / B / 输出 top-k
-    ptr1: ConstPtr<T>,          // A[M×K]
-    ptr2: ConstPtr<T>,          // 指向 B_nt[N×K]
-    indice_ptr: MutPtr<usize>,  // indices buffer: [batch_max][cpu_max_for_scratch][TOPK]
-    value_ptr: MutPtr<T>,       // values buffer : [batch_max][cpu_max_for_scratch][TOPK]
+    ptr1: ConstPtr<T>,         // A[M×K]
+    ptr2: ConstPtr<T>,         // 指向 B_nt[N×K]
+    indice_ptr: MutPtr<usize>, // indices buffer: [batch_max][cpu_max_for_scratch][TOPK]
+    value_ptr: MutPtr<T>,      // values buffer : [batch_max][cpu_max_for_scratch][TOPK]
 
     // 维度
-    a_row: usize,   // M_max
-    b_row: usize,   // N_max
-    column: usize,  // K_max
+    a_row: usize,  // M_max
+    b_row: usize,  // N_max
+    column: usize, // K_max
 
     // blocking 参数（mb/nb/kc/mr/nr）
-    pub params: MatMulParams,
+    pub params: MatmulParams,
 
     // top-k / 线程、batch 上限
     topk: usize,
@@ -53,7 +56,7 @@ pub struct MatMulTopK<T> {
 
     // 每线程的 C_tile 池：[cpu_max_for_scratch][mr×nr]
     c_tile_pool: Box<[T]>,
-    c_tile_stride_elems: usize,  // = mr * nr
+    c_tile_stride_elems: usize, // = mr * nr
 
     // 每 (batch, thread) 一棵 heap，长度 = batch_max * cpu_max_for_scratch
     // heap 自身只存指针和值/len，不再分配数组
@@ -78,13 +81,13 @@ where
     /// - 外部输出 buffer 大小至少为 [batch_max][cpu_max_for_scratch][topk]
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn new(
-        ptr1: *const T,          // A[M×K]
-        ptr2_b_kxn: *const T,    // B[K×N]，构造期使用一次
-        indice_ptr: *mut usize,  // indices 输出 buffer
-        value_ptr: *mut T,       // values 输出 buffer
-        a_row: usize,            // M_max
-        b_row: usize,            // N_max
-        column: usize,           // K_max
+        ptr1: *const T,         // A[M×K]
+        ptr2_b_kxn: *const T,   // B[K×N]，构造期使用一次
+        indice_ptr: *mut usize, // indices 输出 buffer
+        value_ptr: *mut T,      // values 输出 buffer
+        a_row: usize,           // M_max
+        b_row: usize,           // N_max
+        column: usize,          // K_max
         a_row_step_macro: usize,
         b_row_step_macro: usize,
         column_step_macro: usize,
@@ -94,7 +97,7 @@ where
         cpu_max_for_scratch: usize,
         topk: usize,
     ) -> Self {
-        let params = MatMulParams {
+        let params = MatmulParams {
             a_row_step_macro,
             b_row_step_macro,
             column_step_macro,
@@ -250,9 +253,9 @@ where
             assert!(cpu_num <= self.cpu_max_for_scratch);
             assert!(thread_id < cpu_num);
 
-            let m = batch_size;   // 行：batch
-            let n = self.b_row;   // 列：N_max (比如 vocab_size)
-            let k = self.column;  // K
+            let m = batch_size; // 行：batch
+            let n = self.b_row; // 列：N_max (比如 vocab_size)
+            let k = self.column; // K
 
             let mb = self.params.a_row_step_macro.max(1);
             let nb = self.params.b_row_step_macro.max(1);
@@ -266,10 +269,10 @@ where
 
             // 行距（元素计）
             let a_base = self.ptr1.ptr; // A[M×K]
-            let lda = k;                // A 每行跨度 = K
+            let lda = k; // A 每行跨度 = K
 
             let b_nt_ptr = self.ptr2.ptr; // B_nt[N×K]
-            let ldb_row = k;              // B_nt 每行跨度 = K
+            let ldb_row = k; // B_nt 每行跨度 = K
 
             // 输出 heap 对应的 layout stride
             let stride_thread = self.topk;
@@ -277,7 +280,7 @@ where
 
             // 当前线程的 panel / c_tile 缓冲区
             let b_panel_ptr = self.thread_b_panel_ptr(thread_id); // kc×nr
-            let c_tile_ptr = self.thread_c_tile_ptr(thread_id);   // mr×nr
+            let c_tile_ptr = self.thread_c_tile_ptr(thread_id); // mr×nr
 
             // run 之前，先清空本次要用到的 (batch, thread) 的 heap len
             for b in 0..batch_size {
@@ -397,7 +400,7 @@ where
         let mr = self.params.a_row_step_micro.max(1);
         let nr = self.params.b_row_step_micro.max(1);
 
-        let call_param = MatMulParams {
+        let call_param = MatmulParams {
             // 这里 a_row_step_macro 作为 lda = K
             a_row_step_macro: self.column,
             // b_row_step_macro 作为 ldc = nr（C_tile 的列数）
@@ -421,7 +424,7 @@ impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
         let mr = self.params.a_row_step_micro.max(1);
         let nr = self.params.b_row_step_micro.max(1);
 
-        let call_param = MatMulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.column,                    // lda = K
             b_row_step_macro: nr,                             // ldc = nr (C_tile 的列数)
             column_step_macro: self.params.column_step_macro, // kc
@@ -453,7 +456,7 @@ impl MatMulTopKTrait<f32> for MatMulTopK<f32> {
         let mr = self.params.a_row_step_micro.max(1);
         let nr = self.params.b_row_step_micro.max(1);
 
-        let call_param = MatMulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.column,                    // lda = K
             b_row_step_macro: nr,                             // ldc = nr (C_tile 的列数)
             column_step_macro: self.params.column_step_macro, // kc

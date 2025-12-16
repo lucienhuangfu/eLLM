@@ -67,7 +67,7 @@ pub struct Matmul3<T> {
     b_kv_row: usize, // Nkv
 
     // 分块参数（MB/NB/KC/MR/NR=32）
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     _marker: PhantomData<T>,
 
     // 持有转置后权重缓冲
@@ -140,7 +140,7 @@ where
             b_q_row,
             b_kv_row,
 
-            params: MatMulParams {
+            params: MatmulParams {
                 a_row_step_macro,
                 b_row_step_macro,
                 column_step_macro,
@@ -392,7 +392,7 @@ where
         }
     }
     
-}impl<T> MatMulkqvTrait<T> for MatMul3<T>
+}impl<T> MatMulkqvTrait<T> for Matmul3<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -421,7 +421,7 @@ where
 }
 
 // ===== f16 特化：真正调用 AVX-512 微核 =====
-impl MatMulkqvTrait <f16> for MatMul3<f16> {
+impl MatMulkqvTrait <f16> for Matmul3<f16> {
     #[inline]
     fn compute1(
         &self,
@@ -475,7 +475,7 @@ impl MatMulkqvTrait <f16> for MatMul3<f16> {
 }
 
 // ===== f32 占位版本（以后要的话再补微核） =====
-impl MatMulkqvTrait<f32> for MatMul3<f32> {
+impl MatMulkqvTrait<f32> for Matmul3<f32> {
     #[inline]
     fn compute1(
         &self,

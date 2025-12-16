@@ -21,7 +21,7 @@ pub struct MatMulAdd<T> {
     pub output_ptr: MutPtr<T>, // C[S×M×N]
 
     /// 仅承载 step 形状（MB/NB/KC/MR/NR）
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     pub _marker: PhantomData<T>,
 
     // “最大维度” M/N/K（与 MatMul 保持一致）
@@ -50,7 +50,7 @@ where
         ptr2_b_kxn: *const T,    // 原始 B[K×N]
         ptr3_residual: *const T, // residual
         output_ptr: *mut T,      // C
-        params: MatMulParams,    // 仅 step 形状：MB/NB/KC/MR/NR
+        params: MatmulParams,    // 仅 step 形状：MB/NB/KC/MR/NR
         m_max: usize,
         n_max: usize,
         k_max: usize,
@@ -269,7 +269,7 @@ where
 
 /* ------------------ compute：保持你的 trait 风格 ------------------ */
 
-impl<T> MatMulAddTrait<T> for MatMulAdd<T>
+impl<T> MatmulAddTrait<T> for MatmulAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -281,7 +281,7 @@ where
         _input_ptr3: *const T, // 本算子用不到（残差拷贝在 run 里做了）
         output_ptr: *mut T,
     ) {
-        let call_param = MatMulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.k_max,                     // lda = K
             b_row_step_macro: self.n_max,                     // ldc = N
             column_step_macro: self.params.column_step_macro, // kc
@@ -298,7 +298,7 @@ where
 }
 
 // —— f16 特化：走 AVX-512（若可用），否则 generic
-impl MatMulAddTrait<f16> for MatMulAdd<f16> {
+impl MatmulAddTrait<f16> for MatmulAdd<f16> {
     fn compute(
         &self,
         input_ptr1: *const f16,
@@ -306,7 +306,7 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
         _input_ptr3: *const f16,
         output_ptr: *mut f16,
     ) {
-        let call_param = MatMulParams {
+        let call_param = MatmulParams {
             a_row_step_macro: self.k_max,                     // lda = K
             b_row_step_macro: self.n_max,                     // ldc = N
             column_step_macro: self.params.column_step_macro, // kc

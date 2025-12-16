@@ -35,7 +35,7 @@ pub struct MatMulSilu<T> {
     pub ptr3: ConstPtr<T>,     // W_up  [N×K] —— 已转置后的首地址
     pub output_ptr: MutPtr<T>, // C[M×N]
     /// params 只承载 step 形状（MB/NB/KC/MR/NR）
-    pub params: MatMulParams,
+    pub params: MatmulParams,
     pub m_max: usize,
     pub n_max: usize,
     pub k_max: usize,
@@ -101,7 +101,7 @@ where
             ptr2,
             ptr3,
             output_ptr: MutPtr { ptr: out_ptr },
-            params: MatMulParams {
+            params: MatmulParams {
                 a_row_step_macro: mb,
                 b_row_step_macro: nb,
                 column_step_macro: kc,
