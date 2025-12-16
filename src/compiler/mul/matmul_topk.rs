@@ -472,3 +472,226 @@ impl MatMulTopKTrait<f32> for MatMulTopK<f32> {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_abs_diff_eq;
+
+    // 辅助验证函数
+    fn verify_topk_result(
+        m: usize,
+        k: usize,
+        n: usize,
+        topk: usize,
+        cpu_num: usize,
+        cpu_max_for_scratch: usize,
+        a: &[f16],
+        b: &[f16],
+        indices_buf: &[usize],
+        values_buf: &[f16],
+        epsilon: f32,
+    ) {
+        for i in 0..m {
+            // (1) 计算参考结果 (Full MatMul Ground Truth)
+            let mut row_c = vec![0.0f32; n];
+            for j in 0..n {
+                let mut sum = 0.0f32;
+                for kk in 0..k {
+                    sum += (a[i * k + kk] as f32) * (b[kk * n + j] as f32);
+                }
+                row_c[j] = sum;
+            }
+
+            // (2) 排序找 Ground Truth TopK (降序)
+            let mut indexed_row: Vec<(usize, f32)> = row_c.into_iter().enumerate().collect();
+            indexed_row.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let expected_topk = &indexed_row[0..topk];
+
+            // (3) 收集所有“线程”产生的局部 TopK，并进行 Reduce (Merge)
+            let mut merged_candidates: Vec<(usize, f32)> = Vec::new();
+
+            for tid in 0..cpu_num {
+                // Offset = batch_idx * (cpu_max * topk) + thread_idx * topk
+                let offset = i * (cpu_max_for_scratch * topk) + tid * topk;
+                let result_indices = &indices_buf[offset..offset + topk];
+                let result_values = &values_buf[offset..offset + topk];
+
+                for k_idx in 0..topk {
+                    merged_candidates.push((result_indices[k_idx], result_values[k_idx] as f32));
+                }
+            }
+
+            // (4) 对合并后的结果再次排序取全局 TopK
+            merged_candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let final_topk = &merged_candidates[0..topk];
+
+            // (5) 逐个比对
+            for k_idx in 0..topk {
+                let (exp_idx, exp_val) = expected_topk[k_idx];
+                let (got_idx, got_val) = final_topk[k_idx];
+
+                // 验证数值
+                assert_abs_diff_eq!(got_val, exp_val, epsilon = epsilon);
+
+                // 验证索引
+                // 如果数值非常接近，索引可能因为浮点误差而不同
+                // 这里我们要求：如果数值相等（或极接近），索引必须匹配
+                if (got_val - exp_val).abs() < 1e-5 {
+                    assert_eq!(got_idx, exp_idx, "Mismatch at batch {}, rank {}", i, k_idx);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_matmul_topk_f16_3x64x32() {
+        // 1. 维度定义 (仿照 matmul.rs test_matmul_runner_f16_3x64x32)
+        // M=3 (divisible by MR=3), K=64, N=32
+        const M: usize = 3;
+        const K: usize = 64;
+        const N: usize = 32;
+        const TOPK: usize = 10;
+
+        // 2. 模拟多线程参数
+        let cpu_num = 4;
+        let cpu_max_for_scratch = 4;
+
+        // 3. 数据准备
+        let mut a = vec![0.0f16; M * K];
+        let mut b = vec![0.0f16; K * N];
+
+        // 初始化 A
+        for i in 0..M {
+            for k in 0..K {
+                let val = (i + k) as f32 * 0.01;
+                a[i * K + k] = val as f16;
+            }
+        }
+        // 初始化 B
+        for k in 0..K {
+            for j in 0..N {
+                let val = (k + j) as f32 * 0.001;
+                b[k * N + j] = val as f16;
+            }
+        }
+
+        // 4. 输出 Buffer
+        let buf_len = M * cpu_max_for_scratch * TOPK;
+        let mut indices_buf = vec![0usize; buf_len];
+        let mut values_buf = vec![0.0f16; buf_len];
+
+        // 5. 构造 Runner
+        unsafe {
+            let runner = MatMulTopK::<f16>::new(
+                a.as_ptr(),
+                b.as_ptr(),
+                indices_buf.as_mut_ptr(),
+                values_buf.as_mut_ptr(),
+                M,  // a_row
+                N,  // b_row
+                K,  // column
+                3,  // MB (Macro Block M)
+                32, // NB (Macro Block N)
+                64, // KC
+                3,  // MR (必须整除 M)
+                32, // NR
+                M,  // batch_max
+                cpu_max_for_scratch,
+                TOPK,
+            );
+
+            // 6. Fake Multi-threading
+            for tid in 0..cpu_num {
+                runner.run(0, 0, M, cpu_num, tid);
+            }
+        }
+
+        // 7. 验证结果
+        verify_topk_result(
+            M,
+            K,
+            N,
+            TOPK,
+            cpu_num,
+            cpu_max_for_scratch,
+            &a,
+            &b,
+            &indices_buf,
+            &values_buf,
+            0.005,
+        );
+    }
+
+    #[test]
+    fn test_matmul_topk_f16_144x2048x2048() {
+        // 1. 维度定义 (仿照 matmul.rs test_matmul_runner_f16_144x2048x2048)
+        const M: usize = 144;
+        const K: usize = 2048;
+        const N: usize = 2048;
+        const TOPK: usize = 10;
+
+        let cpu_num = 8;
+        let cpu_max_for_scratch = 8;
+
+        let mut a = vec![0.0f16; M * K];
+        let mut b = vec![0.0f16; K * N];
+
+        // 初始化 A, B
+        for i in 0..M {
+            for k in 0..K {
+                let val = ((i + k) % 7) as f32 * 0.01;
+                a[i * K + k] = val as f16;
+            }
+        }
+        for k in 0..K {
+            for j in 0..N {
+                let val = ((k + j) % 11) as f32 * 0.01;
+                b[k * N + j] = val as f16;
+            }
+        }
+
+        let buf_len = M * cpu_max_for_scratch * TOPK;
+        let mut indices_buf = vec![0usize; buf_len];
+        let mut values_buf = vec![0.0f16; buf_len];
+
+        unsafe {
+            let runner = MatMulTopK::<f16>::new(
+                a.as_ptr(),
+                b.as_ptr(),
+                indices_buf.as_mut_ptr(),
+                values_buf.as_mut_ptr(),
+                M,
+                N,
+                K,
+                24,  // MB
+                128, // NB
+                64,  // KC
+                3,   // MR
+                32,  // NR
+                M,
+                cpu_max_for_scratch,
+                TOPK,
+            );
+
+            for tid in 0..cpu_num {
+                runner.run(0, 0, M, cpu_num, tid);
+            }
+        }
+
+        // 验证结果 (K较大时累加误差较大，epsilon 放宽到 0.5)
+        verify_topk_result(
+            M,
+            K,
+            N,
+            TOPK,
+            cpu_num,
+            cpu_max_for_scratch,
+            &a,
+            &b,
+            &indices_buf,
+            &values_buf,
+            0.5,
+        );
+    }
+}
