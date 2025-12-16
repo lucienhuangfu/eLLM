@@ -1,4 +1,4 @@
-use super::super::super::init::matmul_params::MatmulParams;
+use super::super::super::init::matmul_params::MatMulParams;
 use std::ops::{Add, Mul};
 
 /// 通用微核（与 AVX-512 版本对齐的“广播式”语义）
@@ -11,7 +11,7 @@ use std::ops::{Add, Mul};
 ///  - Kc = `param.column_step_macro`
 ///
 /// 注意：这里的 `b` 必须是 **打包面板**（Kc×NR，行主），与 AVX-512 微核一致。
-pub fn matmul_block<T>(a: *const T, b: *const T, c: *mut T, param: &MatmulParams)
+pub fn matmul_block<T>(a: *const T, b: *const T, c: *mut T, param: &MatMulParams)
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
@@ -59,7 +59,7 @@ mod tests {
         let ldc = nr;
 
         // 仅 5 字段（把 lda/ldc/kc 映射进去）
-        let param = MatmulParams {
+        let param = MatMulParams {
             a_row_step_macro: lda,    // ← lda
             b_row_step_macro: ldc,    // ← ldc
             column_step_macro: kc,    // ← kc
@@ -100,7 +100,7 @@ mod tests {
         let lda = kc;
         let ldc = nr;
 
-        let param = MatmulParams {
+        let param = MatMulParams {
             a_row_step_macro: lda,
             b_row_step_macro: ldc,
             column_step_macro: kc,

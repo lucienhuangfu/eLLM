@@ -6,13 +6,13 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatmulParams,
+    matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
 use super::super::super::kernel::common::heap::FixedMinHeap;
 use super::super::assign::assign;
-use super::mul_trait::MatmulTopKTrait; // 只在这里 use 一次
+use super::mul_trait::MatMulTopKTrait; // 只在这里 use 一次
 
 /// Top-K 版本的 MatMul：
 /// - A: [batch_max, K]
@@ -40,7 +40,7 @@ where
     column: usize, // K_max
 
     // blocking 参数（mb/nb/kc/mr/nr）
-    pub params: MatmulParams,
+    pub params: MatMulParams,
 
     // top-k / 线程、batch 上限
     topk: usize,
@@ -97,7 +97,7 @@ where
         cpu_max_for_scratch: usize,
         topk: usize,
     ) -> Self {
-        let params = MatmulParams {
+        let params = MatMulParams {
             a_row_step_macro,
             b_row_step_macro,
             column_step_macro,
@@ -400,7 +400,7 @@ where
         let mr = self.params.a_row_step_micro.max(1);
         let nr = self.params.b_row_step_micro.max(1);
 
-        let call_param = MatmulParams {
+        let call_param = MatMulParams {
             // 这里 a_row_step_macro 作为 lda = K
             a_row_step_macro: self.column,
             // b_row_step_macro 作为 ldc = nr（C_tile 的列数）
@@ -424,7 +424,7 @@ impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
         let mr = self.params.a_row_step_micro.max(1);
         let nr = self.params.b_row_step_micro.max(1);
 
-        let call_param = MatmulParams {
+        let call_param = MatMulParams {
             a_row_step_macro: self.column,                    // lda = K
             b_row_step_macro: nr,                             // ldc = nr (C_tile 的列数)
             column_step_macro: self.params.column_step_macro, // kc
@@ -456,7 +456,7 @@ impl MatMulTopKTrait<f32> for MatMulTopK<f32> {
         let mr = self.params.a_row_step_micro.max(1);
         let nr = self.params.b_row_step_micro.max(1);
 
-        let call_param = MatmulParams {
+        let call_param = MatMulParams {
             a_row_step_macro: self.column,                    // lda = K
             b_row_step_macro: nr,                             // ldc = nr (C_tile 的列数)
             column_step_macro: self.params.column_step_macro, // kc

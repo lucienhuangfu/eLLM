@@ -6,7 +6,7 @@ use std::arch::x86_64::{
 };
 use std::f16;
 
-use crate::init::matmul_params::MatmulParams;
+use crate::init::matmul_params::MatMulParams;
 use crate::kernel::x86_64::f16_512::activation::sigmoid512;
 
 /// 逐 kc 累加：把 A×W_gate 与 A×W_up 的部分和累加到各自的 3×32 累加缓冲。
@@ -24,7 +24,7 @@ pub unsafe fn fused_update_gate_up_acc_block(
     b_up_panel: *const f16,   // W_up   panel: kc×32
     gate_acc: *mut f16,       // acc buffer: 3×32, row stride = 32
     up_acc: *mut f16,         // acc buffer: 3×32, row stride = 32
-    param: &MatmulParams,
+    param: &MatMulParams,
 ) {
     debug_assert_eq!(param.a_row_step_micro, 3);
     debug_assert_eq!(param.b_row_step_micro, 32);
@@ -85,7 +85,7 @@ pub unsafe fn fused_finalize_gate_up_silu_mul_block(
     gate_acc: *const f16, // 3×32, row stride = 32
     up_acc: *const f16,   // 3×32, row stride = 32
     c: *mut f16,          // 3×32, row stride = ldc_out (=N)
-    param: &MatmulParams,
+    param: &MatMulParams,
 ) {
     debug_assert_eq!(param.a_row_step_micro, 3);
     debug_assert_eq!(param.b_row_step_micro, 32);
@@ -152,7 +152,7 @@ mod tests {
             let mut up_acc: Vec<f16> = vec![0.0f16; mr * ldc_acc];
 
             // 调用期参数（update）：lda=K, ldc_acc=32, kc
-            let param_update = MatmulParams {
+            let param_update = MatMulParams {
                 a_row_step_macro: lda,
                 b_row_step_macro: ldc_acc,
                 column_step_macro: kc,
@@ -174,7 +174,7 @@ mod tests {
             let mut c: Vec<f16> = vec![0.0f16; mr * ldc_out];
 
             // 调用期参数（finalize）：ldc_out = 32
-            let param_finalize = MatmulParams {
+            let param_finalize = MatMulParams {
                 a_row_step_macro: lda,     // 未用
                 b_row_step_macro: ldc_out, // C 的行距（=N_tile=32）
                 column_step_macro: kc,     // 未用
@@ -231,7 +231,7 @@ mod tests {
             let mut up_acc: Vec<f16> = vec![0.0f16; mr * ldc_acc];
 
             // 参数（update）
-            let param_update = MatmulParams {
+            let param_update = MatMulParams {
                 a_row_step_macro: lda,
                 b_row_step_macro: ldc_acc,
                 column_step_macro: kc,
@@ -261,7 +261,7 @@ mod tests {
             let mut c: Vec<f16> = vec![0.0f16; mr * ldc_out];
 
             // 参数（finalize）
-            let param_finalize = MatmulParams {
+            let param_finalize = MatMulParams {
                 a_row_step_macro: lda,     // 未用
                 b_row_step_macro: ldc_out, // C 的行距
                 column_step_macro: kc,     // 未用

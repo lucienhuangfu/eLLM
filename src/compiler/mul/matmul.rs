@@ -6,15 +6,15 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use super::super::super::init::{
-    matmul_params::MatmulParams,
+    matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use super::super::super::kernel;
 use super::super::assign::assign;
-use super::mul_trait::MatmulTrait;
+use super::mul_trait::MatMulTrait;
 
 #[derive(Clone)]
-pub struct Matmul<T> {
+pub struct MatMul<T> {
     pub ptr1: ConstPtr<T>,     // A[M×K] 首地址（原来是 A[S×M×K]，现在去掉 S）
     pub ptr2: ConstPtr<T>,     // 构造后即指向 B_nt[N×K]
     pub output_ptr: MutPtr<T>, // C[M×N] 首地址（原来是 C[S×M×N]）
@@ -22,7 +22,7 @@ pub struct Matmul<T> {
     pub output_to_kv: bool, // 保持兼容（你的旧逻辑）
 
     /// 仅承载 step 形状（MB/NB/KC/MR/NR）
-    pub params: MatmulParams,
+    pub params: MatMulParams,
     pub _marker: PhantomData<T>,
 
     // “最大维度” M/N/K（替代旧 params.a_row/b_row/column）
@@ -40,7 +40,7 @@ pub struct Matmul<T> {
     cpu_max_for_scratch: usize,  // 允许的最大线程数
 }
 
-impl<T> Matmul<T>
+impl<T> MatMul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -54,7 +54,7 @@ where
         ptr2_b_kxn: *const T, // B[K×N]（只在构造期使用一次）
         output_ptr: *mut T,   // C[M×N]
         output_to_kv: bool,
-        params: MatulParams, // 仅 step 形状：MB/NB/KC/MR/NR
+        params: MatMulParams, // 仅 step 形状：MB/NB/KC/MR/NR
         m_max: usize,
         n_max: usize,
         k_max: usize,
@@ -115,6 +115,8 @@ where
     /// 不再有 sequence 维度，任务在 M×N tiles 上切给多线程
     pub fn run(
         &self,
+                position_index: usize,
+        position_interval: usize,
         batch_size: usize, // 这里就是 M（保留参数名兼容原调用）
         cpu_num: usize,
         thread_id: usize,
@@ -225,12 +227,12 @@ where
 
 /* ------------------ compute/compute2：保持你的调用风格 ------------------ */
 
-impl<T> MatmulTrait<T> for Matmul<T>
+impl<T> MatMulTrait<T> for MatMul<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
     default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T) {
-        let call_param = MatmulParams {
+        let call_param = MatMulParams {
             a_row_step_macro: self.k_max,                     // lda = K
             b_row_step_macro: self.n_max,                     // ldc = N
             column_step_macro: self.params.column_step_macro, // kc
@@ -257,9 +259,9 @@ where
     }
 }
 
-impl MatmulTrait<f16> for Matmul<f16> {
+impl MatMulTrait<f16> for MatMul<f16> {
     fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
-        let call_param = MatmulParams {
+        let call_param = MatMulParams {
             a_row_step_macro: self.k_max,                     // lda = K
             b_row_step_macro: self.n_max,                     // ldc = N
             column_step_macro: self.params.column_step_macro, // kc
@@ -303,7 +305,7 @@ impl MatmulTrait<f16> for Matmul<f16> {
     }
 }
 
-impl MatmulTrait<f32> for Matmul<f32> {
+impl MatMulTrait<f32> for MatMul<f32> {
     fn compute(&self, _a: *const f32, _b: *const f32, _c: *mut f32) { /* TODO */
     }
     fn compute2(&self, a: *const f32, b: *const f32, c: *mut f32, length: usize) {
@@ -344,7 +346,7 @@ mod tests {
         }
 
         // MatMulParams：这里只用于 run() 里的 blocking（MB/NB/KC/MR/NR）
-        let params = MatmulParams {
+        let params = MatMulParams {
             a_row_step_macro: 3,   // MB
             b_row_step_macro: 32,  // NB
             column_step_macro: 64, // KC
