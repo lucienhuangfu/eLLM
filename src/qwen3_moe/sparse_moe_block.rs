@@ -6,7 +6,7 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::init::matmul_params::MatmulParams;
+use super::super::init::matmul_params::MatMulParams;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
@@ -101,7 +101,7 @@ where
         // gate_output [sequence_chunk_size, batch_size, num_experts]
         let gate_output = hidden_states.matmul(
             &self.gate_weight,
-            MatmulParams {
+            MatMulParams {
                        a_row_step_macro: 6,
                     b_row_step_macro: 128,
                     column_step_macro: 16,
@@ -126,7 +126,7 @@ where
             &self.experts_up_weight,
             experts_indicator,
             indice_ptr,
-            MatmulParams {
+            MatMulParams {
                   a_row_step_macro: 6,
                     b_row_step_macro: 128,
                     column_step_macro: 16,
@@ -145,7 +145,7 @@ where
             weight_ptr,
             topk_indices_ptr,
             self.num_topk,
-            MatmulParams {
+            MatMulParams {
                     a_row_step_macro: 6,
                     b_row_step_macro: 128,
                     column_step_macro: 16,

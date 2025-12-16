@@ -10,7 +10,7 @@ pub trait AttentionTrait<T> {
     );
 }
 
-pub trait MatmulTrait<T> {
+pub trait MatMulTrait<T> {
     fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T);
     fn compute2(
         &self,
@@ -21,7 +21,7 @@ pub trait MatmulTrait<T> {
     );
 }
 
-pub trait MatmulAddTrait<T> {
+pub trait MatMulAddTrait<T> {
     fn compute(
         &self,
         input_ptr1: *const T,
@@ -31,7 +31,7 @@ pub trait MatmulAddTrait<T> {
     );
 }
 
-pub trait MatmulTopKTrait<T> {
+pub trait MatMulTopKTrait<T> {
     fn compute(
         &self,
         input_ptr1: *const T,
@@ -41,7 +41,7 @@ pub trait MatmulTopKTrait<T> {
 }
 
 // === runner/mul_trait.rs ===
-pub trait Matmul3Trait<T> {
+pub trait MatMul3Trait<T> {
     fn compute1(
         &self,
         input_ptr1: *const T,
@@ -55,7 +55,7 @@ pub trait Matmul3Trait<T> {
 }
 // === mul_trait.rs 中新增 ===
 
-pub trait SiluMatmulTrait<T> {
+pub trait SiluMatMulTrait<T> {
     /// K 方向逐 kc 累加：
     ///   gate_acc/up_acc += A_tile(3×kc) × panel(kc×32)
     fn compute1(
@@ -96,7 +96,7 @@ pub trait MatMulkqvTrait<T> {
 }
 
 // === runner/mul_trait.rs ===
-pub trait Matmul5Trait<T> {
+pub trait MatMul5Trait<T> {
     fn compute(
         &self,
         input_ptr1: *const T,

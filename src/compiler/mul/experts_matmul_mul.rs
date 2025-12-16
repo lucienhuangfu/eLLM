@@ -20,19 +20,19 @@ use super::mul_trait::ExpertsDownTrait; // ← 新 trait
 /// - 写出 slot 使用 experts_topk_ptr（token-major, 每 token 升序 expert id 列表）
 /// - 不做 residual
 #[derive(Clone)]
-pub struct ExpertsMatmulDown<T> {
-    pub nonlin_ptr: ConstPtr<T>,         // [E, B, Hmid]
-    pub wdown_nt_ptr: ConstPtr<T>,       // [E, H, Hmid] (转置后)
+pub struct ExpertsMatMulDown<T> {
+    pub nonlin_ptr: ConstPtr<T>,   // [E, B, Hmid]
+    pub wdown_nt_ptr: ConstPtr<T>, // [E, H, Hmid] (转置后)
 
-    pub experts_indicator: ConstPtr<bool>,  // [E]
-    pub indice_ptr:        ConstPtr<bool>,  // [E, B]
-    pub weight_ptr:        ConstPtr<T>,     // [E, B]
+    pub experts_indicator: ConstPtr<bool>, // [E]
+    pub indice_ptr: ConstPtr<bool>,        // [E, B]
+    pub weight_ptr: ConstPtr<T>,           // [E, B]
 
     // 每个 token 的 top-k expert 列表（升序 expert id）：
     // shape = [B, K]，K = num_topk
     pub experts_topk_ptr: ConstPtr<usize>,
 
-    pub output_ptr: MutPtr<T>,              // [B, K, H]，K = num_topk
+    pub output_ptr: MutPtr<T>, // [B, K, H]，K = num_topk
 
     pub num_experts: usize,
     pub num_token: usize,
@@ -47,24 +47,24 @@ pub struct ExpertsMatmulDown<T> {
     pub b_panel_pool: Box<[T]>,
     pub b_panel_stride: usize,
 
-    pub a_tile: Box<[T]>,     // MR × KC
-    pub acc_tile: Box<[T]>,   // MR × NR
+    pub a_tile: Box<[T]>,   // MR × KC
+    pub acc_tile: Box<[T]>, // MR × NR
 
     pub cpu_max_for_scratch: usize,
 }
 
-impl<T> ExpertsMatmulDown<T>
+impl<T> ExpertsMatMulDown<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     pub unsafe fn new(
-        nonlin_ptr: *const T,            // [E,B,Hmid]
-        wdown_ptr: *const T,             // [E,Hmid,H]
-        experts_indicator: *const bool,  // [E]
-        indice_ptr: *const bool,         // [E,B]
-        weight_ptr: *const T,            // [E,B]
-        experts_topk_ptr: *const usize,  // [B,K] 每 token 的 top-k expert id
-        output_ptr: *mut T,              // [B,K,H]
+        nonlin_ptr: *const T,           // [E,B,Hmid]
+        wdown_ptr: *const T,            // [E,Hmid,H]
+        experts_indicator: *const bool, // [E]
+        indice_ptr: *const bool,        // [E,B]
+        weight_ptr: *const T,           // [E,B]
+        experts_topk_ptr: *const usize, // [B,K] 每 token 的 top-k expert id
+        output_ptr: *mut T,             // [B,K,H]
 
         num_experts: usize,
         num_token: usize,
@@ -97,8 +97,8 @@ where
 
         // -------- (2) B_panel 池 --------
         let b_panel_stride = kc * nr;
-        let b_panel_pool = vec![T::default(); cpu_max_for_scratch * b_panel_stride]
-            .into_boxed_slice();
+        let b_panel_pool =
+            vec![T::default(); cpu_max_for_scratch * b_panel_stride].into_boxed_slice();
 
         // -------- (3) A_tile / acc_tile --------
         let a_tile = vec![T::default(); mr * kc].into_boxed_slice();
@@ -106,13 +106,19 @@ where
 
         Self {
             nonlin_ptr: ConstPtr { ptr: nonlin_ptr },
-            wdown_nt_ptr: ConstPtr { ptr: wdown_nt.as_ptr() },
+            wdown_nt_ptr: ConstPtr {
+                ptr: wdown_nt.as_ptr(),
+            },
 
-            experts_indicator: ConstPtr { ptr: experts_indicator },
-            indice_ptr:        ConstPtr { ptr: indice_ptr },
-            weight_ptr:        ConstPtr { ptr: weight_ptr },
+            experts_indicator: ConstPtr {
+                ptr: experts_indicator,
+            },
+            indice_ptr: ConstPtr { ptr: indice_ptr },
+            weight_ptr: ConstPtr { ptr: weight_ptr },
 
-            experts_topk_ptr: ConstPtr { ptr: experts_topk_ptr },
+            experts_topk_ptr: ConstPtr {
+                ptr: experts_topk_ptr,
+            },
 
             output_ptr: MutPtr { ptr: output_ptr },
 
@@ -121,7 +127,6 @@ where
             hmid,
             h,
             num_topk,
-
             params,
             _marker: PhantomData,
 
@@ -209,14 +214,16 @@ where
 
     pub fn run(
         &self,
+                position_index: usize,
+        position_interval: usize,
         batch_size: usize, // = num_token
         cpu_num: usize,
         thread_id: usize,
     ) {
         unsafe {
-            let m  = batch_size;      // token
-            let n  = self.h;          // hidden
-            let k  = self.hmid;       // mid
+            let m = batch_size; // token
+            let n = self.h; // hidden
+            let k = self.hmid; // mid
 
             let mb = self.params.a_row_step_macro;
             let nb = self.params.b_row_step_macro;
@@ -231,8 +238,8 @@ where
 
             if let Some((tb, te)) = assign(total_tiles, cpu_num, thread_id) {
                 let b_panel = self.thread_b_panel(thread_id);
-                let a_tile  = self.a_tile.as_ptr() as *mut T;
-                let acc     = self.acc_tile.as_ptr() as *mut T;
+                let a_tile = self.a_tile.as_ptr() as *mut T;
+                let acc = self.acc_tile.as_ptr() as *mut T;
 
                 // 临时 idx buffer（每线程一次分配）
                 let mut idx_buf = vec![0usize; mb];
@@ -242,7 +249,7 @@ where
                     let tn = t % tiles_n;
 
                     let slot0 = tm * mb;
-                    let n0    = tn * nb;
+                    let n0 = tn * nb;
 
                     let n_blk = (n - n0).min(nb);
                     // 这里默认 nb == nr（即 N 方向分块与微核宽度一致）
@@ -250,8 +257,9 @@ where
 
                     // === 遍历 experts ===
                     for e in 0..self.num_experts {
-
-                        if !*self.experts_indicator.ptr.add(e) { continue; }
+                        if !*self.experts_indicator.ptr.add(e) {
+                            continue;
+                        }
 
                         // 该 expert 的 token 数 cnt_e
                         let mut cnt_e = 0usize;
@@ -260,7 +268,9 @@ where
                                 cnt_e += 1;
                             }
                         }
-                        if slot0 >= cnt_e { continue; }
+                        if slot0 >= cnt_e {
+                            continue;
+                        }
 
                         let be = (cnt_e - slot0).min(mb);
 
@@ -273,7 +283,9 @@ where
                                     if s >= slot0 && s < slot0 + be {
                                         idx_buf[w] = b;
                                         w += 1;
-                                        if w == be { break; }
+                                        if w == be {
+                                            break;
+                                        }
                                     }
                                     s += 1;
                                 }
@@ -287,38 +299,21 @@ where
 
                         // === Kc×NR + MR×Kc → MR×NR ===
                         // 1) 先清零整个 acc（MR×NR），再在 K 维累加
-                        for u in 0..(mr * nr) { *acc.add(u) = T::default(); }
+                        for u in 0..(mr * nr) {
+                            *acc.add(u) = T::default();
+                        }
 
                         let mut k0 = 0usize;
                         while k0 < k {
                             // pack A (be 行)
-                            self.pack_a_tile(
-                                e,
-                                k0,
-                                be,
-                                idx_buf.as_ptr(),
-                                a_tile,
-                            );
+                            self.pack_a_tile(e, k0, be, idx_buf.as_ptr(), a_tile);
 
                             // pack B（当前 expert 的 N×K 中的一段）
-                            let b_nt = self.wdown_nt_ptr.ptr
-                                .add(e * (self.h * self.hmid));
-                            Self::pack_b_panel(
-                                b_nt,
-                                self.hmid,
-                                n0,
-                                k0,
-                                kc,
-                                nr,
-                                b_panel,
-                            );
+                            let b_nt = self.wdown_nt_ptr.ptr.add(e * (self.h * self.hmid));
+                            Self::pack_b_panel(b_nt, self.hmid, n0, k0, kc, nr, b_panel);
 
                             // compute1: (MR×KC) * (KC×NR)，累加到 acc
-                            self.compute1(
-                                a_tile as *const T,
-                                b_panel as *const T,
-                                acc,
-                            );
+                            self.compute1(a_tile as *const T, b_panel as *const T, acc);
 
                             k0 += kc;
                         }
@@ -331,10 +326,10 @@ where
                             // 用新的 experts_topk_ptr 求 slot(b,e)
                             let slot = self.slot_of(b, e);
 
-                            let out_row = self.output_ptr.ptr
-                                .add(b * (self.num_topk * n)
-                                     + slot * n
-                                     + n0);
+                            let out_row = self
+                                .output_ptr
+                                .ptr
+                                .add(b * (self.num_topk * n) + slot * n + n0);
 
                             // acc 中第 r 行的起点
                             let acc_row = acc.add(r * nr) as *const T;
@@ -356,17 +351,12 @@ where
 
 /* ---------------- ExpertsDownTrait 默认实现 ---------------- */
 
-impl<T> ExpertsDownTrait<T> for ExpertsMatmulDown<T>
+impl<T> ExpertsDownTrait<T> for ExpertsMatMulDown<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     // compute1: GEMM micro-kernel，占位（generic 不做事）
-    default fn compute1(
-        &self,
-        _a_tile: *const T,
-        _b_panel: *const T,
-        _acc: *mut T,
-    ) {
+    default fn compute1(&self, _a_tile: *const T, _b_panel: *const T, _acc: *mut T) {
         // 默认空实现，真正的 f16 专用内核在下面特化
     }
 
@@ -384,14 +374,9 @@ where
 
 /* ---------------- f16 专用实现（AVX-512 FP16） ---------------- */
 
-impl ExpertsDownTrait<f16> for ExpertsMatmulDown<f16> {
+impl ExpertsDownTrait<f16> for ExpertsMatMulDown<f16> {
     /// compute1: 用通用 3×32 GEMM 微核 matmul_block 累加到 acc
-    fn compute1(
-        &self,
-        a_tile: *const f16,
-        b_panel: *const f16,
-        acc: *mut f16,
-    ) {
+    fn compute1(&self, a_tile: *const f16, b_panel: *const f16, acc: *mut f16) {
         // 对 matmul_block 的参数映射：
         // - A_tile: MR×KC，行距 lda = KC
         // - B_panel: KC×NR，行距 32（微核内部固定）
@@ -404,21 +389,16 @@ impl ExpertsDownTrait<f16> for ExpertsMatmulDown<f16> {
         debug_assert_eq!(nr, 32);
 
         let call_param = MatMulParams {
-            a_row_step_macro: kc,      // lda = KC
-            b_row_step_macro: nr,      // ldc = NR
-            column_step_macro: kc,     // kc
-            a_row_step_micro: mr,      // MR
-            b_row_step_micro: nr,      // NR
+            a_row_step_macro: kc,  // lda = KC
+            b_row_step_macro: nr,  // ldc = NR
+            column_step_macro: kc, // kc
+            a_row_step_micro: mr,  // MR
+            b_row_step_micro: nr,  // NR
         };
 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            kernel::x86_64::f16_512::matmul_block::matmul_block(
-                a_tile,
-                b_panel,
-                acc,
-                &call_param,
-            );
+            kernel::x86_64::f16_512::matmul_block::matmul_block(a_tile, b_panel, acc, &call_param);
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
@@ -427,22 +407,13 @@ impl ExpertsDownTrait<f16> for ExpertsMatmulDown<f16> {
     }
 
     /// compute2: out_row[j] += acc_row[j] * factor，长度 len
-    fn compute2(
-        &self,
-        out_row: *mut f16,
-        acc_row: *const f16,
-        factor: *const f16,
-        len: usize,
-    ) {
+    fn compute2(&self, out_row: *mut f16, acc_row: *const f16, factor: *const f16, len: usize) {
         let factor_val = unsafe { *factor };
 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
             kernel::x86_64::f16_512::moe_down::moe_down_scale_add(
-                out_row,
-                acc_row,
-                factor_val,
-                len,
+                out_row, acc_row, factor_val, len,
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]

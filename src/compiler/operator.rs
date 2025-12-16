@@ -1,5 +1,3 @@
-//use std::arch::x86_64::_MM_EXCEPT_DENORM;
-// use num_traits::{Float, FromPrimitive};
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
@@ -10,41 +8,43 @@ use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
 use super::map::topk_softmax::TopKSoftmax;
 // Add missing imports for zip map operations
-use super::mul::matmul::Matmul;
-use super::mul::matmul3::Matmul3;
-use super::mul::matmul_add::MatmulAdd;
-use super::mul::matmul_silu_mul_matmul::MatmulSilu;
-use super::mul::matmul_topk::MatmulTopK;
+use super::mul::matmul::MatMul;
+use super::mul::matmul3::MatMul3;
+use super::mul::matmul_add::MatMulAdd;
+// use super::mul::matmul_silu_mul_matmul::MatMulSilu;
+use super::mul::matmul_topk::MatMulTopK;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
 use super::zip_map::add_zip::AddZipMap;
 use super::zip_map::complex_zip::ComplexZipMap;
 use super::zip_map::silu_mul_zip::SiluMulZipMap;
+use super::mul::attention::Attention;
+use super::mul::experts_matmul_mul::ExpertsMatMulDown;
+use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
+use super::mul::experts_merge_add::ExpertsMergeAdd;
+// use crate::init::matmul_params::MatMulParams;
+// use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
-use super::mul::attention::Attention;
-use super::mul::experts_matmul_mul::ExpertsMatmulMul;
-use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatmulSilu;
-use super::mul::experts_merge_add::ExpertsMergeAdd;
-// use crate::init::matmul_params::MatmulParams;
-// use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 
 #[derive(Clone)]
-pub enum Operator<T> {
+pub enum Operator<T>
+where
+    T: PartialOrd + Copy,
+{
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
-
     Attention(Attention<T>),
     ComplexZipMap(ComplexZipMap<T>),
-    ExpertsMatmulMul(ExpertsMatmulMul<T>),
-    ExpertsMatmulSiluMulMatmul(ExpertsMatmulSilu<T>),
+    ExpertsMatMulDown(ExpertsMatMulDown<T>),
+    ExpertsMatMulSilu(ExpertsMatMulSilu<T>),
     ExpertsMergeAdd(ExpertsMergeAdd<T>),
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
     LookupRMSMap(LookupRMSMap<T>),
-    Matmul(Matmul<T>),
-    // Matmul3(Matmul3<T>),
-    MatmulAdd(MatmulAdd<T>),
-    MatmulSiluMulMatmul(MatmulSilu<T>),
-    MatmulTopK(MatmulTopK<T>),
+    MatMul(MatMul<T>),
+    MatMul3(MatMul3<T>),
+    MatMulAdd(MatMulAdd<T>),
+    // MatMulSiluMulMatMul(MatMulSilu<T>),
+    MatMulTopK(MatMulTopK<T>),
     RMSMap(RMSMap<T>),
     SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
@@ -54,7 +54,8 @@ pub enum Operator<T> {
 
 impl<T> Operator<T>
 where
-    T: Copy
+    T: PartialOrd
+        + Copy
         + Default
         + Sub<Output = T>
         + Neg<Output = T>
@@ -109,7 +110,7 @@ where
                     thread_id,
                 );
             }
-            Self::ExpertsMatmulMul(operator) => {
+            Self::ExpertsMatMulDown(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -118,7 +119,8 @@ where
                     thread_id,
                 );
             }
-            Self::ExpertsMatmulSiluMulMatmul(operator) => {
+            /* 
+            Self::MatMulSiluMulMatMul(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -126,7 +128,7 @@ where
                     cpu_num,
                     thread_id,
                 );
-            }
+            }*/
             Self::ExpertsMergeAdd(operator) => {
                 operator.run(
                     position_index,
@@ -154,7 +156,7 @@ where
                     thread_id,
                 );
             }
-            Self::Matmul(operator) => {
+            Self::MatMul(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -163,8 +165,8 @@ where
                     thread_id,
                 );
             }
-            /*
-            Self::Matmul3(operator) => {
+            
+            Self::MatMul3(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -172,17 +174,8 @@ where
                     cpu_num,
                     thread_id,
                 );
-            } */
-            Self::MatmulAdd(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
-            }
-            Self::MatmulSiluMulMatmul(operator) => {
+            } 
+            Self::MatMulAdd(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -191,7 +184,17 @@ where
                     thread_id,
                 );
             }
-            Self::MatmulTopK(operator) => {
+            /* 
+            Self::MatMulSiluMulMatMul(operator) => {
+                operator.run(
+                    position_index,
+                    position_interval,
+                    batch_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }*/
+            Self::MatMulTopK(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -748,7 +751,7 @@ mod test {
     }
 
     #[test]
-    fn test_Matmul_batch_size_1() {
+    fn test_MatMul_batch_size_1() {
         let max_batch_size = 8;
         let hidden_size = 16;
 
@@ -770,7 +773,7 @@ mod test {
             result[i] = hidden_size as f32;
         }
 
-        let params = MatmulParams {
+        let params = MatMulParams {
             a_row: max_batch_size,
             b_row: hidden_size,
             column: hidden_size,
@@ -781,12 +784,12 @@ mod test {
             b_row_step_micro: 1,
         };
 
-        let chunks = chunk_Matmul(data1.as_ptr(), data2.as_ptr(), data3.as_mut_ptr(), &params);
+        let chunks = chunk_MatMul(data1.as_ptr(), data2.as_ptr(), data3.as_mut_ptr(), &params);
 
         let thread_num: usize = num_cpus::get();
         let barrier = Barrier::new(thread_num);
         let barrier_arc = Arc::new(barrier);
-        let mut operator = Operator::Matmul(Matmul::<f32>::new(
+        let mut operator = Operator::MatMul(MatMul::<f32>::new(
             max_batch_size,
             hidden_size,
             hidden_size,
@@ -810,7 +813,7 @@ mod test {
     }
 
     #[test]
-    fn test_Matmul_batch_size_1_sequence() {
+    fn test_MatMul_batch_size_1_sequence() {
         let max_batch_size = 8;
         let hidden_size = 16;
         let sequence_length = 16;
@@ -835,7 +838,7 @@ mod test {
             result[i + offset] = hidden_size as f32;
         }
 
-        let params = MatmulParams {
+        let params = MatMulParams {
             a_row: max_batch_size,
             b_row: hidden_size,
             column: hidden_size,
@@ -846,12 +849,12 @@ mod test {
             b_row_step_micro: 1,
         };
 
-        let chunks = chunk_Matmul(data1.as_ptr(), data2.as_ptr(), data3.as_mut_ptr(), &params);
+        let chunks = chunk_MatMul(data1.as_ptr(), data2.as_ptr(), data3.as_mut_ptr(), &params);
 
         let thread_num: usize = num_cpus::get();
         let barrier = Barrier::new(thread_num);
         let barrier_arc = Arc::new(barrier);
-        let mut operator = Operator::Matmul(Matmul::<f32>::new(
+        let mut operator = Operator::MatMul(MatMul::<f32>::new(
             max_batch_size,
             hidden_size,
             hidden_size,
