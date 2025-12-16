@@ -8,7 +8,7 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::memory::cache::Cache;
 // use super::super::ptensor::linear::Linear;
-use super::super::init::matmul_params::MatmulParams;
+use super::super::init::matmul_params::MatMulParams;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
 
@@ -75,7 +75,7 @@ where
         let nonlinear_product = hidden_states.matmul_silu_mul_matmul(
             &self.gate_weight,
             &self.up_weight,
-            MatmulParams {
+            MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
@@ -88,7 +88,7 @@ where
         let down_product = nonlinear_product.matmul_add(
             &self.down_weight,
             residual,
-            MatmulParams {
+            MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
