@@ -6,6 +6,7 @@ pub mod silu;
 pub mod dot_product;
 pub mod flash_attention;
 pub mod matmul_block;
+pub mod matmul_rms_complex;
 pub mod moe_merge;
 pub mod moe_down;
 pub mod moe_silu;
