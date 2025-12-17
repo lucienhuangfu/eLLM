@@ -1,4 +1,4 @@
-// === runner/matmul_silu.rs ===
+// === runner/experts_matmul_silu.rs ===
 #![allow(non_snake_case)]
 
 use std::f16;
@@ -9,148 +9,193 @@ use super::super::super::init::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
-use super::super::super::kernel;
-use super::super::super::memory::allocator::allocate_init;
 use super::super::assign::assign;
-use super::mul_trait::SiluMatMulTrait; // ← 新 trait 名称
+use super::mul_trait::ExpertsSiluTrait;
 
-/// 构造期：把 B[K×N] 转置为 B_nt[N×K]（行主，行距=K）
-#[inline]
-unsafe fn make_b_nt<T: Copy + Default>(ptr2: *const T, n: usize, k: usize) -> Box<[T]> {
-    let mut v = vec![T::default(); n * k];
-    for kk in 0..k {
-        let src_row = ptr2.add(kk * n); // B[kk, 0]
-        for jj in 0..n {
-            *v.as_mut_ptr().add(jj * k + kk) = *src_row.add(jj);
-        }
-    }
-    v.into_boxed_slice()
-}
-
-/// Runner：A·W_gate 与 A·W_up 的 fused 计算；最终输出 SiLU(gate) ⊙ up
+/// MoE 第一步：
+/// 对每个 expert e：
+///   gate = A·W_gate[e]
+///   up   = A·W_up[e]
+///   NONLIN[e,b,:] = SiLU(gate[b,:]) ⊙ up[b,:]
 #[derive(Clone)]
-pub struct ExpertsMatMulSilu<T> {
-    pub ptr1: ConstPtr<T>,     // A[M×K]
-    pub ptr2: ConstPtr<T>,     // W_gate[N×K] —— 已转置后的首地址
-    pub ptr3: ConstPtr<T>,     // W_up  [N×K] —— 已转置后的首地址
-    pub output_ptr: MutPtr<T>, // C[M×N]
-    /// params 只承载 step 形状（MB/NB/KC/MR/NR）
+pub struct ExpertsMatmulSilu<T> {
+    pub input_ptr: ConstPtr<T>,     // A[B,H]
+
+    // 转置后：每 expert 的 [I×H]（N×K），行距=K=H
+    pub gate_nt_ptr: ConstPtr<T>,
+    pub up_nt_ptr:   ConstPtr<T>,
+
+    pub experts_indicator: ConstPtr<bool>, // [E]
+    pub indice_ptr:        ConstPtr<bool>, // [E,B]
+
+    pub output_ptr: MutPtr<T>,      // NONLIN[E,B,I]
+
     pub params: MatMulParams,
-    pub m_max: usize,
-    pub n_max: usize,
-    pub k_max: usize,
+
+    pub batch: usize,       // B
+    pub inter: usize,       // I
+    pub hidden: usize,      // H
+    pub num_experts: usize, // E
+
+    pub cpu_max_for_scratch: usize,
+    pub b_panel_stride: usize,
+    pub acc_stride: usize,
+    pub a_tile_stride: usize,
+
+    pub gate_panel_pool: Box<[T]>,
+    pub up_panel_pool:   Box<[T]>,
+    pub gate_acc_pool:   Box<[T]>,
+    pub up_acc_pool:     Box<[T]>,
+    pub a_tile_pool:     Box<[T]>,
+
+    pub idx_buf_pool: Box<[usize]>,
+
+    pub wgate_nt_buf: Box<[T]>,
+    pub wup_nt_buf:   Box<[T]>,
+
     _marker: PhantomData<T>,
-
-    // 转置缓存（与 ptr2/ptr3 同寿命；用于持有内存）
-    pub wgate_buf: Box<[T]>, // [N×K]
-    pub wup_buf: Box<[T]>,   // [N×K]
-
-    // 线程私有池（一次分配，run 零分配）
-    // - B 面板：KC×NR（行主，每行 NR 连续）
-    // - 累加器：MR×NR（3×32）
-    cpu_max_for_scratch: usize,
-    b_panel_stride: usize, // kc*nr
-    acc_stride: usize,     // mr*nr
-    gate_panel_pool: Box<[T]>,
-    up_panel_pool: Box<[T]>,
-    gate_acc_pool: Box<[T]>,
-    up_acc_pool: Box<[T]>,
 }
 
-impl<T> ExpertsMatMulSilu<T>
+impl<T> ExpertsMatmulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
-    /// Safety：传入的裸指针需保证后续访问安全
-    pub fn new(
-        a_ptr: *const T,
-        wgate_ptr: *const T, // 输入为 K×N
-        wup_ptr: *const T,   // 输入为 K×N
-        out_ptr: *mut T,
-        m_max: usize,
-        n_max: usize,
-        k_max: usize,
-        mb: usize,
-        nb: usize,
-        kc: usize,
-        mr: usize, // 3
-        nr: usize, // 32
+    #[inline]
+    unsafe fn make_b_nt(src_kxn: *const T, n: usize, k: usize) -> Box<[T]> {
+        let mut v = vec![T::default(); n * k];
+        let dst = v.as_mut_ptr();
+        for kk in 0..k {
+            let src_row = src_kxn.add(kk * n);
+            for jj in 0..n {
+                *dst.add(jj * k + kk) = *src_row.add(jj);
+            }
+        }
+        v.into_boxed_slice()
+    }
+
+    pub unsafe fn new(
+        input_ptr: *const T,            // A[B,H]
+        gate_kxn_ptr: *const T,         // W_gate[E, H×I]
+        up_kxn_ptr:   *const T,         // W_up  [E, H×I]
+        experts_indicator: *const bool, // [E]
+        indice_ptr: *const bool,        // [E,B]
+        output_ptr: *mut T,             // NONLIN[E,B,I]
+
+        batch: usize,
+        inter: usize,
+        hidden: usize,
+        num_experts: usize,
+
+        a_row_step_macro: usize,   // MB
+        b_row_step_macro: usize,   // NB
+        column_step_macro: usize,  // KC
+        a_row_step_micro: usize,   // MR=3
+        b_row_step_micro: usize,   // NR=32
         cpu_max_for_scratch: usize,
     ) -> Self {
-        // 1) 构造期一次性转置（K×N -> N×K）
-        let wgate_buf = unsafe { make_b_nt::<T>(wgate_ptr, n_max, k_max) };
-        let wup_buf = unsafe { make_b_nt::<T>(wup_ptr, n_max, k_max) };
+        let per_elems = inter * hidden;
 
-        // 2) 线程私有池
-        let b_panel_stride = kc.max(1) * nr.max(1);
-        let acc_stride = mr.max(1) * nr.max(1);
-        let pool_elems_b = cpu_max_for_scratch * b_panel_stride;
-        let pool_elems_acc = cpu_max_for_scratch * acc_stride;
+        let mut wgate_nt_buf = vec![T::default(); num_experts * per_elems].into_boxed_slice();
+        let mut wup_nt_buf   = vec![T::default(); num_experts * per_elems].into_boxed_slice();
 
-        let gate_panel_pool = vec![T::default(); pool_elems_b].into_boxed_slice();
-        let up_panel_pool = vec![T::default(); pool_elems_b].into_boxed_slice();
-        let gate_acc_pool = vec![T::default(); pool_elems_acc].into_boxed_slice();
-        let up_acc_pool = vec![T::default(); pool_elems_acc].into_boxed_slice();
+        for e in 0..num_experts {
+            let src_gate_e = gate_kxn_ptr.add(e * (hidden * inter));
+            let src_up_e   = up_kxn_ptr  .add(e * (hidden * inter));
 
-        // 用转置后的缓冲覆盖 ptr2/ptr3（后续一律按 N×K 使用）
-        let ptr2 = ConstPtr {
-            ptr: wgate_buf.as_ptr(),
-        };
-        let ptr3 = ConstPtr {
-            ptr: wup_buf.as_ptr(),
-        };
+            let gate_nt = Self::make_b_nt(src_gate_e, inter, hidden);
+            let up_nt   = Self::make_b_nt(src_up_e,   inter, hidden);
+
+            let dst_gate = wgate_nt_buf.as_mut_ptr().add(e * per_elems);
+            let dst_up   = wup_nt_buf  .as_mut_ptr().add(e * per_elems);
+            std::ptr::copy_nonoverlapping(gate_nt.as_ptr(), dst_gate, per_elems);
+            std::ptr::copy_nonoverlapping(up_nt  .as_ptr(), dst_up,   per_elems);
+        }
+
+        let gate_nt_ptr = wgate_nt_buf.as_ptr();
+        let up_nt_ptr   = wup_nt_buf  .as_ptr();
+
+        let mb = a_row_step_macro.max(1);
+        let kc = column_step_macro.max(1);
+        let mr = a_row_step_micro.max(1);
+        let nr = b_row_step_micro.max(1);
+
+        let b_panel_stride = kc * nr;
+        let acc_stride     = mr * nr;
+        let a_tile_stride  = mr * kc;
+
+        let gate_panel_pool = vec![T::default(); cpu_max_for_scratch * b_panel_stride].into_boxed_slice();
+        let up_panel_pool   = vec![T::default(); cpu_max_for_scratch * b_panel_stride].into_boxed_slice();
+        let gate_acc_pool   = vec![T::default(); cpu_max_for_scratch * acc_stride    ].into_boxed_slice();
+        let up_acc_pool     = vec![T::default(); cpu_max_for_scratch * acc_stride    ].into_boxed_slice();
+        let a_tile_pool     = vec![T::default(); cpu_max_for_scratch * a_tile_stride ].into_boxed_slice();
+
+        let idx_buf_pool    = vec![0usize; cpu_max_for_scratch * mb].into_boxed_slice();
 
         Self {
-            ptr1: ConstPtr { ptr: a_ptr },
-            ptr2,
-            ptr3,
-            output_ptr: MutPtr { ptr: out_ptr },
-            params: MatMulParams {
-                a_row_step_macro: mb,
-                b_row_step_macro: nb,
-                column_step_macro: kc,
-                a_row_step_micro: mr,
-                b_row_step_micro: nr,
-            },
-            m_max,
-            n_max,
-            k_max,
-            _marker: PhantomData,
+            input_ptr: ConstPtr { ptr: input_ptr },
+            gate_nt_ptr: ConstPtr { ptr: gate_nt_ptr },
+            up_nt_ptr:   ConstPtr { ptr: up_nt_ptr },
 
-            wgate_buf,
-            wup_buf,
+            experts_indicator: ConstPtr { ptr: experts_indicator },
+            indice_ptr:        ConstPtr { ptr: indice_ptr },
+            output_ptr:        MutPtr   { ptr: output_ptr },
+
+            params: MatMulParams {
+                a_row_step_macro,
+                b_row_step_macro,
+                column_step_macro,
+                a_row_step_micro,
+                b_row_step_micro,
+            },
+
+            batch,
+            inter,
+            hidden,
+            num_experts,
 
             cpu_max_for_scratch,
             b_panel_stride,
             acc_stride,
+            a_tile_stride,
+
             gate_panel_pool,
             up_panel_pool,
             gate_acc_pool,
             up_acc_pool,
+            a_tile_pool,
+
+            idx_buf_pool,
+
+            wgate_nt_buf,
+            wup_nt_buf,
+
+            _marker: PhantomData,
         }
     }
 
     #[inline(always)]
-    fn thread_slices(&self, tid: usize) -> (*mut T, *mut T, *mut T, *mut T) {
+    pub fn thread_slices(&self, tid: usize) -> (*mut T, *mut T, *mut T, *mut T, *mut T, *mut usize) {
+        debug_assert!(tid < self.cpu_max_for_scratch);
         unsafe {
-            let gp = self.gate_panel_pool.as_ptr().add(tid * self.b_panel_stride) as *mut T;
-            let up = self.up_panel_pool.as_ptr().add(tid * self.b_panel_stride) as *mut T;
-            let ga = self.gate_acc_pool.as_ptr().add(tid * self.acc_stride) as *mut T;
-            let ua = self.up_acc_pool.as_ptr().add(tid * self.acc_stride) as *mut T;
-            (gp, up, ga, ua)
+            let gp  = self.gate_panel_pool.as_ptr().add(tid * self.b_panel_stride) as *mut T;
+            let up  = self.up_panel_pool  .as_ptr().add(tid * self.b_panel_stride) as *mut T;
+            let ga  = self.gate_acc_pool  .as_ptr().add(tid * self.acc_stride)     as *mut T;
+            let ua  = self.up_acc_pool    .as_ptr().add(tid * self.acc_stride)     as *mut T;
+            let at  = self.a_tile_pool    .as_ptr().add(tid * self.a_tile_stride)  as *mut T;
+            let idx = self.idx_buf_pool   .as_ptr().add(tid * self.params.a_row_step_macro) as *mut usize;
+            (gp, up, ga, ua, at, idx)
         }
     }
 
-    /// 从 B_nt[N×K]（行主；行距=K）打 kc×nr 连续面板
     #[inline(always)]
-    unsafe fn pack_panel_from_bnt<U: Copy>(
-        b_nt: *const U, // [N×K] 行主
-        ldb_row: usize, // = K
+    pub unsafe fn pack_panel_from_bnt(
+        b_nt: *const T,  // [N×K]
+        ldb_row: usize,  // = K
         n0: usize,
         k0: usize,
         kc: usize,
         nr: usize,
-        out: *mut U, // 输出 KC×NR 行主
+        out: *mut T,     // KC×NR
     ) {
         for p in 0..kc {
             let dst = out.add(p * nr);
@@ -162,51 +207,65 @@ where
         }
     }
 
-    /// 执行：按 tiles_m × tiles_n 分块；每微块（MR×NR=3×32）：
-    /// - 循环 K 方向，反复打 KC×NR 面板并调用 compute1 累加到 gate_acc/up_acc
-    /// - 整个 K 完成后，compute2 把 SiLU(gate) ⊙ up 写回 C
+    #[inline(always)]
+    pub unsafe fn pack_a_tile_mrkc(
+        a_bxh: *const T,   // [B,H]
+        lda: usize,        // = H
+        idx: *const usize, // b_idx list
+        idx_off: usize,
+        valid_rows: usize, // <= MR
+        k0: usize,
+        kc: usize,
+        out_mrkc: *mut T,  // MR×KC
+        mr: usize,
+    ) {
+        for i in 0..(mr * kc) {
+            *out_mrkc.add(i) = T::default();
+        }
+        for r in 0..valid_rows {
+            let b = *idx.add(idx_off + r);
+            let src = a_bxh.add(b * lda + k0);
+            let dst = out_mrkc.add(r * kc);
+            for p in 0..kc {
+                *dst.add(p) = *src.add(p);
+            }
+        }
+    }
+
     pub fn run(
         &self,
-        position_index: usize,
-        position_interval: usize,
+        _position_index: usize,
+        _position_interval: usize,
         batch_size: usize,
         cpu_num: usize,
         thread_id: usize,
     ) {
         unsafe {
-            // 维度
-            let m = batch_size;
-            let n = self.n_max;
-            let k = self.k_max;
+            let b = batch_size;
+            let n = self.inter;
+            let k = self.hidden;
 
-            // 形状
             let mb = self.params.a_row_step_macro.max(1);
             let nb = self.params.b_row_step_macro.max(1);
             let kc = self.params.column_step_macro.max(1);
             let mr = self.params.a_row_step_micro.max(1);
             let nr = self.params.b_row_step_micro.max(1);
 
-            debug_assert!(m % mr == 0 && n % nr == 0 && k % kc == 0);
-            debug_assert!(
-                thread_id < self.cpu_max_for_scratch && cpu_num <= self.cpu_max_for_scratch
-            );
+            debug_assert!(n % nr == 0 && k % kc == 0);
+            debug_assert!(thread_id < self.cpu_max_for_scratch && cpu_num <= self.cpu_max_for_scratch);
 
-            // 基址/行距
-            let a_base = self.ptr1.ptr; // A
-            let c_base = self.output_ptr.ptr; // C
-            let lda = k; // A 行距
-            let ldc = n; // C 行距
+            let a_base = self.input_ptr.ptr;
+            let lda    = self.hidden;
 
-            // 转置后的权重（N×K；行距=K）
-            let wgate_nt_ptr = self.ptr2.ptr;
-            let wup_nt_ptr = self.ptr3.ptr;
-            let ldb_row = k;
+            let c_base = self.output_ptr.ptr;
+            let c_stride_e = self.batch * self.inter;
 
-            // 每线程缓冲
-            let (gate_panel, up_panel, gate_acc, up_acc) = self.thread_slices(thread_id);
+            let ldb_row = self.hidden;
+            let w_stride = self.inter * self.hidden;
 
-            // tiles
-            let tiles_m = (m + mb - 1) / mb;
+            let (gate_panel, up_panel, gate_acc, up_acc, a_tile, idx_buf) = self.thread_slices(thread_id);
+
+            let tiles_m = (b + mb - 1) / mb;
             let tiles_n = (n + nb - 1) / nb;
 
             if let Some((tb, te)) = assign(tiles_m * tiles_n, cpu_num, thread_id) {
@@ -214,72 +273,89 @@ where
                     let tm = t / tiles_n;
                     let tn = t % tiles_n;
 
-                    let m0 = tm * mb;
+                    let slot_start = tm * mb;
+                    let slot_end   = slot_start + mb;
+
                     let n0 = tn * nb;
-
-                    let m_blk = (m - m0).min(mb);
                     let n_blk = (n - n0).min(nb);
-                    debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
+                    if n_blk == 0 { continue; }
 
-                    // NB 内按 NR 走列块；MB 内按 MR 走行块
-                    let mut nt = 0;
-                    while nt < n_blk {
-                        let mut mi = 0;
-                        while mi < m_blk {
-                            // 清零 MR×NR 累加缓冲（线程本地）
-                            for i in 0..(mr * nr) {
-                                *gate_acc.add(i) = T::default();
+                    for e in 0..self.num_experts {
+                        if !*self.experts_indicator.ptr.add(e) { continue; }
+
+                        let idx_base = self.indice_ptr.ptr.add(e * self.batch);
+                        let mut be = 0usize;
+                        let mut seen = 0usize;
+
+                        for b_idx in 0..self.batch {
+                            if *idx_base.add(b_idx) {
+                                if seen >= slot_start && seen < slot_end {
+                                    *idx_buf.add(be) = b_idx;
+                                    be += 1;
+                                    if be == mb { break; }
+                                }
+                                seen += 1;
+                                if seen >= slot_end { break; }
                             }
-                            for i in 0..(mr * nr) {
-                                *up_acc.add(i) = T::default();
-                            }
-
-                            // K 方向按 kc 面板累加
-                            let mut k0 = 0;
-                            while k0 < k {
-                                // 打 gate / up 的 KC×NR 面板（从 N×K 权重中抽取）
-                                Self::pack_panel_from_bnt::<T>(
-                                    wgate_nt_ptr,
-                                    ldb_row,
-                                    n0 + nt,
-                                    k0,
-                                    kc,
-                                    nr,
-                                    gate_panel,
-                                );
-                                Self::pack_panel_from_bnt::<T>(
-                                    wup_nt_ptr,
-                                    ldb_row,
-                                    n0 + nt,
-                                    k0,
-                                    kc,
-                                    nr,
-                                    up_panel,
-                                );
-
-                                // 当前微块 A 起点（3×kc）
-                                let a_tile = a_base.add((m0 + mi) * lda + k0);
-
-                                // —— per-kc 累加 —— //
-                                // 传入：A_tile、两份面板；输出：两份 acc（3×32）
-                                self.compute1(
-                                    a_tile,
-                                    gate_panel as *const T,
-                                    up_panel as *const T,
-                                    gate_acc,
-                                    up_acc,
-                                );
-
-                                k0 += kc;
-                            }
-
-                            // —— finalize：SiLU(gate) ⊙ up → C —— //
-                            let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
-                            self.compute2(gate_acc as *const T, up_acc as *const T, c_tile);
-
-                            mi += mr;
                         }
-                        nt += nr;
+                        if be == 0 { continue; }
+
+                        let mut nt = 0usize;
+                        while nt < n_blk {
+                            let cols_this = (n_blk - nt).min(nr);
+                            debug_assert!(cols_this == nr || nt + cols_this == n_blk);
+
+                            let mut off = 0usize;
+                            while off < be {
+                                let valid_rows = (be - off).min(mr);
+
+                                for i in 0..(mr * nr) { *gate_acc.add(i) = T::default(); }
+                                for i in 0..(mr * nr) { *up_acc.add(i)   = T::default(); }
+
+                                let mut k0 = 0usize;
+                                while k0 < k {
+                                    let wgate_nt_e = self.gate_nt_ptr.ptr.add(e * w_stride);
+                                    let wup_nt_e   = self.up_nt_ptr  .ptr.add(e * w_stride);
+
+                                    Self::pack_panel_from_bnt(wgate_nt_e, ldb_row, n0 + nt, k0, kc, nr, gate_panel);
+                                    Self::pack_panel_from_bnt(wup_nt_e,   ldb_row, n0 + nt, k0, kc, nr, up_panel);
+
+                                    Self::pack_a_tile_mrkc(a_base, lda, idx_buf, off, valid_rows, k0, kc, a_tile, mr);
+
+                                    self.compute1(
+                                        a_tile as *const T,
+                                        gate_panel as *const T,
+                                        up_panel as *const T,
+                                        gate_acc as *mut T,
+                                        up_acc as *mut T,
+                                        kc,
+                                    );
+
+                                    k0 += kc;
+                                }
+
+                                for r in 0..valid_rows {
+                                    let b_idx = *idx_buf.add(off + r);
+                                    let c_row = c_base
+                                        .add(e * c_stride_e)
+                                        .add(b_idx * self.inter)
+                                        .add(n0 + nt);
+
+                                    let gate_row = gate_acc.add(r * nr);
+                                    let up_row   = up_acc.add(r * nr);
+
+                                    self.compute2(
+                                        gate_row as *const T,
+                                        up_row   as *const T,
+                                        c_row    as *mut T,
+                                    );
+                                }
+
+                                off += valid_rows;
+                            }
+
+                            nt += nr;
+                        }
                     }
                 }
             }
@@ -287,9 +363,9 @@ where
     }
 }
 
-/* -------------------- SiluMatMulTrait 默认实现 -------------------- */
+/* -------------------- ExpertsSiluTrait 默认实现（占位） -------------------- */
 
-impl<T> SiluMatMulTrait<T> for ExpertsMatMulSilu<T>
+impl<T> ExpertsSiluTrait<T> for ExpertsMatmulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -300,19 +376,15 @@ where
         _up_panel: *const T,
         _gate_acc: *mut T,
         _up_acc: *mut T,
-    ) {
-        // 默认空实现（generic T 不做任何事）
-    }
+        _kc: usize,
+    ) {}
 
-    default fn compute2(&self, _gate_acc: *const T, _up_acc: *const T, _c_tile: *mut T) {
-        // 默认空实现
-    }
+    default fn compute2(&self, _gate_row: *const T, _up_row: *const T, _c_row: *mut T) {}
 }
 
-/* -------------------------- f16 专用实现（AVX-512 FP16） -------------------------- */
+/* -------------------- f16 AVX-512 FP16 特化实现 -------------------- */
 
-impl SiluMatMulTrait<f16> for ExpertsMatMulSilu<f16> {
-    /// per-kc 累加：把 A×W_gate 与 A×W_up 的部分和累加进两个 3×32 的 acc
+impl ExpertsSiluTrait<f16> for ExpertsMatmulSilu<f16> {
     fn compute1(
         &self,
         a_tile: *const f16,
@@ -320,62 +392,37 @@ impl SiluMatMulTrait<f16> for ExpertsMatMulSilu<f16> {
         up_panel: *const f16,
         gate_acc: *mut f16,
         up_acc: *mut f16,
+        kc: usize,
     ) {
-        // 调用期参数映射（update 阶段）：
-        // - lda = K                -> a_row_step_macro = self.k_max
-        // - ldc_acc = 32 (NR)      -> b_row_step_macro = self.params.b_row_step_micro
-        // - kc = self.params.column_step_macro
-        // - mr/nr 来自 params
-        let call_param = MatMulParams {
-            a_row_step_macro: self.k_max,                     // lda (=K)
-            b_row_step_macro: self.params.b_row_step_micro,   // ldc_acc (=NR=32)
-            column_step_macro: self.params.column_step_macro, // kc
-            a_row_step_micro: self.params.a_row_step_micro,   // mr (=3)
-            b_row_step_micro: self.params.b_row_step_micro,   // nr (=32)
-        };
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            kernel::x86_64::f16_512::silu_ffn::silu_update_3x32(
+            crate::kernel::x86_64::f16_512::moe_silu::moe_silu_update_3x32(
                 a_tile,
                 gate_panel,
                 up_panel,
                 gate_acc,
                 up_acc,
-                &call_param,
+                kc,
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
-            unreachable!("avx512fp16 required for f16 SiluMatMulTrait::compute1");
+            unreachable!("avx512fp16 required for ExpertsMatmulSilu<f16>::compute1");
         }
     }
 
-    /// finalize：C = SiLU(gate_acc) ⊙ up_acc
-    fn compute2(&self, gate_acc: *const f16, up_acc: *const f16, c_tile: *mut f16) {
-        // 调用期参数映射（finalize 阶段）：
-        // - ldc_out = N           -> b_row_step_macro = self.n_max
-        // - mr/nr 来自 params
-        let call_param = MatMulParams {
-            a_row_step_macro: self.k_max,                     // unused here
-            b_row_step_macro: self.n_max,                     // ldc_out (=N)
-            column_step_macro: self.params.column_step_macro, // unused here
-            a_row_step_micro: self.params.a_row_step_micro,   // mr
-            b_row_step_micro: self.params.b_row_step_micro,   // nr
-        };
-
+    fn compute2(&self, gate_row: *const f16, up_row: *const f16, c_row: *mut f16) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            kernel::x86_64::f16_512::silu_ffn::silu_finish_3x32(
-                gate_acc,
-                up_acc,
-                c_tile,
-                &call_param,
+            crate::kernel::x86_64::f16_512::moe_silu::moe_silu_finalize_row_32(
+                gate_row,
+                up_row,
+                c_row,
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
-            unreachable!("avx512fp16 required for f16 SiluMatMulTrait::compute2");
+            unreachable!("avx512fp16 required for ExpertsMatmulSilu<f16>::compute2");
         }
     }
 }
