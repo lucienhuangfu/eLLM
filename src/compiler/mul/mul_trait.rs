@@ -1,4 +1,4 @@
-pub trait AttentionTrait<T> {
+pub trait AttentionAddTrait<T> {
     fn compute(
         &self,
         q_ptr1: *const T,
@@ -55,25 +55,26 @@ pub trait MatMul3Trait<T> {
 }
 // === mul_trait.rs 中新增 ===
 
-pub trait SiluMatMulTrait<T> {
-    /// K 方向逐 kc 累加：
-    ///   gate_acc/up_acc += A_tile(3×kc) × panel(kc×32)
+// === mul_trait.rs (新增) ===
+
+pub trait ExpertsSiluTrait<T> {
+    /// per-kc update（累加到 gate_acc / up_acc）
     fn compute1(
         &self,
-        a_tile: *const T,      // A tile: 3×kc，行距=K
-        gate_panel: *const T,  // gate 面板: kc×32
-        up_panel: *const T,    // up   面板: kc×32
-        gate_acc: *mut T,      // gate 累加器: 3×32
-        up_acc: *mut T,        // up   累加器: 3×32
+        a_tile: *const T,       // MR×KC（行距=KC）
+        gate_panel: *const T,   // KC×NR（行距=NR）
+        up_panel: *const T,     // KC×NR
+        gate_acc: *mut T,       // MR×NR（行距=NR）
+        up_acc: *mut T,         // MR×NR
+        kc: usize,
     );
 
-    /// 整个 K 累加完成后的收尾：
-    ///   C_tile = SiLU(gate_acc) ⊙ up_acc
+    /// row finalize：写回一行（NR=32）
     fn compute2(
         &self,
-        gate_acc: *const T,    // gate 累加器: 3×32
-        up_acc: *const T,      // up   累加器: 3×32
-        c_tile: *mut T,        // 输出 C tile: 3×32
+        gate_row: *const T,
+        up_row: *const T,
+        c_row: *mut T,
     );
 }
 pub trait MatMulkqvTrait<T> {
