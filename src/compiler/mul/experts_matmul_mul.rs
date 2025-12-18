@@ -214,7 +214,7 @@ where
 
     pub fn run(
         &self,
-                position_index: usize,
+        position_index: usize,
         position_interval: usize,
         batch_size: usize, // = num_token
         cpu_num: usize,
@@ -420,5 +420,210 @@ impl ExpertsDownTrait<f16> for ExpertsMatMulDown<f16> {
         {
             unreachable!("avx512fp16 required for ExpertsDownTrait<f16>::compute2");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::prelude::*;
+    use std::collections::HashSet;
+
+    // 纯 Rust 参考实现：用于验证算子计算结果的正确性
+    // Output[b, slot, h] += NonLin[e, b, hmid] * W_down[e, hmid, h] * RouterWeight[b, e]
+    fn reference_implementation(
+        nonlin: &[f16],
+        wdown: &[f16],
+        experts_indicator: &[bool],
+        indice_ptr: &[bool],
+        weight_ptr: &[f16],
+        experts_topk: &[usize],
+        batch: usize,
+        hmid: usize,
+        h: usize,
+        num_experts: usize,
+        num_topk: usize,
+    ) -> Vec<f16> {
+        let mut output = vec![0.0 as f16; batch * num_topk * h];
+
+        for e in 0..num_experts {
+            if !experts_indicator[e] {
+                continue;
+            }
+
+            for b in 0..batch {
+                // 检查 token b 是否被路由到 expert e
+                if indice_ptr[e * batch + b] {
+                    // 找到 slot
+                    let mut slot = num_topk; // invalid
+                    for s in 0..num_topk {
+                        if experts_topk[b * num_topk + s] == e {
+                            slot = s;
+                            break;
+                        }
+                    }
+                    assert!(
+                        slot < num_topk,
+                        "Expert {} active for token {} but not in topk",
+                        e,
+                        b
+                    );
+
+                    let factor = f32::from(weight_ptr[e * batch + b]);
+
+                    for k in 0..h {
+                        let mut acc = 0.0f32;
+                        for j in 0..hmid {
+                            // NonLin: [E, B, Hmid]
+                            let inp = f32::from(nonlin[e * (batch * hmid) + b * hmid + j]);
+                            // W_down: [E, Hmid, H]
+                            let w = f32::from(wdown[e * (hmid * h) + j * h + k]);
+                            acc += inp * w;
+                        }
+
+                        // Output: [B, K, H]
+                        let out_idx = b * (num_topk * h) + slot * h + k;
+                        let current = f32::from(output[out_idx]);
+                        output[out_idx] = (current + acc * factor) as f16;
+                    }
+                }
+            }
+        }
+        output
+    }
+
+    #[test]
+    fn test_experts_matmul_down_correctness() {
+        // 1. 参数设置
+        let batch = 16;
+        let hmid = 128; // 中间维度
+        let h = 64; // 输出维度
+        let num_experts = 8;
+        let num_topk = 2;
+        let num_threads = 4;
+
+        // Kernel 分块参数
+        let mr = 3;
+        let nr = 32;
+        let kc = 32;
+        let mb = 3;
+        let nb = 32;
+
+        let mut rng = rand::thread_rng();
+
+        println!(
+            "Testing Down Proj: B={}, Hmid={}, H={}, E={}, TopK={}",
+            batch, hmid, h, num_experts, num_topk
+        );
+
+        // 2. 准备随机数据
+        // NonLin: [E, B, Hmid]
+        let nonlin: Vec<f16> = (0..num_experts * batch * hmid)
+            .map(|_| rng.gen_range(-0.5..0.5) as f16)
+            .collect();
+
+        // W_down: [E, Hmid, H]
+        let wdown: Vec<f16> = (0..num_experts * hmid * h)
+            .map(|_| rng.gen_range(-0.1..0.1) as f16)
+            .collect();
+
+        // Routing Info
+        let mut indice_ptr = vec![false; num_experts * batch];
+        let mut experts_indicator = vec![false; num_experts];
+        let mut weight_ptr = vec![0.0 as f16; num_experts * batch];
+        let mut experts_topk = vec![0usize; batch * num_topk];
+
+        for b in 0..batch {
+            // 为每个 token 随机选择 TopK 个 expert
+            let mut selected = HashSet::new();
+            while selected.len() < num_topk {
+                selected.insert(rng.gen_range(0..num_experts));
+            }
+            let mut sorted_experts: Vec<usize> = selected.into_iter().collect();
+            sorted_experts.sort(); // 必须升序
+
+            for (s, &e) in sorted_experts.iter().enumerate() {
+                experts_topk[b * num_topk + s] = e;
+                indice_ptr[e * batch + b] = true;
+                experts_indicator[e] = true;
+                weight_ptr[e * batch + b] = rng.gen_range(0.1..1.0) as f16;
+            }
+        }
+
+        let mut output = vec![0.0 as f16; batch * num_topk * h];
+
+        // 3. 运行优化算子
+        unsafe {
+            let op = ExpertsMatMulDown::new(
+                nonlin.as_ptr(),
+                wdown.as_ptr(),
+                experts_indicator.as_ptr(),
+                indice_ptr.as_ptr(),
+                weight_ptr.as_ptr(),
+                experts_topk.as_ptr(),
+                output.as_mut_ptr(),
+                num_experts,
+                batch,
+                hmid,
+                h,
+                num_topk,
+                MatMulParams {
+                    a_row_step_macro: mb,
+                    b_row_step_macro: nb,
+                    column_step_macro: kc,
+                    a_row_step_micro: mr,
+                    b_row_step_micro: nr,
+                },
+                num_threads, // cpu_max_for_scratch
+            );
+
+            // 模拟多线程运行，逐个执行
+            for tid in 0..num_threads {
+                op.run(0, 0, batch, num_threads, tid);
+            }
+        }
+
+        // 4. 运行参考实现
+        let ref_output = reference_implementation(
+            &nonlin,
+            &wdown,
+            &experts_indicator,
+            &indice_ptr,
+            &weight_ptr,
+            &experts_topk,
+            batch,
+            hmid,
+            h,
+            num_experts,
+            num_topk,
+        );
+
+        // 5. 验证结果
+        let mut max_diff = 0.0f32;
+        let tolerance = 0.1; // f16 累加误差
+
+        for i in 0..output.len() {
+            let val = output[i] as f32;
+            let ref_val = ref_output[i] as f32;
+            let diff = (val - ref_val).abs();
+
+            if diff > max_diff {
+                max_diff = diff;
+            }
+
+            if diff > tolerance {
+                if ref_val.abs() > 0.01 {
+                    let b = i / (num_topk * h);
+                    let rem = i % (num_topk * h);
+                    let s = rem / h;
+                    let k = rem % h;
+                    panic!(
+                        "Mismatch at Batch={}, Slot={}, H={}: Got {}, Expected {}, Diff {}",
+                        b, s, k, val, ref_val, diff
+                    );
+                }
+            }
+        }
+        println!("Test passed! Max difference: {}", max_diff);
     }
 }
