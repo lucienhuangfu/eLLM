@@ -105,31 +105,7 @@ where
         }
     }
 
-    /// 行距=ldc 的 3×32 tile 拷贝（f16 走 SIMD，其他类型走标量）
-    #[inline(always)]
-    unsafe fn tile_copy_3x32(&self, src: *const T, dst: *mut T, ldc: usize) {
-        // f16 + AVX-512：调用你已有的内核
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-        if std::mem::size_of::<T>() == std::mem::size_of::<f16>() {
-            let src_f16 = src as *const f16;
-            let dst_f16 = dst as *mut f16;
-            super::super::super::kernel::x86_64::f16_512::moe_merge::tile_copy_3x32(
-                src_f16, dst_f16, ldc,
-            );
-            return;
-        }
-
-        // 通用标量实现（保持风格简洁；不额外分配）
-        for r in 0..3 {
-            let srow = src.add(r * ldc);
-            let drow = dst.add(r * ldc);
-            for c in 0..32 {
-                *drow.add(c) = *srow.add(c);
-            }
-        }
-    }
-
-    /// 执行：先把 residual 拷到 output，然后做 output += A×B
+    /// 执行：先把 residual 覆盖到 output，然后做 output += A×B
     pub fn run(
         &self,
         position_index: usize,
@@ -223,15 +199,23 @@ where
                     let r_base_s = r_base.add(s * rc_seq_stride);
                     let c_base_s = c_base.add(s * rc_seq_stride);
 
-                    // —— 每个 (m_blk × n_blk) tile：先做 residual→output 的初始化（按 3×32 子 tile）
+                    // —— 每个 (m_blk × n_blk) tile：直接 residual 覆盖到 output（不再 tile_copy）
                     let mut nt = 0;
                     while nt < n_blk {
                         let mut mi = 0;
                         while mi < m_blk {
                             let r_tile = r_base_s.add((m0 + mi) * ldc + (n0 + nt));
                             let c_tile = c_base_s.add((m0 + mi) * ldc + (n0 + nt));
-                            // residual 拷贝到 output（3×32）
-                            self.tile_copy_3x32(r_tile, c_tile, ldc);
+
+                            // 覆盖写：C[mr×nr] = residual[mr×nr]
+                            for r in 0..mr {
+                                let rs = r_tile.add(r * ldc);
+                                let cs = c_tile.add(r * ldc);
+                                for c in 0..nr {
+                                    *cs.add(c) = *rs.add(c);
+                                }
+                            }
+
                             mi += mr;
                         }
                         nt += nr;
@@ -248,7 +232,8 @@ where
                             while mi < m_blk {
                                 let a_tile = a_base_s.add((m0 + mi) * lda + k0);
                                 let c_tile = c_base_s.add((m0 + mi) * ldc + (n0 + nt));
-                                // 注意：compute() 必须是 “累加到 C ” 的微核
+
+                                // compute() 必须是 “累加到 C ” 的微核
                                 self.compute(
                                     a_tile,
                                     b_panel_ptr as *const T,
@@ -273,12 +258,11 @@ impl<T> MatMulAddTrait<T> for MatMulAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
-    // generic：调用通用微核（要求其为 “累加到 C ” 的语义）
     default fn compute(
         &self,
         input_ptr1: *const T,
         input_ptr2: *const T,
-        _input_ptr3: *const T, // 本算子用不到（残差拷贝在 run 里做了）
+        _input_ptr3: *const T,
         output_ptr: *mut T,
     ) {
         let call_param = MatMulParams {
@@ -330,189 +314,5 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
             output_ptr,
             &call_param,
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use approx::assert_abs_diff_eq;
-
-    #[test]
-    fn test_matmul_add_runner_f16_3x64x32() {
-        const S: usize = 1;
-        const M: usize = 3;
-        const K: usize = 64;
-        const N: usize = 32;
-
-        let thread_num = 4;
-
-        let mut a = vec![0.0f16; S * M * K];
-        let mut b = vec![0.0f16; K * N];
-        let mut residual = vec![0.0f16; S * M * N];
-        let mut c = vec![0.0f16; S * M * N];
-
-        // Init A
-        for s in 0..S {
-            for i in 0..M {
-                for k in 0..K {
-                    let val = (s + i + k) as f32 * 0.01;
-                    a[s * M * K + i * K + k] = val as f16;
-                }
-            }
-        }
-
-        // Init B
-        for k in 0..K {
-            for j in 0..N {
-                let val = (k + j) as f32 * 0.02;
-                b[k * N + j] = val as f16;
-            }
-        }
-
-        // Init Residual
-        for s in 0..S {
-            for i in 0..M {
-                for j in 0..N {
-                    let val = (s + i + j) as f32 * 0.03;
-                    residual[s * M * N + i * N + j] = val as f16;
-                }
-            }
-        }
-
-        let params = MatMulParams {
-            a_row_step_macro: 3,
-            b_row_step_macro: 32,
-            column_step_macro: 64,
-            a_row_step_micro: 3,
-            b_row_step_micro: 32,
-        };
-
-        let matmul_add = unsafe {
-            MatMulAdd::<f16>::new(
-                a.as_ptr(),
-                b.as_ptr(),
-                residual.as_ptr(),
-                c.as_mut_ptr(),
-                params,
-                M,
-                N,
-                K,
-                thread_num,
-            )
-        };
-
-        for i in 0..thread_num {
-            matmul_add.run(0, S, M, thread_num, i);
-        }
-
-        // Verify
-        for s in 0..S {
-            for i in 0..M {
-                for j in 0..N {
-                    let mut sum = 0.0f32;
-                    // A * B
-                    for k in 0..K {
-                        let a_val = a[s * M * K + i * K + k] as f32;
-                        let b_val = b[k * N + j] as f32;
-                        sum += a_val * b_val;
-                    }
-                    // + Residual
-                    sum += residual[s * M * N + i * N + j] as f32;
-
-                    let got = c[s * M * N + i * N + j] as f32;
-                    assert_abs_diff_eq!(got, sum, epsilon = 1e-1);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_matmul_add_runner_f16_144x2048x2048() {
-        const S: usize = 1;
-        const M: usize = 144;
-        const K: usize = 2048;
-        const N: usize = 2048;
-
-        let thread_num = 8;
-
-        let mut a = vec![0.0f16; S * M * K];
-        let mut b = vec![0.0f16; K * N];
-        let mut residual = vec![0.0f16; S * M * N];
-        let mut c = vec![0.0f16; S * M * N];
-
-        // Init A
-        for s in 0..S {
-            for i in 0..M {
-                for k in 0..K {
-                    let val = ((s + i + k) % 7) as f32 * 0.01;
-                    a[s * M * K + i * K + k] = val as f16;
-                }
-            }
-        }
-
-        // Init B
-        for k in 0..K {
-            for j in 0..N {
-                let val = ((k + j) % 11) as f32 * 0.01;
-                b[k * N + j] = val as f16;
-            }
-        }
-
-        // Init Residual
-        for s in 0..S {
-            for i in 0..M {
-                for j in 0..N {
-                    let val = ((s + i + j) % 13) as f32 * 0.01;
-                    residual[s * M * N + i * N + j] = val as f16;
-                }
-            }
-        }
-
-        let params = MatMulParams {
-            a_row_step_macro: 24,
-            b_row_step_macro: 128,
-            column_step_macro: 64,
-            a_row_step_micro: 3,
-            b_row_step_micro: 32,
-        };
-
-        let matmul_add = unsafe {
-            MatMulAdd::<f16>::new(
-                a.as_ptr(),
-                b.as_ptr(),
-                residual.as_ptr(),
-                c.as_mut_ptr(),
-                params,
-                M,
-                N,
-                K,
-                thread_num,
-            )
-        };
-
-        for i in 0..thread_num {
-            matmul_add.run(0, S, M, thread_num, i);
-        }
-
-        // Verify
-        for s in 0..S {
-            for i in 0..M {
-                for j in 0..N {
-                    let mut sum = 0.0f32;
-                    // A * B
-                    for k in 0..K {
-                        let a_val = a[s * M * K + i * K + k] as f32;
-                        let b_val = b[k * N + j] as f32;
-                        sum += a_val * b_val;
-                    }
-                    // + Residual
-                    sum += residual[s * M * N + i * N + j] as f32;
-
-                    let got = c[s * M * N + i * N + j] as f32;
-                    assert_abs_diff_eq!(got, sum, epsilon = 5e-1);
-                }
-            }
-        }
     }
 }

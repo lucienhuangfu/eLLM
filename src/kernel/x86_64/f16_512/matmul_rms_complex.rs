@@ -1,10 +1,14 @@
 // === kernel/x86_64/f16_512/matmul_rms_complex.rs ===
 #![allow(non_snake_case)]
 
-use std::arch::x86_64::{_mm512_fmadd_ph, _mm512_load_ph, _mm512_set1_ph, _mm512_store_ph};
+use std::arch::x86_64::{
+    _mm512_fmadd_ph,
+    _mm512_loadu_ph,   // ← 改这里
+    _mm512_set1_ph,
+    _mm512_storeu_ph,  // ← 改这里
+};
 use std::f16;
 
-// 不再需要 MatMulParams
 use crate::kernel::x86_64::f16_512::complex_mul::complex_mul;
 use crate::kernel::x86_64::f16_512::rms_norm::rms_norm;
 
@@ -14,7 +18,7 @@ use crate::kernel::x86_64::f16_512::rms_norm::rms_norm;
 /// - MR = 3, NR = 32
 /// - A_tile: 3×kc，行距 = lda = K
 /// - B_panel: kc×32（行主，每行 32 连续）
-/// - C_tile: 3×32，行距 = ldc = N（整行跨度，和 K/Q/V 自己的 N 有关）
+/// - C_tile: 3×32，行距 = ldc = N（整行跨度）
 /// - kc     = 当前 K block 大小
 ///
 /// 注意：不清零，不做 first；要求上层在 K 循环外保证 C 的初始状态。
@@ -39,14 +43,14 @@ pub unsafe fn matmul_update_inplace_3x32_accum(
     let a1 = a.add(lda);
     let a2 = a.add(2 * lda);
 
-    // 从 C 载入旧值（3 行 × 32 列，各占 1 个 ZMM）
-    let mut c0 = _mm512_load_ph(c.add(0 * ldc));
-    let mut c1 = _mm512_load_ph(c.add(1 * ldc));
-    let mut c2 = _mm512_load_ph(c.add(2 * ldc));
+    // 从 C 载入旧值（3 行 × 32 列）
+    let mut c0 = _mm512_loadu_ph(c.add(0 * ldc));
+    let mut c1 = _mm512_loadu_ph(c.add(1 * ldc));
+    let mut c2 = _mm512_loadu_ph(c.add(2 * ldc));
 
-    // 主循环：对 kc 方向做标量广播 × 向量 FMA
+    // 主循环：kc 方向做广播 × 向量 FMA
     for k in 0..kc {
-        let b = _mm512_load_ph(b_panel.add(k * bstride));
+        let b = _mm512_loadu_ph(b_panel.add(k * bstride));
 
         let a0k = _mm512_set1_ph(*a0.add(k));
         let a1k = _mm512_set1_ph(*a1.add(k));
@@ -57,9 +61,9 @@ pub unsafe fn matmul_update_inplace_3x32_accum(
         c2 = _mm512_fmadd_ph(a2k, b, c2);
     }
 
-    _mm512_store_ph(c.add(0 * ldc), c0);
-    _mm512_store_ph(c.add(1 * ldc), c1);
-    _mm512_store_ph(c.add(2 * ldc), c2);
+    _mm512_storeu_ph(c.add(0 * ldc), c0);
+    _mm512_storeu_ph(c.add(1 * ldc), c1);
+    _mm512_storeu_ph(c.add(2 * ldc), c2);
 }
 
 /// 3×128 收尾：在 C 上 **原地** 做 RMSNorm(weight=1) + RoPE
