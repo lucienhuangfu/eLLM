@@ -18,7 +18,7 @@ use super::mul_trait::ExpertsSiluTrait;
 ///   up   = A·W_up[e]
 ///   NONLIN[e,b,:] = SiLU(gate[b,:]) ⊙ up[b,:]
 #[derive(Clone)]
-pub struct ExpertsMatmulSilu<T> {
+pub struct ExpertsMatMulSilu<T> {
     pub input_ptr: ConstPtr<T>, // A[B,H]
 
     // 转置后：每 expert 的 [I×H]（N×K），行距=K=H
@@ -56,7 +56,7 @@ pub struct ExpertsMatmulSilu<T> {
     _marker: PhantomData<T>,
 }
 
-impl<T> ExpertsMatmulSilu<T>
+impl<T> ExpertsMatMulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -411,7 +411,7 @@ where
 
 /* -------------------- ExpertsSiluTrait 默认实现（占位） -------------------- */
 
-impl<T> ExpertsSiluTrait<T> for ExpertsMatmulSilu<T>
+impl<T> ExpertsSiluTrait<T> for ExpertsMatMulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -431,7 +431,7 @@ where
 
 /* -------------------- f16 AVX-512 FP16 特化实现 -------------------- */
 
-impl ExpertsSiluTrait<f16> for ExpertsMatmulSilu<f16> {
+impl ExpertsSiluTrait<f16> for ExpertsMatMulSilu<f16> {
     fn compute1(
         &self,
         a_tile: *const f16,
@@ -549,15 +549,15 @@ mod tests {
         // 2. 准备随机数据
         // Input: [B, H]
         let input: Vec<f16> = (0..batch * hidden)
-            .map(|_| rng.gen_range(-0.1..0.1) as f16)
+            .map(|_| rng.gen_range(-0.1f32..0.1f32) as f16)
             .collect();
 
         // Weights: [E, H, I]
         let gate_weights: Vec<f16> = (0..num_experts * hidden * inter)
-            .map(|_| rng.gen_range(-0.05..0.05) as f16)
+            .map(|_| rng.gen_range(-0.05f32..0.05f32) as f16)
             .collect();
         let up_weights: Vec<f16> = (0..num_experts * hidden * inter)
-            .map(|_| rng.gen_range(-0.05..0.05) as f16)
+            .map(|_| rng.gen_range(-0.05f32..0.05f32) as f16)
             .collect();
 
         // 3. 模拟路由逻辑 (Routing)
@@ -583,7 +583,7 @@ mod tests {
 
         // 4. 运行优化算子
         unsafe {
-            let op = ExpertsMatmulSilu::new(
+            let op = ExpertsMatMulSilu::new(
                 input.as_ptr(),
                 gate_weights.as_ptr(),
                 up_weights.as_ptr(),

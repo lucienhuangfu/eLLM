@@ -189,11 +189,11 @@ mod tests {
         for t in 0..num_tokens {
             for i in 0..h {
                 // Start with residual
-                let mut acc = f32::from(residual[t * h + i]);
+                let mut acc = residual[t * h + i] as f32;
                 // Add each expert's contribution
                 for s in 0..k {
                     let val = input[t * (k * h) + s * h + i];
-                    acc += f32::from(val);
+                    acc += val as f32;
                 }
                 output[t * h + i] = acc as f16;
             }
@@ -256,8 +256,8 @@ mod tests {
         let tolerance = 0.05; // f16 误差容忍度
 
         for i in 0..output.len() {
-            let val = f32::from(output[i]);
-            let ref_val = f32::from(ref_out[i]);
+            let val = output[i] as f32;
+            let ref_val = ref_out[i] as f32;
             let diff = (val - ref_val).abs();
 
             if diff > tolerance {
