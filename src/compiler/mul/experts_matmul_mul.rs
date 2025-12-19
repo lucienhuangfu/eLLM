@@ -469,21 +469,21 @@ mod tests {
                         b
                     );
 
-                    let factor = f32::from(weight_ptr[e * batch + b]);
+                    let factor = weight_ptr[e * batch + b] as f32;
 
                     for k in 0..h {
                         let mut acc = 0.0f32;
                         for j in 0..hmid {
                             // NonLin: [E, B, Hmid]
-                            let inp = f32::from(nonlin[e * (batch * hmid) + b * hmid + j]);
+                            let inp = nonlin[e * (batch * hmid) + b * hmid + j] as f32;
                             // W_down: [E, Hmid, H]
-                            let w = f32::from(wdown[e * (hmid * h) + j * h + k]);
+                            let w = wdown[e * (hmid * h) + j * h + k] as f32;
                             acc += inp * w;
                         }
 
                         // Output: [B, K, H]
                         let out_idx = b * (num_topk * h) + slot * h + k;
-                        let current = f32::from(output[out_idx]);
+                        let current = output[out_idx] as f32;
                         output[out_idx] = (current + acc * factor) as f16;
                     }
                 }

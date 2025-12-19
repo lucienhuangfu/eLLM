@@ -113,9 +113,10 @@ where
         if std::mem::size_of::<T>() == std::mem::size_of::<f16>() {
             let src_f16 = src as *const f16;
             let dst_f16 = dst as *mut f16;
-            super::super::super::kernel::x86_64::f16_512::moe_merge::tile_copy_3x32(
-                src_f16, dst_f16, ldc,
-            );
+            // bug cannot find the function
+            // super::super::super::kernel::x86_64::f16_512::moe_merge::tile_copy_3x32(
+            //     src_f16, dst_f16, ldc,
+            // );
             return;
         }
 
