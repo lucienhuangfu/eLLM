@@ -119,8 +119,8 @@ where
                     thread_id,
                 );
             }
-            /* 
-            Self::MatMulSiluMulMatMul(operator) => {
+            
+            Self::ExpertsMatMulSilu(operator) => {
                 operator.run(
                     position_index,
                     position_interval,
@@ -128,7 +128,7 @@ where
                     cpu_num,
                     thread_id,
                 );
-            }*/
+            }
             Self::ExpertsMergeAdd(operator) => {
                 operator.run(
                     position_index,

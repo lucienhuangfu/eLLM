@@ -1,4 +1,4 @@
-pub trait AttentionAddTrait<T> {
+pub trait AttentionTrait<T> {
     fn compute(
         &self,
         q_ptr1: *const T,
