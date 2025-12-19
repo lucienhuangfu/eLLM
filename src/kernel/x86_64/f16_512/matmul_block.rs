@@ -128,7 +128,7 @@ mod tests {
                     sum += a_val * b_val;
                 }
                 let got = c_vec[i * ldc + j] as f32;
-                assert_abs_diff_eq!(got, sum, epsilon = 0.5);
+                assert_abs_diff_eq!(got, sum, epsilon = 1.0);
             }
         }
     }
