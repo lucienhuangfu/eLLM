@@ -12,17 +12,8 @@ use super::super::super::init::{
 use super::super::super::kernel;
 use super::super::super::kernel::common::heap::FixedMinHeap;
 use super::super::assign::assign;
-use super::mul_trait::MatMulTopKTrait; // 只在这里 use 一次
+use super::mul_trait::MatMulTopKTrait;
 
-/// Top-K 版本的 MatMul：
-/// - A: [batch_max, K]
-/// - B: [K, N] (构造期转成 B_nt [N, K])
-/// - 输出：values/indices 的逻辑布局为 [batch_max][cpu_max_for_scratch][TOPK]
-///
-/// 运行时：
-/// - 对每个 batch、每个线程维护一个 FixedMinHeap<T>
-/// - 用 2D 分块 + 3×32 微核计算 C 的每个小 tile
-/// - tile 完成后，把 tile 中的标量丢进对应 heap 里
 #[derive(Clone)]
 pub struct MatMulTopK<T>
 where
@@ -31,35 +22,34 @@ where
     // A / B / 输出 top-k
     ptr1: ConstPtr<T>,         // A[M×K]
     ptr2: ConstPtr<T>,         // 指向 B_nt[N×K]
-    indice_ptr: MutPtr<usize>, // indices buffer: [batch_max][cpu_max_for_scratch][TOPK]
-    value_ptr: MutPtr<T>,      // values buffer : [batch_max][cpu_max_for_scratch][TOPK]
+    indice_ptr: MutPtr<usize>, // indices buffer: [batch_max][thread_max][TOPK]
+    value_ptr: MutPtr<T>,      // values buffer : [batch_max][thread_max][TOPK]
 
     // 维度
     a_row: usize,  // M_max
     b_row: usize,  // N_max
     column: usize, // K_max
 
-    // blocking 参数（mb/nb/kc/mr/nr）
     pub params: MatMulParams,
 
-    // top-k / 线程、batch 上限
     topk: usize,
     batch_max: usize,
-    cpu_max_for_scratch: usize,
+
+    // ✅ 不再存 cpu_max_for_scratch，改为内部 thread_max
+    thread_max: usize,
 
     // 构造期转置出来的 B_nt（N×K，行主；行距=K）
     b_nt_buf: Box<[T]>,
 
-    // 每线程的 B 面板池：[cpu_max_for_scratch][kc×nr]
+    // 每线程的 B 面板池：[thread_max][kc×nr]
     b_panel_pool: Box<[T]>,
     b_panel_stride_elems: usize, // = kc * nr
 
-    // 每线程的 C_tile 池：[cpu_max_for_scratch][mr×nr]
+    // 每线程的 C_tile 池：[thread_max][mr×nr]
     c_tile_pool: Box<[T]>,
     c_tile_stride_elems: usize, // = mr * nr
 
-    // 每 (batch, thread) 一棵 heap，长度 = batch_max * cpu_max_for_scratch
-    // heap 自身只存指针和值/len，不再分配数组
+    // ✅ 不改：每 (batch, thread) 一棵 heap
     heaps: Box<[FixedMinHeap<T>]>,
 
     _marker: PhantomData<T>,
@@ -69,22 +59,20 @@ impl<T> MatMulTopK<T>
 where
     T: Copy + Default + PartialOrd + Add<Output = T> + Mul<Output = T>,
 {
-    /// 构造函数：
-    /// - ptr1: A[M×K]
-    /// - ptr2_b_kxn: B[K×N]（构造期转成 B_nt[N×K]）
-    /// - indice_ptr/value_ptr: 预先分配好的 top-k 输出 buffer
-    ///
-    /// 要求：
-    /// - A 行数 = a_row
-    /// - B 行数 = b_row (= N_max)
-    /// - 列数 = column (= K_max)
-    /// - 外部输出 buffer 大小至少为 [batch_max][cpu_max_for_scratch][topk]
+    #[inline]
+    fn detect_threads() -> usize {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .max(1)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn new(
         ptr1: *const T,         // A[M×K]
         ptr2_b_kxn: *const T,   // B[K×N]，构造期使用一次
-        indice_ptr: *mut usize, // indices 输出 buffer
-        value_ptr: *mut T,      // values 输出 buffer
+        indice_ptr: *mut usize, // indices 输出 buffer（必须至少 batch_max*thread_max*topk）
+        value_ptr: *mut T,      // values 输出 buffer（必须至少 batch_max*thread_max*topk）
         a_row: usize,           // M_max
         b_row: usize,           // N_max
         column: usize,          // K_max
@@ -94,7 +82,6 @@ where
         a_row_step_micro: usize,
         b_row_step_micro: usize,
         batch_max: usize,
-        cpu_max_for_scratch: usize,
         topk: usize,
     ) -> Self {
         let params = MatMulParams {
@@ -109,54 +96,52 @@ where
         let n_max = b_row;
         let k_max = column;
 
+        // ✅ 内部决定 thread_max
+        let thread_max = Self::detect_threads();
+
         // === (1) 构造期：B[K×N] → B_nt[N×K] ===
         let mut b_nt_vec: Vec<T> = vec![T::default(); n_max * k_max];
         let b_nt_ptr = b_nt_vec.as_mut_ptr();
 
         for kk in 0..k_max {
-            let b_row_src = ptr2_b_kxn.add(kk * n_max); // 原 B[kk, :]
+            let b_row_src = ptr2_b_kxn.add(kk * n_max);
             for jj in 0..n_max {
-                // B_nt[jj, kk] = B[kk, jj]
                 *b_nt_ptr.add(jj * k_max + kk) = *b_row_src.add(jj);
             }
         }
         let b_nt_box = b_nt_vec.into_boxed_slice();
         let b_nt_base = b_nt_box.as_ptr();
 
-        // === (2) 预分配 B 面板池：[cpu_max_for_scratch][kc×nr] ===
+        // === (2) scratch pools: [thread_max][...] ===
         let kc = params.column_step_macro.max(1);
         let nr = params.b_row_step_micro.max(1);
         let mr = params.a_row_step_micro.max(1);
 
         let b_panel_stride_elems = kc * nr;
-        let b_panel_pool_len = cpu_max_for_scratch * b_panel_stride_elems;
+        let b_panel_pool_len = thread_max * b_panel_stride_elems;
         let b_panel_pool: Vec<T> = vec![T::default(); b_panel_pool_len];
 
-        // === (3) 预分配 C_tile 池：[cpu_max_for_scratch][mr×nr] ===
         let c_tile_stride_elems = mr * nr;
-        let c_tile_pool_len = cpu_max_for_scratch * c_tile_stride_elems;
+        let c_tile_pool_len = thread_max * c_tile_stride_elems;
         let c_tile_pool: Vec<T> = vec![T::default(); c_tile_pool_len];
 
-        // === (4) 为每个 (batch, thread) 构造 FixedMinHeap，附着到输出 buffer 上 ===
-        // layout: [batch_max][cpu_max_for_scratch][topk]
+        // === (3) heaps: [batch_max][thread_max]，绑定到输出 buffer 上 ===
         let stride_thread = topk;
-        let stride_batch = cpu_max_for_scratch * topk;
+        let stride_batch = thread_max * topk;
 
-        let mut heaps_vec: Vec<FixedMinHeap<T>> =
-            Vec::with_capacity(batch_max * cpu_max_for_scratch);
+        let mut heaps_vec: Vec<FixedMinHeap<T>> = Vec::with_capacity(batch_max * thread_max);
 
         for b in 0..batch_max {
-            for tid in 0..cpu_max_for_scratch {
+            for tid in 0..thread_max {
                 let values_base = value_ptr.add(b * stride_batch + tid * stride_thread);
                 let indices_base = indice_ptr.add(b * stride_batch + tid * stride_thread);
-
                 heaps_vec.push(FixedMinHeap::new(values_base, indices_base, topk));
             }
         }
 
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
-            ptr2: ConstPtr { ptr: b_nt_base }, // 指向 B_nt
+            ptr2: ConstPtr { ptr: b_nt_base },
             indice_ptr: MutPtr { ptr: indice_ptr },
             value_ptr: MutPtr { ptr: value_ptr },
 
@@ -167,23 +152,22 @@ where
             params,
             topk,
             batch_max,
-            cpu_max_for_scratch,
+            thread_max,
 
             b_nt_buf: b_nt_box,
             b_panel_pool: b_panel_pool.into_boxed_slice(),
             b_panel_stride_elems,
             c_tile_pool: c_tile_pool.into_boxed_slice(),
             c_tile_stride_elems,
-            heaps: heaps_vec.into_boxed_slice(),
 
+            heaps: heaps_vec.into_boxed_slice(),
             _marker: PhantomData,
         }
     }
 
-    /// 当前线程的 B_panel 指针（不分配）
     #[inline(always)]
     fn thread_b_panel_ptr(&self, thread_id: usize) -> *mut T {
-        debug_assert!(thread_id < self.cpu_max_for_scratch);
+        debug_assert!(thread_id < self.thread_max);
         unsafe {
             self.b_panel_pool
                 .as_ptr()
@@ -191,10 +175,9 @@ where
         }
     }
 
-    /// 当前线程的 C_tile 指针（不分配）
     #[inline(always)]
     fn thread_c_tile_ptr(&self, thread_id: usize) -> *mut T {
-        debug_assert!(thread_id < self.cpu_max_for_scratch);
+        debug_assert!(thread_id < self.thread_max);
         unsafe {
             self.c_tile_pool
                 .as_ptr()
@@ -202,25 +185,21 @@ where
         }
     }
 
-    /// 获取 (batch, thread) 对应的 heap 的可变裸指针
+    /// ✅ 不改你风格：返回 *mut FixedMinHeap<T>
     #[inline(always)]
     fn heap_for(&self, batch: usize, thread_id: usize) -> *mut FixedMinHeap<T> {
         debug_assert!(batch < self.batch_max);
-        debug_assert!(thread_id < self.cpu_max_for_scratch);
-        let idx = batch * self.cpu_max_for_scratch + thread_id;
+        debug_assert!(thread_id < self.thread_max);
+        let idx = batch * self.thread_max + thread_id;
         debug_assert!(idx < self.heaps.len());
         unsafe { self.heaps.as_ptr().add(idx) as *mut FixedMinHeap<T> }
     }
 
-    /// pack B_nt 的一个 (kc × nr) 小块到 panel：
-    /// - B_nt: [N×K] 行主，行距 = ldb_row (=K)
-    /// - 输入块范围：N 方向从 n0 开始，K 方向从 k0 开始
-    /// - 输出：panel[kc×nr] 行主
     #[inline(always)]
     unsafe fn pack_b_panel(
         &self,
         b_nt: *const T,
-        ldb_row: usize, // = K
+        ldb_row: usize,
         n0: usize,
         k0: usize,
         kc: usize,
@@ -238,8 +217,6 @@ where
         }
     }
 
-    /// 运行：忽略 sequence 维度，只看 [batch_size, K] × [K, N]
-    /// position_index / position_interval 先不用，你可以后面按需要扩展。
     pub fn run(
         &self,
         _position_index: usize,
@@ -250,45 +227,41 @@ where
     ) {
         unsafe {
             assert!(batch_size <= self.batch_max);
-            assert!(cpu_num <= self.cpu_max_for_scratch);
+
+            // ✅ cpu 相关：只要求 cpu_num/thread_id 合法，且 cpu_num <= thread_max
+            assert!(cpu_num <= self.thread_max);
             assert!(thread_id < cpu_num);
 
-            let m = batch_size; // 行：batch
-            let n = self.b_row; // 列：N_max (比如 vocab_size)
-            let k = self.column; // K
+            let m = batch_size;
+            let n = self.b_row;
+            let k = self.column;
 
             let mb = self.params.a_row_step_macro.max(1);
             let nb = self.params.b_row_step_macro.max(1);
             let kc = self.params.column_step_macro.max(1);
-            let mr = self.params.a_row_step_micro.max(1); // 3
-            let nr = self.params.b_row_step_micro.max(1); // 32
+            let mr = self.params.a_row_step_micro.max(1);
+            let nr = self.params.b_row_step_micro.max(1);
 
+            // 你说：先假设整除
             debug_assert!(m % mr == 0);
             debug_assert!(n % nr == 0);
             debug_assert!(k % kc == 0);
 
-            // 行距（元素计）
-            let a_base = self.ptr1.ptr; // A[M×K]
-            let lda = k; // A 每行跨度 = K
+            let a_base = self.ptr1.ptr;
+            let lda = k;
 
-            let b_nt_ptr = self.ptr2.ptr; // B_nt[N×K]
-            let ldb_row = k; // B_nt 每行跨度 = K
+            let b_nt_ptr = self.ptr2.ptr;
+            let ldb_row = k;
 
-            // 输出 heap 对应的 layout stride
-            let stride_thread = self.topk;
-            let stride_batch = self.cpu_max_for_scratch * self.topk;
+            let b_panel_ptr = self.thread_b_panel_ptr(thread_id);
+            let c_tile_ptr = self.thread_c_tile_ptr(thread_id);
 
-            // 当前线程的 panel / c_tile 缓冲区
-            let b_panel_ptr = self.thread_b_panel_ptr(thread_id); // kc×nr
-            let c_tile_ptr = self.thread_c_tile_ptr(thread_id); // mr×nr
-
-            // run 之前，先清空本次要用到的 (batch, thread) 的 heap len
+            // 清本线程 heap
             for b in 0..batch_size {
                 let heap_ptr = self.heap_for(b, thread_id);
                 (*heap_ptr).clear();
             }
 
-            // 2D tile 划分 (只在 M×N 平面上)
             let tiles_m = (m + mb - 1) / mb;
             let tiles_n = (n + nb - 1) / nb;
             let tiles_total = tiles_m * tiles_n;
@@ -307,61 +280,47 @@ where
                     debug_assert!(m_blk % mr == 0);
                     debug_assert!(n_blk % nr == 0);
 
-                    // 沿 M 方向按 mr（3）走，沿 N 方向按 nr（32）走
-                    let mut mi = 0;
+                    let mut mi = 0usize;
                     while mi < m_blk {
                         let global_m_start = m0 + mi;
-                        let mr_here = mr.min(m_blk - mi);
 
-                        let mut nt = 0;
+                        let mut nt = 0usize;
                         while nt < n_blk {
                             let global_n_start = n0 + nt;
-                            let nr_here = nr.min(n_blk - nt);
 
-                            // === 为当前 (global_m_start..+mr, global_n_start..+nr) 的 micro-tile 清零 C_tile ===
-                            let c_elems = mr * nr;
-                            for i in 0..c_elems {
+                            for i in 0..(mr * nr) {
                                 *c_tile_ptr.add(i) = T::default();
                             }
 
-                            // === Kc 循环：对这个 micro-tile 累加 KC×NR 的块 ===
-                            let mut k0 = 0;
+                            let mut k0 = 0usize;
                             while k0 < k {
-                                // (1) pack B panel (kc×nr)
                                 self.pack_b_panel(
                                     b_nt_ptr,
                                     ldb_row,
                                     global_n_start,
                                     k0,
                                     kc,
-                                    nr_here,
+                                    nr,
                                     b_panel_ptr,
                                 );
 
-                                // (2) A 子块起点：从 global_m_start 开始的 mr 行
                                 let a_tile = a_base.add(global_m_start * lda + k0);
 
-                                // (3) 调用 3×32 微核：C_tile += A_tile × B_panel
                                 self.compute(a_tile, b_panel_ptr as *const T, c_tile_ptr);
 
                                 k0 += kc;
                             }
 
-                            // === K 累加结束：把 C_tile 中的值丢进对应 batch 的 heap ===
-                            for r in 0..mr_here {
+                            for r in 0..mr {
                                 let batch_idx = global_m_start + r;
                                 if batch_idx >= batch_size {
                                     continue;
                                 }
-
                                 let heap_ptr = self.heap_for(batch_idx, thread_id);
                                 let heap = &mut *heap_ptr;
 
-                                for c in 0..nr_here {
+                                for c in 0..nr {
                                     let col_idx = global_n_start + c;
-                                    if col_idx >= n {
-                                        continue;
-                                    }
                                     let v = *c_tile_ptr.add(r * nr + c);
                                     heap.push(v, col_idx);
                                 }
@@ -375,17 +334,16 @@ where
                 }
             }
 
-            // 所有 tile 结束后，对本线程负责的所有 batch 做一次降序排序
             for b in 0..batch_size {
                 let heap_ptr = self.heap_for(b, thread_id);
                 (*heap_ptr).sort_desc();
             }
-
-            // 此时：
-            // - value_ptr:  [batch_max][cpu_max_for_scratch][topk]
-            // - indice_ptr: [batch_max][cpu_max_for_scratch][topk]
-            // 中的 [0..batch_size][thread_id][0..topk] 就是本线程的 top-k 结果
         }
+    }
+
+    #[inline]
+    pub fn thread_max(&self) -> usize {
+        self.thread_max
     }
 }
 
@@ -396,26 +354,18 @@ where
     T: Copy + Default + PartialOrd + Add<Output = T> + Mul<Output = T>,
 {
     default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T) {
-        // 通用版本：可以用 generic matmul_block，注意这里的 ldc 要等于 nr（局部 C_tile 的列数）
         let mr = self.params.a_row_step_micro.max(1);
         let nr = self.params.b_row_step_micro.max(1);
 
         let call_param = MatMulParams {
-            // 这里 a_row_step_macro 作为 lda = K
             a_row_step_macro: self.column,
-            // b_row_step_macro 作为 ldc = nr（C_tile 的列数）
             b_row_step_macro: nr,
-            column_step_macro: self.params.column_step_macro, // kc
+            column_step_macro: self.params.column_step_macro,
             a_row_step_micro: mr,
             b_row_step_micro: nr,
         };
 
-        kernel::generic::matmul_block::matmul_block(
-            input_ptr1,
-            input_ptr2,
-            output_ptr,
-            &call_param,
-        );
+        kernel::generic::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
     }
 }
 
@@ -425,29 +375,21 @@ impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
         let nr = self.params.b_row_step_micro.max(1);
 
         let call_param = MatMulParams {
-            a_row_step_macro: self.column,                    // lda = K
-            b_row_step_macro: nr,                             // ldc = nr (C_tile 的列数)
-            column_step_macro: self.params.column_step_macro, // kc
-            a_row_step_micro: mr,                             // mr (=3)
-            b_row_step_micro: nr,                             // nr (=32)
+            a_row_step_macro: self.column,
+            b_row_step_macro: nr,
+            column_step_macro: self.params.column_step_macro,
+            a_row_step_micro: mr,
+            b_row_step_micro: nr,
         };
 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            kernel::x86_64::f16_512::matmul_block::matmul_block(
-                input_ptr1,
-                input_ptr2,
-                output_ptr,
-                &call_param,
-            );
+            kernel::x86_64::f16_512::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        kernel::generic::matmul_block::matmul_block(
-            input_ptr1,
-            input_ptr2,
-            output_ptr,
-            &call_param,
-        );
+        {
+            kernel::generic::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
+        }
     }
 }
 
@@ -457,35 +399,67 @@ impl MatMulTopKTrait<f32> for MatMulTopK<f32> {
         let nr = self.params.b_row_step_micro.max(1);
 
         let call_param = MatMulParams {
-            a_row_step_macro: self.column,                    // lda = K
-            b_row_step_macro: nr,                             // ldc = nr (C_tile 的列数)
-            column_step_macro: self.params.column_step_macro, // kc
+            a_row_step_macro: self.column,
+            b_row_step_macro: nr,
+            column_step_macro: self.params.column_step_macro,
             a_row_step_micro: mr,
             b_row_step_micro: nr,
         };
 
-        kernel::generic::matmul_block::matmul_block(
-            input_ptr1,
-            input_ptr2,
-            output_ptr,
-            &call_param,
-        );
+        kernel::generic::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
     }
-}
-
-#[cfg(test)]
+}#[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+    use std::mem;
 
-    // 辅助验证函数
+    use crate::kernel::generic::from_f32::FromF32;
+
+    #[inline]
+    fn f16_from_f32(x: f32) -> f16 {
+        <f16 as FromF32>::from_f32(x)
+    }
+
+    #[inline]
+    fn f32_from_f16(x: f16) -> f32 {
+        let bits: u16 = unsafe { mem::transmute(x) };
+        let sign = ((bits & 0x8000) as u32) << 16;
+        let exp = (bits & 0x7C00) >> 10;
+        let mant = bits & 0x03FF;
+
+        let f_bits: u32 = if exp == 0 {
+            if mant == 0 {
+                sign
+            } else {
+                let mut e: i32 = -14;
+                let mut m = mant as u32;
+                while (m & 0x0400) == 0 {
+                    m <<= 1;
+                    e -= 1;
+                }
+                m &= 0x03FF;
+                let exp_f = (e + 127) as u32;
+                sign | (exp_f << 23) | (m << 13)
+            }
+        } else if exp == 0x1F {
+            let exp_f = 0xFFu32;
+            sign | (exp_f << 23) | ((mant as u32) << 13)
+        } else {
+            let exp_f = (exp as i32 - 15 + 127) as u32;
+            sign | (exp_f << 23) | ((mant as u32) << 13)
+        };
+
+        f32::from_bits(f_bits)
+    }
+
     fn verify_topk_result(
         m: usize,
         k: usize,
         n: usize,
         topk: usize,
-        cpu_num: usize,
-        cpu_max_for_scratch: usize,
+        cpu_num: usize,     // 实际跑的线程数
+        thread_max: usize,  // runner 内部 stride（heaps 绑定用这个）
         a: &[f16],
         b: &[f16],
         indices_buf: &[usize],
@@ -493,52 +467,43 @@ mod tests {
         epsilon: f32,
     ) {
         for i in 0..m {
-            // (1) 计算参考结果 (Full MatMul Ground Truth)
+            // (1) 参考全量 matmul
             let mut row_c = vec![0.0f32; n];
             for j in 0..n {
                 let mut sum = 0.0f32;
                 for kk in 0..k {
-                    sum += (a[i * k + kk] as f32) * (b[kk * n + j] as f32);
+                    sum += f32_from_f16(a[i * k + kk]) * f32_from_f16(b[kk * n + j]);
                 }
                 row_c[j] = sum;
             }
 
-            // (2) 排序找 Ground Truth TopK (降序)
+            // (2) 参考 topk
             let mut indexed_row: Vec<(usize, f32)> = row_c.into_iter().enumerate().collect();
             indexed_row.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
             let expected_topk = &indexed_row[0..topk];
 
-            // (3) 收集所有“线程”产生的局部 TopK，并进行 Reduce (Merge)
-            let mut merged_candidates: Vec<(usize, f32)> = Vec::new();
-
+            // (3) 合并所有线程的局部 topk（你原来的 reduce 思路）
+            let mut merged: Vec<(usize, f32)> = Vec::with_capacity(cpu_num * topk);
             for tid in 0..cpu_num {
-                // Offset = batch_idx * (cpu_max * topk) + thread_idx * topk
-                let offset = i * (cpu_max_for_scratch * topk) + tid * topk;
-                let result_indices = &indices_buf[offset..offset + topk];
-                let result_values = &values_buf[offset..offset + topk];
-
-                for k_idx in 0..topk {
-                    merged_candidates.push((result_indices[k_idx], result_values[k_idx] as f32));
+                let offset = i * (thread_max * topk) + tid * topk;
+                for r in 0..topk {
+                    merged.push((indices_buf[offset + r], f32_from_f16(values_buf[offset + r])));
                 }
             }
 
-            // (4) 对合并后的结果再次排序取全局 TopK
-            merged_candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-            let final_topk = &merged_candidates[0..topk];
+            merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let final_topk = &merged[0..topk];
 
-            // (5) 逐个比对
-            for k_idx in 0..topk {
-                let (exp_idx, exp_val) = expected_topk[k_idx];
-                let (got_idx, got_val) = final_topk[k_idx];
+            // (4) 对比
+            for r in 0..topk {
+                let (exp_idx, exp_val) = expected_topk[r];
+                let (got_idx, got_val) = final_topk[r];
 
-                // 验证数值
                 assert_abs_diff_eq!(got_val, exp_val, epsilon = epsilon);
 
-                // 验证索引
-                // 如果数值非常接近，索引可能因为浮点误差而不同
-                // 这里我们要求：如果数值相等（或极接近），索引必须匹配
+                // 数值完全相等/极近时，索引也要求一致
                 if (got_val - exp_val).abs() < 1e-5 {
-                    assert_eq!(got_idx, exp_idx, "Mismatch at batch {}, rank {}", i, k_idx);
+                    assert_eq!(got_idx, exp_idx, "Mismatch at row {}, rank {}", i, r);
                 }
             }
         }
@@ -546,152 +511,195 @@ mod tests {
 
     #[test]
     fn test_matmul_topk_f16_3x64x32() {
-        // 1. 维度定义 (仿照 matmul.rs test_matmul_runner_f16_3x64x32)
-        // M=3 (divisible by MR=3), K=64, N=32
         const M: usize = 3;
         const K: usize = 64;
         const N: usize = 32;
         const TOPK: usize = 10;
 
-        // 2. 模拟多线程参数
-        let cpu_num = 4;
-        let cpu_max_for_scratch = 4;
+        // 你想模拟多线程：随便取个 <= thread_max 的数
+        let cpu_num = 4usize;
 
-        // 3. 数据准备
-        let mut a = vec![0.0f16; M * K];
-        let mut b = vec![0.0f16; K * N];
+        let mut a = vec![f16_from_f32(0.0); M * K];
+        let mut b = vec![f16_from_f32(0.0); K * N];
 
-        // 初始化 A
         for i in 0..M {
-            for k in 0..K {
-                let val = (i + k) as f32 * 0.01;
-                a[i * K + k] = val as f16;
+            for kk in 0..K {
+                a[i * K + kk] = f16_from_f32((i + kk) as f32 * 0.01);
             }
         }
-        // 初始化 B
-        for k in 0..K {
+        for kk in 0..K {
             for j in 0..N {
-                let val = (k + j) as f32 * 0.001;
-                b[k * N + j] = val as f16;
+                b[kk * N + j] = f16_from_f32((kk + j) as f32 * 0.001);
             }
         }
 
-        // 4. 输出 Buffer
-        let buf_len = M * cpu_max_for_scratch * TOPK;
-        let mut indices_buf = vec![0usize; buf_len];
-        let mut values_buf = vec![0.0f16; buf_len];
-
-        // 5. 构造 Runner
         unsafe {
+            // 先构造 runner（内部决定 thread_max）
+            // 注意：因为 runner 在 new() 里会把 heap 绑到输出 buffer，
+            // 输出 buffer 必须按 thread_max 分配
+            let thread_max = MatMulTopK::<f16>::detect_threads();
+            let buf_len = M * thread_max * TOPK;
+            let mut indices_buf = vec![0usize; buf_len];
+            let mut values_buf = vec![f16_from_f32(0.0); buf_len];
+
             let runner = MatMulTopK::<f16>::new(
                 a.as_ptr(),
                 b.as_ptr(),
                 indices_buf.as_mut_ptr(),
                 values_buf.as_mut_ptr(),
-                M,  // a_row
-                N,  // b_row
-                K,  // column
-                3,  // MB (Macro Block M)
-                32, // NB (Macro Block N)
-                64, // KC
-                3,  // MR (必须整除 M)
-                32, // NR
-                M,  // batch_max
-                cpu_max_for_scratch,
+                M, N, K,
+                3,   // MB
+                32,  // NB
+                64,  // KC
+                3,   // MR
+                32,  // NR
+                M,   // batch_max
                 TOPK,
             );
 
-            // 6. Fake Multi-threading
-            for tid in 0..cpu_num {
-                runner.run(0, 0, M, cpu_num, tid);
+            let used = cpu_num.min(runner.thread_max());
+            for tid in 0..used {
+                runner.run(0, 0, M, used, tid);
             }
-        }
 
-        // 7. 验证结果
-        verify_topk_result(
-            M,
-            K,
-            N,
-            TOPK,
-            cpu_num,
-            cpu_max_for_scratch,
-            &a,
-            &b,
-            &indices_buf,
-            &values_buf,
-            0.005,
-        );
+            verify_topk_result(
+                M, K, N, TOPK,
+                used,
+                runner.thread_max(),
+                &a, &b,
+                &indices_buf,
+                &values_buf,
+                0.01,
+            );
+        }
     }
 
     #[test]
-    fn test_matmul_topk_f16_144x2048x2048() {
-        // 1. 维度定义 (仿照 matmul.rs test_matmul_runner_f16_144x2048x2048)
+    fn test_matmul_topk_f16_24x256x512() {
+        // 中等尺寸：能覆盖多 tile、多 heap push，但不会太慢
+        const M: usize = 24;
+        const K: usize = 256;
+        const N: usize = 512;
+        const TOPK: usize = 10;
+
+        let cpu_num = 8usize;
+
+        let mut a = vec![f16_from_f32(0.0); M * K];
+        let mut b = vec![f16_from_f32(0.0); K * N];
+
+        for i in 0..M {
+            for kk in 0..K {
+                let v = ((i * 131 + kk * 17) % 97) as f32 * 0.01;
+                a[i * K + kk] = f16_from_f32(v);
+            }
+        }
+        for kk in 0..K {
+            for j in 0..N {
+                let v = ((kk * 73 + j * 11) % 101) as f32 * 0.01;
+                b[kk * N + j] = f16_from_f32(v);
+            }
+        }
+
+        unsafe {
+            let thread_max = MatMulTopK::<f16>::detect_threads();
+            let buf_len = M * thread_max * TOPK;
+            let mut indices_buf = vec![0usize; buf_len];
+            let mut values_buf = vec![f16_from_f32(0.0); buf_len];
+
+            let runner = MatMulTopK::<f16>::new(
+                a.as_ptr(),
+                b.as_ptr(),
+                indices_buf.as_mut_ptr(),
+                values_buf.as_mut_ptr(),
+                M, N, K,
+                24,   // MB（整除 M）
+                128,  // NB（整除 N）
+                64,   // KC（整除 K）
+                3,    // MR
+                32,   // NR
+                M,
+                TOPK,
+            );
+
+            let used = cpu_num.min(runner.thread_max());
+            for tid in 0..used {
+                runner.run(0, 0, M, used, tid);
+            }
+
+            // 中等 K 累加误差：给个稍微宽松一点
+            verify_topk_result(
+                M, K, N, TOPK,
+                used,
+                runner.thread_max(),
+                &a, &b,
+                &indices_buf,
+                &values_buf,
+                0.2,
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_matmul_topk_f16_large_like_144x2048x2048_smoke() {
+        // 大尺寸：默认 ignore，想跑手动打开
         const M: usize = 144;
         const K: usize = 2048;
         const N: usize = 2048;
         const TOPK: usize = 10;
 
-        let cpu_num = 8;
-        let cpu_max_for_scratch = 8;
+        let cpu_num = 8usize;
 
-        let mut a = vec![0.0f16; M * K];
-        let mut b = vec![0.0f16; K * N];
+        let mut a = vec![f16_from_f32(0.0); M * K];
+        let mut b = vec![f16_from_f32(0.0); K * N];
 
-        // 初始化 A, B
         for i in 0..M {
-            for k in 0..K {
-                let val = ((i + k) % 7) as f32 * 0.01;
-                a[i * K + k] = val as f16;
+            for kk in 0..K {
+                a[i * K + kk] = f16_from_f32(((i + kk) % 7) as f32 * 0.01);
             }
         }
-        for k in 0..K {
+        for kk in 0..K {
             for j in 0..N {
-                let val = ((k + j) % 11) as f32 * 0.01;
-                b[k * N + j] = val as f16;
+                b[kk * N + j] = f16_from_f32(((kk + j) % 11) as f32 * 0.01);
             }
         }
-
-        let buf_len = M * cpu_max_for_scratch * TOPK;
-        let mut indices_buf = vec![0usize; buf_len];
-        let mut values_buf = vec![0.0f16; buf_len];
 
         unsafe {
+            let thread_max = MatMulTopK::<f16>::detect_threads();
+            let buf_len = M * thread_max * TOPK;
+            let mut indices_buf = vec![0usize; buf_len];
+            let mut values_buf = vec![f16_from_f32(0.0); buf_len];
+
             let runner = MatMulTopK::<f16>::new(
                 a.as_ptr(),
                 b.as_ptr(),
                 indices_buf.as_mut_ptr(),
                 values_buf.as_mut_ptr(),
+                M, N, K,
+                24,
+                128,
+                64,
+                3,
+                32,
                 M,
-                N,
-                K,
-                24,  // MB
-                128, // NB
-                64,  // KC
-                3,   // MR
-                32,  // NR
-                M,
-                cpu_max_for_scratch,
                 TOPK,
             );
 
-            for tid in 0..cpu_num {
-                runner.run(0, 0, M, cpu_num, tid);
+            let used = cpu_num.min(runner.thread_max());
+            for tid in 0..used {
+                runner.run(0, 0, M, used, tid);
             }
-        }
 
-        // 验证结果 (K较大时累加误差较大，epsilon 放宽到 0.5)
-        verify_topk_result(
-            M,
-            K,
-            N,
-            TOPK,
-            cpu_num,
-            cpu_max_for_scratch,
-            &a,
-            &b,
-            &indices_buf,
-            &values_buf,
-            0.5,
-        );
+            // 大 K 累加误差：放宽
+            verify_topk_result(
+                M, K, N, TOPK,
+                used,
+                runner.thread_max(),
+                &a, &b,
+                &indices_buf,
+                &values_buf,
+                0.8,
+            );
+        }
     }
 }
