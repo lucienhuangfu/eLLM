@@ -102,52 +102,12 @@ mod tests {
     use std::ptr;
     use std::slice;
 
-    // 你们自己的 FromF32，用于 f32 -> f16
-    use crate::kernel::generic::from_f32::FromF32;
     // 你们自己的对齐分配器
     use crate::memory::allocator::allocate_init;
 
-    #[inline]
-    fn f16_from_f32(x: f32) -> f16 {
-        f16::from_f32(x)
-    }
-
-    /// 只给 debug / 误差比较用，不参与 AVX 计算
-    #[inline]
-    fn f32_from_f16(x: f16) -> f32 {
-        let bits: u16 = unsafe { mem::transmute(x) };
-        let sign = ((bits & 0x8000) as u32) << 16;
-        let exp = (bits & 0x7C00) >> 10;
-        let mant = bits & 0x03FF;
-
-        let f_bits: u32 = if exp == 0 {
-            if mant == 0 {
-                sign
-            } else {
-                let mut e: i32 = -14;
-                let mut m = mant as u32;
-                while (m & 0x0400) == 0 {
-                    m <<= 1;
-                    e -= 1;
-                }
-                m &= 0x03FF;
-                let exp_f = (e + 127) as u32;
-                sign | (exp_f << 23) | (m << 13)
-            }
-        } else if exp == 0x1F {
-            let exp_f = 0xFFu32;
-            sign | (exp_f << 23) | ((mant as u32) << 13)
-        } else {
-            let exp_f = (exp as i32 - 15 + 127) as u32;
-            sign | (exp_f << 23) | ((mant as u32) << 13)
-        };
-
-        f32::from_bits(f_bits)
-    }
-
     fn approx_eq(a: f16, b: f16, tol: f32) -> bool {
-        let da = f32_from_f16(a);
-        let db = f32_from_f16(b);
+        let da = a as f32;
+        let db = b as f32;
         (da - db).abs() <= tol
     }
 
@@ -190,14 +150,14 @@ mod tests {
         // -------- 构造 A/B/C：一份对齐指针给 AVX，用 Vec 做参考 ----------
 
         // A：对齐版指针
-        let a_ptr = allocate_init::<f16>(3 * LDA, f16_from_f32(0.0));
+        let a_ptr = allocate_init::<f16>(3 * LDA, 0.0 as f16);
         // A：标量参考版
-        let mut a_ref = vec![f16_from_f32(0.0); 3 * LDA];
+        let mut a_ref = vec![0.0 as f16; 3 * LDA];
 
         for m in 0..3 {
             for k in 0..KC {
                 let v = (m as f32) * 0.1 + (k as f32) * 0.01;
-                let val = f16_from_f32(v);
+                let val = v as f16;
                 a_ref[m * LDA + k] = val;
                 unsafe {
                     ptr::write(a_ptr.add(m * LDA + k), val);
@@ -206,12 +166,12 @@ mod tests {
         }
 
         // B
-        let b_ptr = allocate_init::<f16>(KC * 32, f16_from_f32(0.0));
-        let mut b_ref = vec![f16_from_f32(0.0); KC * 32];
+        let b_ptr = allocate_init::<f16>(KC * 32, 0.0 as f16);
+        let mut b_ref = vec![0.0 as f16; KC * 32];
         for k in 0..KC {
             for n in 0..32 {
                 let v = (k as f32) * 0.02 + (n as f32) * 0.001;
-                let val = f16_from_f32(v);
+                let val = v as f16;
                 b_ref[k * 32 + n] = val;
                 unsafe {
                     ptr::write(b_ptr.add(k * 32 + n), val);
@@ -220,7 +180,7 @@ mod tests {
         }
 
         // C
-        let c_init = f16_from_f32(0.5);
+        let c_init = 0.5 as f16;
         let c_ptr = allocate_init::<f16>(3 * LDC, c_init);
         let mut c_ref = vec![c_init; 3 * LDC];
 
@@ -242,8 +202,8 @@ mod tests {
                 i,
                 c_slice[i],
                 c_ref[i],
-                f32_from_f16(c_slice[i]),
-                f32_from_f16(c_ref[i]),
+                c_slice[i] as f32,
+                c_ref[i] as f32,
             );
         }
     }
@@ -264,19 +224,19 @@ mod tests {
         }
 
         const LDC: usize = 128;
-        let eps = f16_from_f32(1e-5);
+        let eps = 1e-5 as f16;
 
         // -------- C / rope 全部用 allocate_init，保证传给 AVX 的都是对齐指针 --------
 
         // C：对齐指针，用于被测路径
-        let c_ptr = allocate_init::<f16>(3 * LDC, f16_from_f32(0.0));
+        let c_ptr = allocate_init::<f16>(3 * LDC, 0.0 as f16);
         // C_ref：对齐指针，用于“手动调用 rms_norm+complex_mul”的参考路径
-        let c_ref_ptr = allocate_init::<f16>(3 * LDC, f16_from_f32(0.0));
+        let c_ref_ptr = allocate_init::<f16>(3 * LDC, 0.0 as f16);
 
         for row in 0..3 {
             for col in 0..LDC {
                 let v = 0.01f32 * (row as f32) + 0.001f32 * (col as f32);
-                let val = f16_from_f32(v);
+                let val = v as f16;
                 let idx = row * LDC + col;
                 unsafe {
                     ptr::write(c_ptr.add(idx), val);
@@ -286,15 +246,15 @@ mod tests {
         }
 
         // rope：对齐指针
-        let rope_ptr = allocate_init::<f16>(LDC, f16_from_f32(0.0));
+        let rope_ptr = allocate_init::<f16>(LDC, 0.0 as f16);
         let num_pairs = LDC / 2;
         for j in 0..num_pairs {
             let theta = 0.01f32 * (j as f32);
             let cos_t = theta.cos();
             let sin_t = theta.sin();
             unsafe {
-                ptr::write(rope_ptr.add(2 * j), f16_from_f32(cos_t));
-                ptr::write(rope_ptr.add(2 * j + 1), f16_from_f32(sin_t));
+                ptr::write(rope_ptr.add(2 * j), cos_t as f16);
+                ptr::write(rope_ptr.add(2 * j + 1), sin_t as f16);
             }
         }
 
