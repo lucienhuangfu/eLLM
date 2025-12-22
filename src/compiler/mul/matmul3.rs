@@ -77,7 +77,6 @@ pub struct MatMul3<T> {
     // 线程私有 KC×NR 面板池
     b_panel_pool: Box<[T]>,
     b_panel_stride_elems: usize,
-    cpu_max_for_scratch: usize,
 }
 
 impl<T> MatMul3<T>
@@ -86,25 +85,24 @@ where
 {
     #[inline]
     pub unsafe fn new(
-        hidden_ptr: *const T,   // A[M×K]
-        q_weight_ptr: *const T, // [K×Nq]
-        q_state_ptr: *mut T,    // [M×Nq]
-        k_weight_ptr: *const T, // [K×Nkv]
-        k_state_ptr: *mut T,    // [M×Nkv]
-        v_weight_ptr: *const T, // [K×Nkv]
-        v_state_ptr: *mut T,    // [M×Nkv]
-        rope_ptr: *const T,     // RoPE 基址（按 N 方向拉平）
+        hidden_ptr: *const T,
+        q_weight_ptr: *const T,
+        q_state_ptr: *mut T,
+        k_weight_ptr: *const T,
+        k_state_ptr: *mut T,
+        v_weight_ptr: *const T,
+        v_state_ptr: *mut T,
+        rope_ptr: *const T,
         head_dim: usize,
-        m_row: usize,    // M
-        col: usize,      // K
-        b_q_row: usize,  // Nq
-        b_kv_row: usize, // Nkv
+        m_row: usize,
+        col: usize,
+        b_q_row: usize,
+        b_kv_row: usize,
         a_row_step_macro: usize,
         b_row_step_macro: usize,
         column_step_macro: usize,
-        a_row_step_micro: usize, // 3
-        b_row_step_micro: usize, // 32（3×32 微核）
-        cpu_max_for_scratch: usize,
+        a_row_step_micro: usize,
+        b_row_step_micro: usize,
     ) -> Self {
         // 预转置 W: [K×N] -> [N×K]
         let wq_buf = transpose_kxn_to_nxk::<T>(q_weight_ptr, col, b_q_row);
@@ -121,11 +119,16 @@ where
             ptr: wv_buf.as_ptr(),
         };
 
-        // 线程面板池：cpu_max_for_scratch × (KC×NR)
+        // 线程面板池：threads × (KC×NR)；threads 只在 new() 用一次，不进 struct
         let kc = column_step_macro.max(1);
         let nr = b_row_step_micro.max(1);
         let b_panel_stride_elems = kc * nr;
-        let pool_len = cpu_max_for_scratch * b_panel_stride_elems;
+
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+
+        let pool_len = threads * b_panel_stride_elems;
         let b_panel_pool = vec![T::default(); pool_len].into_boxed_slice();
 
         Self {
@@ -160,13 +163,11 @@ where
 
             b_panel_pool,
             b_panel_stride_elems,
-            cpu_max_for_scratch,
         }
     }
 
     #[inline(always)]
     fn thread_b_panel_ptr(&self, thread_id: usize) -> *mut T {
-        debug_assert!(thread_id < self.cpu_max_for_scratch);
         unsafe {
             self.b_panel_pool
                 .as_ptr()
@@ -648,6 +649,371 @@ mod tests {
             verify("Q Output", cq_ptr, cq_ref, m * n_q);
             verify("K Output", ck_ptr, ck_ref, m * n_kv);
             verify("V Output", cv_ptr, cv_ref, m * n_kv);
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_abs_diff_eq;
+
+    fn avail_threads_cap(cap: usize) -> usize {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(cap)
+            .max(1)
+    }
+
+    /// float32 reference: C[M×N] = A[M×K] * B[K×N]
+    fn gemm_ref_f32(a: &[f16], b: &[f16], c: &mut [f32], m: usize, k: usize, n: usize) {
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = 0.0f32;
+                for kk in 0..k {
+                    sum += (a[i * k + kk] as f32) * (b[kk * n + j] as f32);
+                }
+                c[i * n + j] = sum;
+            }
+        }
+    }
+
+    /// 统一跑一次 runner（顺序模拟多线程），避免真的开线程引入不确定性
+    fn run_runner(
+        runner: &MatMul3<f16>,
+        m: usize,
+        thread_num: usize,
+    ) {
+        for tid in 0..thread_num {
+            runner.run(0, 1, m, thread_num, tid);
+        }
+    }
+
+    /// 让 finalize 不触发：
+    /// - finalize=true 也行，但只要 N < head_dim=128，并且不会覆盖到 head 的最后 32 片段，就不会进 compute2。
+    /// 这里我们简单设置 Nq/Nkv 都 < 128，且 tile 不会触到 offset_in_head+32==128 的条件。
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    fn test_kqv_f16_avx512_small_single_tile() {
+        const M: usize = 3;
+        const K: usize = 64;
+        const NQ: usize = 32;
+        const NKV: usize = 64;
+        const HEAD_DIM: usize = 128;
+
+        let thread_num = avail_threads_cap(8);
+
+        let mut a = vec![0.0f16; M * K];
+        let mut wq = vec![0.0f16; K * NQ];
+        let mut wk = vec![0.0f16; K * NKV];
+        let mut wv = vec![0.0f16; K * NKV];
+
+        let mut cq = vec![0.0f16; M * NQ];
+        let mut ck = vec![0.0f16; M * NKV];
+        let mut cv = vec![0.0f16; M * NKV];
+
+        let rope = vec![0.0f16; HEAD_DIM]; // 不触发 finalize 时内容无所谓
+
+        for i in 0..M {
+            for kk in 0..K {
+                a[i * K + kk] = (0.01f32 * (i as f32) + 0.001f32 * (kk as f32)) as f16;
+            }
+        }
+        for kk in 0..K {
+            for j in 0..NQ {
+                wq[kk * NQ + j] = (0.02f32 * (kk as f32) + 0.003f32 * (j as f32)) as f16;
+            }
+            for j in 0..NKV {
+                wk[kk * NKV + j] = (0.015f32 * (kk as f32) + 0.002f32 * (j as f32)) as f16;
+                wv[kk * NKV + j] = (0.017f32 * (kk as f32) + 0.0025f32 * (j as f32)) as f16;
+            }
+        }
+
+        let runner = unsafe {
+            MatMul3::<f16>::new(
+                a.as_ptr(),
+                wq.as_ptr(),
+                cq.as_mut_ptr(),
+                wk.as_ptr(),
+                ck.as_mut_ptr(),
+                wv.as_ptr(),
+                cv.as_mut_ptr(),
+                rope.as_ptr(),
+                HEAD_DIM,
+                M,
+                K,
+                NQ,
+                NKV,
+                3,   // MB
+                32,  // NB
+                64,  // KC
+                3,   // MR
+                32,  // NR
+            )
+        };
+
+        run_runner(&runner, M, thread_num);
+
+        let mut cq_ref = vec![0.0f32; M * NQ];
+        let mut ck_ref = vec![0.0f32; M * NKV];
+        let mut cv_ref = vec![0.0f32; M * NKV];
+        gemm_ref_f32(&a, &wq, &mut cq_ref, M, K, NQ);
+        gemm_ref_f32(&a, &wk, &mut ck_ref, M, K, NKV);
+        gemm_ref_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+
+        for i in 0..M {
+            for j in 0..NQ {
+                assert_abs_diff_eq!(cq[i * NQ + j] as f32, cq_ref[i * NQ + j], epsilon = 1e-1);
+            }
+            for j in 0..NKV {
+                assert_abs_diff_eq!(ck[i * NKV + j] as f32, ck_ref[i * NKV + j], epsilon = 1e-1);
+                assert_abs_diff_eq!(cv[i * NKV + j] as f32, cv_ref[i * NKV + j], epsilon = 1e-1);
+            }
+        }
+    }
+
+    /// multi-tile：M 多个 MB，N 多个 NB（更能覆盖 assign + tile 逻辑）
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    fn test_kqv_f16_avx512_multi_tile() {
+        const M: usize = 12;   // 4 个 MB(=3)
+        const K: usize = 64;
+        const NQ: usize = 96;  // 3 个 NR(=32)
+        const NKV: usize = 96;
+        const HEAD_DIM: usize = 128;
+
+        let thread_num = avail_threads_cap(16);
+
+        let mut a = vec![0.0f16; M * K];
+        let mut wq = vec![0.0f16; K * NQ];
+        let mut wk = vec![0.0f16; K * NKV];
+        let mut wv = vec![0.0f16; K * NKV];
+
+        let mut cq = vec![0.0f16; M * NQ];
+        let mut ck = vec![0.0f16; M * NKV];
+        let mut cv = vec![0.0f16; M * NKV];
+
+        let rope = vec![0.0f16; HEAD_DIM];
+
+        for i in 0..M {
+            for kk in 0..K {
+                a[i * K + kk] = (((i * 7 + kk * 3) % 19) as f32 * 0.01) as f16;
+            }
+        }
+        for kk in 0..K {
+            for j in 0..NQ {
+                wq[kk * NQ + j] = (((kk * 5 + j * 11) % 23) as f32 * 0.01) as f16;
+            }
+            for j in 0..NKV {
+                wk[kk * NKV + j] = (((kk * 3 + j * 7) % 29) as f32 * 0.01) as f16;
+                wv[kk * NKV + j] = (((kk * 9 + j * 4) % 31) as f32 * 0.01) as f16;
+            }
+        }
+
+        let runner = unsafe {
+            MatMul3::<f16>::new(
+                a.as_ptr(),
+                wq.as_ptr(),
+                cq.as_mut_ptr(),
+                wk.as_ptr(),
+                ck.as_mut_ptr(),
+                wv.as_ptr(),
+                cv.as_mut_ptr(),
+                rope.as_ptr(),
+                HEAD_DIM,
+                M,
+                K,
+                NQ,
+                NKV,
+                6,   // MB: 让 tile 变化
+                64,  // NB
+                64,  // KC
+                3,   // MR
+                32,  // NR
+            )
+        };
+
+        run_runner(&runner, M, thread_num);
+
+        let mut cq_ref = vec![0.0f32; M * NQ];
+        let mut ck_ref = vec![0.0f32; M * NKV];
+        let mut cv_ref = vec![0.0f32; M * NKV];
+        gemm_ref_f32(&a, &wq, &mut cq_ref, M, K, NQ);
+        gemm_ref_f32(&a, &wk, &mut ck_ref, M, K, NKV);
+        gemm_ref_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+
+        for i in 0..M {
+            for j in 0..NQ {
+                assert_abs_diff_eq!(cq[i * NQ + j] as f32, cq_ref[i * NQ + j], epsilon = 5e-1);
+            }
+            for j in 0..NKV {
+                assert_abs_diff_eq!(ck[i * NKV + j] as f32, ck_ref[i * NKV + j], epsilon = 5e-1);
+                assert_abs_diff_eq!(cv[i * NKV + j] as f32, cv_ref[i * NKV + j], epsilon = 5e-1);
+            }
+        }
+    }
+
+    /// KC split：K=128, KC=64 => 两个 k-block，覆盖累加路径
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    fn test_kqv_f16_avx512_kc_split() {
+        const M: usize = 6;
+        const K: usize = 128;
+        const NQ: usize = 64;
+        const NKV: usize = 64;
+        const HEAD_DIM: usize = 128;
+
+        let thread_num = avail_threads_cap(8);
+
+        let mut a = vec![0.0f16; M * K];
+        let mut wq = vec![0.0f16; K * NQ];
+        let mut wk = vec![0.0f16; K * NKV];
+        let mut wv = vec![0.0f16; K * NKV];
+
+        let mut cq = vec![0.0f16; M * NQ];
+        let mut ck = vec![0.0f16; M * NKV];
+        let mut cv = vec![0.0f16; M * NKV];
+
+        let rope = vec![0.0f16; HEAD_DIM];
+
+        for i in 0..M {
+            for kk in 0..K {
+                a[i * K + kk] = (((i + kk) % 17) as f32 * 0.01) as f16;
+            }
+        }
+        for kk in 0..K {
+            for j in 0..NQ {
+                wq[kk * NQ + j] = (((kk * 2 + j) % 13) as f32 * 0.01) as f16;
+            }
+            for j in 0..NKV {
+                wk[kk * NKV + j] = (((kk * 3 + j * 2) % 19) as f32 * 0.01) as f16;
+                wv[kk * NKV + j] = (((kk * 5 + j * 3) % 23) as f32 * 0.01) as f16;
+            }
+        }
+
+        let runner = unsafe {
+            MatMul3::<f16>::new(
+                a.as_ptr(),
+                wq.as_ptr(),
+                cq.as_mut_ptr(),
+                wk.as_ptr(),
+                ck.as_mut_ptr(),
+                wv.as_ptr(),
+                cv.as_mut_ptr(),
+                rope.as_ptr(),
+                HEAD_DIM,
+                M,
+                K,
+                NQ,
+                NKV,
+                6,   // MB
+                32,  // NB
+                64,  // KC（分两段）
+                3,   // MR
+                32,  // NR
+            )
+        };
+
+        run_runner(&runner, M, thread_num);
+
+        let mut cq_ref = vec![0.0f32; M * NQ];
+        let mut ck_ref = vec![0.0f32; M * NKV];
+        let mut cv_ref = vec![0.0f32; M * NKV];
+        gemm_ref_f32(&a, &wq, &mut cq_ref, M, K, NQ);
+        gemm_ref_f32(&a, &wk, &mut ck_ref, M, K, NKV);
+        gemm_ref_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+
+        for i in 0..M {
+            for j in 0..NQ {
+                assert_abs_diff_eq!(cq[i * NQ + j] as f32, cq_ref[i * NQ + j], epsilon = 5e-1);
+            }
+            for j in 0..NKV {
+                assert_abs_diff_eq!(ck[i * NKV + j] as f32, ck_ref[i * NKV + j], epsilon = 5e-1);
+                assert_abs_diff_eq!(cv[i * NKV + j] as f32, cv_ref[i * NKV + j], epsilon = 5e-1);
+            }
+        }
+    }
+
+    /// 稍大一点的尺寸（但仍可做 unit test）：覆盖更多 tile/累加
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    fn test_kqv_f16_avx512_medium() {
+        const M: usize = 48;
+        const K: usize = 256;
+        const NQ: usize = 256;
+        const NKV: usize = 256;
+        const HEAD_DIM: usize = 128;
+
+        let thread_num = avail_threads_cap(16);
+
+        let mut a = vec![0.0f16; M * K];
+        
+        let mut wq = vec![0.0f16; K * NQ];
+        let mut wk = vec![0.0f16; K * NKV];
+        let mut wv = vec![0.0f16; K * NKV];
+
+        let mut cq = vec![0.0f16; M * NQ];
+        let mut ck = vec![0.0f16; M * NKV];
+        let mut cv = vec![0.0f16; M * NKV];
+
+        let rope = vec![0.0f16; HEAD_DIM];
+
+        for i in 0..M {
+            for kk in 0..K {
+                a[i * K + kk] = (((i * 3 + kk * 5) % 97) as f32 * 0.001) as f16;
+            }
+        }
+        for kk in 0..K {
+            for j in 0..NQ {
+                wq[kk * NQ + j] = (((kk * 7 + j * 11) % 101) as f32 * 0.001) as f16;
+            }
+            for j in 0..NKV {
+                wk[kk * NKV + j] = (((kk * 13 + j * 17) % 103) as f32 * 0.001) as f16;
+                wv[kk * NKV + j] = (((kk * 19 + j * 23) % 107) as f32 * 0.001) as f16;
+            }
+        }
+
+        let runner = unsafe {
+            MatMul3::<f16>::new(
+                a.as_ptr(),
+                wq.as_ptr(),
+                cq.as_mut_ptr(),
+                wk.as_ptr(),
+                ck.as_mut_ptr(),
+                wv.as_ptr(),
+                cv.as_mut_ptr(),
+                rope.as_ptr(),
+                HEAD_DIM,
+                M,
+                K,
+                NQ,
+                NKV,
+                24,   // MB
+                128,  // NB
+                64,   // KC
+                3,    // MR
+                32,   // NR
+            )
+        };
+
+        run_runner(&runner, M, thread_num);
+
+        let mut cq_ref = vec![0.0f32; M * NQ];
+        let mut ck_ref = vec![0.0f32; M * NKV];
+        let mut cv_ref = vec![0.0f32; M * NKV];
+        gemm_ref_f32(&a, &wq, &mut cq_ref, M, K, NQ);
+        gemm_ref_f32(&a, &wk, &mut ck_ref, M, K, NKV);
+        gemm_ref_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+
+        // 更大规模，容差放宽
+        for i in 0..M {
+            for j in 0..NQ {
+                assert_abs_diff_eq!(cq[i * NQ + j] as f32, cq_ref[i * NQ + j], epsilon = 1.0);
+            }
+            for j in 0..NKV {
+                assert_abs_diff_eq!(ck[i * NKV + j] as f32, ck_ref[i * NKV + j], epsilon = 1.0);
+                assert_abs_diff_eq!(cv[i * NKV + j] as f32, cv_ref[i * NKV + j], epsilon = 1.0);
+            }
         }
     }
 }
