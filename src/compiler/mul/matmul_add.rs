@@ -316,3 +316,187 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_abs_diff_eq;
+
+    #[test]
+    fn test_matmul_add_runner_f16_3x64x32() {
+        const S: usize = 1;
+        const M: usize = 3;
+        const K: usize = 64;
+        const N: usize = 32;
+
+        let thread_num = 4;
+
+        let mut a = vec![0.0f16; S * M * K];
+        let mut b = vec![0.0f16; K * N];
+        let mut residual = vec![0.0f16; S * M * N];
+        let mut c = vec![0.0f16; S * M * N];
+
+        // Init A
+        for s in 0..S {
+            for i in 0..M {
+                for k in 0..K {
+                    let val = (s + i + k) as f32 * 0.01;
+                    a[s * M * K + i * K + k] = val as f16;
+                }
+            }
+        }
+
+        // Init B
+        for k in 0..K {
+            for j in 0..N {
+                let val = (k + j) as f32 * 0.02;
+                b[k * N + j] = val as f16;
+            }
+        }
+
+        // Init Residual
+        for s in 0..S {
+            for i in 0..M {
+                for j in 0..N {
+                    let val = (s + i + j) as f32 * 0.03;
+                    residual[s * M * N + i * N + j] = val as f16;
+                }
+            }
+        }
+
+        let params = MatMulParams {
+            a_row_step_macro: 3,
+            b_row_step_macro: 32,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+
+        let matmul_add = unsafe {
+            MatMulAdd::<f16>::new(
+                a.as_ptr(),
+                b.as_ptr(),
+                residual.as_ptr(),
+                c.as_mut_ptr(),
+                params,
+                M,
+                N,
+                K,
+                thread_num,
+            )
+        };
+
+        for i in 0..thread_num {
+            matmul_add.run(0, S, M, thread_num, i);
+        }
+
+        // Verify
+        for s in 0..S {
+            for i in 0..M {
+                for j in 0..N {
+                    let mut sum = 0.0f32;
+                    // A * B
+                    for k in 0..K {
+                        let a_val = a[s * M * K + i * K + k] as f32;
+                        let b_val = b[k * N + j] as f32;
+                        sum += a_val * b_val;
+                    }
+                    // + Residual
+                    sum += residual[s * M * N + i * N + j] as f32;
+
+                    let got = c[s * M * N + i * N + j] as f32;
+                    assert_abs_diff_eq!(got, sum, epsilon = 1e-1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_matmul_add_runner_f16_144x2048x2048() {
+        const S: usize = 1;
+        const M: usize = 144;
+        const K: usize = 2048;
+        const N: usize = 2048;
+
+        let thread_num = 8;
+
+        let mut a = vec![0.0f16; S * M * K];
+        let mut b = vec![0.0f16; K * N];
+        let mut residual = vec![0.0f16; S * M * N];
+        let mut c = vec![0.0f16; S * M * N];
+
+        // Init A
+        for s in 0..S {
+            for i in 0..M {
+                for k in 0..K {
+                    let val = ((s + i + k) % 7) as f32 * 0.01;
+                    a[s * M * K + i * K + k] = val as f16;
+                }
+            }
+        }
+
+        // Init B
+        for k in 0..K {
+            for j in 0..N {
+                let val = ((k + j) % 11) as f32 * 0.01;
+                b[k * N + j] = val as f16;
+            }
+        }
+
+        // Init Residual
+        for s in 0..S {
+            for i in 0..M {
+                for j in 0..N {
+                    let val = ((s + i + j) % 13) as f32 * 0.01;
+                    residual[s * M * N + i * N + j] = val as f16;
+                }
+            }
+        }
+
+        let params = MatMulParams {
+            a_row_step_macro: 24,
+            b_row_step_macro: 128,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+
+        let matmul_add = unsafe {
+            MatMulAdd::<f16>::new(
+                a.as_ptr(),
+                b.as_ptr(),
+                residual.as_ptr(),
+                c.as_mut_ptr(),
+                params,
+                M,
+                N,
+                K,
+                thread_num,
+            )
+        };
+
+        for i in 0..thread_num {
+            matmul_add.run(0, S, M, thread_num, i);
+        }
+
+        // Verify
+        for s in 0..S {
+            for i in 0..M {
+                for j in 0..N {
+                    let mut sum = 0.0f32;
+                    // A * B
+                    for k in 0..K {
+                        let a_val = a[s * M * K + i * K + k] as f32;
+                        let b_val = b[k * N + j] as f32;
+                        sum += a_val * b_val;
+                    }
+                    // + Residual
+                    sum += residual[s * M * N + i * N + j] as f32;
+
+                    let got = c[s * M * N + i * N + j] as f32;
+                    assert_abs_diff_eq!(got, sum, epsilon = 5e-1);
+                }
+            }
+        }
+    }
+}
