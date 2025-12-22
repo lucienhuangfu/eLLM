@@ -494,168 +494,53 @@ impl MatMulkqvTrait<f32> for MatMul3<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::alloc::{alloc, Layout};
+    use approx::assert_abs_diff_eq;
+
+    // ========================================================================
+    // Helpers for f32 tests
+    // ========================================================================
 
     // 简单的参考矩阵乘法：C = A * W^T
-    unsafe fn ref_matmul(
+    fn ref_matmul_f32(
         m: usize,
         k: usize,
         n: usize,
-        a: *const f32,
-        w: *const f32, // KxN
-        c: *mut f32,
+        a: &[f32],
+        w: &[f32], // KxN
+        c: &mut [f32],
     ) {
         for i in 0..m {
             for j in 0..n {
                 let mut sum = 0.0;
                 for p in 0..k {
-                    let val_a = *a.add(i * k + p);
-                    let val_w = *w.add(p * n + j); // W is KxN
+                    let val_a = a[i * k + p];
+                    let val_w = w[p * n + j]; // W is KxN
                     sum += val_a * val_w;
                 }
-                *c.add(i * n + j) = sum;
+                c[i * n + j] = sum;
             }
         }
     }
 
     // 参考后处理：RMS + RoPE
-    unsafe fn ref_post_process(m: usize, n: usize, c: *mut f32, rope: *const f32, head_dim: usize) {
+    fn ref_post_process_f32(m: usize, n: usize, c: &mut [f32], rope: &[f32], head_dim: usize) {
         let eps = 1e-6;
-        for i in 0..m {
-            // 按 head 处理
-            for h_base in (0..n).step_by(head_dim) {
-                let ptr = c.add(i * n + h_base);
-                let rope_ptr = rope.add(h_base);
-                rms_norm(ptr, ptr, head_dim, eps);
-                complex_mul(ptr, rope_ptr, ptr, head_dim);
-            }
-        }
-    }
-
-    #[test]
-    fn test_matmul3_qkv_72_rows() {
         unsafe {
-            // 1. 维度设定
-            let m = 72;
-            let k = 256; // 假设 Hidden size
-            let head_dim = 128;
-            let n_q = 32 * 128; // 4096
-            let n_kv = 4 * 128; // 512
-
-            // 2. 分配内存
-            let layout_a = Layout::array::<f32>(m * k).unwrap();
-            let a_ptr = alloc(layout_a) as *mut f32;
-
-            let layout_wq = Layout::array::<f32>(k * n_q).unwrap();
-            let wq_ptr = alloc(layout_wq) as *mut f32;
-            let layout_wk = Layout::array::<f32>(k * n_kv).unwrap();
-            let wk_ptr = alloc(layout_wk) as *mut f32;
-            let layout_wv = Layout::array::<f32>(k * n_kv).unwrap();
-            let wv_ptr = alloc(layout_wv) as *mut f32;
-
-            let layout_cq = Layout::array::<f32>(m * n_q).unwrap();
-            let cq_ptr = alloc(layout_cq) as *mut f32;
-            let cq_ref = alloc(layout_cq) as *mut f32;
-
-            let layout_ck = Layout::array::<f32>(m * n_kv).unwrap();
-            let ck_ptr = alloc(layout_ck) as *mut f32;
-            let ck_ref = alloc(layout_ck) as *mut f32;
-
-            let layout_cv = Layout::array::<f32>(m * n_kv).unwrap();
-            let cv_ptr = alloc(layout_cv) as *mut f32;
-            let cv_ref = alloc(layout_cv) as *mut f32;
-
-            let layout_rope = Layout::array::<f32>(n_q).unwrap(); // 足够覆盖最大的 N
-            let rope_ptr = alloc(layout_rope) as *mut f32;
-
-            // 3. 初始化数据 (使用确定性数据方便调试)
-            for i in 0..m * k {
-                *a_ptr.add(i) = (i % 100) as f32 * 0.01;
-            }
-            for i in 0..k * n_q {
-                *wq_ptr.add(i) = ((i + 1) % 7) as f32 * 0.01;
-            }
-            for i in 0..k * n_kv {
-                *wk_ptr.add(i) = ((i + 2) % 7) as f32 * 0.01;
-            }
-            for i in 0..k * n_kv {
-                *wv_ptr.add(i) = ((i + 3) % 7) as f32 * 0.01;
-            }
-            for i in 0..n_q {
-                *rope_ptr.add(i) = 1.0;
-            } // 简化 RoPE 为 1.0，主要测流程
-
-            // 清零输出
-            for i in 0..m * n_q {
-                *cq_ptr.add(i) = 0.0;
-                *cq_ref.add(i) = 0.0;
-            }
-            for i in 0..m * n_kv {
-                *ck_ptr.add(i) = 0.0;
-                *ck_ref.add(i) = 0.0;
-            }
-            for i in 0..m * n_kv {
-                *cv_ptr.add(i) = 0.0;
-                *cv_ref.add(i) = 0.0;
-            }
-
-            // 4. 运行 MatMul3
-            let matmul = MatMul3::<f32>::new(
-                a_ptr, wq_ptr, cq_ptr, wk_ptr, ck_ptr, wv_ptr, cv_ptr, rope_ptr, head_dim, m, k,
-                n_q, n_kv, 24,  // MB
-                128, // NB
-                32,  // KC
-                3,   // MR
-                32,  // NR
-                1,   // cpu_max
-            );
-
-            matmul.run(0, 0, m, 1, 0);
-
-            // 5. 运行参考实现
-            // Q: MatMul + RMS + RoPE
-            ref_matmul(m, k, n_q, a_ptr, wq_ptr, cq_ref);
-            ref_post_process(m, n_q, cq_ref, rope_ptr, head_dim);
-
-            // K: MatMul + RMS + RoPE
-            ref_matmul(m, k, n_kv, a_ptr, wk_ptr, ck_ref);
-            ref_post_process(m, n_kv, ck_ref, rope_ptr, head_dim);
-
-            // V: Only MatMul
-            ref_matmul(m, k, n_kv, a_ptr, wv_ptr, cv_ref);
-
-            // 6. 验证结果
-            let verify = |name: &str, out: *const f32, reference: *const f32, len: usize| {
-                let mut max_diff = 0.0f32;
-                for i in 0..len {
-                    let diff = (*out.add(i) - *reference.add(i)).abs();
-                    if diff > max_diff {
-                        max_diff = diff;
-                    }
-                    if diff > 1e-3 {
-                        panic!(
-                            "{} mismatch at index {}: got {}, expected {}, diff {}",
-                            name,
-                            i,
-                            *out.add(i),
-                            *reference.add(i),
-                            diff
-                        );
-                    }
+            for i in 0..m {
+                // 按 head 处理
+                for h_base in (0..n).step_by(head_dim) {
+                    let ptr = c.as_mut_ptr().add(i * n + h_base);
+                    let rope_ptr = rope.as_ptr().add(h_base);
+                    rms_norm(ptr, ptr, head_dim, eps);
+                    complex_mul(ptr, rope_ptr, ptr, head_dim);
                 }
-                println!("{} passed. Max diff: {}", name, max_diff);
-            };
-
-            verify("Q Output", cq_ptr, cq_ref, m * n_q);
-            verify("K Output", ck_ptr, ck_ref, m * n_kv);
-            verify("V Output", cv_ptr, cv_ref, m * n_kv);
+            }
         }
     }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use approx::assert_abs_diff_eq;
+
+    // ========================================================================
+    // Helpers for f16 tests
+    // ========================================================================
 
     fn avail_threads_cap(cap: usize) -> usize {
         std::thread::available_parallelism()
@@ -666,7 +551,7 @@ mod tests {
     }
 
     /// float32 reference: C[M×N] = A[M×K] * B[K×N]
-    fn gemm_ref_f32(a: &[f16], b: &[f16], c: &mut [f32], m: usize, k: usize, n: usize) {
+    fn gemm_ref_f16_acc_f32(a: &[f16], b: &[f16], c: &mut [f32], m: usize, k: usize, n: usize) {
         for i in 0..m {
             for j in 0..n {
                 let mut sum = 0.0f32;
@@ -679,13 +564,115 @@ mod tests {
     }
 
     /// 统一跑一次 runner（顺序模拟多线程），避免真的开线程引入不确定性
-    fn run_runner(
-        runner: &MatMul3<f16>,
-        m: usize,
-        thread_num: usize,
-    ) {
+    fn run_runner(runner: &MatMul3<f16>, m: usize, thread_num: usize) {
         for tid in 0..thread_num {
             runner.run(0, 1, m, thread_num, tid);
+        }
+    }
+
+    // ========================================================================
+    // Tests
+    // ========================================================================
+
+    #[test]
+    fn test_matmul3_qkv_f32_72_rows() {
+        // 1. 维度设定
+        let m = 72;
+        let k = 256; // 假设 Hidden size
+        let head_dim = 128;
+        let n_q = 32 * 128; // 4096
+        let n_kv = 4 * 128; // 512
+
+        // 2. 分配内存
+        let mut a = vec![0.0f32; m * k];
+        let mut wq = vec![0.0f32; k * n_q];
+        let mut wk = vec![0.0f32; k * n_kv];
+        let mut wv = vec![0.0f32; k * n_kv];
+
+        let mut cq = vec![0.0f32; m * n_q];
+        let mut cq_ref = vec![0.0f32; m * n_q];
+
+        let mut ck = vec![0.0f32; m * n_kv];
+        let mut ck_ref = vec![0.0f32; m * n_kv];
+
+        let mut cv = vec![0.0f32; m * n_kv];
+        let mut cv_ref = vec![0.0f32; m * n_kv];
+
+        let mut rope = vec![1.0f32; n_q]; // 足够覆盖最大的 N
+
+        // 3. 初始化数据 (使用确定性数据方便调试)
+        for i in 0..m * k {
+            a[i] = (i % 100) as f32 * 0.01;
+        }
+        for i in 0..k * n_q {
+            wq[i] = ((i + 1) % 7) as f32 * 0.01;
+        }
+        for i in 0..k * n_kv {
+            wk[i] = ((i + 2) % 7) as f32 * 0.01;
+            wv[i] = ((i + 3) % 7) as f32 * 0.01;
+        }
+        for i in 0..n_q {
+            rope[i] = 1.0;
+        } // 简化 RoPE 为 1.0，主要测流程
+
+        unsafe {
+            // 4. 运行 MatMul3
+            let matmul = MatMul3::<f32>::new(
+                a.as_ptr(),
+                wq.as_ptr(),
+                cq.as_mut_ptr(),
+                wk.as_ptr(),
+                ck.as_mut_ptr(),
+                wv.as_ptr(),
+                cv.as_mut_ptr(),
+                rope.as_ptr(),
+                head_dim,
+                m,
+                k,
+                n_q,
+                n_kv,
+                24,  // MB
+                128, // NB
+                32,  // KC
+                3,   // MR
+                32,  // NR
+            );
+
+            matmul.run(0, 0, m, 1, 0);
+
+            // 5. 运行参考实现
+            // Q: MatMul + RMS + RoPE
+            ref_matmul_f32(m, k, n_q, &a, &wq, &mut cq_ref);
+            ref_post_process_f32(m, n_q, &mut cq_ref, &rope, head_dim);
+
+            // K: MatMul + RMS + RoPE
+            ref_matmul_f32(m, k, n_kv, &a, &wk, &mut ck_ref);
+            ref_post_process_f32(m, n_kv, &mut ck_ref, &rope, head_dim);
+
+            // V: Only MatMul
+            ref_matmul_f32(m, k, n_kv, &a, &wv, &mut cv_ref);
+
+            // 6. 验证结果
+            let verify = |name: &str, out: &[f32], reference: &[f32]| {
+                let mut max_diff = 0.0f32;
+                for (i, (v1, v2)) in out.iter().zip(reference.iter()).enumerate() {
+                    let diff = (v1 - v2).abs();
+                    if diff > max_diff {
+                        max_diff = diff;
+                    }
+                    if diff > 1e-3 {
+                        panic!(
+                            "{} mismatch at index {}: got {}, expected {}, diff {}",
+                            name, i, v1, v2, diff
+                        );
+                    }
+                }
+                println!("{} passed. Max diff: {}", name, max_diff);
+            };
+
+            verify("Q Output", &cq, &cq_ref);
+            verify("K Output", &ck, &ck_ref);
+            verify("V Output", &cv, &cv_ref);
         }
     }
 
@@ -744,11 +731,11 @@ mod tests {
                 K,
                 NQ,
                 NKV,
-                3,   // MB
-                32,  // NB
-                64,  // KC
-                3,   // MR
-                32,  // NR
+                3,  // MB
+                32, // NB
+                64, // KC
+                3,  // MR
+                32, // NR
             )
         };
 
@@ -757,9 +744,9 @@ mod tests {
         let mut cq_ref = vec![0.0f32; M * NQ];
         let mut ck_ref = vec![0.0f32; M * NKV];
         let mut cv_ref = vec![0.0f32; M * NKV];
-        gemm_ref_f32(&a, &wq, &mut cq_ref, M, K, NQ);
-        gemm_ref_f32(&a, &wk, &mut ck_ref, M, K, NKV);
-        gemm_ref_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32(&a, &wq, &mut cq_ref, M, K, NQ);
+        gemm_ref_f16_acc_f32(&a, &wk, &mut ck_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32(&a, &wv, &mut cv_ref, M, K, NKV);
 
         for i in 0..M {
             for j in 0..NQ {
@@ -772,13 +759,13 @@ mod tests {
         }
     }
 
-    /// multi-tile：M 多个 MB，N 多个 NB（更能覆盖 assign + tile 逻辑）
+    /// multi-tile：M 多个 MB(=3)，N 多个 NB（更能覆盖 assign + tile 逻辑）
     #[test]
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
     fn test_kqv_f16_avx512_multi_tile() {
-        const M: usize = 12;   // 4 个 MB(=3)
+        const M: usize = 12; // 4 个 MB(=3)
         const K: usize = 64;
-        const NQ: usize = 96;  // 3 个 NR(=32)
+        const NQ: usize = 96; // 3 个 NR(=32)
         const NKV: usize = 96;
         const HEAD_DIM: usize = 128;
 
@@ -797,16 +784,16 @@ mod tests {
 
         for i in 0..M {
             for kk in 0..K {
-                a[i * K + kk] = (((i * 7 + kk * 3) % 19) as f32 * 0.01) as f16;
+                a[i * K + kk] = (((i * 7 + kk * 3) % 19) as f32 * 0.01f32) as f16;
             }
         }
         for kk in 0..K {
             for j in 0..NQ {
-                wq[kk * NQ + j] = (((kk * 5 + j * 11) % 23) as f32 * 0.01) as f16;
+                wq[kk * NQ + j] = (((kk * 5 + j * 11) % 23) as f32 * 0.01f32) as f16;
             }
             for j in 0..NKV {
-                wk[kk * NKV + j] = (((kk * 3 + j * 7) % 29) as f32 * 0.01) as f16;
-                wv[kk * NKV + j] = (((kk * 9 + j * 4) % 31) as f32 * 0.01) as f16;
+                wk[kk * NKV + j] = (((kk * 3 + j * 7) % 29) as f32 * 0.01f32) as f16;
+                wv[kk * NKV + j] = (((kk * 9 + j * 4) % 31) as f32 * 0.01f32) as f16;
             }
         }
 
@@ -825,11 +812,11 @@ mod tests {
                 K,
                 NQ,
                 NKV,
-                6,   // MB: 让 tile 变化
-                64,  // NB
-                64,  // KC
-                3,   // MR
-                32,  // NR
+                6,  // MB: 让 tile 变化
+                64, // NB
+                64, // KC
+                3,  // MR
+                32, // NR
             )
         };
 
@@ -838,9 +825,9 @@ mod tests {
         let mut cq_ref = vec![0.0f32; M * NQ];
         let mut ck_ref = vec![0.0f32; M * NKV];
         let mut cv_ref = vec![0.0f32; M * NKV];
-        gemm_ref_f32(&a, &wq, &mut cq_ref, M, K, NQ);
-        gemm_ref_f32(&a, &wk, &mut ck_ref, M, K, NKV);
-        gemm_ref_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32(&a, &wq, &mut cq_ref, M, K, NQ);
+        gemm_ref_f16_acc_f32(&a, &wk, &mut ck_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32(&a, &wv, &mut cv_ref, M, K, NKV);
 
         for i in 0..M {
             for j in 0..NQ {
@@ -878,16 +865,16 @@ mod tests {
 
         for i in 0..M {
             for kk in 0..K {
-                a[i * K + kk] = (((i + kk) % 17) as f32 * 0.01) as f16;
+                a[i * K + kk] = (((i + kk) % 17) as f32 * 0.01f32) as f16;
             }
         }
         for kk in 0..K {
             for j in 0..NQ {
-                wq[kk * NQ + j] = (((kk * 2 + j) % 13) as f32 * 0.01) as f16;
+                wq[kk * NQ + j] = (((kk * 2 + j) % 13) as f32 * 0.01f32) as f16;
             }
             for j in 0..NKV {
-                wk[kk * NKV + j] = (((kk * 3 + j * 2) % 19) as f32 * 0.01) as f16;
-                wv[kk * NKV + j] = (((kk * 5 + j * 3) % 23) as f32 * 0.01) as f16;
+                wk[kk * NKV + j] = (((kk * 3 + j * 2) % 19) as f32 * 0.01f32) as f16;
+                wv[kk * NKV + j] = (((kk * 5 + j * 3) % 23) as f32 * 0.01f32) as f16;
             }
         }
 
@@ -906,11 +893,11 @@ mod tests {
                 K,
                 NQ,
                 NKV,
-                6,   // MB
-                32,  // NB
-                64,  // KC（分两段）
-                3,   // MR
-                32,  // NR
+                6,  // MB
+                32, // NB
+                64, // KC（分两段）
+                3,  // MR
+                32, // NR
             )
         };
 
@@ -919,9 +906,9 @@ mod tests {
         let mut cq_ref = vec![0.0f32; M * NQ];
         let mut ck_ref = vec![0.0f32; M * NKV];
         let mut cv_ref = vec![0.0f32; M * NKV];
-        gemm_ref_f32(&a, &wq, &mut cq_ref, M, K, NQ);
-        gemm_ref_f32(&a, &wk, &mut ck_ref, M, K, NKV);
-        gemm_ref_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32(&a, &wq, &mut cq_ref, M, K, NQ);
+        gemm_ref_f16_acc_f32(&a, &wk, &mut ck_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32(&a, &wv, &mut cv_ref, M, K, NKV);
 
         for i in 0..M {
             for j in 0..NQ {
@@ -947,7 +934,7 @@ mod tests {
         let thread_num = avail_threads_cap(16);
 
         let mut a = vec![0.0f16; M * K];
-        
+
         let mut wq = vec![0.0f16; K * NQ];
         let mut wk = vec![0.0f16; K * NKV];
         let mut wv = vec![0.0f16; K * NKV];
@@ -988,11 +975,11 @@ mod tests {
                 K,
                 NQ,
                 NKV,
-                24,   // MB
-                128,  // NB
-                64,   // KC
-                3,    // MR
-                32,   // NR
+                24,  // MB
+                128, // NB
+                64,  // KC
+                3,   // MR
+                32,  // NR
             )
         };
 
@@ -1001,9 +988,9 @@ mod tests {
         let mut cq_ref = vec![0.0f32; M * NQ];
         let mut ck_ref = vec![0.0f32; M * NKV];
         let mut cv_ref = vec![0.0f32; M * NKV];
-        gemm_ref_f32(&a, &wq, &mut cq_ref, M, K, NQ);
-        gemm_ref_f32(&a, &wk, &mut ck_ref, M, K, NKV);
-        gemm_ref_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32(&a, &wq, &mut cq_ref, M, K, NQ);
+        gemm_ref_f16_acc_f32(&a, &wk, &mut ck_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32(&a, &wv, &mut cv_ref, M, K, NKV);
 
         // 更大规模，容差放宽
         for i in 0..M {
