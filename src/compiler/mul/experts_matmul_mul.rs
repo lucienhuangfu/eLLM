@@ -495,10 +495,15 @@ mod tests {
 
     use crate::kernel::generic::from_f32::FromF32;
 
+    // ========================================================================
+    // Helpers
+    // ========================================================================
+
     #[inline]
     fn f16_from_f32(x: f32) -> f16 {
         <f16 as FromF32>::from_f32(x)
     }
+
     /// 只给测试用：把 f16 bits 转成 f32
     #[inline]
     fn f32_from_f16(x: f16) -> f32 {
@@ -543,6 +548,25 @@ mod tests {
         let row = &topk[b * ktop..b * ktop + ktop];
         row.iter().position(|&x| x == e).unwrap_or(0)
     }
+
+    fn verify_output(out: &[f16], out_ref: &[f32], tol: f32, msg: &str) {
+        for i in 0..out.len() {
+            let got = f32_from_f16(out[i]);
+            let exp = out_ref[i];
+            assert!(
+                approx_eq_f32(got, exp, tol),
+                "{} mismatch at {}: got={}, exp={}",
+                msg,
+                i,
+                got,
+                exp
+            );
+        }
+    }
+
+    // ========================================================================
+    // Test Cases
+    // ========================================================================
 
     #[test]
     fn test_down_mb_gt_mr_basic_no_tail() {
@@ -634,17 +658,7 @@ mod tests {
             }
         }
 
-        for i in 0..out.len() {
-            let got = f32_from_f16(out[i]);
-            let exp = out_ref[i];
-            assert!(
-                approx_eq_f32(got, exp, 5e-2),
-                "mismatch at {}: got={}, exp={}",
-                i,
-                got,
-                exp
-            );
-        }
+        verify_output(&out, &out_ref, 5e-2, "basic");
     }
 
     #[test]
@@ -729,17 +743,7 @@ mod tests {
             }
         }
 
-        for i in 0..out.len() {
-            let got = f32_from_f16(out[i]);
-            let exp = out_ref[i];
-            assert!(
-                approx_eq_f32(got, exp, 5e-2),
-                "tail mismatch at {}: got={}, exp={}",
-                i,
-                got,
-                exp
-            );
-        }
+        verify_output(&out, &out_ref, 5e-2, "tail");
     }
 
     #[test]

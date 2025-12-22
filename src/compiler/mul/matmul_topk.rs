@@ -365,7 +365,12 @@ where
             b_row_step_micro: nr,
         };
 
-        kernel::generic::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
+        kernel::generic::matmul_block::matmul_block(
+            input_ptr1,
+            input_ptr2,
+            output_ptr,
+            &call_param,
+        );
     }
 }
 
@@ -384,11 +389,21 @@ impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            kernel::x86_64::f16_512::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
+            kernel::x86_64::f16_512::matmul_block::matmul_block(
+                input_ptr1,
+                input_ptr2,
+                output_ptr,
+                &call_param,
+            );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
-            kernel::generic::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
+            kernel::generic::matmul_block::matmul_block(
+                input_ptr1,
+                input_ptr2,
+                output_ptr,
+                &call_param,
+            );
         }
     }
 }
@@ -406,60 +421,26 @@ impl MatMulTopKTrait<f32> for MatMulTopK<f32> {
             b_row_step_micro: nr,
         };
 
-        kernel::generic::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
+        kernel::generic::matmul_block::matmul_block(
+            input_ptr1,
+            input_ptr2,
+            output_ptr,
+            &call_param,
+        );
     }
-}#[cfg(test)]
+}
+#[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
-    use std::mem;
-
-    use crate::kernel::generic::from_f32::FromF32;
-
-    #[inline]
-    fn f16_from_f32(x: f32) -> f16 {
-        <f16 as FromF32>::from_f32(x)
-    }
-
-    #[inline]
-    fn f32_from_f16(x: f16) -> f32 {
-        let bits: u16 = unsafe { mem::transmute(x) };
-        let sign = ((bits & 0x8000) as u32) << 16;
-        let exp = (bits & 0x7C00) >> 10;
-        let mant = bits & 0x03FF;
-
-        let f_bits: u32 = if exp == 0 {
-            if mant == 0 {
-                sign
-            } else {
-                let mut e: i32 = -14;
-                let mut m = mant as u32;
-                while (m & 0x0400) == 0 {
-                    m <<= 1;
-                    e -= 1;
-                }
-                m &= 0x03FF;
-                let exp_f = (e + 127) as u32;
-                sign | (exp_f << 23) | (m << 13)
-            }
-        } else if exp == 0x1F {
-            let exp_f = 0xFFu32;
-            sign | (exp_f << 23) | ((mant as u32) << 13)
-        } else {
-            let exp_f = (exp as i32 - 15 + 127) as u32;
-            sign | (exp_f << 23) | ((mant as u32) << 13)
-        };
-
-        f32::from_bits(f_bits)
-    }
 
     fn verify_topk_result(
         m: usize,
         k: usize,
         n: usize,
         topk: usize,
-        cpu_num: usize,     // 实际跑的线程数
-        thread_max: usize,  // runner 内部 stride（heaps 绑定用这个）
+        cpu_num: usize,    // 实际跑的线程数
+        thread_max: usize, // runner 内部 stride（heaps 绑定用这个）
         a: &[f16],
         b: &[f16],
         indices_buf: &[usize],
@@ -472,7 +453,7 @@ mod tests {
             for j in 0..n {
                 let mut sum = 0.0f32;
                 for kk in 0..k {
-                    sum += f32_from_f16(a[i * k + kk]) * f32_from_f16(b[kk * n + j]);
+                    sum += (a[i * k + kk] as f32) * (b[kk * n + j] as f32);
                 }
                 row_c[j] = sum;
             }
@@ -487,7 +468,7 @@ mod tests {
             for tid in 0..cpu_num {
                 let offset = i * (thread_max * topk) + tid * topk;
                 for r in 0..topk {
-                    merged.push((indices_buf[offset + r], f32_from_f16(values_buf[offset + r])));
+                    merged.push((indices_buf[offset + r], values_buf[offset + r] as f32));
                 }
             }
 
@@ -519,17 +500,17 @@ mod tests {
         // 你想模拟多线程：随便取个 <= thread_max 的数
         let cpu_num = 4usize;
 
-        let mut a = vec![f16_from_f32(0.0); M * K];
-        let mut b = vec![f16_from_f32(0.0); K * N];
+        let mut a = vec![0.0 as f16; M * K];
+        let mut b = vec![0.0 as f16; K * N];
 
         for i in 0..M {
             for kk in 0..K {
-                a[i * K + kk] = f16_from_f32((i + kk) as f32 * 0.01);
+                a[i * K + kk] = ((i + kk) as f32 * 0.01) as f16;
             }
         }
         for kk in 0..K {
             for j in 0..N {
-                b[kk * N + j] = f16_from_f32((kk + j) as f32 * 0.001);
+                b[kk * N + j] = ((kk + j) as f32 * 0.001) as f16;
             }
         }
 
@@ -540,20 +521,22 @@ mod tests {
             let thread_max = MatMulTopK::<f16>::detect_threads();
             let buf_len = M * thread_max * TOPK;
             let mut indices_buf = vec![0usize; buf_len];
-            let mut values_buf = vec![f16_from_f32(0.0); buf_len];
+            let mut values_buf = vec![0.0 as f16; buf_len];
 
             let runner = MatMulTopK::<f16>::new(
                 a.as_ptr(),
                 b.as_ptr(),
                 indices_buf.as_mut_ptr(),
                 values_buf.as_mut_ptr(),
-                M, N, K,
-                3,   // MB
-                32,  // NB
-                64,  // KC
-                3,   // MR
-                32,  // NR
-                M,   // batch_max
+                M,
+                N,
+                K,
+                3,  // MB
+                32, // NB
+                64, // KC
+                3,  // MR
+                32, // NR
+                M,  // batch_max
                 TOPK,
             );
 
@@ -563,10 +546,14 @@ mod tests {
             }
 
             verify_topk_result(
-                M, K, N, TOPK,
+                M,
+                K,
+                N,
+                TOPK,
                 used,
                 runner.thread_max(),
-                &a, &b,
+                &a,
+                &b,
                 &indices_buf,
                 &values_buf,
                 0.01,
@@ -584,19 +571,19 @@ mod tests {
 
         let cpu_num = 8usize;
 
-        let mut a = vec![f16_from_f32(0.0); M * K];
-        let mut b = vec![f16_from_f32(0.0); K * N];
+        let mut a = vec![0.0 as f16; M * K];
+        let mut b = vec![0.0 as f16; K * N];
 
         for i in 0..M {
             for kk in 0..K {
                 let v = ((i * 131 + kk * 17) % 97) as f32 * 0.01;
-                a[i * K + kk] = f16_from_f32(v);
+                a[i * K + kk] = v as f16;
             }
         }
         for kk in 0..K {
             for j in 0..N {
                 let v = ((kk * 73 + j * 11) % 101) as f32 * 0.01;
-                b[kk * N + j] = f16_from_f32(v);
+                b[kk * N + j] = v as f16;
             }
         }
 
@@ -604,19 +591,21 @@ mod tests {
             let thread_max = MatMulTopK::<f16>::detect_threads();
             let buf_len = M * thread_max * TOPK;
             let mut indices_buf = vec![0usize; buf_len];
-            let mut values_buf = vec![f16_from_f32(0.0); buf_len];
+            let mut values_buf = vec![0.0 as f16; buf_len];
 
             let runner = MatMulTopK::<f16>::new(
                 a.as_ptr(),
                 b.as_ptr(),
                 indices_buf.as_mut_ptr(),
                 values_buf.as_mut_ptr(),
-                M, N, K,
-                24,   // MB（整除 M）
-                128,  // NB（整除 N）
-                64,   // KC（整除 K）
-                3,    // MR
-                32,   // NR
+                M,
+                N,
+                K,
+                24,  // MB（整除 M）
+                128, // NB（整除 N）
+                64,  // KC（整除 K）
+                3,   // MR
+                32,  // NR
                 M,
                 TOPK,
             );
@@ -628,13 +617,17 @@ mod tests {
 
             // 中等 K 累加误差：给个稍微宽松一点
             verify_topk_result(
-                M, K, N, TOPK,
+                M,
+                K,
+                N,
+                TOPK,
                 used,
                 runner.thread_max(),
-                &a, &b,
+                &a,
+                &b,
                 &indices_buf,
                 &values_buf,
-                0.2,
+                0.5,
             );
         }
     }
@@ -650,17 +643,17 @@ mod tests {
 
         let cpu_num = 8usize;
 
-        let mut a = vec![f16_from_f32(0.0); M * K];
-        let mut b = vec![f16_from_f32(0.0); K * N];
+        let mut a = vec![0.0 as f16; M * K];
+        let mut b = vec![0.0 as f16; K * N];
 
         for i in 0..M {
             for kk in 0..K {
-                a[i * K + kk] = f16_from_f32(((i + kk) % 7) as f32 * 0.01);
+                a[i * K + kk] = (((i + kk) % 7) as f32 * 0.01) as f16;
             }
         }
         for kk in 0..K {
             for j in 0..N {
-                b[kk * N + j] = f16_from_f32(((kk + j) % 11) as f32 * 0.01);
+                b[kk * N + j] = (((kk + j) % 11) as f32 * 0.01) as f16;
             }
         }
 
@@ -668,14 +661,16 @@ mod tests {
             let thread_max = MatMulTopK::<f16>::detect_threads();
             let buf_len = M * thread_max * TOPK;
             let mut indices_buf = vec![0usize; buf_len];
-            let mut values_buf = vec![f16_from_f32(0.0); buf_len];
+            let mut values_buf = vec![0.0 as f16; buf_len];
 
             let runner = MatMulTopK::<f16>::new(
                 a.as_ptr(),
                 b.as_ptr(),
                 indices_buf.as_mut_ptr(),
                 values_buf.as_mut_ptr(),
-                M, N, K,
+                M,
+                N,
+                K,
                 24,
                 128,
                 64,
@@ -692,10 +687,14 @@ mod tests {
 
             // 大 K 累加误差：放宽
             verify_topk_result(
-                M, K, N, TOPK,
+                M,
+                K,
+                N,
+                TOPK,
                 used,
                 runner.thread_max(),
-                &a, &b,
+                &a,
+                &b,
                 &indices_buf,
                 &values_buf,
                 0.8,

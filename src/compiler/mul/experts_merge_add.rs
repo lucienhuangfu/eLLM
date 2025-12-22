@@ -4,8 +4,8 @@
 use std::f16;
 use std::ops::{Add, Mul};
 
-use super::super::super::kernel;
 use super::super::super::init::send_sync_ptr::{ConstPtr, MutPtr};
+use super::super::super::kernel;
 use super::super::assign::assign;
 use super::mul_trait::MoeMergeTrait;
 
@@ -106,9 +106,9 @@ where
 
             // ===== (2) 按 token 维度切片：merge + residual =====
             if let Some((t0, t1)) = assign(num_tokens, thread_num, thread_id) {
-                let in_ptr = self.input_ptr.ptr;     // [num_tokens, K, H]
+                let in_ptr = self.input_ptr.ptr; // [num_tokens, K, H]
                 let res_ptr = self.residual_ptr.ptr; // [num_tokens, H]
-                let out_ptr = self.output_ptr.ptr;   // [num_tokens, H]
+                let out_ptr = self.output_ptr.ptr; // [num_tokens, H]
 
                 for t in t0..t1 {
                     let res_row = res_ptr.add(t * H);
@@ -167,51 +167,34 @@ impl MoeMergeTrait<f16> for ExpertsMergeAdd<f16> {
 mod tests {
     use super::*;
     use std::arch::is_x86_feature_detected;
-    use std::mem;
 
-    use crate::kernel::generic::from_f32::FromF32;
-
-    #[inline]
-    fn f16_from_f32(x: f32) -> f16 {
-        <f16 as FromF32>::from_f32(x)
-    }
+    // ========================================================================
+    // Helpers
+    // ========================================================================
 
     #[inline]
-    fn f32_from_f16(x: f16) -> f32 {
-        let bits: u16 = unsafe { mem::transmute(x) };
-        let sign = ((bits & 0x8000) as u32) << 16;
-        let exp = (bits & 0x7C00) >> 10;
-        let mant = bits & 0x03FF;
-
-        let f_bits: u32 = if exp == 0 {
-            if mant == 0 {
-                sign
-            } else {
-                let mut e: i32 = -14;
-                let mut m = mant as u32;
-                while (m & 0x0400) == 0 {
-                    m <<= 1;
-                    e -= 1;
-                }
-                m &= 0x03FF;
-                let exp_f = (e + 127) as u32;
-                sign | (exp_f << 23) | (m << 13)
-            }
-        } else if exp == 0x1F {
-            let exp_f = 0xFFu32;
-            sign | (exp_f << 23) | ((mant as u32) << 13)
-        } else {
-            let exp_f = (exp as i32 - 15 + 127) as u32;
-            sign | (exp_f << 23) | ((mant as u32) << 13)
-        };
-
-        f32::from_bits(f_bits)
-    }
-
-    #[inline]
-    fn approx(a: f32, b: f32, tol: f32) -> bool {
+    fn approx_eq_f32(a: f32, b: f32, tol: f32) -> bool {
         (a - b).abs() <= tol
     }
+
+    fn verify_output(out: &[f16], out_ref: &[f32], tol: f32, msg: &str) {
+        for i in 0..out.len() {
+            let got = out[i] as f32;
+            let exp = out_ref[i];
+            assert!(
+                approx_eq_f32(got, exp, tol),
+                "{} mismatch at {}: got={}, exp={}",
+                msg,
+                i,
+                got,
+                exp
+            );
+        }
+    }
+
+    // ========================================================================
+    // Test Cases
+    // ========================================================================
 
     #[test]
     fn test_merge_add_k1_basic() {
@@ -229,17 +212,22 @@ mod tests {
 
         let num_experts = 4usize; // 只是 reset 用，不影响 merge
 
-        let mut input = vec![f16_from_f32(0.0); num_tokens * K * H];
-        let mut residual = vec![f16_from_f32(0.0); num_tokens * H];
-        let mut out = vec![f16_from_f32(0.0); num_tokens * H];
+        let mut input = vec![0.0 as f16; num_tokens * K * H];
+        let mut residual = vec![0.0 as f16; num_tokens * H];
+        let mut out = vec![0.0 as f16; num_tokens * H];
 
         let mut experts_indicator = vec![false; num_experts];
         let mut indice = vec![false; num_experts * num_tokens];
 
+        let mut out_ref = vec![0.0f32; num_tokens * H];
+
         for t in 0..num_tokens {
             for h in 0..H {
-                residual[t * H + h] = f16_from_f32(0.1 * t as f32 + 0.001 * h as f32);
-                input[(t * K + 0) * H + h] = f16_from_f32(0.05 * t as f32 + 0.0007 * h as f32);
+                let r_val = 0.1 * t as f32 + 0.001 * h as f32;
+                let i_val = 0.05 * t as f32 + 0.0007 * h as f32;
+                residual[t * H + h] = r_val as f16;
+                input[(t * K + 0) * H + h] = i_val as f16;
+                out_ref[t * H + h] = r_val + i_val;
             }
         }
 
@@ -259,13 +247,7 @@ mod tests {
 
         runner.run(0, 1, batch, 1, 0);
 
-        for t in 0..num_tokens {
-            for h in 0..H {
-                let got = f32_from_f16(out[t * H + h]);
-                let exp = f32_from_f16(residual[t * H + h]) + f32_from_f16(input[(t * K + 0) * H + h]);
-                assert!(approx(got, exp, 5e-2), "mismatch t={}, h={}, got={}, exp={}", t, h, got, exp);
-            }
-        }
+        verify_output(&out, &out_ref, 5e-2, "k1_basic");
     }
 
     #[test]
@@ -280,20 +262,27 @@ mod tests {
         let H = 64usize;
         let num_experts = 8usize;
 
-        let mut input = vec![f16_from_f32(0.0); num_tokens * K * H];
-        let mut residual = vec![f16_from_f32(0.0); num_tokens * H];
-        let mut out = vec![f16_from_f32(0.0); num_tokens * H];
+        let mut input = vec![0.0 as f16; num_tokens * K * H];
+        let mut residual = vec![0.0 as f16; num_tokens * H];
+        let mut out = vec![0.0 as f16; num_tokens * H];
 
         let mut experts_indicator = vec![false; num_experts];
         let mut indice = vec![false; num_experts * num_tokens];
 
+        let mut out_ref = vec![0.0f32; num_tokens * H];
+
         for t in 0..num_tokens {
             for h in 0..H {
-                residual[t * H + h] = f16_from_f32(0.03 * t as f32 + 0.0009 * h as f32);
+                let r_val = 0.03 * t as f32 + 0.0009 * h as f32;
+                residual[t * H + h] = r_val as f16;
+
+                let mut sum_k = 0.0f32;
                 for s in 0..K {
-                    input[(t * K + s) * H + h] =
-                        f16_from_f32(0.01 * (s as f32 + 1.0) + 0.002 * t as f32 + 0.0002 * h as f32);
+                    let val = 0.01 * (s as f32 + 1.0) + 0.002 * t as f32 + 0.0002 * h as f32;
+                    input[(t * K + s) * H + h] = val as f16;
+                    sum_k += val;
                 }
+                out_ref[t * H + h] = r_val + sum_k;
             }
         }
 
@@ -313,16 +302,7 @@ mod tests {
 
         runner.run(0, 1, num_tokens, 1, 0);
 
-        for t in 0..num_tokens {
-            for h in 0..H {
-                let mut exp = f32_from_f16(residual[t * H + h]);
-                for s in 0..K {
-                    exp += f32_from_f16(input[(t * K + s) * H + h]);
-                }
-                let got = f32_from_f16(out[t * H + h]);
-                assert!(approx(got, exp, 5e-2), "mismatch t={}, h={}, got={}, exp={}", t, h, got, exp);
-            }
-        }
+        verify_output(&out, &out_ref, 5e-2, "k3_sum");
     }
 
     #[test]
@@ -338,19 +318,27 @@ mod tests {
         let H = 48usize;
         let num_experts = 2usize;
 
-        let mut input = vec![f16_from_f32(0.0); num_tokens * K * H];
-        let mut residual = vec![f16_from_f32(0.0); num_tokens * H];
-        let mut out = vec![f16_from_f32(0.0); num_tokens * H];
+        let mut input = vec![0.0 as f16; num_tokens * K * H];
+        let mut residual = vec![0.0 as f16; num_tokens * H];
+        let mut out = vec![0.0 as f16; num_tokens * H];
 
         let mut experts_indicator = vec![false; num_experts];
         let mut indice = vec![false; num_experts * num_tokens];
 
+        let mut out_ref = vec![0.0f32; num_tokens * H];
+
         for t in 0..num_tokens {
             for h in 0..H {
-                residual[t * H + h] = f16_from_f32(0.02 * t as f32 + 0.001 * h as f32);
+                let r_val = 0.02 * t as f32 + 0.001 * h as f32;
+                residual[t * H + h] = r_val as f16;
+
+                let mut sum_k = 0.0f32;
                 for s in 0..K {
-                    input[(t * K + s) * H + h] = f16_from_f32(0.01 * (s as f32 + 1.0) + 0.0003 * h as f32);
+                    let val = 0.01 * (s as f32 + 1.0) + 0.0003 * h as f32;
+                    input[(t * K + s) * H + h] = val as f16;
+                    sum_k += val;
                 }
+                out_ref[t * H + h] = r_val + sum_k;
             }
         }
 
@@ -370,15 +358,7 @@ mod tests {
 
         runner.run(0, 1, num_tokens, 1, 0);
 
-        for t in 0..num_tokens {
-            for h in 0..H {
-                let exp = f32_from_f16(residual[t * H + h])
-                    + f32_from_f16(input[(t * K + 0) * H + h])
-                    + f32_from_f16(input[(t * K + 1) * H + h]);
-                let got = f32_from_f16(out[t * H + h]);
-                assert!(approx(got, exp, 5e-2), "tail mismatch t={}, h={}, got={}, exp={}", t, h, got, exp);
-            }
-        }
+        verify_output(&out, &out_ref, 5e-2, "tail_h48");
     }
 
     #[test]
@@ -392,9 +372,9 @@ mod tests {
         let H = 16usize;
         let num_experts = 3usize;
 
-        let input = vec![f16_from_f32(0.0); num_tokens * K * H];
-        let residual = vec![f16_from_f32(0.0); num_tokens * H];
-        let mut out = vec![f16_from_f32(0.0); num_tokens * H];
+        let input = vec![0.0 as f16; num_tokens * K * H];
+        let residual = vec![0.0 as f16; num_tokens * H];
+        let mut out = vec![0.0 as f16; num_tokens * H];
 
         let mut experts_indicator = vec![true; num_experts];
         let mut indice = vec![true; num_experts * num_tokens]; // 全 true，期待被清零
@@ -418,41 +398,30 @@ mod tests {
         runner.run(0, 1, batch, 2, 1);
 
         for e in 0..num_experts {
-            assert_eq!(experts_indicator[e], false, "experts_indicator not cleared at e={}", e);
+            assert_eq!(
+                experts_indicator[e], false,
+                "experts_indicator not cleared at e={}",
+                e
+            );
             for t in 0..num_tokens {
-                assert_eq!(indice[e * num_tokens + t], false, "indice not cleared at e={}, t={}", e, t);
+                assert_eq!(
+                    indice[e * num_tokens + t],
+                    false,
+                    "indice not cleared at e={}, t={}",
+                    e,
+                    t
+                );
             }
         }
-    }
-}
-    use rand::prelude::*;
-
-    // 纯 Rust 参考实现：验证 Output = Residual + Sum(Experts)
-    fn reference_implementation(
-        input: &[f16],    // [Tokens, K, H]
-        residual: &[f16], // [Tokens, H]
-        num_tokens: usize,
-        k: usize,
-        h: usize,
-    ) -> Vec<f16> {
-        let mut output = vec![0.0 as f16; num_tokens * h];
-        for t in 0..num_tokens {
-            for i in 0..h {
-                // Start with residual
-                let mut acc = residual[t * h + i] as f32;
-                // Add each expert's contribution
-                for s in 0..k {
-                    let val = input[t * (k * h) + s * h + i];
-                    acc += val as f32;
-                }
-                output[t * h + i] = acc as f16;
-            }
-        }
-        output
     }
 
     #[test]
-    fn test_experts_merge_add_correctness() {
+    fn test_merge_add_multithreaded_correctness() {
+        if !is_x86_feature_detected!("avx512fp16") {
+            eprintln!("skip: avx512fp16 not detected");
+            return;
+        }
+
         let sequence_chunk_size = 16;
         let batch_size = 4;
         let num_tokens = sequence_chunk_size * batch_size;
@@ -461,22 +430,28 @@ mod tests {
         let k = 2; // experts per token
         let num_threads = 4;
 
-        let mut rng = rand::thread_rng();
-
-        // 1. 准备数据
-        // Input: [Tokens, K, H]
-        let input: Vec<f16> = (0..num_tokens * k * hidden)
-            .map(|_| rng.gen_range(-0.5..0.5) as f16)
-            .collect();
-        // Residual: [Tokens, H]
-        let residual: Vec<f16> = (0..num_tokens * hidden)
-            .map(|_| rng.gen_range(-0.5..0.5) as f16)
-            .collect();
-        // Output: [Tokens, H]
+        // 1. 准备数据 (Deterministic)
+        let mut input = vec![0.0 as f16; num_tokens * k * hidden];
+        let mut residual = vec![0.0 as f16; num_tokens * hidden];
         let mut output = vec![0.0 as f16; num_tokens * hidden];
+        let mut out_ref = vec![0.0f32; num_tokens * hidden];
+
+        for t in 0..num_tokens {
+            for h in 0..hidden {
+                let r_val = ((t + h) % 100) as f32 * 0.01 - 0.5;
+                residual[t * hidden + h] = r_val as f16;
+
+                let mut sum_k = 0.0f32;
+                for s in 0..k {
+                    let val = ((t * k + s + h) % 100) as f32 * 0.01 - 0.5;
+                    input[t * (k * hidden) + s * hidden + h] = val as f16;
+                    sum_k += val;
+                }
+                out_ref[t * hidden + h] = r_val + sum_k;
+            }
+        }
 
         // 2. 准备需要被 Reset 的 Flags
-        // 填充为 true，验证运行后是否被清零
         let mut experts_indicator = vec![true; num_experts];
         let mut indice_ptr = vec![true; num_experts * num_tokens];
 
@@ -493,6 +468,7 @@ mod tests {
                 num_experts,
                 k,
                 hidden,
+                true, // reset_gating = true
             );
 
             // 模拟多线程运行
@@ -501,33 +477,15 @@ mod tests {
             }
         }
 
-        // 4. 验证计算结果 (Merge + Residual)
-        let ref_out = reference_implementation(&input, &residual, num_tokens, k, hidden);
-        let tolerance = 0.05; // f16 误差容忍度
-
-        for i in 0..output.len() {
-            let val = output[i] as f32;
-            let ref_val = ref_out[i] as f32;
-            let diff = (val - ref_val).abs();
-
-            if diff > tolerance {
-                panic!(
-                    "Mismatch at index {}: Got {}, Expected {}, Diff {}",
-                    i, val, ref_val, diff
-                );
-            }
-        }
+        // 4. 验证计算结果
+        verify_output(&output, &out_ref, 5e-2, "multithreaded");
 
         // 5. 验证 Flags 是否被清零 (Reset Logic)
         for (i, &val) in experts_indicator.iter().enumerate() {
             assert!(!val, "experts_indicator[{}] was not reset to false", i);
         }
-        // indice_ptr 只有在 experts_indicator 为 true 的行才会被清零
-        // 但我们在测试开始时把 experts_indicator 全设为 true 了，所以应该全被清零
         for (i, &val) in indice_ptr.iter().enumerate() {
             assert!(!val, "indice_ptr[{}] was not reset to false", i);
         }
-
-        println!("ExpertsMergeAdd test passed!");
     }
 }
