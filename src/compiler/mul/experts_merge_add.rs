@@ -42,11 +42,11 @@ where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     pub fn new(
-        input_ptr: *const T,        // [num_tokens, K, H]
-        residual_ptr: *const T,     // [num_tokens, H]
+        input_ptr: *const T,    // [num_tokens, K, H]
+        residual_ptr: *const T, // [num_tokens, H]
         experts_indicator: *mut bool,
         indice_ptr: *mut bool,
-        output_ptr: *mut T,         // [num_tokens, H]
+        output_ptr: *mut T, // [num_tokens, H]
         sequence_chunk_size: usize,
         batch_size: usize,
         num_experts: usize,
@@ -58,7 +58,9 @@ where
             input_ptr: ConstPtr { ptr: input_ptr },
             residual_ptr: ConstPtr { ptr: residual_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
-            experts_indicator: MutPtr { ptr: experts_indicator },
+            experts_indicator: MutPtr {
+                ptr: experts_indicator,
+            },
             indice_ptr: MutPtr { ptr: indice_ptr },
             sequence_chunk_size,
             batch_size,
@@ -421,5 +423,111 @@ mod tests {
                 assert_eq!(indice[e * num_tokens + t], false, "indice not cleared at e={}, t={}", e, t);
             }
         }
+    }
+}
+    use rand::prelude::*;
+
+    // 纯 Rust 参考实现：验证 Output = Residual + Sum(Experts)
+    fn reference_implementation(
+        input: &[f16],    // [Tokens, K, H]
+        residual: &[f16], // [Tokens, H]
+        num_tokens: usize,
+        k: usize,
+        h: usize,
+    ) -> Vec<f16> {
+        let mut output = vec![0.0 as f16; num_tokens * h];
+        for t in 0..num_tokens {
+            for i in 0..h {
+                // Start with residual
+                let mut acc = residual[t * h + i] as f32;
+                // Add each expert's contribution
+                for s in 0..k {
+                    let val = input[t * (k * h) + s * h + i];
+                    acc += val as f32;
+                }
+                output[t * h + i] = acc as f16;
+            }
+        }
+        output
+    }
+
+    #[test]
+    fn test_experts_merge_add_correctness() {
+        let sequence_chunk_size = 16;
+        let batch_size = 4;
+        let num_tokens = sequence_chunk_size * batch_size;
+        let hidden = 64;
+        let num_experts = 8;
+        let k = 2; // experts per token
+        let num_threads = 4;
+
+        let mut rng = rand::thread_rng();
+
+        // 1. 准备数据
+        // Input: [Tokens, K, H]
+        let input: Vec<f16> = (0..num_tokens * k * hidden)
+            .map(|_| rng.gen_range(-0.5..0.5) as f16)
+            .collect();
+        // Residual: [Tokens, H]
+        let residual: Vec<f16> = (0..num_tokens * hidden)
+            .map(|_| rng.gen_range(-0.5..0.5) as f16)
+            .collect();
+        // Output: [Tokens, H]
+        let mut output = vec![0.0 as f16; num_tokens * hidden];
+
+        // 2. 准备需要被 Reset 的 Flags
+        // 填充为 true，验证运行后是否被清零
+        let mut experts_indicator = vec![true; num_experts];
+        let mut indice_ptr = vec![true; num_experts * num_tokens];
+
+        // 3. 运行算子
+        unsafe {
+            let op = ExpertsMergeAdd::new(
+                input.as_ptr(),
+                residual.as_ptr(),
+                experts_indicator.as_mut_ptr(),
+                indice_ptr.as_mut_ptr(),
+                output.as_mut_ptr(),
+                sequence_chunk_size,
+                batch_size,
+                num_experts,
+                k,
+                hidden,
+            );
+
+            // 模拟多线程运行
+            for tid in 0..num_threads {
+                op.run(0, 0, batch_size, num_threads, tid);
+            }
+        }
+
+        // 4. 验证计算结果 (Merge + Residual)
+        let ref_out = reference_implementation(&input, &residual, num_tokens, k, hidden);
+        let tolerance = 0.05; // f16 误差容忍度
+
+        for i in 0..output.len() {
+            let val = output[i] as f32;
+            let ref_val = ref_out[i] as f32;
+            let diff = (val - ref_val).abs();
+
+            if diff > tolerance {
+                panic!(
+                    "Mismatch at index {}: Got {}, Expected {}, Diff {}",
+                    i, val, ref_val, diff
+                );
+            }
+        }
+
+        // 5. 验证 Flags 是否被清零 (Reset Logic)
+        for (i, &val) in experts_indicator.iter().enumerate() {
+            assert!(!val, "experts_indicator[{}] was not reset to false", i);
+        }
+        // indice_ptr 只有在 experts_indicator 为 true 的行才会被清零
+        // 但我们在测试开始时把 experts_indicator 全设为 true 了，所以应该全被清零
+        for (i, &val) in indice_ptr.iter().enumerate() {
+            assert!(!val, "indice_ptr[{}] was not reset to false", i);
+        }
+
+        println!("ExpertsMergeAdd test passed!");
     }
 }

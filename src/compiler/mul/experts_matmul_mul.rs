@@ -263,8 +263,8 @@ where
 
     pub fn run(
         &self,
-        _position_index: usize,
-        _position_interval: usize,
+        position_index: usize,
+        position_interval: usize,
         batch_size: usize, // = num_token
         cpu_num: usize,
         thread_id: usize,

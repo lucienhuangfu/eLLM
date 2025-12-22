@@ -11,6 +11,9 @@ use super::super::super::init::{
 };
 use super::super::assign::assign;
 use super::mul_trait::MatMulkqvTrait;
+// 添加 generic kernel 的引用
+use crate::kernel::generic::complex_mul::complex_mul;
+use crate::kernel::generic::rms_norm::rms_norm;
 
 #[inline]
 unsafe fn transpose_kxn_to_nxk<T: Copy + Default>(w_kxn: *const T, k: usize, n: usize) -> Box<[T]> {
@@ -445,19 +448,208 @@ impl MatMulkqvTrait<f32> for MatMul3<f32> {
     #[inline]
     fn compute1(
         &self,
-        _a: *const f32,
-        _b_panel: *const f32,
-        _c: *mut f32,
-        _lda: usize,
-        _ldc: usize,
-        _kc: usize,
+        a: *const f32,
+        b_panel: *const f32,
+        c: *mut f32,
+        lda: usize,
+        ldc: usize,
+        kc: usize,
     ) {
-        // TODO: f32 版本
+        // f32 标量参考实现：3x32 累加
+        // A: 3xKC (行距 lda)
+        // B_panel: KCx32 (行主序, 连续)
+        // C: 3x32 (行距 ldc)
+        unsafe {
+            for m in 0..3 {
+                for n in 0..32 {
+                    let mut sum = 0.0;
+                    for k in 0..kc {
+                        let val_a = *a.add(m * lda + k);
+                        let val_b = *b_panel.add(k * 32 + n);
+                        sum += val_a * val_b;
+                    }
+                    *c.add(m * ldc + n) += sum;
+                }
+            }
+        }
     }
 
     #[inline]
-    fn compute2(&self, _c_head: *mut f32, _rope_head: *const f32, _ldc: usize) {
-        // TODO: f32 版本
+    fn compute2(&self, c_head: *mut f32, rope_head: *const f32, ldc: usize) {
+        // f32 标量参考实现：3x128 RMSNorm + RoPE
+        // c_head 指向 3 行的起始位置，每行处理 128 个元素
+        unsafe {
+            let eps = 1e-6;
+            for r in 0..3 {
+                let row_ptr = c_head.add(r * ldc);
+                // 1. RMS Norm (In-place)
+                rms_norm(row_ptr, row_ptr, 128, eps);
+                // 2. RoPE (In-place)
+                complex_mul(row_ptr, rope_head, row_ptr, 128);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::alloc::{alloc, Layout};
+
+    // 简单的参考矩阵乘法：C = A * W^T
+    unsafe fn ref_matmul(
+        m: usize,
+        k: usize,
+        n: usize,
+        a: *const f32,
+        w: *const f32, // KxN
+        c: *mut f32,
+    ) {
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for p in 0..k {
+                    let val_a = *a.add(i * k + p);
+                    let val_w = *w.add(p * n + j); // W is KxN
+                    sum += val_a * val_w;
+                }
+                *c.add(i * n + j) = sum;
+            }
+        }
+    }
+
+    // 参考后处理：RMS + RoPE
+    unsafe fn ref_post_process(m: usize, n: usize, c: *mut f32, rope: *const f32, head_dim: usize) {
+        let eps = 1e-6;
+        for i in 0..m {
+            // 按 head 处理
+            for h_base in (0..n).step_by(head_dim) {
+                let ptr = c.add(i * n + h_base);
+                let rope_ptr = rope.add(h_base);
+                rms_norm(ptr, ptr, head_dim, eps);
+                complex_mul(ptr, rope_ptr, ptr, head_dim);
+            }
+        }
+    }
+
+    #[test]
+    fn test_matmul3_qkv_72_rows() {
+        unsafe {
+            // 1. 维度设定
+            let m = 72;
+            let k = 256; // 假设 Hidden size
+            let head_dim = 128;
+            let n_q = 32 * 128; // 4096
+            let n_kv = 4 * 128; // 512
+
+            // 2. 分配内存
+            let layout_a = Layout::array::<f32>(m * k).unwrap();
+            let a_ptr = alloc(layout_a) as *mut f32;
+
+            let layout_wq = Layout::array::<f32>(k * n_q).unwrap();
+            let wq_ptr = alloc(layout_wq) as *mut f32;
+            let layout_wk = Layout::array::<f32>(k * n_kv).unwrap();
+            let wk_ptr = alloc(layout_wk) as *mut f32;
+            let layout_wv = Layout::array::<f32>(k * n_kv).unwrap();
+            let wv_ptr = alloc(layout_wv) as *mut f32;
+
+            let layout_cq = Layout::array::<f32>(m * n_q).unwrap();
+            let cq_ptr = alloc(layout_cq) as *mut f32;
+            let cq_ref = alloc(layout_cq) as *mut f32;
+
+            let layout_ck = Layout::array::<f32>(m * n_kv).unwrap();
+            let ck_ptr = alloc(layout_ck) as *mut f32;
+            let ck_ref = alloc(layout_ck) as *mut f32;
+
+            let layout_cv = Layout::array::<f32>(m * n_kv).unwrap();
+            let cv_ptr = alloc(layout_cv) as *mut f32;
+            let cv_ref = alloc(layout_cv) as *mut f32;
+
+            let layout_rope = Layout::array::<f32>(n_q).unwrap(); // 足够覆盖最大的 N
+            let rope_ptr = alloc(layout_rope) as *mut f32;
+
+            // 3. 初始化数据 (使用确定性数据方便调试)
+            for i in 0..m * k {
+                *a_ptr.add(i) = (i % 100) as f32 * 0.01;
+            }
+            for i in 0..k * n_q {
+                *wq_ptr.add(i) = ((i + 1) % 7) as f32 * 0.01;
+            }
+            for i in 0..k * n_kv {
+                *wk_ptr.add(i) = ((i + 2) % 7) as f32 * 0.01;
+            }
+            for i in 0..k * n_kv {
+                *wv_ptr.add(i) = ((i + 3) % 7) as f32 * 0.01;
+            }
+            for i in 0..n_q {
+                *rope_ptr.add(i) = 1.0;
+            } // 简化 RoPE 为 1.0，主要测流程
+
+            // 清零输出
+            for i in 0..m * n_q {
+                *cq_ptr.add(i) = 0.0;
+                *cq_ref.add(i) = 0.0;
+            }
+            for i in 0..m * n_kv {
+                *ck_ptr.add(i) = 0.0;
+                *ck_ref.add(i) = 0.0;
+            }
+            for i in 0..m * n_kv {
+                *cv_ptr.add(i) = 0.0;
+                *cv_ref.add(i) = 0.0;
+            }
+
+            // 4. 运行 MatMul3
+            let matmul = MatMul3::<f32>::new(
+                a_ptr, wq_ptr, cq_ptr, wk_ptr, ck_ptr, wv_ptr, cv_ptr, rope_ptr, head_dim, m, k,
+                n_q, n_kv, 24,  // MB
+                128, // NB
+                32,  // KC
+                3,   // MR
+                32,  // NR
+                1,   // cpu_max
+            );
+
+            matmul.run(0, 0, m, 1, 0);
+
+            // 5. 运行参考实现
+            // Q: MatMul + RMS + RoPE
+            ref_matmul(m, k, n_q, a_ptr, wq_ptr, cq_ref);
+            ref_post_process(m, n_q, cq_ref, rope_ptr, head_dim);
+
+            // K: MatMul + RMS + RoPE
+            ref_matmul(m, k, n_kv, a_ptr, wk_ptr, ck_ref);
+            ref_post_process(m, n_kv, ck_ref, rope_ptr, head_dim);
+
+            // V: Only MatMul
+            ref_matmul(m, k, n_kv, a_ptr, wv_ptr, cv_ref);
+
+            // 6. 验证结果
+            let verify = |name: &str, out: *const f32, reference: *const f32, len: usize| {
+                let mut max_diff = 0.0f32;
+                for i in 0..len {
+                    let diff = (*out.add(i) - *reference.add(i)).abs();
+                    if diff > max_diff {
+                        max_diff = diff;
+                    }
+                    if diff > 1e-3 {
+                        panic!(
+                            "{} mismatch at index {}: got {}, expected {}, diff {}",
+                            name,
+                            i,
+                            *out.add(i),
+                            *reference.add(i),
+                            diff
+                        );
+                    }
+                }
+                println!("{} passed. Max diff: {}", name, max_diff);
+            };
+
+            verify("Q Output", cq_ptr, cq_ref, m * n_q);
+            verify("K Output", ck_ptr, ck_ref, m * n_kv);
+            verify("V Output", cv_ptr, cv_ref, m * n_kv);
+        }
     }
 }
 #[cfg(test)]
