@@ -60,7 +60,7 @@ where
     T: Copy + Default + PartialOrd + Add<Output = T> + Mul<Output = T>,
 {
     #[inline]
-    fn detect_threads() -> usize {
+    pub fn detect_threads() -> usize {
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)

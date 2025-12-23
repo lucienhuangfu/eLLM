@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-// use std::iter::zip;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
@@ -284,7 +283,7 @@ where
             self.data,
             gate_weights.data,
             up_weights.data,
-            experts_indicator,
+            expertsIndicator,
             indice_ptr,
             output_tensor.data,
             self.shape[1],
@@ -438,7 +437,6 @@ where
         output_tensor
     }
 
-    /*
     pub fn matmul3(
         &self,
         q_weight: &Tensor<T>,
@@ -498,7 +496,7 @@ where
 
         self.operator_queue.borrow_mut().push(operator);
         (q_state, k_state, v_state)
-    }*/
+    }
 
     pub fn matmul_silu_mul_matmul(
         &self,
@@ -548,15 +546,18 @@ where
         tensor2: &Tensor<T>,
         params: MatMulParams,
         thread_num: usize,
+        topk: usize,
         scope_name: String,
-    ) -> (*const usize, Self, Self) {
-        let a_row = self.shape[1];
-        let b_row = tensor2.shape[1];
-        let column = self.shape[2];
+    ) -> (*const usize, Self) {
+        let m = self.shape[0] * self.shape[1];
+        let k = self.shape[2];
+        let n = tensor2.shape[0];
 
-        let output_shape = vec![self.shape[0], self.shape[1], tensor2.shape[0]];
+        // MatMulTopK uses internal thread detection for buffer layout
+        // let thread_max = MatMulTopK::<T>::detect_threads();
+        let output_shape = vec![self.shape[0], self.shape[1], thread_num * topk];
 
-        let indice_ptr = allocate_init(output_shape.iter().product(), 0usize);
+        let indice_ptr = unsafe { allocate_init(output_shape.iter().product(), 0usize) };
 
         let value_tensor = Tensor::<T>::from_cache(
             output_shape.clone(),
@@ -565,31 +566,27 @@ where
             self.operator_queue.clone(),
         );
 
-        let sum_tensor = Tensor::from_cache(
-            vec![self.shape[0], self.shape[1], thread_num],
-            format!("{}.sums.output", scope_name),
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-
-        let operator = Operator::MatMulTopK(MatMulTopK::new(
-            self.data,
-            tensor2.data,
-            indice_ptr,
-            value_tensor.data,
-            sum_tensor.data,
-            a_row,
-            b_row,
-            column,
-            params.a_row_step_macro,
-            params.b_row_step_macro,
-            params.column_step_macro,
-            params.a_row_step_micro,
-            params.b_row_step_micro,
-        ));
+        let operator = unsafe {
+            Operator::MatMulTopK(MatMulTopK::new(
+                self.data,
+                tensor2.data,
+                indice_ptr,
+                value_tensor.data,
+                m, // a_row
+                n, // b_row
+                k, // column
+                params.a_row_step_macro,
+                params.b_row_step_macro,
+                params.column_step_macro,
+                params.a_row_step_micro,
+                params.b_row_step_micro,
+                m, // batch_max
+                topk,
+            ))
+        };
 
         self.operator_queue.borrow_mut().push(operator);
-        (indice_ptr, value_tensor, sum_tensor)
+        (indice_ptr, value_tensor)
     }
 
     pub fn permute(&self, dims: Vec<usize>) -> Self {
@@ -1259,9 +1256,10 @@ mod test {
             "model.layers.0.topk_softmax".to_string(),
         );
 
-        for op in operator_queue.borrow_mut().iter() {
-            op.run(0, sequence_chunk_size, batch_size, 2, 0);
-            op.run(0, sequence_chunk_size, batch_size, 2, 1);
+        for i in 0..thread_num {
+            for op in operator_queue.borrow_mut().iter() {
+                op.run(0, sequence_chunk_size, batch_size, thread_num, i);
+            }
         }
 
         let num_tokens = sequence_chunk_size * batch_size;
@@ -1317,5 +1315,321 @@ mod test {
         // Check output sequences (sampled tokens)
         assert_eq!(output_sequences[0], *candidates0[0].0);
         assert_eq!(output_sequences[1], *candidates1[0].0);
+    }
+
+    #[test]
+    fn test_matmul3_f16() {
+        if !std::arch::is_x86_feature_detected!("avx512fp16") {
+            println!("AVX512FP16 not supported, skipping test.");
+            return;
+        }
+
+        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        // Dimensions matching test_kqv_f16_avx512_multi_tile in matmul3.rs
+        // M = 12 (4 * MB=3)
+        // K = 64
+        // NQ = 96 (3 * NR=32)
+        // NKV = 96
+        // HEAD_DIM = 128
+        let sequence_chunk_size = 1;
+        let batch_size = 12;
+        let hidden_size = 64;
+        let q_dim = 96;
+        let kv_dim = 96;
+        let head_dim = 128;
+
+        // Input: [sequence_chunk_size, batch_size, hidden_size]
+        let input_shape = vec![sequence_chunk_size, batch_size, hidden_size];
+        let input_tensor = Tensor::<f16>::from_cache(
+            input_shape.clone(),
+            "input".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        // Weights: Tensor expects [N, K] shape for shape[0] usage, but MatMul3 expects KxN data layout.
+        let q_weight_shape = vec![q_dim, hidden_size];
+        let k_weight_shape = vec![kv_dim, hidden_size];
+        let v_weight_shape = vec![kv_dim, hidden_size];
+
+        let q_weight = Tensor::<f16>::from_cache(
+            q_weight_shape.clone(),
+            "q_weight".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+        let k_weight = Tensor::<f16>::from_cache(
+            k_weight_shape.clone(),
+            "k_weight".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+        let v_weight = Tensor::<f16>::from_cache(
+            v_weight_shape.clone(),
+            "v_weight".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        // RoPE: [head_dim]
+        let rope_shape = vec![head_dim];
+        let position_embedding = Tensor::<f16>::from_cache(
+            rope_shape.clone(),
+            "rope".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        // Initialize data matching test_kqv_f16_avx512_multi_tile
+        let num_input = sequence_chunk_size * batch_size * hidden_size;
+        let mut input_data = vec![f16::ZERO; num_input];
+        for i in 0..batch_size {
+            for k in 0..hidden_size {
+                input_data[i * hidden_size + k] =
+                    f16::from_f32(((i * 7 + k * 3) % 19) as f32 * 0.01);
+            }
+        }
+        unsafe {
+            input_tensor
+                .data
+                .copy_from_nonoverlapping(input_data.as_ptr(), num_input);
+        }
+
+        // Initialize Weights (KxN layout)
+        let mut q_data = vec![f16::ZERO; q_dim * hidden_size];
+        let mut k_data = vec![f16::ZERO; kv_dim * hidden_size];
+        let mut v_data = vec![f16::ZERO; kv_dim * hidden_size];
+
+        for k in 0..hidden_size {
+            for n in 0..q_dim {
+                q_data[k * q_dim + n] = f16::from_f32(((k * 5 + n * 11) % 23) as f32 * 0.01);
+            }
+            for n in 0..kv_dim {
+                k_data[k * kv_dim + n] = f16::from_f32(((k * 3 + n * 7) % 29) as f32 * 0.01);
+                v_data[k * kv_dim + n] = f16::from_f32(((k * 9 + n * 4) % 31) as f32 * 0.01);
+            }
+        }
+
+        unsafe {
+            q_weight
+                .data
+                .copy_from_nonoverlapping(q_data.as_ptr(), q_data.len());
+            k_weight
+                .data
+                .copy_from_nonoverlapping(k_data.as_ptr(), k_data.len());
+            v_weight
+                .data
+                .copy_from_nonoverlapping(v_data.as_ptr(), v_data.len());
+        }
+
+        // Initialize RoPE (All zeros in the reference test)
+        let rope_data = vec![f16::ZERO; head_dim];
+        unsafe {
+            position_embedding
+                .data
+                .copy_from_nonoverlapping(rope_data.as_ptr(), head_dim);
+        }
+
+        let params = MatMulParams {
+            a_row_step_macro: 6,
+            b_row_step_macro: 64,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+
+        let (q_out, k_out, v_out) = input_tensor.matmul3(
+            &q_weight,
+            &k_weight,
+            &v_weight,
+            &position_embedding,
+            head_dim,
+            params,
+            "matmul3_test".to_string(),
+        );
+
+        // Run operators
+        for op in operator_queue.borrow_mut().iter() {
+            op.run(0, sequence_chunk_size, batch_size, 1, 0);
+        }
+
+        // Verification
+        // Since NQ=96 < HEAD_DIM=128, finalize (RMS+RoPE) is NOT performed in MatMul3 logic for this test case.
+        // So we just verify MatMul result.
+
+        let verify_matmul =
+            |output_tensor: &Tensor<f16>, weight_data_kxn: &[f16], n_dim: usize, name: &str| {
+                let out_len = sequence_chunk_size * batch_size * n_dim;
+                let out_data = unsafe { std::slice::from_raw_parts(output_tensor.data, out_len) };
+
+                for i in 0..batch_size {
+                    for j in 0..n_dim {
+                        let mut sum = 0.0f32;
+                        for k in 0..hidden_size {
+                            let a_val = f32::from(input_data[i * hidden_size + k]);
+                            let w_val = f32::from(weight_data_kxn[k * n_dim + j]);
+                            sum += a_val * w_val;
+                        }
+
+                        let val = f32::from(out_data[i * n_dim + j]);
+                        assert!(
+                            (val - sum).abs() < 0.5, // Epsilon from test_kqv_f16_avx512_multi_tile is 5e-1
+                            "{} mismatch at batch {}, col {}: got {}, expected {}",
+                            name,
+                            i,
+                            j,
+                            val,
+                            sum
+                        );
+                    }
+                }
+            };
+
+        verify_matmul(&q_out, &q_data, q_dim, "Q");
+        verify_matmul(&k_out, &k_data, kv_dim, "K");
+        verify_matmul(&v_out, &v_data, kv_dim, "V");
+    }
+
+    #[test]
+    fn test_matmul_local_topk_f16() {
+        if !std::arch::is_x86_feature_detected!("avx512fp16") {
+            println!("AVX512FP16 not supported, skipping test.");
+            return;
+        }
+
+        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let sequence_chunk_size = 1;
+        let batch_size = 4;
+        let hidden_size = 64; // K
+        let intermediate_size = 128; // N
+        let topk = 10;
+
+        // Use available threads but cap at 4 for test consistency
+        let max_threads = MatMulTopK::<f16>::detect_threads();
+        let thread_num = 4.min(max_threads);
+
+        let input_shape = vec![sequence_chunk_size, batch_size, hidden_size];
+        let input_tensor = Tensor::<f16>::from_cache(
+            input_shape,
+            "input".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        // Weight shape [N, K]
+        let weight_shape = vec![intermediate_size, hidden_size];
+        let weight_tensor = Tensor::<f16>::from_cache(
+            weight_shape,
+            "weight".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        // Init data
+        let m = sequence_chunk_size * batch_size;
+        let k = hidden_size;
+        let n = intermediate_size;
+
+        let mut input_data = vec![f16::ZERO; m * k];
+        for i in 0..m {
+            for j in 0..k {
+                input_data[i * k + j] = f16::from_f32(((i + j) as f32 * 0.01));
+            }
+        }
+        unsafe {
+            input_tensor
+                .data
+                .copy_from_nonoverlapping(input_data.as_ptr(), m * k);
+        }
+
+        // Weight data K x N layout (MatMulTopK expects B to be KxN in memory)
+        let mut weight_data = vec![f16::ZERO; k * n];
+        for i in 0..k {
+            for j in 0..n {
+                weight_data[i * n + j] = f16::from_f32(((i + j) as f32 * 0.001));
+            }
+        }
+        unsafe {
+            weight_tensor
+                .data
+                .copy_from_nonoverlapping(weight_data.as_ptr(), k * n);
+        }
+
+        let params = MatMulParams {
+            a_row_step_macro: 4,   // MB
+            b_row_step_macro: 32,  // NB
+            column_step_macro: 32, // KC
+            a_row_step_micro: 1,   // MR
+            b_row_step_micro: 16,  // NR
+        };
+
+        let (indice_ptr, value_tensor) = input_tensor.matmul_local_topk(
+            &weight_tensor,
+            params,
+            thread_num,
+            topk,
+            "matmul_local_topk_test".to_string(),
+        );
+
+        // Run
+        for op in operator_queue.borrow_mut().iter() {
+            for i in 0..thread_num {
+                op.run(0, sequence_chunk_size, batch_size, thread_num, i);
+            }
+        }
+
+        // Verify
+        // Output buffer size is based on max_threads, not thread_num
+        let out_len = m * max_threads * topk;
+        let indices = unsafe { std::slice::from_raw_parts(indice_ptr, out_len) };
+        let values = unsafe { std::slice::from_raw_parts(value_tensor.data, out_len) };
+
+        // Calculate expected
+        for i in 0..m {
+            // Full matmul for this row
+            let mut row_c = vec![0.0f32; n];
+            for j in 0..n {
+                let mut sum = 0.0f32;
+                for kk in 0..k {
+                    sum += f32::from(input_data[i * k + kk]) * f32::from(weight_data[kk * n + j]);
+                }
+                row_c[j] = sum;
+            }
+
+            let mut indexed_row: Vec<(usize, f32)> = row_c.into_iter().enumerate().collect();
+            indexed_row.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let expected_topk = &indexed_row[0..topk];
+
+            // Collect from all threads
+            let mut merged: Vec<(usize, f32)> = Vec::new();
+            for tid in 0..thread_num {
+                let offset = i * (max_threads * topk) + tid * topk;
+                for r in 0..topk {
+                    merged.push((indices[offset + r], f32::from(values[offset + r])));
+                }
+            }
+            merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let final_topk = &merged[0..topk];
+
+            for r in 0..topk {
+                let (exp_idx, exp_val) = expected_topk[r];
+                let (got_idx, got_val) = final_topk[r];
+                assert!(
+                    (got_val - exp_val).abs() < 0.05,
+                    "Value mismatch row {} rank {}: got {} exp {}",
+                    i,
+                    r,
+                    got_val,
+                    exp_val
+                );
+                if (got_val - exp_val).abs() < 1e-4 {
+                    assert_eq!(got_idx, exp_idx, "Index mismatch row {} rank {}", i, r);
+                }
+            }
+        }
     }
 }
