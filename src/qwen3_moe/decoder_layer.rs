@@ -152,8 +152,6 @@ where
         };
         let hidden_states = &hidden_states_owned;
 
-        
-        
         //  attention + add
         let attention_hidden_states = self.self_attention.forward(
             &norm_hidden,
@@ -161,15 +159,12 @@ where
             &*self.position_embedding,
             // format!("{}.attention_hidden1", self.scope_name),
         );
-        
-     
-      
+
         let norm_hidden_states = attention_hidden_states.rms(
             // self.layernorm_weight.data,
             self.rms_norm_eps,
             format!("{}.norm_hidden2", self.scope_name),
         );
-           
 
         norm_hidden_states.data;
         let output_hidden_states = self.sparse_moe_block.forward(
@@ -178,8 +173,6 @@ where
             format!("{}.attention_hidden3", self.scope_name),
             // num_cpus::get(),
         );
-        
-
 
         /*
         let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],
@@ -213,13 +206,13 @@ mod test {
 
     #[test]
     fn test_decoder_layer_f32() {
-        let position_window_size = 4;
+        let sequence_chunk_size = 1;
+        let position_window_size = sequence_chunk_size;
         let batch_size = 6;
 
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-        let sequence_chunk_size = position_window_size;
         let hidden_size = config.hidden_size;
         let max_position_embeddings = config.max_position_embeddings;
         let head_dim = config.head_dim;
@@ -269,14 +262,13 @@ mod test {
         }
 
         let mut sequences = vec![0; sequence_chunk_size * batch_size];
-  
+
         let output_tensor = layer.forward(
             &input,
             sequences.as_mut_ptr(),
             String::from("model.layers.1.output_tensor"),
         );
 
-   
         // Validate output shape
         debug_assert_eq!(
             output_tensor.shape,
