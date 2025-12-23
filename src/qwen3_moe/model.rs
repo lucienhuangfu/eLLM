@@ -1,8 +1,8 @@
 use core_affinity;
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::rc::Rc;
 
 use std::sync::Barrier;
 use std::sync::{Arc, RwLock};
@@ -173,7 +173,7 @@ where
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
             indices_ptr,
             &sum_tensor,
-            unsafe {sequences.add(self.batch_size)},
+            unsafe { sequences.add(self.batch_size) },
             self.topk_size,
             format!("{}.softmax", self.scope_name),
         );
@@ -202,7 +202,7 @@ mod test {
     fn test_model_forward() {
         // let cpu_num =  thread::available_parallelism().unwrap().get();
         let sequence_length = 128;
-        let sequence_chunk_size = 4;
+        let sequence_chunk_size = 1;
         let batch_size = 6;
 
         let config =
@@ -222,16 +222,17 @@ mod test {
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-        let mut sequences = allocate_init::<usize>((config.max_position_embeddings + 1)*batch_size, 0);
+        let mut sequences =
+            allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
         let output_tensor = unsafe { model.forward(sequences) };
-        
+
         let thread_num: usize = num_cpus::get();
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
                 operator.run(0, 1, batch_size, thread_num, i);
             }
         }
-         
+
         // Add assertions to verify the output_tensor
         // For example:
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);

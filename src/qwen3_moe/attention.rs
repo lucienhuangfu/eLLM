@@ -123,7 +123,7 @@ where
                 position_embedding,
                 self.head_dim,
                 MatMulParams {
-      a_row_step_macro: 6,
+                    a_row_step_macro: 6,
                     b_row_step_macro: 256,
                     column_step_macro: 16,
                     a_row_step_micro: 3,
@@ -132,7 +132,6 @@ where
                 self.scope_name.clone(),
             );
 
-            
             let view_query_states = query_states.view(vec![
                 query_states.shape[0],
                 query_states.shape[1],
@@ -150,13 +149,12 @@ where
             //[batch_size, head_num, sequence_num,  head_size] < - [sequence_num, batch_size, head_num, head_size]
             let mut view_key_position_tensor = view_key_states.permute(vec![1, 2, 0, 3]);
 
-        
             let mut view_value_states = value_states.view(vec![
                 value_states.shape[0],
                 value_states.shape[1],
                 self.num_key_value_heads,
                 self.head_dim,
-            ]); 
+            ]);
 
             let mut view_value_states2 = view_value_states.permute(vec![1, 2, 0, 3]);
 
@@ -168,12 +166,11 @@ where
                 format!("{}.attn_output", self.scope_name),
             );
 
-            
             let mut view_context_tensor = context_tensor.view(vec![
                 context_tensor.shape[0],
                 self.batch_size,
                 self.hidden_size,
-            ]); 
+            ]);
 
             // [sequence_chunk_size, batch_size, hidden_size]
             // matmul + add
@@ -201,29 +198,29 @@ mod test {
     use super::*;
     use approx::assert_ulps_eq;
 
-    
     #[test]
     fn test_self_attention() {
-        let position_window_size = 4;
+        let sequence_chunk_size = 1;
         let batch_size = 6;
         // let hidden_size = 128;
         // let num_attention_heads = 64;
         // let num_kv_heads = 8;
         // let sequence_length = 10;
 
-        let config = Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
-
+        let config =
+            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let inverse_sqrt_head = 1.0 / (config.hidden_size as f32).sqrt();
         let attention_head_size: usize = config.head_dim;
         // config.hidden_size / config.num_attention_heads;
 
-        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::<String, Vec<f32>>::new())));
+        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::<
+            String,
+            Vec<f32>,
+        >::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let self_attention = Attention::new(
-            
-            
             // hidden_size,
             // num_attention_heads,
             // num_kv_heads,
@@ -239,19 +236,18 @@ mod test {
         );
 
         let hidden_states = Tensor::zeros(
-            vec![position_window_size, batch_size, config.hidden_size],
+            vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
             cache.clone(),
             operator_queue.clone(),
         );
 
         let residual_tensor = Tensor::zeros(
-            vec![position_window_size, batch_size, config.hidden_size],
+            vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
             cache.clone(),
             operator_queue.clone(),
         );
-
 
         let position_embedding = Tensor::zeros(
             vec![config.max_position_embeddings, 1, 1, attention_head_size],
@@ -265,14 +261,18 @@ mod test {
         // Add assertions to validate the output
         debug_assert_eq!(
             output.shape,
-            vec![position_window_size, batch_size, config.num_attention_heads * config.head_dim]
+            vec![
+                sequence_chunk_size,
+                batch_size,
+                config.num_attention_heads * config.head_dim
+            ]
         );
 
         // Execute the operator queue
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, 1, batch_size,  thread_num, i);
+                operator.run(1, 1, batch_size, thread_num, i);
             }
         }
 
