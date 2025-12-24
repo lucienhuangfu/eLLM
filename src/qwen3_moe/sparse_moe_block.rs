@@ -199,12 +199,12 @@ mod test {
         let top_k = 8;
         let norm_topk_prob = true;
 
-        let cache = Rc::new(RefCell::new(Cache::<f32>::new(
+        let cache = Rc::new(RefCell::new(Cache::<f16>::new(
             std::collections::HashMap::new(),
         )));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let sparse_moe = SparseMoeBlock::<f32>::new(
+        let sparse_moe = SparseMoeBlock::<f16>::new(
             // position_window_size,
             hidden_size,
             intermediate_size,
@@ -233,13 +233,13 @@ mod test {
 
         for i in 0..input.shape.iter().product() {
             unsafe {
-                input.data.add(i).write(1.0);
+                input.data.add(i).write(1.0 as f16);
             }
         }
 
         for i in 0..residual.shape.iter().product() {
             unsafe {
-                residual.data.add(i).write(1.0);
+                residual.data.add(i).write(1.0 as f16);
             }
         }
 

@@ -1,26 +1,40 @@
 use core_affinity;
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::thread;
 use std::time::Instant;
-use std::sync::Barrier;
 
 // use hurdles::Barrier;
 // use super::barrier::Barrier;
 // use serde::{Deserialize, Serialize};
-// use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::ops::{AddAssign, Neg, Sub};
 
 use super::super::compiler::operator::Operator;
 // use crate::kernel::generic::from_f32::FromF32;
-// use crate::kernel::generic::sigmoid::Sigmoid;
-// use crate::kernel::generic::sqrt::Sqrt;
-// use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+use crate::kernel::generic::sigmoid::Sigmoid;
+use crate::kernel::generic::sqrt::Sqrt;
+use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 // use super::state::State;
 
-
-pub fn start(operator_queue: Vec<Operator<f32>>) {
+pub fn start<T>(operator_queue: Vec<Operator<T>>)
+where
+    T: PartialOrd
+        + Copy
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid<T>
+        + Sqrt
+        + AddAssign
+        + Send
+        + Sync
+        + 'static,
+{
     println!("start");
     // let prompt_operator_num;
     // let data = SyncUnsafeCell::new(DataReader::new(prompt_data));
@@ -64,26 +78,18 @@ pub fn start(operator_queue: Vec<Operator<f32>>) {
             for p in 0..sequence_length {
                 println!("thread {} position {}", thread_id, p);
                 for operator in queue.iter() {
-                    operator.run(p, 1, batch_size, thread_num, thread_id);
+                    operator.run(0, 1, batch_size, thread_num, thread_id);
                     b.wait();
                 }
             }
-            // only decode part
-            // for operator in queue.iter() {
-            //    operator.run(0, 1, batch_size, thread_num, thread_id);
-            //    b.wait();
-            // }
             let t = s.elapsed();
             println!("thread {} decode time {:?}", thread_id, t);
-
-
         });
 
         // std::mem::forget(handle);
         handles.push(handle);
     }
 
-    
     for handle in handles {
         handle.join().unwrap();
     }
@@ -94,9 +100,12 @@ mod test {
     use approx::assert_relative_eq;
 
     use super::*;
-    use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
-    use crate::ptensor::tensor::Tensor;
+    use crate::memory::allocator::allocate_init;
     use crate::memory::cache::Cache;
+    use crate::ptensor::tensor::Tensor;
+    use crate::qwen3_moe::config::Config;
+    use crate::qwen3_moe::model::Model;
+    use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
 
     // use crate::memory::allocator::allocate_init;
 
@@ -162,7 +171,7 @@ mod test {
             String::from("model.layers.0.output_tensor"),
         );
 
-        /* 
+        /*
         let thread_num: usize = num_cpus::get();
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
@@ -173,5 +182,24 @@ mod test {
 
         // output_tensor.operator_queue.borrow().to_vec()
         start(output_tensor.operator_queue.take());
+    }
+
+    #[test]
+    fn test_model_start() {
+        let sequence_length = 128;
+        let sequence_chunk_size = 1;
+        let batch_size = 6;
+
+        let config =
+            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+
+        let mut model =
+            Model::<f32>::new(&config, sequence_length, sequence_chunk_size, batch_size);
+
+        let mut sequences =
+            allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
+        let _ = unsafe { model.forward(sequences) };
+
+        start(model.operator_queue.take());
     }
 }

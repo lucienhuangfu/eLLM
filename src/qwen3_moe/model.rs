@@ -238,61 +238,27 @@ mod test {
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
     }
 
-    /*
-       #[test]
-       fn test_model_forward_f16() {
-           let cpu_num = thread::available_parallelism().unwrap().get();
-           let mut config: Config = Config::new();
-           config.load_model_config(r"models/Llama-2-7b-hf/config.json");
-           config.load_compile_config(r"models/Llama-2-7b-hf.json");
+    #[test]
+    fn test_model_forward_f16() {
+        let sequence_length = 128;
+        let sequence_chunk_size = 1;
+        let batch_size = 6;
 
-           let model_dir = "models/Llama-2-7b-hf"; // Define model_dir
-           let loader = SafeTensorsLoader::new("D:/llama-3-chinese-8b-instruct-v3").unwrap();
+        let config =
+            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-           // 分别加载配置和权重
-           // let config = loader.load_config()?;
-           let weights = loader.load_all_weights_f16().unwrap();
+        let mut model =
+            Model::<f16>::new(&config, sequence_length, sequence_chunk_size, batch_size);
 
-           let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(weights)));
-           let operator_queue = Rc::new(RefCell::new(Vec::new()));
+        let mut sequences =
+            allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
+        let output_tensor = unsafe { model.forward(sequences) };
 
-           let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
-           let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.output"), cache.clone(), operator_queue.clone());
-           let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
-
-           let model = Transformer::<f16>::new(
-               config.clone(),
-               // word_embedding,
-               // position_embedding,
-               // norm_weight,
-               // cpu_num,
-               // cache.clone(),
-               // operator_queue.clone(),
-           );
-
-           let sequence_length = 128;
-           // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-           let mut sequences = allocate_init::<usize>((sequence_length + 1)*config.batch_size, 0);
-
-           let output_tensor = unsafe {
-               model.build(sequences)
-           };
-    */
-    /*
-    let thread_num: usize = cpu_num;
-
-    for p in 0..sequence_length {
-        for operator in output_tensor.operator_queue.borrow().iter() {
+        let thread_num: usize = num_cpus::get();
+        for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, p, i);
+                operator.run(0, 1, batch_size, thread_num, i);
             }
-            println!("{}", p);
         }
     }
-    */
-
-    // Add assertions to verify the output_tensor
-    // For example:
-    // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
-    // }
 }
