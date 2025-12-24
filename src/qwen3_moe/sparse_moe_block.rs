@@ -95,31 +95,37 @@ where
         residual: &Tensor<T>,
         tensor_name: String,
     ) -> Tensor<T> {
-
         println!("Entering SparseMoeBlock forward: {}", tensor_name);
         println!("gate weight shape: {:?}", self.gate_weight.shape);
         // gate_output [sequence_chunk_size, batch_size, num_experts]
         let gate_output = hidden_states.matmul(
             &self.gate_weight,
             MatMulParams {
-                       a_row_step_macro: 6,
-                    b_row_step_macro: 128,
-                    column_step_macro: 16,
-                    a_row_step_micro: 3,
-                    b_row_step_micro: 128,
+                a_row_step_macro: 6,
+                b_row_step_macro: 128,
+                column_step_macro: 16,
+                a_row_step_micro: 3,
+                b_row_step_micro: 128,
             },
             hidden_states.shape[0],
             format!("{}.gate", self.scope_name),
         );
 
-        println!( "After gate matmul in SparseMoeBlock forward: {}", tensor_name);
-        let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) = gate_output.experts_softmax_norm(
-            self.num_experts,
-            self.num_topk,
-            format!("{}.router_probs", self.scope_name),
+        println!(
+            "After gate matmul in SparseMoeBlock forward: {}",
+            tensor_name
         );
+        let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) = gate_output
+            .experts_softmax_norm(
+                self.num_experts,
+                self.num_topk,
+                format!("{}.router_probs", self.scope_name),
+            );
 
-        println!( "After experts_softmax_norm in SparseMoeBlock forward: {}", tensor_name);
+        println!(
+            "After experts_softmax_norm in SparseMoeBlock forward: {}",
+            tensor_name
+        );
         // nonlinear_product [num_experts, sequence_chunk_size, batch_size, intermediate_size]
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
@@ -127,16 +133,19 @@ where
             experts_indicator,
             indice_ptr,
             MatMulParams {
-                  a_row_step_macro: 6,
-                    b_row_step_macro: 128,
-                    column_step_macro: 16,
-                    a_row_step_micro: 3,
-                    b_row_step_micro: 128,
+                a_row_step_macro: 6,
+                b_row_step_macro: 128,
+                column_step_macro: 16,
+                a_row_step_micro: 3,
+                b_row_step_micro: 128,
             },
             format!("{}.gate_up", self.scope_name),
         );
-  
-        println!( "After experts_matmul_silu_mul_matmul in SparseMoeBlock forward: {}", tensor_name);
+
+        println!(
+            "After experts_matmul_silu_mul_matmul in SparseMoeBlock forward: {}",
+            tensor_name
+        );
         // down_product [sequence_chunk_size, batch_size, num_experts_per_token, hidden_size]
         let down_product = nonlinear_product.experts_matmul_mul(
             &self.experts_down_weight,
@@ -146,24 +155,27 @@ where
             topk_indices_ptr,
             self.num_topk,
             MatMulParams {
-                    a_row_step_macro: 6,
-                    b_row_step_macro: 128,
-                    column_step_macro: 16,
-                    a_row_step_micro: 3,
-                    b_row_step_micro: 128,
+                a_row_step_macro: 6,
+                b_row_step_macro: 128,
+                column_step_macro: 16,
+                a_row_step_micro: 3,
+                b_row_step_micro: 128,
             },
             format!("{}.down", self.scope_name),
         );
-        
-        println!( "After experts_matmul_mul in SparseMoeBlock forward: {}", tensor_name);
-        
+
+        println!(
+            "After experts_matmul_mul in SparseMoeBlock forward: {}",
+            tensor_name
+        );
+
         let merge_tensor = down_product.experts_merge_add(
             residual,
             experts_indicator,
             indice_ptr,
             self.num_experts,
             format!("{}.merge", self.scope_name),
-        ); 
+        );
         merge_tensor
     }
 }
@@ -177,7 +189,7 @@ mod test {
 
     #[test]
     fn test_sparse_moe_block() {
-        let position_window_size = 4;
+        let sequence_chunk_size = 1;
         let batch_size = 24;
         // let head_size = 128;
 
@@ -187,12 +199,12 @@ mod test {
         let top_k = 8;
         let norm_topk_prob = true;
 
-        let cache = Rc::new(RefCell::new(Cache::<f32>::new(
+        let cache = Rc::new(RefCell::new(Cache::<f16>::new(
             std::collections::HashMap::new(),
         )));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let sparse_moe = SparseMoeBlock::<f32>::new(
+        let sparse_moe = SparseMoeBlock::<f16>::new(
             // position_window_size,
             hidden_size,
             intermediate_size,
@@ -204,7 +216,7 @@ mod test {
             operator_queue.clone(),
         );
 
-        let shape = vec![position_window_size, batch_size, hidden_size];
+        let shape = vec![sequence_chunk_size, batch_size, hidden_size];
         let input = Tensor::from_cache(
             shape.clone(),
             String::from("model.layers.0.input_tensor"),
@@ -221,13 +233,13 @@ mod test {
 
         for i in 0..input.shape.iter().product() {
             unsafe {
-                input.data.add(i).write(1.0);
+                input.data.add(i).write(1.0 as f16);
             }
         }
 
         for i in 0..residual.shape.iter().product() {
             unsafe {
-                residual.data.add(i).write(1.0);
+                residual.data.add(i).write(1.0 as f16);
             }
         }
 
