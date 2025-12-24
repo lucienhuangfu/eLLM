@@ -12,15 +12,15 @@ use super::mul::matmul::MatMul;
 use super::mul::matmul3::MatMul3;
 use super::mul::matmul_add::MatMulAdd;
 // use super::mul::matmul_silu_mul_matmul::MatMulSilu;
+use super::mul::attention::Attention;
+use super::mul::experts_matmul_mul::ExpertsMatMulDown;
+use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
+use super::mul::experts_merge_add::ExpertsMergeAdd;
 use super::mul::matmul_topk::MatMulTopK;
 use super::zip_map::add_rms_zip::AddRMSZipMap;
 use super::zip_map::add_zip::AddZipMap;
 use super::zip_map::complex_zip::ComplexZipMap;
 use super::zip_map::silu_mul_zip::SiluMulZipMap;
-use super::mul::attention::Attention;
-use super::mul::experts_matmul_mul::ExpertsMatMulDown;
-use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
-use super::mul::experts_merge_add::ExpertsMergeAdd;
 // use crate::init::matmul_params::MatMulParams;
 // use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 // use super::map::softmax_map::SoftmaxMap;
@@ -119,7 +119,7 @@ where
                     thread_id,
                 );
             }
-            
+
             Self::ExpertsMatMulSilu(operator) => {
                 operator.run(
                     position_index,
@@ -165,7 +165,7 @@ where
                     thread_id,
                 );
             }
-            
+
             Self::MatMul3(operator) => {
                 operator.run(
                     position_index,
@@ -174,7 +174,7 @@ where
                     cpu_num,
                     thread_id,
                 );
-            } 
+            }
             Self::MatMulAdd(operator) => {
                 operator.run(
                     position_index,
@@ -184,7 +184,7 @@ where
                     thread_id,
                 );
             }
-            /* 
+            /*
             Self::MatMulSiluMulMatMul(operator) => {
                 operator.run(
                     position_index,
