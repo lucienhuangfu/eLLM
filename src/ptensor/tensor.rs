@@ -16,13 +16,13 @@ use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
 use super::super::compiler::mul::attention::Attention;
-use super::super::compiler::mul::experts_matmul_mul::ExpertsMatMulMul;
+use super::super::compiler::mul::experts_matmul_mul::ExpertsMatMulDown;
 use super::super::compiler::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
 use super::super::compiler::mul::experts_merge_add::ExpertsMergeAdd;
 use super::super::compiler::mul::matmul::MatMul;
 use super::super::compiler::mul::matmul3::MatMul3;
 use super::super::compiler::mul::matmul_add::MatMulAdd;
-use super::super::compiler::mul::matmul_silu_mul_matmul::MatMulSilu;
+// use super::super::compiler::mul::matmul_silu_mul_matmul::MatMulSilu;
 use super::super::compiler::mul::matmul_topk::MatMulTopK;
 use super::super::compiler::operator::Operator;
 use super::super::compiler::zip_map::add_zip::AddZipMap;
@@ -30,8 +30,10 @@ use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
 use super::super::compiler::zip_map::silu_mul_zip::SiluMulZipMap;
 use crate::compiler::zip_map::add_rms_zip::AddRMSZipMap;
 
-#[derive(Clone)]
-pub struct Tensor<T> {
+pub struct Tensor<T>
+where
+    T: Copy + PartialOrd,
+{
     pub data: *mut T,
     pub shape: Vec<usize>,
     pub strides: Vec<usize>,
@@ -45,6 +47,7 @@ pub struct Tensor<T> {
 impl<T> Tensor<T>
 where
     T: Copy
+        + PartialOrd
         + Default
         + Sub<Output = T>
         + Neg<Output = T>
@@ -195,6 +198,7 @@ where
             num_experts,
             self.shape[2],
             self.shape[3],
+            false,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -230,23 +234,23 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::ExpertsMatMulMul(ExpertsMatMulMul::new(
-            self.data,
-            down_weights.data,
-            experts_indicator,
-            indice_ptr,
-            weight_ptr,
-            topk_indices_ptr,
-            output_tensor.data,
-            self.shape[2],
-            down_weights.shape[1],
-            down_weights.shape[0],
-            params.a_row_step_macro,
-            params.b_row_step_macro,
-            params.column_step_macro,
-            params.a_row_step_micro,
-            params.b_row_step_micro,
-        ));
+        let operator = Operator::ExpertsMatMulDown(unsafe {
+            ExpertsMatMulDown::new(
+                self.data,
+                down_weights.data,
+                experts_indicator,
+                indice_ptr,
+                weight_ptr,
+                topk_indices_ptr,
+                output_tensor.data,
+                down_weights.shape[0],
+                self.shape[1] * self.shape[2],
+                down_weights.shape[2],
+                down_weights.shape[1],
+                num_experts_per_tok,
+                params,
+            )
+        });
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
@@ -278,22 +282,25 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::ExpertsMatMulSiluMulMatMul(ExpertsMatMulSilu::new(
-            self.data,
-            gate_weights.data,
-            up_weights.data,
-            expertsIndicator,
-            indice_ptr,
-            output_tensor.data,
-            self.shape[1],
-            gate_weights.shape[1],
-            gate_weights.shape[0],
-            params.a_row_step_macro,
-            params.b_row_step_macro,
-            params.column_step_macro,
-            params.a_row_step_micro,
-            params.b_row_step_micro,
-        ));
+        let operator = Operator::ExpertsMatMulSilu(unsafe {
+            ExpertsMatMulSilu::new(
+                self.data,
+                gate_weights.data,
+                up_weights.data,
+                experts_indicator,
+                indice_ptr,
+                output_tensor.data,
+                self.shape[0] * self.shape[1],
+                gate_weights.shape[1],
+                self.shape[2],
+                gate_weights.shape[0],
+                params.a_row_step_macro,
+                params.b_row_step_macro,
+                params.column_step_macro,
+                params.a_row_step_micro,
+                params.b_row_step_micro,
+            )
+        });
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
@@ -497,6 +504,7 @@ where
         (q_state, k_state, v_state)
     }
 
+    /*
     pub fn matmul_silu_mul_matmul(
         &self,
         tensor2: &Tensor<T>,
@@ -538,7 +546,7 @@ where
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
-    }
+    } */
 
     pub fn matmul_local_topk(
         &self,
@@ -761,8 +769,8 @@ where
     }
 }
 
-unsafe impl<T: Copy + Default + Send + Sync> Send for Tensor<T> {}
-unsafe impl<T: Copy + Default + Send + Sync> Sync for Tensor<T> {}
+unsafe impl<T: Copy + Default + Send + Sync + PartialOrd> Send for Tensor<T> {}
+unsafe impl<T: Copy + Default + Send + Sync + PartialOrd> Sync for Tensor<T> {}
 
 #[cfg(test)]
 mod test {
@@ -1474,7 +1482,7 @@ mod test {
 
         // Verify
         // Output buffer size is based on max_threads, not thread_num
-        let out_len = m * max_threads * topk;
+        let out_len = m * thread_num * topk;
         let indices = unsafe { std::slice::from_raw_parts(indice_ptr, out_len) };
         let values = unsafe { std::slice::from_raw_parts(value_tensor.data, out_len) };
 
