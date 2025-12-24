@@ -759,8 +759,6 @@ where
         operator_queue.borrow_mut().push(operator);
         (output_hidden_tensor, output_normal_tensor)
     }
-
-
 }
 
 unsafe impl<T: Copy + Default + Send + Sync> Send for Tensor<T> {}
@@ -768,15 +766,11 @@ unsafe impl<T: Copy + Default + Send + Sync> Sync for Tensor<T> {}
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use approx::assert_ulps_eq;
     use std::collections::HashMap;
     use std::f16;
     use std::thread;
-
-    // use num_cpus;
-    // use std::sync::Arc;
-    // use std::sync::Barrier;
-    use super::*;
 
     #[test]
     fn test_experts_softmax_norm_f32() {
@@ -1033,9 +1027,12 @@ mod test {
             "model.layers.0.topk_softmax".to_string(),
         );
 
-        for op in operator_queue.borrow_mut().iter() {
-            op.run(0, sequence_chunk_size, batch_size, 2, 0);
-            op.run(0, sequence_chunk_size, batch_size, 2, 1);
+        for i in 0..thread_num {
+            println!("Running operator for thread {}", i);
+            for op in operator_queue.borrow_mut().iter() {
+                op.run(0, sequence_chunk_size, batch_size, thread_num, i);
+                // op.run(0, sequence_chunk_size, batch_size, 2, 1);
+            }
         }
 
         let num_tokens = sequence_chunk_size * batch_size;
@@ -1277,11 +1274,10 @@ mod test {
 
         // Initialize data matching test_kqv_f16_avx512_multi_tile
         let num_input = sequence_chunk_size * batch_size * hidden_size;
-        let mut input_data = vec![f16::ZERO; num_input];
+        let mut input_data = vec![0.0f16; num_input];
         for i in 0..batch_size {
             for k in 0..hidden_size {
-                input_data[i * hidden_size + k] =
-                    f16::from_f32(((i * 7 + k * 3) % 19) as f32 * 0.01);
+                input_data[i * hidden_size + k] = (((i * 7 + k * 3) % 19) as f32 * 0.01) as f16;
             }
         }
         unsafe {
@@ -1291,17 +1287,17 @@ mod test {
         }
 
         // Initialize Weights (KxN layout)
-        let mut q_data = vec![f16::ZERO; q_dim * hidden_size];
-        let mut k_data = vec![f16::ZERO; kv_dim * hidden_size];
-        let mut v_data = vec![f16::ZERO; kv_dim * hidden_size];
+        let mut q_data = vec![0.0f16; q_dim * hidden_size];
+        let mut k_data = vec![0.0f16; kv_dim * hidden_size];
+        let mut v_data = vec![0.0f16; kv_dim * hidden_size];
 
         for k in 0..hidden_size {
             for n in 0..q_dim {
-                q_data[k * q_dim + n] = f16::from_f32(((k * 5 + n * 11) % 23) as f32 * 0.01);
+                q_data[k * q_dim + n] = (((k * 5 + n * 11) % 23) as f32 * 0.01) as f16;
             }
             for n in 0..kv_dim {
-                k_data[k * kv_dim + n] = f16::from_f32(((k * 3 + n * 7) % 29) as f32 * 0.01);
-                v_data[k * kv_dim + n] = f16::from_f32(((k * 9 + n * 4) % 31) as f32 * 0.01);
+                k_data[k * kv_dim + n] = (((k * 3 + n * 7) % 29) as f32 * 0.01) as f16;
+                v_data[k * kv_dim + n] = (((k * 9 + n * 4) % 31) as f32 * 0.01) as f16;
             }
         }
 
@@ -1318,7 +1314,7 @@ mod test {
         }
 
         // Initialize RoPE (All zeros in the reference test)
-        let rope_data = vec![f16::ZERO; head_dim];
+        let rope_data = vec![0.0f16; head_dim];
         unsafe {
             position_embedding
                 .data
@@ -1361,12 +1357,12 @@ mod test {
                     for j in 0..n_dim {
                         let mut sum = 0.0f32;
                         for k in 0..hidden_size {
-                            let a_val = f32::from(input_data[i * hidden_size + k]);
-                            let w_val = f32::from(weight_data_kxn[k * n_dim + j]);
+                            let a_val = input_data[i * hidden_size + k] as f32;
+                            let w_val = weight_data_kxn[k * n_dim + j] as f32;
                             sum += a_val * w_val;
                         }
 
-                        let val = f32::from(out_data[i * n_dim + j]);
+                        let val = out_data[i * n_dim + j] as f32;
                         assert!(
                             (val - sum).abs() < 0.5, // Epsilon from test_kqv_f16_avx512_multi_tile is 5e-1
                             "{} mismatch at batch {}, col {}: got {}, expected {}",
@@ -1396,9 +1392,9 @@ mod test {
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let sequence_chunk_size = 1;
-        let batch_size = 4;
+        let batch_size = 12;
         let hidden_size = 64; // K
-        let intermediate_size = 128; // N
+        let intermediate_size = 96; // N
         let topk = 10;
 
         // Use available threads but cap at 4 for test consistency
@@ -1428,10 +1424,10 @@ mod test {
         let k = hidden_size;
         let n = intermediate_size;
 
-        let mut input_data = vec![f16::ZERO; m * k];
+        let mut input_data = vec![0.0f16; m * k];
         for i in 0..m {
             for j in 0..k {
-                input_data[i * k + j] = f16::from_f32(((i + j) as f32 * 0.01));
+                input_data[i * k + j] = ((i + j) as f32 * 0.01) as f16;
             }
         }
         unsafe {
@@ -1441,10 +1437,10 @@ mod test {
         }
 
         // Weight data K x N layout (MatMulTopK expects B to be KxN in memory)
-        let mut weight_data = vec![f16::ZERO; k * n];
+        let mut weight_data = vec![0.0f16; k * n];
         for i in 0..k {
             for j in 0..n {
-                weight_data[i * n + j] = f16::from_f32(((i + j) as f32 * 0.001));
+                weight_data[i * n + j] = ((i + j) as f32 * 0.001) as f16;
             }
         }
         unsafe {
@@ -1454,11 +1450,11 @@ mod test {
         }
 
         let params = MatMulParams {
-            a_row_step_macro: 4,   // MB
-            b_row_step_macro: 32,  // NB
-            column_step_macro: 32, // KC
-            a_row_step_micro: 1,   // MR
-            b_row_step_micro: 16,  // NR
+            a_row_step_macro: 6,   // MB
+            b_row_step_macro: 64,  // NB
+            column_step_macro: 64, // KC
+            a_row_step_micro: 3,   // MR
+            b_row_step_micro: 32,  // NR
         };
 
         let (indice_ptr, value_tensor) = input_tensor.matmul_local_topk(
@@ -1489,7 +1485,7 @@ mod test {
             for j in 0..n {
                 let mut sum = 0.0f32;
                 for kk in 0..k {
-                    sum += f32::from(input_data[i * k + kk]) * f32::from(weight_data[kk * n + j]);
+                    sum += (input_data[i * k + kk] as f32) * (weight_data[kk * n + j] as f32);
                 }
                 row_c[j] = sum;
             }
@@ -1503,7 +1499,7 @@ mod test {
             for tid in 0..thread_num {
                 let offset = i * (max_threads * topk) + tid * topk;
                 for r in 0..topk {
-                    merged.push((indices[offset + r], f32::from(values[offset + r])));
+                    merged.push((indices[offset + r], values[offset + r] as f32));
                 }
             }
             merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
@@ -1538,9 +1534,9 @@ mod test {
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let sequence_chunk_size = 1;
-        let batch_size = 4;
+        let batch_size = 12;
         let hidden_size = 64; // K
-        let intermediate_size = 32; // N
+        let intermediate_size = 96; // N
 
         let input_shape = vec![sequence_chunk_size, batch_size, hidden_size];
         let input_tensor = Tensor::<f16>::from_cache(
@@ -1562,10 +1558,10 @@ mod test {
         let k = hidden_size;
         let n = intermediate_size;
 
-        let mut input_data = vec![f16::ZERO; m * k];
+        let mut input_data = vec![0.0f16; m * k];
         for i in 0..m {
             for j in 0..k {
-                input_data[i * k + j] = f16::from_f32(((i * 7 + j * 3) % 19) as f32 * 0.1);
+                input_data[i * k + j] = (((i * 7 + j * 3) % 19) as f32 * 0.1) as f16;
             }
         }
         unsafe {
@@ -1575,10 +1571,10 @@ mod test {
         }
 
         // Initialize Weight (K x N layout in memory)
-        let mut weight_data = vec![f16::ZERO; k * n];
+        let mut weight_data = vec![0.0f16; k * n];
         for i in 0..k {
             for j in 0..n {
-                weight_data[i * n + j] = f16::from_f32(((i * 5 + j * 11) % 23) as f32 * 0.1);
+                weight_data[i * n + j] = (((i * 5 + j * 11) % 23) as f32 * 0.1) as f16;
             }
         }
         unsafe {
@@ -1588,11 +1584,11 @@ mod test {
         }
 
         let params = MatMulParams {
-            a_row_step_macro: 4,
-            b_row_step_macro: 32,
-            column_step_macro: 32,
-            a_row_step_micro: 1,
-            b_row_step_micro: 16,
+            a_row_step_macro: 6,
+            b_row_step_macro: 64,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
         };
 
         let output_tensor = input_tensor.matmul(
@@ -1613,11 +1609,11 @@ mod test {
             for j in 0..n {
                 let mut sum = 0.0f32;
                 for kk in 0..k {
-                    let a = f32::from(input_data[i * k + kk]);
-                    let b = f32::from(weight_data[kk * n + j]);
+                    let a = input_data[i * k + kk] as f32;
+                    let b = weight_data[kk * n + j] as f32;
                     sum += a * b;
                 }
-                let val = f32::from(output_data[i * n + j]);
+                let val = output_data[i * n + j] as f32;
                 assert!(
                     (val - sum).abs() < 0.5,
                     "Mismatch at batch {}, col {}: got {}, expected {}",
@@ -1630,7 +1626,7 @@ mod test {
         }
     }
 
-         #[test]
+    #[test]
     fn test_matmul_add_f16() {
         if !std::arch::is_x86_feature_detected!("avx512fp16") {
             println!("AVX512FP16 not supported, skipping test.");
@@ -1641,9 +1637,9 @@ mod test {
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let sequence_chunk_size = 1;
-        let batch_size = 4;
+        let batch_size = 12;
         let hidden_size = 64; // K
-        let intermediate_size = 32; // N
+        let intermediate_size = 96; // N
 
         let input_shape = vec![sequence_chunk_size, batch_size, hidden_size];
         let input_tensor = Tensor::<f16>::from_cache(
@@ -1674,10 +1670,10 @@ mod test {
         let n = intermediate_size;
 
         // Init Input
-        let mut input_data = vec![f16::ZERO; m * k];
+        let mut input_data = vec![0.0f16; m * k];
         for i in 0..m {
             for j in 0..k {
-                input_data[i * k + j] = f16::from_f32(((i * 7 + j * 3) % 19) as f32 * 0.1);
+                input_data[i * k + j] = (((i * 7 + j * 3) % 19) as f32 * 0.1) as f16;
             }
         }
         unsafe {
@@ -1687,10 +1683,10 @@ mod test {
         }
 
         // Init Weight (K x N layout)
-        let mut weight_data = vec![f16::ZERO; k * n];
+        let mut weight_data = vec![0.0f16; k * n];
         for i in 0..k {
             for j in 0..n {
-                weight_data[i * n + j] = f16::from_f32(((i * 5 + j * 11) % 23) as f32 * 0.1);
+                weight_data[i * n + j] = (((i * 5 + j * 11) % 23) as f32 * 0.1) as f16;
             }
         }
         unsafe {
@@ -1700,10 +1696,10 @@ mod test {
         }
 
         // Init Bias
-        let mut bias_data = vec![f16::ZERO; m * n];
+        let mut bias_data = vec![0.0f16; m * n];
         for i in 0..m {
             for j in 0..n {
-                bias_data[i * n + j] = f16::from_f32(((i * 2 + j * 5) % 17) as f32 * 0.1);
+                bias_data[i * n + j] = (((i * 2 + j * 5) % 17) as f32 * 0.1) as f16;
             }
         }
         unsafe {
@@ -1713,11 +1709,11 @@ mod test {
         }
 
         let params = MatMulParams {
-            a_row_step_macro: 4,
-            b_row_step_macro: 32,
-            column_step_macro: 32,
-            a_row_step_micro: 1,
-            b_row_step_micro: 16,
+            a_row_step_macro: 6,
+            b_row_step_macro: 64,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
         };
 
         let output_tensor = input_tensor.matmul_add(
@@ -1738,13 +1734,13 @@ mod test {
             for j in 0..n {
                 let mut sum = 0.0f32;
                 for kk in 0..k {
-                    let a = f32::from(input_data[i * k + kk]);
-                    let b = f32::from(weight_data[kk * n + j]);
+                    let a = input_data[i * k + kk] as f32;
+                    let b = weight_data[kk * n + j] as f32;
                     sum += a * b;
                 }
-                sum += f32::from(bias_data[i * n + j]);
+                sum += bias_data[i * n + j] as f32;
 
-                let val = f32::from(output_data[i * n + j]);
+                let val = output_data[i * n + j] as f32;
                 assert!(
                     (val - sum).abs() < 0.5,
                     "Mismatch at batch {}, col {}: got {}, expected {}",
@@ -1755,6 +1751,5 @@ mod test {
                 );
             }
         }
-    }  
-    
+    }
 }

@@ -290,13 +290,13 @@ mod test {
         );
     }
 
-    /*
     #[test]
     fn test_decoder_layer_f16() {
         let position_window_size = 4;
         let batch_size = 6;
 
-        let config = Config::load_from_file(r"models/Qwen2.5-0.5B-Instruct/config.json").unwrap();
+        let config =
+            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let sequence_chunk_size = position_window_size;
         let hidden_size = config.hidden_size;
@@ -374,5 +374,5 @@ mod test {
             output_tensor.shape,
             vec![position_window_size, batch_size, hidden_size]
         );
-    } */
+    }
 }

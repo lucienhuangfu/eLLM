@@ -124,10 +124,10 @@ where
                 self.head_dim,
                 MatMulParams {
                     a_row_step_macro: 6,
-                    b_row_step_macro: 256,
-                    column_step_macro: 16,
+                    b_row_step_macro: 64,
+                    column_step_macro: 64,
                     a_row_step_micro: 3,
-                    b_row_step_micro: 128,
+                    b_row_step_micro: 32,
                 },
                 self.scope_name.clone(),
             );
