@@ -169,6 +169,7 @@ where
         output_tensor
     }
 
+    /*
     pub fn experts_merge_add(
         &self,
         residual: &Tensor<T>,
@@ -339,7 +340,7 @@ where
         ));
         self.operator_queue.borrow_mut().push(operator);
         (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr)
-    }
+    }*/
 
     pub fn from_cache(
         shape: Vec<usize>,
@@ -424,20 +425,18 @@ where
             self.operator_queue.clone(),
         );
 
-        let operator = Operator::MatMulAdd(MatMulAdd::new(
-            self.data,
-            tensor2.data,
-            tensor3.data,
-            output_tensor.data,
-            a_row,
-            b_row,
-            column,
-            params.a_row_step_macro,
-            params.b_row_step_macro,
-            params.column_step_macro,
-            params.a_row_step_micro,
-            params.b_row_step_micro,
-        ));
+        let operator = Operator::MatMulAdd(unsafe {
+            MatMulAdd::new(
+                self.data,
+                tensor2.data,
+                tensor3.data,
+                output_tensor.data,
+                params,
+                a_row,
+                b_row,
+                column,
+            )
+        });
 
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
@@ -552,16 +551,16 @@ where
         &self,
         tensor2: &Tensor<T>,
         params: MatMulParams,
-        thread_num: usize,
+        // thread_num: usize,
         topk: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
         let m = self.shape[0] * self.shape[1];
         let k = self.shape[2];
         let n = tensor2.shape[0];
-
-        // MatMulTopK uses internal thread detection for buffer layout
-        // let thread_max = MatMulTopK::<T>::detect_threads();
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         let output_shape = vec![self.shape[0], self.shape[1], thread_num * topk];
 
         let indice_ptr = unsafe { allocate_init(output_shape.iter().product(), 0usize) };
@@ -779,196 +778,6 @@ mod test {
     use std::collections::HashMap;
     use std::f16;
     use std::thread;
-
-    #[test]
-    fn test_experts_softmax_norm_f32() {
-        let cache: Rc<RefCell<Cache<f32>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f32>>>> = Rc::new(RefCell::new(Vec::new()));
-
-        let sequence_chunk_size = 1;
-        let batch_size = 2;
-        let num_experts = 8;
-        let num_experts_per_tok = 2;
-
-        let shape = vec![sequence_chunk_size, batch_size, num_experts];
-        let tensor = Tensor::<f32>::from_cache(
-            shape.clone(),
-            "model.layers.0.logits".to_string(),
-            //"input".to_string(),
-            cache.clone(),
-            operator_queue.clone(),
-        );
-
-        let data: Vec<f32> = vec![
-            // token 0
-            1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5, // token 1
-            5.0, 6.0, 7.0, 8.0, 4.5, 5.5, 6.5, 7.5,
-        ];
-        unsafe {
-            tensor
-                .data
-                .copy_from_nonoverlapping(data.as_ptr(), data.len());
-        }
-
-        let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) = tensor
-            .experts_softmax_norm(num_experts, num_experts_per_tok, "softmax_norm".to_string());
-
-        for op in operator_queue.borrow_mut().iter() {
-            op.run(0, sequence_chunk_size, batch_size, 1, 0);
-        }
-
-        let num_tokens = sequence_chunk_size * batch_size;
-        let indices = unsafe { std::slice::from_raw_parts(indice_ptr, num_experts * num_tokens) };
-        let weights = unsafe { std::slice::from_raw_parts(weight_ptr, num_experts * num_tokens) };
-        let indicators = unsafe { std::slice::from_raw_parts(experts_indicator, num_experts) };
-
-        // Token 0: input [1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5], topk indices 3, 7
-        let data0 = &data[0..num_experts];
-        let exps0: Vec<f32> = data0.iter().map(|v| v.exp()).collect();
-        let sum0: f32 = exps0.iter().sum();
-        assert_ulps_eq!(weights[3 * num_tokens + 0], exps0[3] / sum0);
-        assert_ulps_eq!(weights[7 * num_tokens + 0], exps0[7] / sum0);
-        assert!(indices[3 * num_tokens + 0]);
-        assert!(indices[7 * num_tokens + 0]);
-
-        // Token 1: input [5.0, 6.0, 7.0, 8.0, 4.5, 5.5, 6.5, 7.5], topk indices 3, 7
-        let data1 = &data[num_experts..2 * num_experts];
-        let exps1: Vec<f32> = data1.iter().map(|v| v.exp()).collect();
-        let sum1: f32 = exps1.iter().sum();
-        assert_ulps_eq!(weights[3 * num_tokens + 1], exps1[3] / sum1);
-        assert_ulps_eq!(weights[7 * num_tokens + 1], exps1[7] / sum1);
-        assert!(indices[3 * num_tokens + 1]);
-        assert!(indices[7 * num_tokens + 1]);
-
-        // Check indicators
-        assert!(!indicators[0]);
-        assert!(!indicators[1]);
-        assert!(!indicators[2]);
-        assert!(indicators[3]);
-        assert!(!indicators[4]);
-        assert!(!indicators[5]);
-        assert!(!indicators[6]);
-        assert!(indicators[7]);
-
-        // Check other indices and weights are false/zero
-        for e in 0..num_experts {
-            for t in 0..num_tokens {
-                let offset = e * num_tokens + t;
-                if (e == 3 && (t == 0 || t == 1)) || (e == 7 && (t == 0 || t == 1)) {
-                    continue;
-                }
-                assert!(!indices[offset]);
-                assert_ulps_eq!(weights[offset], 0.0);
-            }
-        }
-    }
-
-    #[test]
-    fn test_experts_softmax_norm_f16() {
-        if !std::arch::is_x86_feature_detected!("avx512fp16") {
-            println!("AVX512FP16 not supported, skipping test.");
-            return;
-        }
-
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
-
-        let sequence_chunk_size = 1;
-        let batch_size = 2;
-        let num_experts = 128;
-        let num_experts_per_tok = 8;
-        let thread_num = 8;
-
-        let shape = vec![sequence_chunk_size, batch_size, num_experts];
-        let tensor = Tensor::<f16>::from_cache(
-            shape.clone(),
-            "model.layers.0.logits".to_string(),
-            cache.clone(),
-            operator_queue.clone(),
-        );
-
-        let num_tokens = sequence_chunk_size * batch_size;
-        let mut data_f32: Vec<f32> = Vec::with_capacity(num_tokens * num_experts);
-
-        // Generate data
-        for t in 0..num_tokens {
-            for i in 0..num_experts {
-                // Base value
-                let v = ((i as f32 + t as f32 * 13.0) * 1.1) % 20.0 - 10.0;
-                data_f32.push(v);
-            }
-            // Set top values explicitly to ensure stability
-            let base = t * num_experts;
-            for k in 0..num_experts_per_tok {
-                // Set experts [0..k] to high values to ensure they are selected
-                // Using distinct values to avoid sorting ambiguity
-                data_f32[base + k] = 20.0 + (num_experts_per_tok - k) as f32;
-            }
-        }
-
-        let data: Vec<f16> = data_f32.iter().map(|&x| x as f16).collect();
-        unsafe {
-            tensor
-                .data
-                .copy_from_nonoverlapping(data.as_ptr(), data.len());
-        }
-
-        let (experts_indicator, indice_ptr, weight_ptr, _topk_indices_ptr) = tensor
-            .experts_softmax_norm(num_experts, num_experts_per_tok, "softmax_norm".to_string());
-
-        for op in operator_queue.borrow_mut().iter() {
-            for i in 0..thread_num {
-                op.run(0, sequence_chunk_size, batch_size, thread_num, i);
-            }
-        }
-
-        let indices = unsafe { std::slice::from_raw_parts(indice_ptr, num_experts * num_tokens) };
-        let weights = unsafe { std::slice::from_raw_parts(weight_ptr, num_experts * num_tokens) };
-        let indicators = unsafe { std::slice::from_raw_parts(experts_indicator, num_experts) };
-
-        for t in 0..num_tokens {
-            let start = t * num_experts;
-            let end = start + num_experts;
-            let token_input = &data_f32[start..end];
-
-            let mut expected: Vec<(usize, f32)> = token_input.iter().copied().enumerate().collect();
-            // Sort descending by value
-            expected.sort_by(|a, b| b.1.total_cmp(&a.1));
-
-            let topk = &expected[0..num_experts_per_tok];
-            let max_val = topk.iter().map(|x| x.1).fold(f32::NEG_INFINITY, f32::max);
-            let denom: f32 = topk.iter().map(|v| (v.1 - max_val).exp()).sum();
-
-            for i in 0..num_experts_per_tok {
-                let (idx, val) = topk[i];
-                let prob = (val - max_val).exp() / denom;
-
-                assert!(
-                    indicators[idx],
-                    "Expert {} should be selected (token {})",
-                    idx, t
-                );
-
-                let offset = idx * num_tokens + t;
-                assert!(
-                    indices[offset],
-                    "Index ptr for expert {} token {} should be true",
-                    idx, t
-                );
-
-                let weight = weights[offset];
-
-                assert!(
-                    ((weight as f32) - prob).abs() < 1e-3,
-                    "Weight mismatch for expert {} token {}: expected {:?}, got {:?}",
-                    idx,
-                    t,
-                    prob,
-                    weight
-                );
-            }
-        }
-    }
 
     #[test]
     fn test_topk_softmax_f32() {
@@ -1505,7 +1314,7 @@ mod test {
             // Collect from all threads
             let mut merged: Vec<(usize, f32)> = Vec::new();
             for tid in 0..thread_num {
-                let offset = i * (max_threads * topk) + tid * topk;
+                let offset = i * (thread_num * topk) + tid * topk;
                 for r in 0..topk {
                     merged.push((indices[offset + r], values[offset + r] as f32));
                 }
@@ -1760,4 +1569,195 @@ mod test {
             }
         }
     }
+
+        /* 
+    #[test]
+    fn test_experts_softmax_norm_f32() {
+        let cache: Rc<RefCell<Cache<f32>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f32>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let sequence_chunk_size = 1;
+        let batch_size = 2;
+        let num_experts = 8;
+        let num_experts_per_tok = 2;
+
+        let shape = vec![sequence_chunk_size, batch_size, num_experts];
+        let tensor = Tensor::<f32>::from_cache(
+            shape.clone(),
+            "model.layers.0.logits".to_string(),
+            //"input".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        let data: Vec<f32> = vec![
+            // token 0
+            1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5, // token 1
+            5.0, 6.0, 7.0, 8.0, 4.5, 5.5, 6.5, 7.5,
+        ];
+        unsafe {
+            tensor
+                .data
+                .copy_from_nonoverlapping(data.as_ptr(), data.len());
+        }
+
+        let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) = tensor
+            .experts_softmax_norm(num_experts, num_experts_per_tok, "softmax_norm".to_string());
+
+        for op in operator_queue.borrow_mut().iter() {
+            op.run(0, sequence_chunk_size, batch_size, 1, 0);
+        }
+
+        let num_tokens = sequence_chunk_size * batch_size;
+        let indices = unsafe { std::slice::from_raw_parts(indice_ptr, num_experts * num_tokens) };
+        let weights = unsafe { std::slice::from_raw_parts(weight_ptr, num_experts * num_tokens) };
+        let indicators = unsafe { std::slice::from_raw_parts(experts_indicator, num_experts) };
+
+        // Token 0: input [1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5], topk indices 3, 7
+        let data0 = &data[0..num_experts];
+        let exps0: Vec<f32> = data0.iter().map(|v| v.exp()).collect();
+        let sum0: f32 = exps0.iter().sum();
+        assert_ulps_eq!(weights[3 * num_tokens + 0], exps0[3] / sum0);
+        assert_ulps_eq!(weights[7 * num_tokens + 0], exps0[7] / sum0);
+        assert!(indices[3 * num_tokens + 0]);
+        assert!(indices[7 * num_tokens + 0]);
+
+        // Token 1: input [5.0, 6.0, 7.0, 8.0, 4.5, 5.5, 6.5, 7.5], topk indices 3, 7
+        let data1 = &data[num_experts..2 * num_experts];
+        let exps1: Vec<f32> = data1.iter().map(|v| v.exp()).collect();
+        let sum1: f32 = exps1.iter().sum();
+        assert_ulps_eq!(weights[3 * num_tokens + 1], exps1[3] / sum1);
+        assert_ulps_eq!(weights[7 * num_tokens + 1], exps1[7] / sum1);
+        assert!(indices[3 * num_tokens + 1]);
+        assert!(indices[7 * num_tokens + 1]);
+
+        // Check indicators
+        assert!(!indicators[0]);
+        assert!(!indicators[1]);
+        assert!(!indicators[2]);
+        assert!(indicators[3]);
+        assert!(!indicators[4]);
+        assert!(!indicators[5]);
+        assert!(!indicators[6]);
+        assert!(indicators[7]);
+
+        // Check other indices and weights are false/zero
+        for e in 0..num_experts {
+            for t in 0..num_tokens {
+                let offset = e * num_tokens + t;
+                if (e == 3 && (t == 0 || t == 1)) || (e == 7 && (t == 0 || t == 1)) {
+                    continue;
+                }
+                assert!(!indices[offset]);
+                assert_ulps_eq!(weights[offset], 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_experts_softmax_norm_f16() {
+        if !std::arch::is_x86_feature_detected!("avx512fp16") {
+            println!("AVX512FP16 not supported, skipping test.");
+            return;
+        }
+
+        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let sequence_chunk_size = 1;
+        let batch_size = 2;
+        let num_experts = 128;
+        let num_experts_per_tok = 8;
+        let thread_num = 8;
+
+        let shape = vec![sequence_chunk_size, batch_size, num_experts];
+        let tensor = Tensor::<f16>::from_cache(
+            shape.clone(),
+            "model.layers.0.logits".to_string(),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
+        let num_tokens = sequence_chunk_size * batch_size;
+        let mut data_f32: Vec<f32> = Vec::with_capacity(num_tokens * num_experts);
+
+        // Generate data
+        for t in 0..num_tokens {
+            for i in 0..num_experts {
+                // Base value
+                let v = ((i as f32 + t as f32 * 13.0) * 1.1) % 20.0 - 10.0;
+                data_f32.push(v);
+            }
+            // Set top values explicitly to ensure stability
+            let base = t * num_experts;
+            for k in 0..num_experts_per_tok {
+                // Set experts [0..k] to high values to ensure they are selected
+                // Using distinct values to avoid sorting ambiguity
+                data_f32[base + k] = 20.0 + (num_experts_per_tok - k) as f32;
+            }
+        }
+
+        let data: Vec<f16> = data_f32.iter().map(|&x| x as f16).collect();
+        unsafe {
+            tensor
+                .data
+                .copy_from_nonoverlapping(data.as_ptr(), data.len());
+        }
+
+        let (experts_indicator, indice_ptr, weight_ptr, _topk_indices_ptr) = tensor
+            .experts_softmax_norm(num_experts, num_experts_per_tok, "softmax_norm".to_string());
+
+        for op in operator_queue.borrow_mut().iter() {
+            for i in 0..thread_num {
+                op.run(0, sequence_chunk_size, batch_size, thread_num, i);
+            }
+        }
+
+        let indices = unsafe { std::slice::from_raw_parts(indice_ptr, num_experts * num_tokens) };
+        let weights = unsafe { std::slice::from_raw_parts(weight_ptr, num_experts * num_tokens) };
+        let indicators = unsafe { std::slice::from_raw_parts(experts_indicator, num_experts) };
+
+        for t in 0..num_tokens {
+            let start = t * num_experts;
+            let end = start + num_experts;
+            let token_input = &data_f32[start..end];
+
+            let mut expected: Vec<(usize, f32)> = token_input.iter().copied().enumerate().collect();
+            // Sort descending by value
+            expected.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+            let topk = &expected[0..num_experts_per_tok];
+            let max_val = topk.iter().map(|x| x.1).fold(f32::NEG_INFINITY, f32::max);
+            let denom: f32 = topk.iter().map(|v| (v.1 - max_val).exp()).sum();
+
+            for i in 0..num_experts_per_tok {
+                let (idx, val) = topk[i];
+                let prob = (val - max_val).exp() / denom;
+
+                assert!(
+                    indicators[idx],
+                    "Expert {} should be selected (token {})",
+                    idx, t
+                );
+
+                let offset = idx * num_tokens + t;
+                assert!(
+                    indices[offset],
+                    "Index ptr for expert {} token {} should be true",
+                    idx, t
+                );
+
+                let weight = weights[offset];
+
+                assert!(
+                    ((weight as f32) - prob).abs() < 1e-3,
+                    "Weight mismatch for expert {} token {}: expected {:?}, got {:?}",
+                    idx,
+                    t,
+                    prob,
+                    weight
+                );
+            }
+        }
+    }*/
 }

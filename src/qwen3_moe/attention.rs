@@ -16,7 +16,7 @@ use super::super::ptensor::tensor::Tensor;
 
 use super::config::Config;
 
-#[derive(Clone)]
+// #[derive(Clone)]
 pub struct Attention<T> {
     // sequence_length: usize,
     // batch_size: usize,
@@ -166,10 +166,10 @@ where
                 format!("{}.attn_output", self.scope_name),
             );
 
-            let mut view_context_tensor = context_tensor.view(vec![
-                context_tensor.shape[0],
-                self.batch_size,
-                self.hidden_size,
+            let mut view_context_tensor = attn_output.view(vec![
+                attn_output.shape[0],
+                residual.shape[1],
+                residual.shape[2]
             ]);
 
             // [sequence_chunk_size, batch_size, hidden_size]

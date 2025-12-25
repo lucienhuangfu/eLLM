@@ -10,12 +10,13 @@
 #![allow(incomplete_features)]
 #![allow(unused_parens)]
 
-pub mod compiler;
+
 pub mod init;
-pub mod kernel;
 pub mod memory;
+pub mod kernel;
+pub mod compiler;
 pub mod ptensor;
-// pub mod qwen3_moe;
+pub mod qwen3_moe;
 // pub mod runtime;
 // pub mod serving;
 // pub mod llama;

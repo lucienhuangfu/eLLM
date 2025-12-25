@@ -54,7 +54,6 @@ where
         m_max: usize,
         n_max: usize,
         k_max: usize,
-        cpu_max_for_scratch: usize, // 运行期线程上限（保证不再分配）
     ) -> Self {
         // === (1) B → B_nt 转置 ===
         // 原 B：K×N（行主，行距=N）
@@ -74,6 +73,11 @@ where
         let kc = params.column_step_macro.max(1);
         let nr = params.b_row_step_micro.max(1);
         let b_panel_stride_elems = kc * nr;
+
+        let cpu_max_for_scratch = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+
         let pool_len = cpu_max_for_scratch * b_panel_stride_elems;
         let b_panel_pool: Vec<T> = vec![T::default(); pool_len];
 
@@ -382,7 +386,6 @@ mod tests {
                 M,
                 N,
                 K,
-                thread_num,
             )
         };
 
@@ -471,7 +474,6 @@ mod tests {
                 M,
                 N,
                 K,
-                thread_num,
             )
         };
 
