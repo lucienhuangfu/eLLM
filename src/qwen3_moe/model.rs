@@ -31,7 +31,7 @@ use super::decoder_layer::DecoderLayer;
 
 // use super::rope::precompute_freqs_cis;
 
-#[derive(Clone)]
+// #[derive(Clone)]
 pub struct Model<T> {
     // config: Config,
     // sequences: Vec<usize>,
@@ -69,6 +69,7 @@ where
         sequence_length: usize,
         sequence_chunk_size: usize,
         batch_size: usize,
+        topk_size: usize,
     ) -> Self {
         let scope_name = String::from("model");
 
@@ -124,7 +125,7 @@ where
             batch_size: batch_size,
             hidden_size: config.hidden_size,
             sequence_chunk_size: sequence_chunk_size,
-            topk_size: config.num_experts_per_tok,
+            topk_size: topk_size,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
             cache: cache,
@@ -166,7 +167,7 @@ where
                 a_row_step_micro: 8,
                 b_row_step_micro: 8,
             },
-            8,
+            self.topk_size,
             format!("{}.lm_head", self.scope_name),
         );
 

@@ -43,7 +43,7 @@ where
     MatMul(MatMul<T>),
     MatMul3(MatMul3<T>),
     MatMulAdd(MatMulAdd<T>),
-    MatMulSiluMulMatMul(MatMulSilu<T>),
+    // MatMulSiluMulMatMul(MatMulSilu<T>),
     MatMulTopK(MatMulTopK<T>),
     RMSMap(RMSMap<T>),
     SiluMulZipMap(SiluMulZipMap<T>),

@@ -84,7 +84,7 @@ where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     #[inline]
-    pub unsafe fn new(
+    pub fn new(
         hidden_ptr: *const T,
         q_weight_ptr: *const T,
         q_state_ptr: *mut T,
@@ -105,9 +105,9 @@ where
         b_row_step_micro: usize,
     ) -> Self {
         // 预转置 W: [K×N] -> [N×K]
-        let wq_buf = transpose_kxn_to_nxk::<T>(q_weight_ptr, col, b_q_row);
-        let wk_buf = transpose_kxn_to_nxk::<T>(k_weight_ptr, col, b_kv_row);
-        let wv_buf = transpose_kxn_to_nxk::<T>(v_weight_ptr, col, b_kv_row);
+        let wq_buf = unsafe { transpose_kxn_to_nxk::<T>(q_weight_ptr, col, b_q_row) };
+        let wk_buf = unsafe { transpose_kxn_to_nxk::<T>(k_weight_ptr, col, b_kv_row) };
+        let wv_buf = unsafe { transpose_kxn_to_nxk::<T>(v_weight_ptr, col, b_kv_row) };
 
         let q_weight_ptr = ConstPtr {
             ptr: wq_buf.as_ptr(),
