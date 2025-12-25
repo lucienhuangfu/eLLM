@@ -661,7 +661,7 @@ where
     pub fn topk_softmax(
         &self,
         indices_ptr: *const usize,
-        sums_tensor: &Tensor<T>,
+        // sums_tensor: &Tensor<T>,
         output_sequences: *mut usize,
         num_topk: usize,
         scope_name: String,
@@ -679,7 +679,6 @@ where
         let operator = Operator::TopKSoftmax(TopKSoftmax::new(
             indices_ptr,
             self.data,
-            sums_tensor.data,
             indice_ptr,
             value_tensor.data,
             output_sequences,
@@ -839,7 +838,7 @@ mod test {
 
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
-            &sums_tensor,
+            // &sums_tensor,
             output_sequences.as_mut_ptr(),
             num_topk,
             "model.layers.0.topk_softmax".to_string(),
@@ -958,7 +957,7 @@ mod test {
 
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
-            &sums_tensor,
+            // &sums_tensor,
             output_sequences.as_mut_ptr(),
             num_topk,
             "model.layers.0.topk_softmax".to_string(),
@@ -1064,19 +1063,19 @@ mod test {
 
         let q_weight = Tensor::<f16>::from_cache(
             q_weight_shape.clone(),
-            "q_weight".to_string(),
+            "q.weight".to_string(),
             cache.clone(),
             operator_queue.clone(),
         );
         let k_weight = Tensor::<f16>::from_cache(
             k_weight_shape.clone(),
-            "k_weight".to_string(),
+            "k.weight".to_string(),
             cache.clone(),
             operator_queue.clone(),
         );
         let v_weight = Tensor::<f16>::from_cache(
             v_weight_shape.clone(),
-            "v_weight".to_string(),
+            "v.weight".to_string(),
             cache.clone(),
             operator_queue.clone(),
         );
@@ -1215,7 +1214,7 @@ mod test {
         let intermediate_size = 96; // N
         let topk = 10;
 
-       let thread_num = std::thread::available_parallelism()
+        let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
         // .min(max_threads);
@@ -1359,7 +1358,7 @@ mod test {
         let input_shape = vec![sequence_chunk_size, batch_size, hidden_size];
         let input_tensor = Tensor::<f16>::from_cache(
             input_shape.clone(),
-            "input".to_string(),
+            "model.layers.0.input".to_string(),
             cache.clone(),
             operator_queue.clone(),
         );
@@ -1367,7 +1366,7 @@ mod test {
         let weight_shape = vec![intermediate_size, hidden_size];
         let weight_tensor = Tensor::<f16>::from_cache(
             weight_shape.clone(),
-            "weight".to_string(),
+            "weight.weight".to_string(),
             cache.clone(),
             operator_queue.clone(),
         );
@@ -1413,7 +1412,7 @@ mod test {
             &weight_tensor,
             params,
             sequence_chunk_size,
-            "matmul_test".to_string(),
+            "model.layers.0.matmul".to_string(),
         );
 
         for op in operator_queue.borrow_mut().iter() {
@@ -1462,7 +1461,7 @@ mod test {
         let input_shape = vec![sequence_chunk_size, batch_size, hidden_size];
         let input_tensor = Tensor::<f16>::from_cache(
             input_shape.clone(),
-            "input".to_string(),
+            "model.layers.0.input".to_string(),
             cache.clone(),
             operator_queue.clone(),
         );
@@ -1470,7 +1469,7 @@ mod test {
         let weight_shape = vec![intermediate_size, hidden_size];
         let weight_tensor = Tensor::<f16>::from_cache(
             weight_shape.clone(),
-            "weight".to_string(),
+            "weight.weight".to_string(),
             cache.clone(),
             operator_queue.clone(),
         );
@@ -1478,7 +1477,7 @@ mod test {
         let bias_shape = vec![sequence_chunk_size, batch_size, intermediate_size];
         let bias_tensor = Tensor::<f16>::from_cache(
             bias_shape.clone(),
-            "bias".to_string(),
+            "bias.weight".to_string(),
             cache.clone(),
             operator_queue.clone(),
         );
@@ -1538,7 +1537,7 @@ mod test {
             &weight_tensor,
             &bias_tensor,
             params,
-            "matmul_add_test".to_string(),
+            "model.layers.0.matmul_add".to_string(),
         );
 
         for op in operator_queue.borrow_mut().iter() {
@@ -1571,7 +1570,7 @@ mod test {
         }
     }
 
-        /* 
+    /*
     #[test]
     fn test_experts_softmax_norm_f32() {
         let cache: Rc<RefCell<Cache<f32>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
@@ -1603,7 +1602,7 @@ mod test {
         }
 
         let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) = tensor
-            .experts_softmax_norm(num_experts, num_experts_per_tok, "softmax_norm".to_string());
+            .experts_softmax_norm(num_experts, num_experts_per_tok, "model.layers.0.softmax_norm".to_string());
 
         for op in operator_queue.borrow_mut().iter() {
             op.run(0, sequence_chunk_size, batch_size, 1, 0);
@@ -1706,7 +1705,7 @@ mod test {
         }
 
         let (experts_indicator, indice_ptr, weight_ptr, _topk_indices_ptr) = tensor
-            .experts_softmax_norm(num_experts, num_experts_per_tok, "softmax_norm".to_string());
+            .experts_softmax_norm(num_experts, num_experts_per_tok, "model.layers.0.softmax_norm".to_string());
 
         for op in operator_queue.borrow_mut().iter() {
             for i in 0..thread_num {

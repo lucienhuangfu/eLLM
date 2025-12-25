@@ -276,70 +276,76 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, 1, batch_size, thread_num, i);
+                operator.run(0, 1, batch_size, thread_num, i);
             }
         }
 
         // Add more assertions as needed
     }
 
-    /*
     #[test]
     fn test_self_attention_f16() {
-        let hidden_size = 8192;
-        let num_attention_heads = 64;
-        let num_kv_heads = 8;
-        let sequence_length = 10;
-        let batch_size = 32;
+        let sequence_chunk_size = 1;
+        let batch_size = 6;
 
-        let position_index = 8;
-        let current_batch_size = 1;
+        let config =
+            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-        let inverse_sqrt_head = 1.0 / (hidden_size as f16).sqrt();
-        let attention_head_size: usize = hidden_size / num_attention_heads;
+        let attention_head_size: usize = config.head_dim;
 
-        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
+        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::<
+            String,
+            Vec<f16>,
+        >::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
         let self_attention = Attention::new(
-            hidden_size,
-            num_attention_heads,
-            num_kv_heads,
-            sequence_length,
-            batch_size,
-            inverse_sqrt_head,
-            num_cpus::get(),
+            &config,
+            1,
             "model.layers.1.self_attn",
             cache.clone(),
             operator_queue.clone(),
         );
 
         let hidden_states = Tensor::zeros(
-            vec![batch_size, hidden_size],
+            vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
             cache.clone(),
             operator_queue.clone(),
         );
 
+        let residual_tensor = Tensor::zeros(
+            vec![sequence_chunk_size, batch_size, config.hidden_size],
+            String::from("model.layers.1.residual_tensor"),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
         let position_embedding = Tensor::zeros(
-            vec![sequence_length, 1, 1, attention_head_size],
+            vec![config.max_position_embeddings, 1, 1, attention_head_size],
             String::from("model.position_embedding.weight"),
             cache.clone(),
             operator_queue.clone(),
         );
 
-        let output = self_attention.forward(&hidden_states, &position_embedding);
+        let output = self_attention.forward(&hidden_states, &residual_tensor, &position_embedding);
 
         // Add assertions to validate the output
-        // assert_eq!(output.shape, vec![batch_size, hidden_size]);
+        debug_assert_eq!(
+            output.shape,
+            vec![
+                sequence_chunk_size,
+                batch_size,
+                config.num_attention_heads * config.head_dim
+            ]
+        );
 
         // Execute the operator queue
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(current_batch_size, position_index, i);
+                operator.run(0, 1, batch_size, thread_num, i);
             }
         }
-        // Add more assertions as needed
-    } */
+    }
 }
