@@ -79,26 +79,26 @@ where
             is_causal: false,
             layer_idx: layer_idx,
             q_weight: Tensor::zeros(
-                vec![config.hidden_size, config.num_attention_heads * head_dim],
+                vec![ config.num_attention_heads * head_dim, config.hidden_size],
                 format!("{}.q_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             k_weight: Tensor::zeros(
-                vec![config.hidden_size, config.num_key_value_heads * head_dim],
+                vec![config.num_key_value_heads * head_dim, config.hidden_size],
                 format!("{}.k_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
             v_weight: Tensor::zeros(
-                vec![config.hidden_size, config.num_key_value_heads * head_dim],
+                vec![config.num_key_value_heads * head_dim, config.hidden_size ],
                 format!("{}.v_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
             ),
 
             o_weight: Tensor::zeros(
-                vec![config.num_attention_heads * head_dim, config.hidden_size],
+                vec![config.hidden_size, config.num_attention_heads * head_dim],
                 format!("{}.o_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
@@ -170,10 +170,11 @@ where
                 format!("{}.attn_output", self.scope_name),
             );
 
+            println!("attn_output shape: {:?}", attn_output.shape);
             let mut view_context_tensor = attn_output.view(vec![
                 attn_output.shape[0],
-                residual.shape[1],
-                residual.shape[2],
+                attn_output.shape[1],
+                attn_output.shape[2] * attn_output.shape[3]
             ]);
 
             // [sequence_chunk_size, batch_size, hidden_size]
@@ -186,12 +187,10 @@ where
                     b_row_step_macro: 256,
                     column_step_macro: 16,
                     a_row_step_micro: 3,
-                    b_row_step_micro: 128,
+                    b_row_step_micro: 32,
                 },
                 self.scope_name.clone(),
             );
-
-            // let output_tensor = self.wo.forward(&hidden_states, format!("{}.output_tensor", self.scope_name));
             output_tensor
         }
     }
@@ -315,7 +314,11 @@ mod test {
         );
 
         let residual_tensor = Tensor::zeros(
-            vec![sequence_chunk_size, batch_size, config.hidden_size],
+            vec![
+                sequence_chunk_size,
+                batch_size,
+                config.hidden_size,
+            ],
             String::from("model.layers.1.residual_tensor"),
             cache.clone(),
             operator_queue.clone(),
@@ -330,15 +333,17 @@ mod test {
 
         let output = self_attention.forward(&hidden_states, &residual_tensor, &position_embedding);
 
+        
         // Add assertions to validate the output
         debug_assert_eq!(
             output.shape,
             vec![
                 sequence_chunk_size,
                 batch_size,
-                config.num_attention_heads * config.head_dim
+                config.hidden_size
             ]
         );
+         
 
         // Execute the operator queue
         let thread_num: usize = num_cpus::get();
