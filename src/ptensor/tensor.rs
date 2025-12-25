@@ -30,6 +30,7 @@ use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
 use super::super::compiler::zip_map::silu_mul_zip::SiluMulZipMap;
 use crate::compiler::zip_map::add_rms_zip::AddRMSZipMap;
 
+#[derive(Clone)]
 pub struct Tensor<T>
 where
     T: Copy + PartialOrd,
@@ -1214,9 +1215,9 @@ mod test {
         let intermediate_size = 96; // N
         let topk = 10;
 
-        // Use available threads but cap at 4 for test consistency
-        // let max_threads = MatMulTopK::<f16>::detect_threads();
-        let thread_num = 4;
+       let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         // .min(max_threads);
 
         let input_shape = vec![sequence_chunk_size, batch_size, hidden_size];
@@ -1277,7 +1278,7 @@ mod test {
         let (indice_ptr, value_tensor) = input_tensor.matmul_local_topk(
             &weight_tensor,
             params,
-            thread_num,
+            // thread_num,
             topk,
             "model.layers.0.matmul_local_topk".to_string(),
         );

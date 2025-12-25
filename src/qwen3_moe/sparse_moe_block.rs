@@ -15,7 +15,10 @@ use crate::compiler::operator::Operator;
 // use super::super::ptensor::linear::Linear;
 
 #[derive(Clone)]
-pub struct SparseMoeBlock<T> {
+pub struct SparseMoeBlock<T>
+where
+    T: Copy + PartialOrd,
+{
     hidden_size: usize,
     num_experts: usize,
     num_topk: usize,
@@ -32,6 +35,7 @@ pub struct SparseMoeBlock<T> {
 impl<T> SparseMoeBlock<T>
 where
     T: Copy
+        + PartialOrd
         + Default
         + Sub<Output = T>
         + Neg<Output = T>

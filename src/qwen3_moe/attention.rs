@@ -17,7 +17,10 @@ use super::super::ptensor::tensor::Tensor;
 use super::config::Config;
 
 // #[derive(Clone)]
-pub struct Attention<T> {
+pub struct Attention<T>
+where
+    T: Copy + PartialOrd,
+{
     // sequence_length: usize,
     // batch_size: usize,
     num_attention_heads: usize,
@@ -40,6 +43,7 @@ pub struct Attention<T> {
 impl<T> Attention<T>
 where
     T: Copy
+        + PartialOrd
         + Default
         + Sub<Output = T>
         + Neg<Output = T>
@@ -169,7 +173,7 @@ where
             let mut view_context_tensor = attn_output.view(vec![
                 attn_output.shape[0],
                 residual.shape[1],
-                residual.shape[2]
+                residual.shape[2],
             ]);
 
             // [sequence_chunk_size, batch_size, hidden_size]

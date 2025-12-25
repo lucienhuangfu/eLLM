@@ -32,7 +32,10 @@ use super::decoder_layer::DecoderLayer;
 // use super::rope::precompute_freqs_cis;
 
 // #[derive(Clone)]
-pub struct Model<T> {
+pub struct Model<T>
+where
+    T: Copy + PartialOrd,
+{
     // config: Config,
     // sequences: Vec<usize>,
     word_embedding: Rc<Tensor<T>>,
@@ -52,6 +55,7 @@ pub struct Model<T> {
 impl<T> Model<T>
 where
     T: Copy
+        + PartialOrd
         + Default
         + Sub<Output = T>
         + Neg<Output = T>

@@ -1,6 +1,6 @@
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::rc::Rc;
 
 use crate::kernel::generic::from_f32::FromF32;
 use crate::kernel::generic::sigmoid::Sigmoid;
@@ -19,7 +19,10 @@ use super::attention::Attention;
 // use super::feedforward::FeedForward;
 
 // #[derive(Clone)]
-pub struct DecoderLayer<T> {
+pub struct DecoderLayer<T>
+where
+    T: Copy + PartialOrd,
+{
     sequence_length: usize,
     sequence_chunk_size: usize,
     batch_size: usize,
@@ -40,6 +43,7 @@ pub struct DecoderLayer<T> {
 impl<T> DecoderLayer<T>
 where
     T: Copy
+        + PartialOrd
         + Default
         + Sub<Output = T>
         + Neg<Output = T>
@@ -166,7 +170,7 @@ where
             format!("{}.norm_hidden2", self.scope_name),
         );
 
-    
+        norm_hidden_states
         /*
         let output_hidden_states = self.sparse_moe_block.forward(
             &norm_hidden_states,
@@ -174,7 +178,7 @@ where
             format!("{}.attention_hidden3", self.scope_name),
         );
 
-  
+
         let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],
             attention_hidden2.shape[1]/self.head_dim,
             self.head_dim]);
@@ -193,7 +197,6 @@ where
         out.view(attention_hidden2.shape.clone())
         */
         // output_hidden_states
-    
     }
 }
 

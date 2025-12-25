@@ -13,7 +13,10 @@ use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
 
 #[derive(Clone)]
-pub struct MLP<T> {
+pub struct MLP<T>
+where
+    T: Copy + PartialOrd,
+{
     // sequence_chunk_size: usize,
     // head_size: usize,
     gate_weight: Tensor<T>,
@@ -26,7 +29,16 @@ pub struct MLP<T> {
 
 impl<T> MLP<T>
 where
-    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
+    T: Copy
+        + PartialOrd
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid<T>
+        + Sqrt
+        + AddAssign,
 {
     pub fn new(
         // sequence_chunk_size: usize,
