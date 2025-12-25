@@ -587,7 +587,7 @@ mod test {
         let operator = Operator::TopKSoftmax(TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
             input_values.as_ptr(),
-            sums.as_ptr(),
+            // sums.as_ptr(),
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),

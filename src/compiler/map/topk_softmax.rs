@@ -15,7 +15,6 @@ use crate::kernel::generic::sqrt::Sqrt;
 pub struct TopKSoftmax<T> {
     input_indices_ptr: ConstPtr<usize>,
     input_values_ptr: ConstPtr<T>,
-    sums_ptr: ConstPtr<T>,
     output_indices_ptr: MutPtr<usize>,
     output_values_ptr: MutPtr<T>,
     output_sequences: MutPtr<usize>,
@@ -26,7 +25,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
     pub fn new(
         input_indices_ptr: *const usize,
         input_values_ptr: *const T,
-        sums_ptr: *const T,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
         output_sequences: *mut usize,
@@ -42,7 +40,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
             input_values_ptr: ConstPtr {
                 ptr: input_values_ptr,
             },
-            sums_ptr: ConstPtr { ptr: sums_ptr },
             output_indices_ptr: MutPtr {
                 ptr: output_indices_ptr,
             },
@@ -69,7 +66,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
             let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
             let mut input_indices_ptr = self.input_indices_ptr.ptr;
             let mut input_values_ptr = self.input_values_ptr.ptr;
-            let mut sums_ptr = self.sums_ptr.ptr;
             let mut output_indices_ptr = self.output_indices_ptr.ptr;
             let mut output_values_ptr = self.output_values_ptr.ptr;
 
@@ -85,7 +81,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
                     self.compute(
                         input_indices_ptr.add(input_stride),
                         input_values_ptr.add(input_stride),
-                        sums_ptr.add(index),
                         output_indices_ptr.add(output_stride),
                         output_values_ptr.add(output_stride),
                         token_ptr,
@@ -109,7 +104,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmaxTr
         &self,
         input_indices_ptr: *const usize,
         input_values_ptr: *const T,
-        sums_ptr: *const T,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
         output_token_ptr: *mut usize,
@@ -134,7 +128,6 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
         &self,
         input_indices_ptr: *const usize,
         input_values_ptr: *const f16,
-        sums_ptr: *const f16,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut f16,
         output_token_ptr: *mut usize,
@@ -169,7 +162,6 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
         &self,
         input_indices_ptr: *const usize,
         input_values_ptr: *const f32,
-        sums_ptr: *const f32,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut f32,
         output_token_ptr: *mut usize,
@@ -179,7 +171,6 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
         kernel::x86_64::f32_256::truncated_topk_softmax::truncated_topk_softmax(
             input_values_ptr,
             input_indices_ptr,
-            sums_ptr,
             output_values_ptr,
             output_indices_ptr,
             output_token_ptr,
@@ -227,7 +218,6 @@ mod test {
         let operator = TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
             input_values.as_ptr(),
-            sums.as_ptr(),
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
@@ -317,7 +307,6 @@ mod test {
         let operator = TopKSoftmax::<f16>::new(
             input_indices.as_ptr(),
             input_values.as_ptr(),
-            sums.as_ptr(),
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),

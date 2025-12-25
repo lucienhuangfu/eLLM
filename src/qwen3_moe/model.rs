@@ -162,7 +162,7 @@ where
             format!("{}.norm_hidden", self.scope_name),
         );
 
-        let (indices_ptr, values_tensor, sum_tensor) = norm_state.matmul_local_topk(
+        let (indices_ptr, values_tensor) = norm_state.matmul_local_topk(
             &self.lm_head_weight,
             MatMulParams {
                 a_row_step_macro: 16,
@@ -177,7 +177,7 @@ where
 
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
             indices_ptr,
-            &sum_tensor,
+                
             unsafe { sequences.add(self.batch_size) },
             self.topk_size,
             format!("{}.softmax", self.scope_name),
@@ -209,6 +209,7 @@ mod test {
         let sequence_length = 128;
         let sequence_chunk_size = 1;
         let batch_size = 6;
+        let topk_size = 8;
 
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
@@ -218,6 +219,7 @@ mod test {
             sequence_length,
             sequence_chunk_size,
             batch_size,
+            topk_size
             // word_embedding,
             // position_embedding,
             // norm_weight,
@@ -248,12 +250,13 @@ mod test {
         let sequence_length = 128;
         let sequence_chunk_size = 1;
         let batch_size = 6;
+        let topk_size = 8;
 
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let mut model =
-            Model::<f16>::new(&config, sequence_length, sequence_chunk_size, batch_size);
+            Model::<f16>::new(&config, sequence_length, sequence_chunk_size, batch_size, topk_size);
 
         let mut sequences =
             allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);

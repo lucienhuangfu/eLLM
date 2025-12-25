@@ -9,7 +9,7 @@ pub fn truncated_topk_softmax(
     // [thread_num, topk_size]
     input_indices_ptr: *const usize,
     // [thread_num]
-    _sums_ptr: *const f32,
+    // _sums_ptr: *const f32,
     // [topk_size]
     output_values_ptr: *mut f32,
     // [topk_size]
@@ -87,7 +87,7 @@ mod tests {
         truncated_topk_softmax(
             values.as_ptr(),
             indices.as_ptr(),
-            sums.as_ptr(),
+            // sums.as_ptr(),
             out_vals.as_mut_ptr(),
             out_idx.as_mut_ptr(),
             &mut out_token,
