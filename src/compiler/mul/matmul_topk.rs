@@ -242,6 +242,9 @@ where
             let mr = self.params.a_row_step_micro.max(1);
             let nr = self.params.b_row_step_micro.max(1);
 
+            // 打印 n 和 nr 的值用于调试
+            println!("[matmul_topk] n = {}, nr = {}", n, nr);
+
             // 你说：先假设整除
             debug_assert!(m % mr == 0);
             debug_assert!(n % nr == 0);

@@ -2,6 +2,7 @@ use core_affinity;
 use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::ptr::null;
 use std::rc::Rc;
 
 use std::sync::Barrier;
@@ -120,7 +121,7 @@ where
             word_embedding: word_embedding.clone(),
             position_embedding: position_embedding.clone(),
             lm_head_weight: Tensor::zeros(
-                vec![config.hidden_size, config.vocab_size],
+                vec![config.vocab_size, config.hidden_size],
                 String::from("lm_head.weight"),
                 cache.clone(),
                 operator_queue.clone(),
@@ -161,29 +162,30 @@ where
             self.rms_norm_eps,
             format!("{}.norm_hidden", self.scope_name),
         );
-
+   
         let (indices_ptr, values_tensor) = norm_state.matmul_local_topk(
             &self.lm_head_weight,
-            MatMulParams {
-                a_row_step_macro: 16,
-                b_row_step_macro: 16,
-                column_step_macro: 16,
-                a_row_step_micro: 8,
-                b_row_step_micro: 8,
-            },
+           MatMulParams {
+                    a_row_step_macro: 6,
+                    b_row_step_macro: 64,
+                    column_step_macro: 64,
+                    a_row_step_micro: 3,
+                    b_row_step_micro: 32,
+                },
             self.topk_size,
             format!("{}.lm_head", self.scope_name),
         );
 
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
             indices_ptr,
-                
+
             unsafe { sequences.add(self.batch_size) },
             self.topk_size,
             format!("{}.softmax", self.scope_name),
         );
 
         (topk_indice, topk_value)
+        // (null(), values_tensor)
     }
 }
 
@@ -219,21 +221,22 @@ mod test {
             sequence_length,
             sequence_chunk_size,
             batch_size,
-            topk_size
-            // word_embedding,
-            // position_embedding,
-            // norm_weight,
-            // cpu_num,
-            // cache.clone(),
-            // operator_queue.clone(),
+            topk_size, // word_embedding,
+                       // position_embedding,
+                       // norm_weight,
+                       // cpu_num,
+                       // cache.clone(),
+                       // operator_queue.clone(),
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-        let mut sequences =
-            allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
+        let mut sequences = allocate_init::<usize>((sequence_length + 1) * batch_size, 0);
         let output_tensor = unsafe { model.forward(sequences) };
 
-        let thread_num: usize = num_cpus::get();
+        
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
                 operator.run(0, 1, batch_size, thread_num, i);
@@ -255,14 +258,21 @@ mod test {
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-        let mut model =
-            Model::<f16>::new(&config, sequence_length, sequence_chunk_size, batch_size, topk_size);
+        let mut model = Model::<f16>::new(
+            &config,
+            sequence_length,
+            sequence_chunk_size,
+            batch_size,
+            topk_size,
+        );
 
         let mut sequences =
             allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
         let output_tensor = unsafe { model.forward(sequences) };
 
-        let thread_num: usize = num_cpus::get();
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
                 operator.run(0, 1, batch_size, thread_num, i);

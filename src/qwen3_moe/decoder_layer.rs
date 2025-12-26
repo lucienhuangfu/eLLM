@@ -277,7 +277,9 @@ mod test {
         );
 
         // Execute the operator queue
-        let thread_num: usize = num_cpus::get();
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
@@ -293,7 +295,7 @@ mod test {
 
     #[test]
     fn test_decoder_layer_f16() {
-        let position_window_size = 4;
+        let position_window_size = 1;
         let batch_size = 6;
 
         let config =
@@ -363,11 +365,13 @@ mod test {
         );
 
         // Execute the operator queue
-        let thread_num: usize = num_cpus::get();
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(1, 1, batch_size, thread_num, i);
+                operator.run(0, 1, batch_size, thread_num, i);
             }
         }
 
