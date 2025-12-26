@@ -12,13 +12,14 @@ fn main() {
     let sequence_length = 128;
     let sequence_chunk_size = 1;
     let batch_size = 6;
+    let topk_size = 8;
 
     let config =
         Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-    let mut model = Model::<f16>::new(&config, sequence_length, sequence_chunk_size, batch_size);
+    let mut model = Model::<f16>::new(&config, sequence_length, sequence_chunk_size, batch_size, topk_size);
 
-    let sequences = allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
+    let sequences = allocate_init::<usize>((sequence_length + 1) * batch_size, 0);
     let _ = unsafe { model.forward(sequences) };
 
     start(model.operator_queue.take());

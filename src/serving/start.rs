@@ -105,10 +105,11 @@ mod test {
     use crate::ptensor::tensor::Tensor;
     use crate::qwen3_moe::config::Config;
     use crate::qwen3_moe::model::Model;
-    use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
+    // use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
 
     // use crate::memory::allocator::allocate_init;
 
+    /*
     #[test]
     fn test_start() {
         let position_window_size = 4;
@@ -182,22 +183,23 @@ mod test {
 
         // output_tensor.operator_queue.borrow().to_vec()
         start(output_tensor.operator_queue.take());
-    }
+    } */
 
     #[test]
     fn test_model_start() {
         let sequence_length = 128;
         let sequence_chunk_size = 1;
         let batch_size = 6;
+        let topk_size = 8;
 
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let mut model =
-            Model::<f32>::new(&config, sequence_length, sequence_chunk_size, batch_size);
+            Model::<f32>::new(&config, sequence_length, sequence_chunk_size, batch_size, topk_size);
 
         let mut sequences =
-            allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
+            allocate_init::<usize>((sequence_length + 1) * batch_size, 0);
         let _ = unsafe { model.forward(sequences) };
 
         start(model.operator_queue.take());

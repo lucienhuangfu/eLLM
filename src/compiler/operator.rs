@@ -245,6 +245,14 @@ where
     }
 }
 
+// Many Operator variants contain raw pointers to buffers that are
+// partitioned per-thread and used in a thread-safe manner by the
+// runtime. Marking `Operator<T>` as `Send`/`Sync` is safe when `T`
+// is a plain POD-like type (here constrained to `PartialOrd + Copy`).
+// Use `unsafe impl` because raw pointers are not auto-`Send`.
+unsafe impl<T> Send for Operator<T> where T: PartialOrd + Copy {}
+unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
+
 #[cfg(test)]
 mod test {
     use super::*;
