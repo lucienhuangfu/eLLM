@@ -296,12 +296,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cache-padded"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "981520c98f422fcc584dc1a95c334e6953900b9106bc47a9839b81790009eb21"
-
-[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -695,8 +689,6 @@ dependencies = [
  "rand 0.8.5",
  "raw-cpuid",
  "regex",
- "repugnant-pickle",
- "rtrb",
  "safetensors",
  "serde",
  "serde-pickle",
@@ -1808,28 +1800,6 @@ name = "regex-syntax"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
-
-[[package]]
-name = "repugnant-pickle"
-version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4a4a65fb8b2ce90d27a650246c8e1c0d709c766e8ac963961b7a11f0cbf9a6a"
-dependencies = [
- "anyhow",
- "nom",
- "num-bigint",
- "once_cell",
- "zip",
-]
-
-[[package]]
-name = "rtrb"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99e704dd104faf2326a320140f70f0b736d607c1caa1b1748a6c568a79819109"
-dependencies = [
- "cache-padded",
-]
 
 [[package]]
 name = "rustc-demangle"
