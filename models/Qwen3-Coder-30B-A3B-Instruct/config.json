@@ -35,5 +35,5 @@
   "use_cache": true,
   "use_qk_norm": true,
   "use_sliding_window": false,
-  "vocab_size": 1519
+  "vocab_size": 3200
 }
