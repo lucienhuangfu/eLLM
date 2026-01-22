@@ -1,4 +1,4 @@
-// === runner/matmul.rs ===
+// === compiler/mul/matmul.rs ===
 #![allow(non_snake_case)]
 
 use std::f16;
@@ -16,7 +16,7 @@ use super::mul_trait::MatMulTrait;
 #[derive(Clone)]
 pub struct MatMul<T> {
     pub ptr1: ConstPtr<T>,     // A[M×K]
-    pub ptr2: ConstPtr<T>,     // 指向 B_nt[N×K]
+    pub ptr2: ConstPtr<T>,     // B_nt[N×K]（按行连续）
     pub output_ptr: MutPtr<T>, // C[M×N]
 
     pub output_to_kv: bool,
@@ -30,9 +30,6 @@ pub struct MatMul<T> {
     pub n_max: usize,
     pub k_max: usize,
 
-    // 构造期转置得到的 B_nt（N×K）
-    b_nt_buf: Box<[T]>,
-
     // 线程私有 KC×NR 面板池：连续大块，按 thread_id 切片
     // 布局：[threads][kc*nr]
     b_panel_pool: Box<[T]>,
@@ -44,29 +41,20 @@ where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     /// new():
-    /// 1) B[K×N] → B_nt[N×K]
+    /// 1) 不再做 B 转置：直接接收 B_nt[N×K]
     /// 2) 根据 CPU 可用并行度预分配面板池（只在 new() 里使用线程数，不进结构体字段）
     pub unsafe fn new(
-        ptr1: *const T,       // A[M×K]
-        ptr2_b_kxn: *const T, // B[K×N]
-        output_ptr: *mut T,   // C[M×N]
+        ptr1: *const T,          // A[M×K]
+        ptr2_b_nt_nxk: *const T, // ✅ B_nt[N×K]（按行连续）
+        output_ptr: *mut T,      // C[M×N]
         output_to_kv: bool,
         params: MatMulParams, // 仅 step 形状
         m_max: usize,
         n_max: usize,
         k_max: usize,
     ) -> Self {
-        // === (1) 构造期完成 B → B_nt，全量转置 ===
-        let mut b_nt_vec: Vec<T> = vec![T::default(); n_max * k_max];
-        let b_nt_ptr = b_nt_vec.as_mut_ptr();
-        for kk in 0..k_max {
-            let b_row = ptr2_b_kxn.add(kk * n_max);
-            for jj in 0..n_max {
-                *b_nt_ptr.add(jj * k_max + kk) = *b_row.add(jj);
-            }
-        }
-        let b_nt_box = b_nt_vec.into_boxed_slice();
-        let b_nt_base = b_nt_box.as_ptr();
+        // === (1) 不再构造期转置：ptr2 直接引用传入的 B_nt[N×K] ===
+        let b_nt_base = ptr2_b_nt_nxk;
 
         // === (2) 预分配 panel pool：线程数来自 CPU 并行度 ===
         let kc = params.column_step_macro.max(1);
@@ -79,7 +67,7 @@ where
 
         let pool_len = threads * b_panel_stride_elems;
         let b_panel_pool: Vec<T> = vec![T::default(); pool_len];
- 
+
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             ptr2: ConstPtr { ptr: b_nt_base },
@@ -90,7 +78,6 @@ where
             m_max,
             n_max,
             k_max,
-            b_nt_buf: b_nt_box,
             b_panel_pool: b_panel_pool.into_boxed_slice(),
             b_panel_stride_elems,
         }
@@ -117,108 +104,123 @@ where
     }
 
     pub fn run(
-        &self,
-        position_index: usize,
-        position_interval: usize,
-        batch_size: usize, // = M
-        cpu_num: usize,
-        thread_id: usize,
-    ) {
-        let _ = position_index;
-        let _ = position_interval;
+    &self,
+    position_index: usize,
+    position_interval: usize,
+    batch_size: usize, // = M_run（可能不是 3 的倍数）
+    cpu_num: usize,
+    thread_id: usize,
+) {
+    let _ = position_index;
+    let _ = position_interval;
 
-        unsafe {
-            let m = batch_size;
-            let n = self.n_max;
-            let k = self.k_max;
+    unsafe {
+        let m_run = batch_size;
 
-            let mb = self.params.a_row_step_macro.max(1);
-            let nb = self.params.b_row_step_macro.max(1);
-            let kc = self.params.column_step_macro.max(1);
-            let mr = self.params.a_row_step_micro.max(1);
-            let nr = self.params.b_row_step_micro.max(1);
+        let n = self.n_max;
+        let k = self.k_max;
 
-            // 这些对齐断言建议保留（否则微核/pack 会越界或错）
-            debug_assert!(m % mr == 0);
-            debug_assert!(n % nr == 0);
-            debug_assert!(k % kc == 0);
+        let mb = self.params.a_row_step_macro.max(1);
+        let nb = self.params.b_row_step_macro.max(1);
+        let kc = self.params.column_step_macro.max(1);
+        let mr = self.params.a_row_step_micro.max(1);
+        let nr = self.params.b_row_step_micro.max(1);
 
-            // 线程数只要不超过 pool 支持即可
-            let max_threads = self.panel_threads();
-            debug_assert!(cpu_num >= 1);
-            debug_assert!(thread_id < cpu_num);
-            debug_assert!(cpu_num <= max_threads);
+        // === 固定微核假设：MR=3, NR=32 时你也可以留着，但这里保留通用写法 ===
 
-            let a_base = self.ptr1.ptr;
-            let c_base = self.output_ptr.ptr;
-            let lda = k;
-            let ldc = n;
+        // 关键：run 时把 M 向上 pad 到 MR 的倍数（空算），用于跑固定 MR 微核
+        let m_pad = ((m_run + mr - 1) / mr) * mr;
 
-            let b_nt_ptr = self.ptr2.ptr; // N×K
-            let ldb_row = k;
+        // new() 预留必须覆盖到 m_pad（你说你能保证，这里用断言锁死）
+        debug_assert!(m_pad <= self.m_max);
 
-            let b_panel_ptr = self.thread_b_panel_ptr(thread_id);
+        // 你当前的块内循环要求 m_blk % mr == 0，
+        // 为了保证这一点且不引入 tile 内 tail 逻辑，要求 MB 是 MR 的倍数
+        debug_assert!(mb % mr == 0);
 
-            #[inline(always)]
-            unsafe fn pack_b_panel<T: Copy>(
-                b_nt: *const T,
-                ldb_row: usize,
-                n0: usize,
-                k0: usize,
-                kc: usize,
-                nr: usize,
-                out: *mut T,
-            ) {
-                for p in 0..kc {
-                    let src_col = k0 + p;
-                    let dst_row = out.add(p * nr);
-                    for lane in 0..nr {
-                        let j = n0 + lane;
-                        let src = b_nt.add(j * ldb_row + src_col);
-                        *dst_row.add(lane) = *src;
-                    }
+        // 其他对齐断言：你现在 pack/微核都依赖这些
+        debug_assert!(n % nr == 0);
+        debug_assert!(k % kc == 0);
+
+        // 线程数只要不超过 pool 支持即可
+        let max_threads = self.panel_threads();
+        debug_assert!(cpu_num >= 1);
+        debug_assert!(thread_id < cpu_num);
+        debug_assert!(cpu_num <= max_threads);
+
+        let a_base = self.ptr1.ptr;
+        let c_base = self.output_ptr.ptr;
+        let lda = k;
+        let ldc = n;
+
+        let b_nt_ptr = self.ptr2.ptr; // N×K row-major
+        let ldb_row = k;
+
+        let b_panel_ptr = self.thread_b_panel_ptr(thread_id);
+
+        #[inline(always)]
+        unsafe fn pack_b_panel<T: Copy>(
+            b_nt: *const T,
+            ldb_row: usize,
+            n0: usize,
+            k0: usize,
+            kc: usize,
+            nr: usize,
+            out: *mut T,
+        ) {
+            for p in 0..kc {
+                let src_col = k0 + p;
+                let dst_row = out.add(p * nr);
+                for lane in 0..nr {
+                    let j = n0 + lane;
+                    let src = b_nt.add(j * ldb_row + src_col);
+                    *dst_row.add(lane) = *src;
                 }
             }
+        }
 
-            let tiles_m = (m + mb - 1) / mb;
-            let tiles_n = (n + nb - 1) / nb;
-            let tiles = tiles_m * tiles_n;
+        // 这里开始：所有 tile 切分按 m_pad 而不是 m_run
+        let tiles_m = (m_pad + mb - 1) / mb;
+        let tiles_n = (n + nb - 1) / nb;
+        let tiles = tiles_m * tiles_n;
 
-            if let Some((tb, te)) = assign(tiles, cpu_num, thread_id) {
-                for t in tb..te {
-                    let tm = t / tiles_n;
-                    let tn = t % tiles_n;
+        if let Some((tb, te)) = assign(tiles, cpu_num, thread_id) {
+            for t in tb..te {
+                let tm = t / tiles_n;
+                let tn = t % tiles_n;
 
-                    let m0 = tm * mb;
-                    let n0 = tn * nb;
+                let m0 = tm * mb;
+                let n0 = tn * nb;
 
-                    let m_blk = (m - m0).min(mb);
-                    let n_blk = (n - n0).min(nb);
+                // 注意：m_blk 基于 m_pad
+                let m_blk = (m_pad - m0).min(mb);
+                let n_blk = (n - n0).min(nb);
 
-                    debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
+                debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
 
-                    let mut k0 = 0;
-                    while k0 < k {
-                        let mut nt = 0;
-                        while nt < n_blk {
-                            pack_b_panel::<T>(b_nt_ptr, ldb_row, n0 + nt, k0, kc, nr, b_panel_ptr);
+                let mut k0 = 0;
+                while k0 < k {
+                    let mut nt = 0;
+                    while nt < n_blk {
+                        pack_b_panel::<T>(b_nt_ptr, ldb_row, n0 + nt, k0, kc, nr, b_panel_ptr);
 
-                            let mut mi = 0;
-                            while mi < m_blk {
-                                let a_tile = a_base.add((m0 + mi) * lda + k0);
-                                let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
+                        let mut mi = 0;
+                        while mi < m_blk {
+                            let a_tile = a_base.add((m0 + mi) * lda + k0);
+                            let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
 
-                                self.compute(a_tile, b_panel_ptr as *const T, c_tile);
-                                mi += mr;
-                            }
-                            nt += nr;
+                            self.compute(a_tile, b_panel_ptr as *const T, c_tile);
+                            mi += mr;
                         }
-                        k0 += kc;
+
+                        nt += nr;
                     }
+                    k0 += kc;
                 }
             }
         }
     }
+}
 }
 
 /* ------------------ compute/compute2：保持你的调用风格 ------------------ */
@@ -301,7 +303,7 @@ mod tests {
         let thread_num = avail_threads().min(8); // 测试别太大
 
         let mut a = vec![0.0f16; M * K];
-        let mut b = vec![0.0f16; K * N];
+        let mut b_nt = vec![0.0f16; N * K]; // ✅ B_nt[N×K]
         let mut c = vec![0.0f16; M * N];
 
         for i in 0..M {
@@ -310,10 +312,12 @@ mod tests {
                 a[i * K + kk] = v as f16;
             }
         }
-        for kk in 0..K {
-            for j in 0..N {
+
+        // ✅ 填充 B_nt：按 N×K row-major
+        for j in 0..N {
+            for kk in 0..K {
                 let v = 0.02f32 * (kk as f32) + 0.003f32 * (j as f32);
-                b[kk * N + j] = v as f16;
+                b_nt[j * K + kk] = v as f16;
             }
         }
 
@@ -328,7 +332,7 @@ mod tests {
         let matmul = unsafe {
             MatMul::<f16>::new(
                 a.as_ptr(),
-                b.as_ptr(),
+                b_nt.as_ptr(), // ✅ 传入 B_nt[N×K]
                 c.as_mut_ptr(),
                 false,
                 params,
@@ -338,7 +342,7 @@ mod tests {
             )
         };
 
-        // 你这里是“顺序模拟多线程调用”
+        // 顺序模拟多线程调用
         for tid in 0..thread_num {
             matmul.run(0, 1, M, thread_num, tid);
         }
@@ -347,7 +351,9 @@ mod tests {
             for j in 0..N {
                 let mut sum = 0.0f32;
                 for kk in 0..K {
-                    sum += (a[i * K + kk] as f32) * (b[kk * N + j] as f32);
+                    // ✅ reference：A[M×K] × B[K×N]，但我们存的是 B_nt[N×K]
+                    // B[k][j] == B_nt[j][k]
+                    sum += (a[i * K + kk] as f32) * (b_nt[j * K + kk] as f32);
                 }
                 let got = c[i * N + j] as f32;
                 assert_abs_diff_eq!(got, sum, epsilon = 1e-1);
@@ -364,7 +370,7 @@ mod tests {
         let thread_num = avail_threads().min(16);
 
         let mut a = vec![0.0f16; M * K];
-        let mut b = vec![0.0f16; K * N];
+        let mut b_nt = vec![0.0f16; N * K]; // ✅ B_nt[N×K]
         let mut c = vec![0.0f16; M * N];
 
         for i in 0..M {
@@ -373,10 +379,12 @@ mod tests {
                 a[i * K + k] = val as f16;
             }
         }
-        for k in 0..K {
-            for j in 0..N {
+
+        // ✅ 填充 B_nt：按 N×K row-major
+        for j in 0..N {
+            for k in 0..K {
                 let val = ((k + j) % 11) as f32 * 0.01;
-                b[k * N + j] = val as f16;
+                b_nt[j * K + k] = val as f16;
             }
         }
 
@@ -391,7 +399,7 @@ mod tests {
         let matmul = unsafe {
             MatMul::<f16>::new(
                 a.as_ptr(),
-                b.as_ptr(),
+                b_nt.as_ptr(), // ✅ 传入 B_nt[N×K]
                 c.as_mut_ptr(),
                 false,
                 params,
@@ -409,11 +417,91 @@ mod tests {
             for j in 0..N {
                 let mut sum = 0.0f32;
                 for kk in 0..K {
-                    sum += (a[i * K + kk] as f32) * (b[kk * N + j] as f32);
+                    sum += (a[i * K + kk] as f32) * (b_nt[j * K + kk] as f32);
                 }
                 let got = c[i * N + j] as f32;
                 assert_abs_diff_eq!(got, sum, epsilon = 5e-1);
             }
         }
     }
+    #[test]
+fn test_matmul_runner_f16_batch7_pad_to9() {
+    const M_RUN: usize = 7;
+    const MR: usize = 3;
+    const M_MAX: usize = 9; // ceil_div(7,3)*3=9
+    const K: usize = 64;
+    const N: usize = 32;
+
+    let thread_num = 1; // 单线程先验证逻辑，避免并发干扰
+
+    // A/C 按 M_MAX 分配，前 M_RUN 行填数据，pad 行填 0
+    let mut a = vec![0.0f16; M_MAX * K];
+    let mut b_nt = vec![0.0f16; N * K]; // B_nt[N×K]
+    let mut c = vec![0.0f16; M_MAX * N];
+
+    // 填 A：前 7 行有值，剩下两行保持 0
+    for i in 0..M_RUN {
+        for kk in 0..K {
+            let v = 0.01f32 * (i as f32) + 0.001f32 * (kk as f32);
+            a[i * K + kk] = v as f16;
+        }
+    }
+
+    // 填 B_nt：按 N×K row-major
+    for j in 0..N {
+        for kk in 0..K {
+            let v = 0.02f32 * (kk as f32) + 0.003f32 * (j as f32);
+            b_nt[j * K + kk] = v as f16;
+        }
+    }
+
+    let params = MatMulParams {
+        a_row_step_macro: 6,   // MB（是 MR 的倍数）
+        b_row_step_macro: 32,  // NB
+        column_step_macro: 64, // KC
+        a_row_step_micro: 3,   // MR
+        b_row_step_micro: 32,  // NR
+    };
+
+    let matmul = unsafe {
+        MatMul::<f16>::new(
+            a.as_ptr(),
+            b_nt.as_ptr(),
+            c.as_mut_ptr(),
+            false,
+            params,
+            M_MAX, // m_max=9
+            N,
+            K,
+        )
+    };
+
+    // batch_size 传 7（不是 3 的倍数），内部会 pad 到 9
+    for tid in 0..thread_num {
+        matmul.run(0, 1, M_RUN, thread_num, tid);
+    }
+
+    // 只检查前 7 行（真实 batch），pad 行不检查
+    for i in 0..M_RUN {
+        for j in 0..N {
+            let mut sum = 0.0f32;
+            for kk in 0..K {
+                sum += (a[i * K + kk] as f32) * (b_nt[j * K + kk] as f32);
+            }
+            let got = c[i * N + j] as f32;
+            approx::assert_abs_diff_eq!(got, sum, epsilon = 1e-1);
+        }
+    }
+
+    // 可选：pad 行如果 A pad 行为 0，那么 C pad 行应该仍为 0（这里只是额外 sanity）
+    for i in M_RUN..M_MAX {
+        for j in 0..N {
+            let got = c[i * N + j] as f32;
+            approx::assert_abs_diff_eq!(got, 0.0, epsilon = 1e-1);
+        }
+    }
+
+    // 额外：确认 MR 固定=3 的前提没被破坏
+    assert_eq!(MR, 3);
+}
 }
