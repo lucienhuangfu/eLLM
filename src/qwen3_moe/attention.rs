@@ -117,6 +117,9 @@ where
         // tensor_name: String,
     ) -> Tensor<T> {
         unsafe {
+            //println!("hidden_states shape: {:?}", hidden_states.shape);
+
+
             // mul_rms_complex 合并operators
             // [sequence_chunk_size, batch_size, hidden_size]
             // [sequence_chunk_size, batch_size, kv_hidden_size]
@@ -127,7 +130,7 @@ where
                 position_embedding,
                 self.head_dim,
                 MatMulParams {
-                    a_row_step_macro: 6,
+                    a_row_step_macro: 3,
                     b_row_step_macro: 64,
                     column_step_macro: 64,
                     a_row_step_micro: 3,
@@ -135,7 +138,7 @@ where
                 },
                 self.scope_name.clone(),
             );
-
+            
             let view_query_states = query_states.view(vec![
                 query_states.shape[0],
                 query_states.shape[1],
@@ -183,7 +186,7 @@ where
                 &self.o_weight,
                 &residual,
                 MatMulParams {
-                    a_row_step_macro: 6,
+                    a_row_step_macro: 3,
                     b_row_step_macro: 256,
                     column_step_macro: 16,
                     a_row_step_micro: 3,
@@ -204,7 +207,7 @@ mod test {
     #[test]
     fn test_self_attention() {
         let sequence_chunk_size = 1;
-        let batch_size = 6;
+        let batch_size = 3;
         // let hidden_size = 128;
         // let num_attention_heads = 64;
         // let num_kv_heads = 8;
@@ -267,7 +270,7 @@ mod test {
             vec![
                 sequence_chunk_size,
                 batch_size,
-                config.num_attention_heads * config.head_dim
+                config.hidden_size
             ]
         );
 
@@ -285,12 +288,13 @@ mod test {
     #[test]
     fn test_self_attention_f16() {
         let sequence_chunk_size = 1;
-        let batch_size = 6;
+        let batch_size = 3;
 
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let attention_head_size: usize = config.head_dim;
+
 
         let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::<
             String,
