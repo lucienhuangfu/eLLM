@@ -11,7 +11,7 @@ fn main() {
 
     let sequence_length = 128;
     let sequence_chunk_size = 1;
-    let batch_size = 6;
+    let batch_size = 3;
     let topk_size = 8;
 
     let config =

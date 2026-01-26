@@ -13,7 +13,7 @@ use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
 use super::attention::Attention;
-// use super::sparse_moe_block::SparseMoeBlock;
+use super::sparse_moe_block::SparseMoeBlock;
 // use super::moe_layer::MoeLayer;
 // use crate::qwen3_moe::mlp;
 // use super::feedforward::FeedForward;
@@ -34,7 +34,7 @@ where
     position_embedding: Rc<Tensor<T>>,
     self_attention: Attention<T>,
     // moe_layer: MoeLayer<T>,
-    // sparse_moe_block: SparseMoeBlock<T>,
+    sparse_moe_block: SparseMoeBlock<T>,
     scope_name: String,
     cache: Rc<RefCell<Cache<T>>>,
     operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
@@ -109,7 +109,7 @@ where
                 cache.clone(),
                 operator_queue.clone(),
             ),
-            /*
+            
             sparse_moe_block: SparseMoeBlock::new(
                 config.hidden_size,
                 config.moe_intermediate_size,
@@ -119,7 +119,7 @@ where
                 &scope_name,
                 cache.clone(),
                 operator_queue.clone(),
-            ),*/
+            ),
             word_embedding: word_embedding,
             position_embedding: position_embedding,
             cache: cache,
@@ -169,14 +169,13 @@ where
             self.rms_norm_eps,
             format!("{}.norm_hidden2", self.scope_name),
         );
-
-        norm_hidden_states
-        /*
+        
+        
         let output_hidden_states = self.sparse_moe_block.forward(
             &norm_hidden_states,
             &attention_hidden_states,
             format!("{}.attention_hidden3", self.scope_name),
-        );
+        );/* 
 
 
         let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],
@@ -196,7 +195,7 @@ where
 
         out.view(attention_hidden2.shape.clone())
         */
-        // output_hidden_states
+        output_hidden_states
     }
 }
 
@@ -296,7 +295,7 @@ mod test {
     #[test]
     fn test_decoder_layer_f16() {
         let position_window_size = 1;
-        let batch_size = 6;
+        let batch_size = 3;
 
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();

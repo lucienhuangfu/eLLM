@@ -71,10 +71,10 @@ where
             // let prompt_queue_slice = &queue[..decode_start.min(queue.len())];
             // let decode_queue_slice = &queue[decode_start.min(queue.len())..];
 
-            let sequence_length = 10;
+            let sequence_length = 128;
 
             let s = Instant::now();
-            let batch_size = 6;
+            let batch_size = 1;
             for p in 0..sequence_length {
                 println!("thread {} position {}", thread_id, p);
                 for operator in queue.iter() {
