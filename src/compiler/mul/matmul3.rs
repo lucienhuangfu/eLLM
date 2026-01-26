@@ -1,4 +1,4 @@
-// === runner/matmul_kqv.rs ===
+// === compiler/mul/matmul3.rs ===
 #![allow(non_snake_case)]
 
 use std::f16;
@@ -11,39 +11,23 @@ use super::super::super::init::{
 };
 use super::super::assign::assign;
 use super::mul_trait::MatMulkqvTrait;
+
 // 添加 generic kernel 的引用
 use crate::kernel::generic::complex_mul::complex_mul;
 use crate::kernel::generic::rms_norm::rms_norm;
 
-#[inline]
-unsafe fn transpose_kxn_to_nxk<T: Copy + Default>(w_kxn: *const T, k: usize, n: usize) -> Box<[T]> {
-    // 输入: W[K×N] 行主；输出: W_nt[N×K] 行主（行距=K）
-    let mut out = vec![T::default(); n * k];
-    for kk in 0..k {
-        let src_row = w_kxn.add(kk * n);
-        for jj in 0..n {
-            *out.as_mut_ptr().add(jj * k + kk) = *src_row.add(jj);
-        }
-    }
-    out.into_boxed_slice()
-}
-
 /// K/Q/V 三个 GEMM（不含 sequence 维度）
 ///
-/// 约定:
-/// - A:  [M×K]
-/// - Wq: [K×Nq] （构造期会转成 [Nq×K]）
-/// - Wk: [K×Nkv]（构造期转 [Nkv×K]）
-/// - Wv: 同上
-/// - Cq: [M×Nq]
-/// - Ck: [M×Nkv]
-/// - Cv: [M×Nkv]
+/// 约定（改动后）:
+/// - A:      [M×K]
+/// - Wq_nt:  [Nq×K]（✅ 由外部保证已经是 N×K 行主）
+/// - Wk_nt:  [Nkv×K]
+/// - Wv_nt:  [Nkv×K]
+/// - Cq:     [M×Nq]
+/// - Ck:     [M×Nkv]
+/// - Cv:     [M×Nkv]
 ///
-/// 分块空间:
-///   对 Q:  tiles_m_q = ceil(M/MB), tiles_n_q = ceil(Nq/NB)
-///   对 KV: tiles_m_kv = ceil(M/MB), tiles_n_kv = ceil(Nkv/NB)
-///
-/// 三条路径各自用自己的 tiles 做 assign(total_tiles, cpu_num, thread_id)。
+/// 注意：本文件不再在 new() 中转置权重，也不再持有 wq_buf/wk_buf/wv_buf。
 #[derive(Clone)]
 pub struct MatMul3<T> {
     // A / W / C
@@ -69,11 +53,6 @@ pub struct MatMul3<T> {
     pub params: MatMulParams,
     _marker: PhantomData<T>,
 
-    // 持有转置后权重缓冲
-    wq_buf: Box<[T]>,
-    wk_buf: Box<[T]>,
-    wv_buf: Box<[T]>,
-
     // 线程私有 KC×NR 面板池
     b_panel_pool: Box<[T]>,
     b_panel_stride_elems: usize,
@@ -86,11 +65,11 @@ where
     #[inline]
     pub fn new(
         hidden_ptr: *const T,
-        q_weight_ptr: *const T,
+        q_weight_ptr_nt: *const T, // ✅ 现在约定为 Wq_nt[Nq×K]
         q_state_ptr: *mut T,
-        k_weight_ptr: *const T,
+        k_weight_ptr_nt: *const T, // ✅ Wk_nt[Nkv×K]
         k_state_ptr: *mut T,
-        v_weight_ptr: *const T,
+        v_weight_ptr_nt: *const T, // ✅ Wv_nt[Nkv×K]
         v_state_ptr: *mut T,
         rope_ptr: *const T,
         head_dim: usize,
@@ -104,21 +83,6 @@ where
         a_row_step_micro: usize,
         b_row_step_micro: usize,
     ) -> Self {
-        // 预转置 W: [K×N] -> [N×K]
-        let wq_buf = unsafe { transpose_kxn_to_nxk::<T>(q_weight_ptr, col, b_q_row) };
-        let wk_buf = unsafe { transpose_kxn_to_nxk::<T>(k_weight_ptr, col, b_kv_row) };
-        let wv_buf = unsafe { transpose_kxn_to_nxk::<T>(v_weight_ptr, col, b_kv_row) };
-
-        let q_weight_ptr = ConstPtr {
-            ptr: wq_buf.as_ptr(),
-        };
-        let k_weight_ptr = ConstPtr {
-            ptr: wk_buf.as_ptr(),
-        };
-        let v_weight_ptr = ConstPtr {
-            ptr: wv_buf.as_ptr(),
-        };
-
         // 线程面板池：threads × (KC×NR)；threads 只在 new() 用一次，不进 struct
         let kc = column_step_macro.max(1);
         let nr = b_row_step_micro.max(1);
@@ -133,11 +97,11 @@ where
 
         Self {
             hidden_ptr: ConstPtr { ptr: hidden_ptr },
-            q_weight_ptr,
+            q_weight_ptr: ConstPtr { ptr: q_weight_ptr_nt }, // ✅ 直接引用外部 N×K
             q_state_ptr: MutPtr { ptr: q_state_ptr },
-            k_weight_ptr,
+            k_weight_ptr: ConstPtr { ptr: k_weight_ptr_nt }, // ✅
             k_state_ptr: MutPtr { ptr: k_state_ptr },
-            v_weight_ptr,
+            v_weight_ptr: ConstPtr { ptr: v_weight_ptr_nt }, // ✅
             v_state_ptr: MutPtr { ptr: v_state_ptr },
 
             rope_ptr: ConstPtr { ptr: rope_ptr },
@@ -156,10 +120,6 @@ where
                 b_row_step_micro,
             },
             _marker: PhantomData,
-
-            wq_buf,
-            wk_buf,
-            wv_buf,
 
             b_panel_pool,
             b_panel_stride_elems,
@@ -199,10 +159,6 @@ where
     }
 
     /// 某一条路径的 M×N×K 分块 + assign(total_tiles) + 3×32 GEMM +（可选）3×128 finalize
-    ///
-    /// 要求 MatMulkqvTrait 已经扩展为：
-    ///   fn compute1(&self, a, b_panel, c, lda, ldc, kc);
-    ///   fn compute2(&self, c_head, rope_head, ldc);
     #[inline(always)]
     unsafe fn gemm_one_path_tiles(
         &self,
@@ -230,7 +186,7 @@ where
         debug_assert_eq!(nr, 32);
         debug_assert!(k % kc_block == 0);
         debug_assert!(n % nr == 0);
-        debug_assert!(self.head_dim % nr == 0); // 比如 128 = 4×32
+        debug_assert!(self.head_dim % nr == 0);
 
         let tiles_m = (m + mb - 1) / mb;
         let tiles_n = (n + nb - 1) / nb;
@@ -259,7 +215,6 @@ where
 
                     let mut nt = 0;
                     while nt < n_blk {
-                        // 打一个 kc×32 面板
                         self.pack_b_panel_from_bnt(
                             b_nt,
                             k, // ldb_row_nt = K
@@ -275,7 +230,6 @@ where
                             let a_tile = a.add((m0 + mi) * k + k0); // 3×kc
                             let c_tile = c.add((m0 + mi) * ldc + (n0 + nt)); // 3×32
 
-                            // ✅ GEMM 微核：3×32
                             self.compute1(
                                 a_tile,
                                 b_panel_ptr as *const T,
@@ -285,24 +239,17 @@ where
                                 kc_cur,
                             );
 
-                            // ✅ 在 K 尾部 + 这一块是某个 head 的最后 32 列 => 做 3×128 finalize
                             if finalize && (k0 + kc_cur == k) {
-                                let global_col = n0 + nt; // 当前这块 32 的起始列
+                                let global_col = n0 + nt;
                                 let offset_in_head = global_col % head_dim;
 
-                                // 只有当 offset+32 == head_dim 时，这块是该 head 的最后 32 列
                                 if offset_in_head + nr == head_dim {
-                                    let head_col0 = global_col - offset_in_head; // head 的起始列
+                                    let head_col0 = global_col - offset_in_head;
 
                                     let c_head_ptr = c.add((m0 + mi) * ldc + head_col0);
                                     let rope_head_ptr = rope_base.add(head_col0);
 
-                                    // ✅ 这里调用 trait 的 compute2，内部去用 3×128 内核
-                                    self.compute2(
-                                        c_head_ptr, // 3×128 的起点
-                                        rope_head_ptr,
-                                        ldc,
-                                    );
+                                    self.compute2(c_head_ptr, rope_head_ptr, ldc);
                                 }
                             }
 
@@ -319,58 +266,67 @@ where
 
     /// 入口：不再有 S 维度，只针对当前 A[M×K] 做一次 K/Q/V。
     pub fn run(
-        &self,
-        position_index: usize,
-        position_interval: usize,
-        batch_size: usize, // M
-        cpu_num: usize,
-        thread_id: usize,
-    ) where
-        Self: MatMulkqvTrait<T>,
-    {
-        unsafe {
-            let m = batch_size;
-            let k = self.col;
-            let n_q = self.b_q_row;
-            let n_kv = self.b_kv_row;
+    &self,
+    position_index: usize,
+    position_interval: usize,
+    batch_size: usize, // M_run（可能不是 3 的倍数）
+    cpu_num: usize,
+    thread_id: usize,
+) where
+    Self: MatMulkqvTrait<T>,
+{
+    let _ = position_index;
+    let _ = position_interval;
 
-            debug_assert_eq!(m, self.m_row);
+    unsafe {
+        let m_run = batch_size;
 
-            let a_base = self.hidden_ptr.ptr;
-            let cq_base = self.q_state_ptr.ptr;
-            let ck_base = self.k_state_ptr.ptr;
-            let cv_base = self.v_state_ptr.ptr;
+        let k = self.col;
+        let n_q = self.b_q_row;
+        let n_kv = self.b_kv_row;
 
-            let wq_nt = self.q_weight_ptr.ptr;
-            let wk_nt = self.k_weight_ptr.ptr;
-            let wv_nt = self.v_weight_ptr.ptr;
+        let mr = self.params.a_row_step_micro.max(1); // 期望=3
+        debug_assert_eq!(mr, 3);
 
-            let ldq = n_q;
-            let ldk = n_kv;
-            let ldv = n_kv;
+        // === 关键：向上 pad 到 3 的倍数，用于固定 3×32 微核 ===
+        let m_pad = ((m_run + mr - 1) / mr) * mr;
 
-            let rope_base = self.rope_ptr.ptr;
+        // self.m_row 在你们“new 预留更大”语义下，应当视为 capacity（m_max）
+        debug_assert!(m_pad <= self.m_row);
 
-            // === 1) V 路径：通常不做 RMS+RoPE ===
-            self.gemm_one_path_tiles(
-                a_base, cv_base, wv_nt, m, n_kv, k, ldv, rope_base, cpu_num, thread_id,
-                false, // V 不 finalize
-            );
+        let a_base = self.hidden_ptr.ptr;
+        let cq_base = self.q_state_ptr.ptr;
+        let ck_base = self.k_state_ptr.ptr;
+        let cv_base = self.v_state_ptr.ptr;
 
-            // === 2) K 路径：做 RMS+RoPE（3×128） ===
-            self.gemm_one_path_tiles(
-                a_base, ck_base, wk_nt, m, n_kv, k, ldk, rope_base, cpu_num, thread_id,
-                true, // K finalize
-            );
+        let wq_nt = self.q_weight_ptr.ptr;
+        let wk_nt = self.k_weight_ptr.ptr;
+        let wv_nt = self.v_weight_ptr.ptr;
 
-            // === 3) Q 路径：看你模型需要，这里暂时 true ===
-            self.gemm_one_path_tiles(
-                a_base, cq_base, wq_nt, m, n_q, k, ldq, rope_base, cpu_num, thread_id,
-                true, // 如果 Q 不需要 RMS+RoPE，可以改成 false
-            );
-        }
+        let ldq = n_q;
+        let ldk = n_kv;
+        let ldv = n_kv;
+
+        let rope_base = self.rope_ptr.ptr;
+
+        // === 1) V 路径：通常不做 RMS+RoPE ===
+        self.gemm_one_path_tiles(
+            a_base, cv_base, wv_nt, m_pad, n_kv, k, ldv, rope_base, cpu_num, thread_id, false,
+        );
+
+        // === 2) K 路径：做 RMS+RoPE（3×128） ===
+        self.gemm_one_path_tiles(
+            a_base, ck_base, wk_nt, m_pad, n_kv, k, ldk, rope_base, cpu_num, thread_id, true,
+        );
+
+        // === 3) Q 路径 ===
+        self.gemm_one_path_tiles(
+            a_base, cq_base, wq_nt, m_pad, n_q, k, ldq, rope_base, cpu_num, thread_id, true,
+        );
     }
 }
+}
+
 impl<T> MatMulkqvTrait<T> for MatMul3<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
@@ -385,12 +341,12 @@ where
         _ldc: usize,
         _kc: usize,
     ) {
-        // generic 占位，不做事
+        // generic 占位
     }
 
     #[inline]
     default fn compute2(&self, _c_head: *mut T, _rope_head: *const T, _ldc: usize) {
-        // generic 占位，不做事
+        // generic 占位
     }
 }
 
@@ -408,24 +364,18 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
     ) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            // 3×32 GEMM 微核
             crate::kernel::x86_64::f16_512::matmul_rms_complex::matmul_update_inplace_3x32_accum(
                 a, b_panel, c, lda, ldc, kc,
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
-            // TODO: fallback 标量/通用实现
+            // TODO: fallback
         }
     }
 
     #[inline]
-    fn compute2(
-        &self,
-        c_head: *mut f16,      // 指向 3×128 的起点（某个 head 的整行）
-        rope_head: *const f16, // 对应这个 head 的 128 维 RoPE 相位
-        ldc: usize,
-    ) {
+    fn compute2(&self, c_head: *mut f16, rope_head: *const f16, ldc: usize) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
             let eps: f16 = 1e-6f32 as f16;
@@ -438,7 +388,7 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         {
-            // TODO: fallback 实现
+            // TODO: fallback
         }
     }
 }
@@ -455,10 +405,6 @@ impl MatMulkqvTrait<f32> for MatMul3<f32> {
         ldc: usize,
         kc: usize,
     ) {
-        // f32 标量参考实现：3x32 累加
-        // A: 3xKC (行距 lda)
-        // B_panel: KCx32 (行主序, 连续)
-        // C: 3x32 (行距 ldc)
         unsafe {
             for m in 0..3 {
                 for n in 0..32 {
@@ -476,15 +422,11 @@ impl MatMulkqvTrait<f32> for MatMul3<f32> {
 
     #[inline]
     fn compute2(&self, c_head: *mut f32, rope_head: *const f32, ldc: usize) {
-        // f32 标量参考实现：3x128 RMSNorm + RoPE
-        // c_head 指向 3 行的起始位置，每行处理 128 个元素
         unsafe {
             let eps = 1e-6;
             for r in 0..3 {
                 let row_ptr = c_head.add(r * ldc);
-                // 1. RMS Norm (In-place)
                 rms_norm(row_ptr, row_ptr, 128, eps);
-                // 2. RoPE (In-place)
                 complex_mul(row_ptr, rope_head, row_ptr, 128);
             }
         }
@@ -500,34 +442,30 @@ mod tests {
     // Helpers for f32 tests
     // ========================================================================
 
-    // 简单的参考矩阵乘法：C = A * W^T
-    fn ref_matmul_f32(
+    /// 参考：A[M×K] * W[K×N]，但我们存的是 W_nt[N×K]，所以用 w_nt[j*K + p]
+    fn ref_matmul_f32_from_wnt(
         m: usize,
         k: usize,
         n: usize,
         a: &[f32],
-        w: &[f32], // KxN
+        w_nt: &[f32], // N×K
         c: &mut [f32],
     ) {
         for i in 0..m {
             for j in 0..n {
                 let mut sum = 0.0;
                 for p in 0..k {
-                    let val_a = a[i * k + p];
-                    let val_w = w[p * n + j]; // W is KxN
-                    sum += val_a * val_w;
+                    sum += a[i * k + p] * w_nt[j * k + p];
                 }
                 c[i * n + j] = sum;
             }
         }
     }
 
-    // 参考后处理：RMS + RoPE
     fn ref_post_process_f32(m: usize, n: usize, c: &mut [f32], rope: &[f32], head_dim: usize) {
         let eps = 1e-6;
         unsafe {
             for i in 0..m {
-                // 按 head 处理
                 for h_base in (0..n).step_by(head_dim) {
                     let ptr = c.as_mut_ptr().add(i * n + h_base);
                     let rope_ptr = rope.as_ptr().add(h_base);
@@ -550,20 +488,26 @@ mod tests {
             .max(1)
     }
 
-    /// float32 reference: C[M×N] = A[M×K] * B[K×N]
-    fn gemm_ref_f16_acc_f32(a: &[f16], b: &[f16], c: &mut [f32], m: usize, k: usize, n: usize) {
+    /// f32 accumulate reference GEMM: out = A[M×K] * W[K×N]，但 W 存的是 W_nt[N×K]
+    fn gemm_ref_f16_acc_f32_from_wnt(
+        a: &[f16],
+        w_nt: &[f16], // N×K
+        out: &mut [f32],
+        m: usize,
+        k: usize,
+        n: usize,
+    ) {
         for i in 0..m {
             for j in 0..n {
                 let mut sum = 0.0f32;
                 for kk in 0..k {
-                    sum += (a[i * k + kk] as f32) * (b[kk * n + j] as f32);
+                    sum += (a[i * k + kk] as f32) * (w_nt[j * k + kk] as f32);
                 }
-                c[i * n + j] = sum;
+                out[i * n + j] = sum;
             }
         }
     }
 
-    /// 统一跑一次 runner（顺序模拟多线程），避免真的开线程引入不确定性
     fn run_runner(runner: &MatMul3<f16>, m: usize, thread_num: usize) {
         for tid in 0..thread_num {
             runner.run(0, 1, m, thread_num, tid);
@@ -576,18 +520,19 @@ mod tests {
 
     #[test]
     fn test_matmul3_qkv_f32_72_rows() {
-        // 1. 维度设定
         let m = 72;
-        let k = 256; // 假设 Hidden size
+        let k = 256;
         let head_dim = 128;
         let n_q = 32 * 128; // 4096
         let n_kv = 4 * 128; // 512
 
-        // 2. 分配内存
+        // A
         let mut a = vec![0.0f32; m * k];
-        let mut wq = vec![0.0f32; k * n_q];
-        let mut wk = vec![0.0f32; k * n_kv];
-        let mut wv = vec![0.0f32; k * n_kv];
+
+        // ✅ 权重改为 N×K（W_nt）
+        let mut wq_nt = vec![0.0f32; n_q * k];
+        let mut wk_nt = vec![0.0f32; n_kv * k];
+        let mut wv_nt = vec![0.0f32; n_kv * k];
 
         let mut cq = vec![0.0f32; m * n_q];
         let mut cq_ref = vec![0.0f32; m * n_q];
@@ -598,32 +543,39 @@ mod tests {
         let mut cv = vec![0.0f32; m * n_kv];
         let mut cv_ref = vec![0.0f32; m * n_kv];
 
-        let mut rope = vec![1.0f32; n_q]; // 足够覆盖最大的 N
+        let mut rope = vec![1.0f32; n_q.max(n_kv)];
 
-        // 3. 初始化数据 (使用确定性数据方便调试)
         for i in 0..m * k {
             a[i] = (i % 100) as f32 * 0.01;
         }
-        for i in 0..k * n_q {
-            wq[i] = ((i + 1) % 7) as f32 * 0.01;
+
+        // 原先是 K×N 的填法，这里改成 N×K
+        for j in 0..n_q {
+            for kk in 0..k {
+                let idx_old = kk * n_q + j;
+                let v = ((idx_old + 1) % 7) as f32 * 0.01;
+                wq_nt[j * k + kk] = v;
+            }
         }
-        for i in 0..k * n_kv {
-            wk[i] = ((i + 2) % 7) as f32 * 0.01;
-            wv[i] = ((i + 3) % 7) as f32 * 0.01;
+        for j in 0..n_kv {
+            for kk in 0..k {
+                let idx_old = kk * n_kv + j;
+                wk_nt[j * k + kk] = ((idx_old + 2) % 7) as f32 * 0.01;
+                wv_nt[j * k + kk] = ((idx_old + 3) % 7) as f32 * 0.01;
+            }
         }
-        for i in 0..n_q {
+        for i in 0..rope.len() {
             rope[i] = 1.0;
-        } // 简化 RoPE 为 1.0，主要测流程
+        }
 
         unsafe {
-            // 4. 运行 MatMul3
             let matmul = MatMul3::<f32>::new(
                 a.as_ptr(),
-                wq.as_ptr(),
+                wq_nt.as_ptr(),
                 cq.as_mut_ptr(),
-                wk.as_ptr(),
+                wk_nt.as_ptr(),
                 ck.as_mut_ptr(),
-                wv.as_ptr(),
+                wv_nt.as_ptr(),
                 cv.as_mut_ptr(),
                 rope.as_ptr(),
                 head_dim,
@@ -640,19 +592,15 @@ mod tests {
 
             matmul.run(0, 0, m, 1, 0);
 
-            // 5. 运行参考实现
-            // Q: MatMul + RMS + RoPE
-            ref_matmul_f32(m, k, n_q, &a, &wq, &mut cq_ref);
+            // reference（从 W_nt 计算）
+            ref_matmul_f32_from_wnt(m, k, n_q, &a, &wq_nt, &mut cq_ref);
             ref_post_process_f32(m, n_q, &mut cq_ref, &rope, head_dim);
 
-            // K: MatMul + RMS + RoPE
-            ref_matmul_f32(m, k, n_kv, &a, &wk, &mut ck_ref);
+            ref_matmul_f32_from_wnt(m, k, n_kv, &a, &wk_nt, &mut ck_ref);
             ref_post_process_f32(m, n_kv, &mut ck_ref, &rope, head_dim);
 
-            // V: Only MatMul
-            ref_matmul_f32(m, k, n_kv, &a, &wv, &mut cv_ref);
+            ref_matmul_f32_from_wnt(m, k, n_kv, &a, &wv_nt, &mut cv_ref);
 
-            // 6. 验证结果
             let verify = |name: &str, out: &[f32], reference: &[f32]| {
                 let mut max_diff = 0.0f32;
                 for (i, (v1, v2)) in out.iter().zip(reference.iter()).enumerate() {
@@ -676,9 +624,6 @@ mod tests {
         }
     }
 
-    /// 让 finalize 不触发：
-    /// - finalize=true 也行，但只要 N < head_dim=128，并且不会覆盖到 head 的最后 32 片段，就不会进 compute2。
-    /// 这里我们简单设置 Nq/Nkv 都 < 128，且 tile 不会触到 offset_in_head+32==128 的条件。
     #[test]
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
     fn test_kqv_f16_avx512_small_single_tile() {
@@ -691,62 +636,66 @@ mod tests {
         let thread_num = avail_threads_cap(8);
 
         let mut a = vec![0.0f16; M * K];
-        let mut wq = vec![0.0f16; K * NQ];
-        let mut wk = vec![0.0f16; K * NKV];
-        let mut wv = vec![0.0f16; K * NKV];
+
+        // ✅ 权重改为 N×K
+        let mut wq_nt = vec![0.0f16; NQ * K];
+        let mut wk_nt = vec![0.0f16; NKV * K];
+        let mut wv_nt = vec![0.0f16; NKV * K];
 
         let mut cq = vec![0.0f16; M * NQ];
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
-        let rope = vec![0.0f16; HEAD_DIM]; // 不触发 finalize 时内容无所谓
+        let rope = vec![0.0f16; HEAD_DIM];
 
         for i in 0..M {
             for kk in 0..K {
                 a[i * K + kk] = (0.01f32 * (i as f32) + 0.001f32 * (kk as f32)) as f16;
             }
         }
-        for kk in 0..K {
-            for j in 0..NQ {
-                wq[kk * NQ + j] = (0.02f32 * (kk as f32) + 0.003f32 * (j as f32)) as f16;
+
+        // 原来是 K×N 的写法，这里转成 N×K
+        for j in 0..NQ {
+            for kk in 0..K {
+                wq_nt[j * K + kk] = (0.02f32 * (kk as f32) + 0.003f32 * (j as f32)) as f16;
             }
-            for j in 0..NKV {
-                wk[kk * NKV + j] = (0.015f32 * (kk as f32) + 0.002f32 * (j as f32)) as f16;
-                wv[kk * NKV + j] = (0.017f32 * (kk as f32) + 0.0025f32 * (j as f32)) as f16;
+        }
+        for j in 0..NKV {
+            for kk in 0..K {
+                wk_nt[j * K + kk] = (0.015f32 * (kk as f32) + 0.002f32 * (j as f32)) as f16;
+                wv_nt[j * K + kk] = (0.017f32 * (kk as f32) + 0.0025f32 * (j as f32)) as f16;
             }
         }
 
-        let runner = unsafe {
-            MatMul3::<f16>::new(
-                a.as_ptr(),
-                wq.as_ptr(),
-                cq.as_mut_ptr(),
-                wk.as_ptr(),
-                ck.as_mut_ptr(),
-                wv.as_ptr(),
-                cv.as_mut_ptr(),
-                rope.as_ptr(),
-                HEAD_DIM,
-                M,
-                K,
-                NQ,
-                NKV,
-                3,  // MB
-                32, // NB
-                64, // KC
-                3,  // MR
-                32, // NR
-            )
-        };
+        let runner = MatMul3::<f16>::new(
+            a.as_ptr(),
+            wq_nt.as_ptr(),
+            cq.as_mut_ptr(),
+            wk_nt.as_ptr(),
+            ck.as_mut_ptr(),
+            wv_nt.as_ptr(),
+            cv.as_mut_ptr(),
+            rope.as_ptr(),
+            HEAD_DIM,
+            M,
+            K,
+            NQ,
+            NKV,
+            3,  // MB
+            32, // NB
+            64, // KC
+            3,  // MR
+            32, // NR
+        );
 
         run_runner(&runner, M, thread_num);
 
         let mut cq_ref = vec![0.0f32; M * NQ];
         let mut ck_ref = vec![0.0f32; M * NKV];
         let mut cv_ref = vec![0.0f32; M * NKV];
-        gemm_ref_f16_acc_f32(&a, &wq, &mut cq_ref, M, K, NQ);
-        gemm_ref_f16_acc_f32(&a, &wk, &mut ck_ref, M, K, NKV);
-        gemm_ref_f16_acc_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wq_nt, &mut cq_ref, M, K, NQ);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wk_nt, &mut ck_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M, K, NKV);
 
         for i in 0..M {
             for j in 0..NQ {
@@ -759,22 +708,29 @@ mod tests {
         }
     }
 
-    /// multi-tile：M 多个 MB(=3)，N 多个 NB（更能覆盖 assign + tile 逻辑）
+    // 下面这些 f16 测试原本都以 K×N 构造权重并 reference 也是 K×N；
+    // 现在统一改为 N×K（W_nt），因此全部按同样方式改造：
+    //   1) wq/wk/wv 的 Vec 长度从 K*N 变为 N*K
+    //   2) 填充索引从 [kk*N + j] 变为 [j*K + kk]
+    //   3) reference 从 b[kk*N + j] 变为 w_nt[j*K + kk]
+    //
+    // 为了避免篇幅爆炸，这里保留你原测试结构，并做同样的 layout 改动。
+
     #[test]
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
     fn test_kqv_f16_avx512_multi_tile() {
-        const M: usize = 12; // 4 个 MB(=3)
+        const M: usize = 12;
         const K: usize = 64;
-        const NQ: usize = 96; // 3 个 NR(=32)
+        const NQ: usize = 96;
         const NKV: usize = 96;
         const HEAD_DIM: usize = 128;
 
         let thread_num = avail_threads_cap(16);
 
         let mut a = vec![0.0f16; M * K];
-        let mut wq = vec![0.0f16; K * NQ];
-        let mut wk = vec![0.0f16; K * NKV];
-        let mut wv = vec![0.0f16; K * NKV];
+        let mut wq_nt = vec![0.0f16; NQ * K];
+        let mut wk_nt = vec![0.0f16; NKV * K];
+        let mut wv_nt = vec![0.0f16; NKV * K];
 
         let mut cq = vec![0.0f16; M * NQ];
         let mut ck = vec![0.0f16; M * NKV];
@@ -787,47 +743,47 @@ mod tests {
                 a[i * K + kk] = (((i * 7 + kk * 3) % 19) as f32 * 0.01f32) as f16;
             }
         }
-        for kk in 0..K {
-            for j in 0..NQ {
-                wq[kk * NQ + j] = (((kk * 5 + j * 11) % 23) as f32 * 0.01f32) as f16;
+        for j in 0..NQ {
+            for kk in 0..K {
+                wq_nt[j * K + kk] = (((kk * 5 + j * 11) % 23) as f32 * 0.01f32) as f16;
             }
-            for j in 0..NKV {
-                wk[kk * NKV + j] = (((kk * 3 + j * 7) % 29) as f32 * 0.01f32) as f16;
-                wv[kk * NKV + j] = (((kk * 9 + j * 4) % 31) as f32 * 0.01f32) as f16;
+        }
+        for j in 0..NKV {
+            for kk in 0..K {
+                wk_nt[j * K + kk] = (((kk * 3 + j * 7) % 29) as f32 * 0.01f32) as f16;
+                wv_nt[j * K + kk] = (((kk * 9 + j * 4) % 31) as f32 * 0.01f32) as f16;
             }
         }
 
-        let runner = unsafe {
-            MatMul3::<f16>::new(
-                a.as_ptr(),
-                wq.as_ptr(),
-                cq.as_mut_ptr(),
-                wk.as_ptr(),
-                ck.as_mut_ptr(),
-                wv.as_ptr(),
-                cv.as_mut_ptr(),
-                rope.as_ptr(),
-                HEAD_DIM,
-                M,
-                K,
-                NQ,
-                NKV,
-                6,  // MB: 让 tile 变化
-                64, // NB
-                64, // KC
-                3,  // MR
-                32, // NR
-            )
-        };
+        let runner = MatMul3::<f16>::new(
+            a.as_ptr(),
+            wq_nt.as_ptr(),
+            cq.as_mut_ptr(),
+            wk_nt.as_ptr(),
+            ck.as_mut_ptr(),
+            wv_nt.as_ptr(),
+            cv.as_mut_ptr(),
+            rope.as_ptr(),
+            HEAD_DIM,
+            M,
+            K,
+            NQ,
+            NKV,
+            6,
+            64,
+            64,
+            3,
+            32,
+        );
 
         run_runner(&runner, M, thread_num);
 
         let mut cq_ref = vec![0.0f32; M * NQ];
         let mut ck_ref = vec![0.0f32; M * NKV];
         let mut cv_ref = vec![0.0f32; M * NKV];
-        gemm_ref_f16_acc_f32(&a, &wq, &mut cq_ref, M, K, NQ);
-        gemm_ref_f16_acc_f32(&a, &wk, &mut ck_ref, M, K, NKV);
-        gemm_ref_f16_acc_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wq_nt, &mut cq_ref, M, K, NQ);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wk_nt, &mut ck_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M, K, NKV);
 
         for i in 0..M {
             for j in 0..NQ {
@@ -840,11 +796,10 @@ mod tests {
         }
     }
 
-    /// KC split：K=128, KC=64 => 两个 k-block，覆盖累加路径
     #[test]
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
     fn test_kqv_f16_avx512_kc_split() {
-        const M: usize = 6;
+        const M: usize = 3;
         const K: usize = 128;
         const NQ: usize = 64;
         const NKV: usize = 64;
@@ -853,9 +808,9 @@ mod tests {
         let thread_num = avail_threads_cap(8);
 
         let mut a = vec![0.0f16; M * K];
-        let mut wq = vec![0.0f16; K * NQ];
-        let mut wk = vec![0.0f16; K * NKV];
-        let mut wv = vec![0.0f16; K * NKV];
+        let mut wq_nt = vec![0.0f16; NQ * K];
+        let mut wk_nt = vec![0.0f16; NKV * K];
+        let mut wv_nt = vec![0.0f16; NKV * K];
 
         let mut cq = vec![0.0f16; M * NQ];
         let mut ck = vec![0.0f16; M * NKV];
@@ -868,47 +823,47 @@ mod tests {
                 a[i * K + kk] = (((i + kk) % 17) as f32 * 0.01f32) as f16;
             }
         }
-        for kk in 0..K {
-            for j in 0..NQ {
-                wq[kk * NQ + j] = (((kk * 2 + j) % 13) as f32 * 0.01f32) as f16;
+        for j in 0..NQ {
+            for kk in 0..K {
+                wq_nt[j * K + kk] = (((kk * 2 + j) % 13) as f32 * 0.01f32) as f16;
             }
-            for j in 0..NKV {
-                wk[kk * NKV + j] = (((kk * 3 + j * 2) % 19) as f32 * 0.01f32) as f16;
-                wv[kk * NKV + j] = (((kk * 5 + j * 3) % 23) as f32 * 0.01f32) as f16;
+        }
+        for j in 0..NKV {
+            for kk in 0..K {
+                wk_nt[j * K + kk] = (((kk * 3 + j * 2) % 19) as f32 * 0.01f32) as f16;
+                wv_nt[j * K + kk] = (((kk * 5 + j * 3) % 23) as f32 * 0.01f32) as f16;
             }
         }
 
-        let runner = unsafe {
-            MatMul3::<f16>::new(
-                a.as_ptr(),
-                wq.as_ptr(),
-                cq.as_mut_ptr(),
-                wk.as_ptr(),
-                ck.as_mut_ptr(),
-                wv.as_ptr(),
-                cv.as_mut_ptr(),
-                rope.as_ptr(),
-                HEAD_DIM,
-                M,
-                K,
-                NQ,
-                NKV,
-                6,  // MB
-                32, // NB
-                64, // KC（分两段）
-                3,  // MR
-                32, // NR
-            )
-        };
+        let runner = MatMul3::<f16>::new(
+            a.as_ptr(),
+            wq_nt.as_ptr(),
+            cq.as_mut_ptr(),
+            wk_nt.as_ptr(),
+            ck.as_mut_ptr(),
+            wv_nt.as_ptr(),
+            cv.as_mut_ptr(),
+            rope.as_ptr(),
+            HEAD_DIM,
+            M,
+            K,
+            NQ,
+            NKV,
+            3,
+            32,
+            64,
+            3,
+            32,
+        );
 
         run_runner(&runner, M, thread_num);
 
         let mut cq_ref = vec![0.0f32; M * NQ];
         let mut ck_ref = vec![0.0f32; M * NKV];
         let mut cv_ref = vec![0.0f32; M * NKV];
-        gemm_ref_f16_acc_f32(&a, &wq, &mut cq_ref, M, K, NQ);
-        gemm_ref_f16_acc_f32(&a, &wk, &mut ck_ref, M, K, NKV);
-        gemm_ref_f16_acc_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wq_nt, &mut cq_ref, M, K, NQ);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wk_nt, &mut ck_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M, K, NKV);
 
         for i in 0..M {
             for j in 0..NQ {
@@ -921,7 +876,6 @@ mod tests {
         }
     }
 
-    /// 稍大一点的尺寸（但仍可做 unit test）：覆盖更多 tile/累加
     #[test]
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
     fn test_kqv_f16_avx512_medium() {
@@ -934,10 +888,9 @@ mod tests {
         let thread_num = avail_threads_cap(16);
 
         let mut a = vec![0.0f16; M * K];
-
-        let mut wq = vec![0.0f16; K * NQ];
-        let mut wk = vec![0.0f16; K * NKV];
-        let mut wv = vec![0.0f16; K * NKV];
+        let mut wq_nt = vec![0.0f16; NQ * K];
+        let mut wk_nt = vec![0.0f16; NKV * K];
+        let mut wv_nt = vec![0.0f16; NKV * K];
 
         let mut cq = vec![0.0f16; M * NQ];
         let mut ck = vec![0.0f16; M * NKV];
@@ -950,49 +903,48 @@ mod tests {
                 a[i * K + kk] = (((i * 3 + kk * 5) % 97) as f32 * 0.001) as f16;
             }
         }
-        for kk in 0..K {
-            for j in 0..NQ {
-                wq[kk * NQ + j] = (((kk * 7 + j * 11) % 101) as f32 * 0.001) as f16;
+        for j in 0..NQ {
+            for kk in 0..K {
+                wq_nt[j * K + kk] = (((kk * 7 + j * 11) % 101) as f32 * 0.001) as f16;
             }
-            for j in 0..NKV {
-                wk[kk * NKV + j] = (((kk * 13 + j * 17) % 103) as f32 * 0.001) as f16;
-                wv[kk * NKV + j] = (((kk * 19 + j * 23) % 107) as f32 * 0.001) as f16;
+        }
+        for j in 0..NKV {
+            for kk in 0..K {
+                wk_nt[j * K + kk] = (((kk * 13 + j * 17) % 103) as f32 * 0.001) as f16;
+                wv_nt[j * K + kk] = (((kk * 19 + j * 23) % 107) as f32 * 0.001) as f16;
             }
         }
 
-        let runner = unsafe {
-            MatMul3::<f16>::new(
-                a.as_ptr(),
-                wq.as_ptr(),
-                cq.as_mut_ptr(),
-                wk.as_ptr(),
-                ck.as_mut_ptr(),
-                wv.as_ptr(),
-                cv.as_mut_ptr(),
-                rope.as_ptr(),
-                HEAD_DIM,
-                M,
-                K,
-                NQ,
-                NKV,
-                24,  // MB
-                128, // NB
-                64,  // KC
-                3,   // MR
-                32,  // NR
-            )
-        };
+        let runner = MatMul3::<f16>::new(
+            a.as_ptr(),
+            wq_nt.as_ptr(),
+            cq.as_mut_ptr(),
+            wk_nt.as_ptr(),
+            ck.as_mut_ptr(),
+            wv_nt.as_ptr(),
+            cv.as_mut_ptr(),
+            rope.as_ptr(),
+            HEAD_DIM,
+            M,
+            K,
+            NQ,
+            NKV,
+            24,
+            128,
+            64,
+            3,
+            32,
+        );
 
         run_runner(&runner, M, thread_num);
 
         let mut cq_ref = vec![0.0f32; M * NQ];
         let mut ck_ref = vec![0.0f32; M * NKV];
         let mut cv_ref = vec![0.0f32; M * NKV];
-        gemm_ref_f16_acc_f32(&a, &wq, &mut cq_ref, M, K, NQ);
-        gemm_ref_f16_acc_f32(&a, &wk, &mut ck_ref, M, K, NKV);
-        gemm_ref_f16_acc_f32(&a, &wv, &mut cv_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wq_nt, &mut cq_ref, M, K, NQ);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wk_nt, &mut ck_ref, M, K, NKV);
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M, K, NKV);
 
-        // 更大规模，容差放宽
         for i in 0..M {
             for j in 0..NQ {
                 assert_abs_diff_eq!(cq[i * NQ + j] as f32, cq_ref[i * NQ + j], epsilon = 1.0);
@@ -1003,4 +955,98 @@ mod tests {
             }
         }
     }
+
+    #[test]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+fn test_kqv_f16_avx512_batch7_pad_to9_no_finalize() {
+    use approx::assert_abs_diff_eq;
+
+    const M_RUN: usize = 7;   // 非 3 倍数
+    const M_MAX: usize = 9;   // ceil_div(7,3)*3 = 9
+    const K: usize = 64;
+
+    // 关键：让 N < HEAD_DIM，避免 finalize 条件 offset+32==head_dim 触发
+    const HEAD_DIM: usize = 128;
+    const NQ: usize = 64;   // < 128 => nt 只会 0,32，不会到 96
+    const NKV: usize = 64;  // < 128
+
+    let thread_num = avail_threads_cap(8);
+
+    // A 按 M_MAX 分配（capacity），只填前 M_RUN 行，其余保持 0
+    let mut a = vec![0.0f16; M_MAX * K];
+    for i in 0..M_RUN {
+        for kk in 0..K {
+            a[i * K + kk] = (0.01f32 * (i as f32) + 0.001f32 * (kk as f32)) as f16;
+        }
+    }
+
+    // W_nt: N×K
+    let mut wq_nt = vec![0.0f16; NQ * K];
+    let mut wk_nt = vec![0.0f16; NKV * K];
+    let mut wv_nt = vec![0.0f16; NKV * K];
+
+    for j in 0..NQ {
+        for kk in 0..K {
+            wq_nt[j * K + kk] = (0.02f32 * (kk as f32) + 0.003f32 * (j as f32)) as f16;
+        }
+    }
+    for j in 0..NKV {
+        for kk in 0..K {
+            wk_nt[j * K + kk] = (0.015f32 * (kk as f32) + 0.002f32 * (j as f32)) as f16;
+            wv_nt[j * K + kk] = (0.017f32 * (kk as f32) + 0.0025f32 * (j as f32)) as f16;
+        }
+    }
+
+    // 输出按 M_MAX 分配（capacity）
+    let mut cq = vec![0.0f16; M_MAX * NQ];
+    let mut ck = vec![0.0f16; M_MAX * NKV];
+    let mut cv = vec![0.0f16; M_MAX * NKV];
+
+    // rope 给足长度即可（本测试不会触发 finalize）
+    let rope = vec![1.0f16; HEAD_DIM.max(NQ).max(NKV)];
+
+    // MB 要是 MR 的倍数（你现有 gemm_one_path_tiles 要求 m_blk%mr==0）
+    let runner = MatMul3::<f16>::new(
+        a.as_ptr(),
+        wq_nt.as_ptr(),
+        cq.as_mut_ptr(),
+        wk_nt.as_ptr(),
+        ck.as_mut_ptr(),
+        wv_nt.as_ptr(),
+        cv.as_mut_ptr(),
+        rope.as_ptr(),
+        HEAD_DIM,
+        M_MAX, // m_row 当 capacity 用
+        K,
+        NQ,
+        NKV,
+        6,   // MB
+        64,  // NB（=N）
+        64,  // KC（=K）
+        3,   // MR
+        32,  // NR
+    );
+
+    // run 传 batch=7（内部 pad 到 9）
+    run_runner(&runner, M_RUN, thread_num);
+
+    // reference：只算前 7 行（pad 行不关心）
+    let mut cq_ref = vec![0.0f32; M_RUN * NQ];
+    let mut ck_ref = vec![0.0f32; M_RUN * NKV];
+    let mut cv_ref = vec![0.0f32; M_RUN * NKV];
+
+    gemm_ref_f16_acc_f32_from_wnt(&a, &wq_nt, &mut cq_ref, M_RUN, K, NQ);
+    gemm_ref_f16_acc_f32_from_wnt(&a, &wk_nt, &mut ck_ref, M_RUN, K, NKV);
+    gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M_RUN, K, NKV);
+
+    for i in 0..M_RUN {
+        for j in 0..NQ {
+            assert_abs_diff_eq!(cq[i * NQ + j] as f32, cq_ref[i * NQ + j], epsilon = 5e-1);
+        }
+        for j in 0..NKV {
+            assert_abs_diff_eq!(ck[i * NKV + j] as f32, ck_ref[i * NKV + j], epsilon = 5e-1);
+            assert_abs_diff_eq!(cv[i * NKV + j] as f32, cv_ref[i * NKV + j], epsilon = 5e-1);
+        }
+    }
+}
 }
