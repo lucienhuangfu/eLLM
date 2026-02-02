@@ -1,40 +1,59 @@
-use crate::init::record::{BatchList, BatchRecord, Phase};
 use async_stream::stream;
 use axum::{
     extract::State, response::sse::Event, response::IntoResponse, response::Sse, routing::post,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokenizers::Tokenizer;
 use tokio::net::TcpListener;
+use tokio::sync::{Notify, RwLock};
+
+use crate::init::record::{BatchList, BatchRecord, Phase};
 
 // ===== OpenAI API 结构 =====
 
 #[derive(Debug)]
 struct BatchPrompt {
-    tokens: Vec<i32>,
-    len: usize,
+    tokens: Vec<u32>, // 展平的二维矩阵 [batch_size][capacity]
+    batch_size: usize,
+    capacity: usize,
 }
 
 impl BatchPrompt {
-    fn new(capacity: usize) -> Self {
+    fn new(batch_size: usize, capacity: usize) -> Self {
         Self {
-            tokens: vec![0; capacity],
-            len: 0,
+            tokens: vec![0; batch_size * capacity],
+            batch_size,
+            capacity,
         }
     }
 
-    fn write_prompt(&mut self, prompt: &str) {
-        // 模拟分词过程，实际应调用 tokenizer.encode
-        let mock_tokens: Vec<i32> = prompt.as_bytes().iter().map(|&b| b as i32).collect();
-        let write_len = mock_tokens.len().min(self.tokens.len());
+    fn write_prompt(
+        &mut self,
+        slot_index: usize,
+        prompt: &str,
+        tokenizer: &Tokenizer,
+    ) -> Result<usize, String> {
+        // 使用真正的分词器进行编码
+        let tokens = tokenizer
+            .encode(prompt, true)
+            .map_err(|e| format!("Tokenization failed: {}", e))?;
+        let ids = tokens.get_ids();
+        let write_len = ids.len().min(self.capacity);
 
-        // 将 prompt 一次性写入预分配的 buffer
-        self.tokens[..write_len].copy_from_slice(&mock_tokens[..write_len]);
-        self.len = write_len;
+        // 计算在展平矩阵中的起始偏移量
+        let offset = slot_index * self.capacity;
 
-        println!("Prompt 已写入 BatchPrompt, 长度: {}", self.len);
+        // 将 tokens 写入对应 slot 的 buffer
+        self.tokens[offset..offset + write_len].copy_from_slice(&ids[..write_len]);
+
+        println!(
+            "Prompt 已通过 Tokenizer 写入 BatchPrompt Slot {}, 长度: {}",
+            slot_index, write_len
+        );
+        Ok(write_len)
     }
 }
 
@@ -90,8 +109,9 @@ pub struct StreamChoice {
 
 #[derive(Clone)]
 struct AppState {
-    batch_prompts: Arc<Mutex<Vec<BatchPrompt>>>,
-    batch_list: Arc<Mutex<BatchList>>,
+    batch_prompts: Arc<RwLock<BatchPrompt>>,
+    batch_list: Arc<RwLock<BatchList>>,
+    tokenizer: Arc<Tokenizer>,
 }
 
 // ===== HTTP 处理器 =====
@@ -112,21 +132,30 @@ async fn chat_completions(
         .join("\n");
 
     // 从全局状态获取并写入，如果没有空位则等待
-    let (slot_index, notifier) = loop {
+    let (slot_index, notifier): (usize, Arc<Notify>) = loop {
         let mut found_slot = None;
         {
-            let mut batch_list = state.batch_list.lock().unwrap();
-            let mut batch_prompts = state.batch_prompts.lock().unwrap();
+            let mut batch_list = state.batch_list.write().await;
+            let mut batch_prompts = state.batch_prompts.write().await;
+            let current_size = batch_list.current_size;
 
-            for (i, record) in batch_list.records[..batch_list.current_size]
-                .iter_mut()
-                .enumerate()
-            {
-                if record.sequence_length == 0 {
-                    batch_prompts[i].write_prompt(&prompt);
-                    record.sequence_length = batch_prompts[i].len;
-                    found_slot = Some((i, record.notify.clone()));
-                    break;
+            for (i, record) in batch_list.records[..current_size].iter_mut().enumerate() {
+                if record.prompt_length == 0 {
+                    match batch_prompts.write_prompt(i, &prompt, &state.tokenizer) {
+                        Ok(write_len) => {
+                            record.prompt_length = write_len;
+                            found_slot = Some((i, record.notify.clone()));
+                            break;
+                        }
+                        Err(e) => {
+                            eprintln!("Error writing prompt: {}", e);
+                            return (
+                                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Tokenization failed: {}", e),
+                            )
+                                .into_response();
+                        }
+                    }
                 }
             }
         }
@@ -149,18 +178,45 @@ async fn chat_completions(
     // 等待推理完成的信号唤醒
     notifier.notified().await;
 
+    // 根据 sequence_index - prompt_length 提取生成的 tokens 并解码
+    let generated_text = {
+        let (start, end, capacity) = {
+            let batch_list = state.batch_list.read().await;
+            let record = &batch_list.records[slot_index];
+            let batch_prompts_meta = state.batch_prompts.read().await;
+            let base = slot_index * batch_prompts_meta.capacity;
+            (
+                base + record.prompt_length,
+                base + record.sequence_index,
+                batch_prompts_meta.tokens.len(),
+            )
+        };
+
+        if end > start && end <= capacity {
+            let batch_prompts = state.batch_prompts.read().await;
+            state
+                .tokenizer
+                .decode(&batch_prompts.tokens[start..end], true)
+                .unwrap_or_else(|_| String::from("Decode error"))
+        } else {
+            String::new()
+        }
+    };
+
+    // 释放槽位并重置状态
+    {
+        let mut batch_list = state.batch_list.write().await;
+        let record = &mut batch_list.records[slot_index];
+        record.prompt_length = 0;
+        record.sequence_index = 0;
+        record.kv_index = 0;
+    }
+
     if is_stream {
         // 流式响应
+        let model_name = request.model.clone();
         let stream_response = stream! {
-            // 模拟推理开始前的延迟
-            tokio::time::sleep(Duration::from_millis(100)).await;
-
-            let result = format!(
-                "This is a direct response to '{}' using model {}. Inference is now nested inside the handler without background workers.",
-                prompt.replace("\n", " "), request.model
-            );
-
-            let words: Vec<&str> = result.split_whitespace().collect();
+            let words: Vec<&str> = generated_text.split_inclusive(' ').collect();
             for (i, word) in words.iter().enumerate() {
                 let is_final = i == words.len() - 1;
                 let response = StreamResponse {
@@ -170,43 +226,29 @@ async fn chat_completions(
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_secs(),
-                    model: request.model.clone(),
+                    model: model_name.clone(),
                     choices: vec![StreamChoice {
                         index: 0,
                         delta: ChatMessage {
                             role: "assistant".to_string(),
-                            content: format!("{} ", word),
+                            content: word.to_string(),
                         },
                         finish_reason: if is_final { Some("stop".to_string()) } else { None },
                     }],
                 };
 
-                match serde_json::to_string(&response) {
-                    Ok(json) => yield Ok(Event::default().data(json)),
-                    Err(_) => yield Err(axum::Error::new("JSON serialization failed")),
+                if let Ok(json) = serde_json::to_string(&response) {
+                    yield Ok::<Event, axum::Error>(Event::default().data(json));
                 }
 
-                // 模拟流式生成的词与词之间的间隔
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                if is_final {
-                    break;
-                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
             }
         };
 
         Sse::new(stream_response).into_response()
     } else {
         // 非流式响应 - 直接执行推理并返回
-        println!("执行同步推理: model={}", request.model);
-
-        // 模拟推理计算时间
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let content = format!(
-            "This is a direct synchronous response to '{}' using model {}. Inference is performed directly within the HTTP handler.",
-            prompt.replace("\n", " "), request.model
-        );
+        println!("同步推理完成: id={}", request_id);
 
         let response = ChatCompletionResponse {
             id: request_id,
@@ -220,7 +262,7 @@ async fn chat_completions(
                 index: 0,
                 message: ChatMessage {
                     role: "assistant".to_string(),
-                    content,
+                    content: generated_text,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -233,8 +275,8 @@ async fn chat_completions(
 async fn status() -> impl IntoResponse {
     Json(serde_json::json!({
         "status": "running",
-        "mode": "handler_nested_processing",
-        "info": "Inference is performed directly within the request handler"
+        "mode": "single_threaded_background_processing",
+        "info": "Inference and HTTP server run on a single OS thread using current_thread runtime"
     }))
 }
 
@@ -248,29 +290,32 @@ fn generate_id() -> String {
 
 // ===== 主函数 =====
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("启动直接处理模式的 OpenAI 兼容服务器...");
+    println!("启动单线程架构的 OpenAI 兼容服务器...");
+
+    // 加载分词器
+    let tokenizer_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
+    let tokenizer = Tokenizer::from_file(tokenizer_path)
+        .map_err(|e| format!("无法加载分词器 {}: {}", tokenizer_path, e))?;
+    let tokenizer = Arc::new(tokenizer);
 
     // 在 main 中创建全局共享的 batch_prompts 和 batch_list
     let batch_size = 4;
-    let mut prompts = Vec::with_capacity(batch_size);
-    for _ in 0..batch_size {
-        prompts.push(BatchPrompt::new(50000));
-    }
-    let batch_prompts = Arc::new(Mutex::new(prompts));
+    let capacity = 50000;
+    let batch_prompts = Arc::new(RwLock::new(BatchPrompt::new(batch_size, capacity)));
 
     let batch_records = (0..batch_size)
         .map(|_| BatchRecord {
             sequence_index: 0,
             kv_index: 0,
             phase: Phase::Prefill_begin,
-            sequence_length: 0,
+            prompt_length: 0,
             notify: Arc::new(tokio::sync::Notify::new()),
         })
         .collect::<Vec<_>>();
 
-    let batch_list = Arc::new(Mutex::new(BatchList {
+    let batch_list = Arc::new(RwLock::new(BatchList {
         records: batch_records.into_boxed_slice(),
         current_size: batch_size,
     }));
@@ -278,19 +323,68 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         batch_prompts,
         batch_list,
+        tokenizer,
     };
 
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))
         .route("/status", axum::routing::get(status))
-        .with_state(state);
+        .with_state(state.clone());
 
     let listener = TcpListener::bind("0.0.0.0:8000").await?;
 
     println!("服务器运行在 http://0.0.0.0:8000");
     println!("API 端点:");
-    println!("  POST /v1/chat/completions - OpenAI 兼容的聊天完成 (直接推理模式)");
+    println!("  POST /v1/chat/completions - OpenAI 兼容的聊天完成 (单线程推理模式)");
     println!("  GET  /status - 服务器状态");
+
+    // 启动背景推理循环 (在同一个单线程 runtime 上运行)
+    let loop_state = state.clone();
+    tokio::spawn(async move {
+        println!("背景推理任务已启动");
+        loop {
+            let mut processed = false;
+            {
+                let mut batch_list = loop_state.batch_list.write().await;
+                let current_size = batch_list.current_size;
+
+                for (i, record) in batch_list.records[..current_size].iter_mut().enumerate() {
+                    // 如果有 prompt 且处于等待推理的状态
+                    if record.prompt_length > 0 && record.sequence_index == 0 {
+                        // 模拟推理逻辑：
+                        // 在现实中，这里会启动真正的推理引擎。
+
+                        // 模拟生成过程：写入几个简单的 token id
+                        {
+                            let mut batch_prompts = loop_state.batch_prompts.write().await;
+                            let start = i * batch_prompts.capacity + record.prompt_length;
+                            // 模拟写入 "Hello" 类似的 token ids
+                            for j in 0..5 {
+                                if start + j < batch_prompts.tokens.len() {
+                                    batch_prompts.tokens[start + j] = 77 + (j as u32);
+                                }
+                            }
+                        }
+
+                        // 设定生成的长度
+                        record.sequence_index = record.prompt_length + 5;
+
+                        record.notify.notify_one();
+                        println!("Slot {} 推理完成 (单线程模拟)", i);
+                        processed = true;
+                    }
+                }
+            }
+
+            if !processed {
+                // 如果没有待处理任务，稍微休眠以避免 100% CPU 占用
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            } else {
+                // 处理完一批后，yield 让出执行权给 HTTP server
+                tokio::task::yield_now().await;
+            }
+        }
+    });
 
     axum::serve(listener, app).await?;
     Ok(())

@@ -16,7 +16,7 @@ pub struct BatchRecord {
     // pub snapshot_sequence_index: usize,
     pub kv_index: usize,
     pub phase: Phase,
-    pub sequence_length: usize,
+    pub prompt_length: usize,
     pub notify: Arc<Notify>,
     // 内存布局优化:
     // 原来: 8 + 8 + 1 (+7 padding) = 24 bytes
