@@ -324,7 +324,7 @@ mod test {
                 // snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
-                sequence_length: i,
+                prompt_length: i,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
             for j in 0..total_candidates_per_item {
@@ -442,7 +442,7 @@ mod test {
                 sequence_index: i,
                 kv_index: 0,
                 phase: Phase::Decode,
-                sequence_length: i,
+                prompt_length: i,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
             for j in 0..total_candidates_per_item {
