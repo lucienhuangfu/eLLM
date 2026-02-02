@@ -777,7 +777,6 @@ where
             Operator::LiftVector(LiftVector::new(token_list_ptr, self.data, self.shape[1]));
         self.operator_queue.borrow_mut().push(operator);
     }
-
 }
 
 unsafe impl<T: Copy + Default + Send + Sync> Send for Tensor<T> {}
@@ -1067,6 +1066,8 @@ mod test {
                 sequence_index: i,
                 kv_index: 0,
                 phase: Phase::Decode,
+                sequence_length: i,
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
         }
 
@@ -1215,6 +1216,8 @@ mod test {
                 sequence_index: i,
                 kv_index: 0,
                 phase: Phase::Decode,
+                sequence_length: i,
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
         }
 

@@ -257,6 +257,8 @@ mod test {
                 sequence_index: i,
                 kv_index: i,
                 phase: Phase::Decode,
+                sequence_length: i,
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             })
             .collect();
 

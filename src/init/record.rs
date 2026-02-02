@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use tokio::sync::Notify;
+
 #[derive(Clone)]
 pub struct TokenRecord {
     // pub token_id: usize,
@@ -13,9 +16,11 @@ pub struct BatchRecord {
     // pub snapshot_sequence_index: usize,
     pub kv_index: usize,
     pub phase: Phase,
+    pub sequence_length: usize,
+    pub notify: Arc<Notify>,
     // 内存布局优化:
     // 原来: 8 + 8 + 1 (+7 padding) = 24 bytes
-    // 现在: 4 + 4 + 1 (+3 padding) = 12 bytes
+    // 现在: 4 + 4 + 1 + 8 (+ ? padding)
 }
 
 #[derive(Clone, Copy, Debug)]
