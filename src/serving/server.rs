@@ -1,3 +1,4 @@
+use crate::init::record::{BatchList, BatchRecord, Phase};
 use async_stream::stream;
 use axum::{
     extract::State, response::sse::Event, response::IntoResponse, response::Sse, routing::post,
@@ -89,7 +90,8 @@ pub struct StreamChoice {
 
 #[derive(Clone)]
 struct AppState {
-    batch_prompt: Arc<Mutex<BatchPrompt>>,
+    batch_prompts: Arc<Mutex<Vec<BatchPrompt>>>,
+    batch_list: Arc<Mutex<BatchList>>,
 }
 
 // ===== HTTP 处理器 =====
@@ -109,17 +111,43 @@ async fn chat_completions(
         .collect::<Vec<_>>()
         .join("\n");
 
-    // 从全局状态获取并写入
-    {
-        let mut batch_prompt = state.batch_prompt.lock().unwrap();
-        batch_prompt.write_prompt(&prompt);
-    }
+    // 从全局状态获取并写入，如果没有空位则等待
+    let (slot_index, notifier) = loop {
+        let mut found_slot = None;
+        {
+            let mut batch_list = state.batch_list.lock().unwrap();
+            let mut batch_prompts = state.batch_prompts.lock().unwrap();
+
+            for (i, record) in batch_list.records[..batch_list.current_size]
+                .iter_mut()
+                .enumerate()
+            {
+                if record.sequence_length == 0 {
+                    batch_prompts[i].write_prompt(&prompt);
+                    record.sequence_length = batch_prompts[i].len;
+                    found_slot = Some((i, record.notify.clone()));
+                    break;
+                }
+            }
+        }
+
+        if let Some(slot) = found_slot {
+            break slot;
+        }
+
+        // 如果没有空位，等待 1ms 后重试
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    };
 
     println!(
-        "开始处理请求: {}, 模式: {}",
+        "开始等待推理处理请求: {}, Slot: {}, 模式: {}",
         request_id,
+        slot_index,
         if is_stream { "流式" } else { "同步" }
     );
+
+    // 等待推理完成的信号唤醒
+    notifier.notified().await;
 
     if is_stream {
         // 流式响应
@@ -224,9 +252,33 @@ fn generate_id() -> String {
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("启动直接处理模式的 OpenAI 兼容服务器...");
 
-    // 在 main 中创建全局共享的 batch_prompt
-    let batch_prompt = Arc::new(Mutex::new(BatchPrompt::new(50000)));
-    let state = AppState { batch_prompt };
+    // 在 main 中创建全局共享的 batch_prompts 和 batch_list
+    let batch_size = 4;
+    let mut prompts = Vec::with_capacity(batch_size);
+    for _ in 0..batch_size {
+        prompts.push(BatchPrompt::new(50000));
+    }
+    let batch_prompts = Arc::new(Mutex::new(prompts));
+
+    let batch_records = (0..batch_size)
+        .map(|_| BatchRecord {
+            sequence_index: 0,
+            kv_index: 0,
+            phase: Phase::Prefill_begin,
+            sequence_length: 0,
+            notify: Arc::new(tokio::sync::Notify::new()),
+        })
+        .collect::<Vec<_>>();
+
+    let batch_list = Arc::new(Mutex::new(BatchList {
+        records: batch_records.into_boxed_slice(),
+        current_size: batch_size,
+    }));
+
+    let state = AppState {
+        batch_prompts,
+        batch_list,
+    };
 
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))

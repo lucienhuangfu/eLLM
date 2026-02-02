@@ -487,6 +487,8 @@ mod test {
                 sequence_index: i,
                 kv_index: 0,
                 phase: Phase::Decode,
+                sequence_length: i,
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
             for j in 0..total_candidates_per_item {
                 input_values.push(5.0 - (j as f32 * 0.1) - (i as f32));

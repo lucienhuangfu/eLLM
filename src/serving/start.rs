@@ -274,18 +274,24 @@ mod test {
                 // snapshot_sequence_index: 0,
                 kv_index: 10,
                 phase: Phase::Decode,
+                sequence_length: 100,
+                notify: Arc::new(tokio::sync::Notify::new()),
             },
             BatchRecord {
                 sequence_index: 20,
                 // snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Prefill_begin,
+                sequence_length: 20,
+                notify: Arc::new(tokio::sync::Notify::new()),
             },
             BatchRecord {
                 sequence_index: 100,
                 // snapshot_sequence_index: 0,
                 kv_index: 50,
                 phase: Phase::Decode,
+                sequence_length: 100,
+                notify: Arc::new(tokio::sync::Notify::new()),
             },
         ]
         .into_boxed_slice();
@@ -369,6 +375,8 @@ mod test {
             // snapshot_sequence_index: 0,
             kv_index: 5,
             phase: Phase::Prefill_end,
+            sequence_length: 10,
+            notify: Arc::new(tokio::sync::Notify::new()),
         }]
         .into_boxed_slice();
 
@@ -514,6 +522,8 @@ mod test {
                 // snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Prefill_begin,
+                sequence_length: 50,
+                notify: Arc::new(tokio::sync::Notify::new()),
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
