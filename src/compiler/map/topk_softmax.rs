@@ -4,7 +4,6 @@ use std::ptr;
 
 use super::map_trait::TopKSoftmaxTrait;
 use crate::compiler::assign::assign;
-use crate::init::record::{BatchList, BatchRecord, Phase, TokenList, TokenRecord};
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::kernel::generic::exp::Exp;
@@ -55,121 +54,33 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         }
     }
 
-    pub fn run(
-        &self,
-        position_begin: usize,
-        position_interval: usize,
-        batch_size: usize,
-        thread_num: usize,
-        thread_id: usize,
-    ) {
-        if let Some((begin, end)) = assign(batch_size * position_interval, thread_num, thread_id) {
-            let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
-            let mut input_indices_ptr = self.input_indices_ptr.ptr;
-            let mut input_values_ptr = self.input_values_ptr.ptr;
-            let mut output_indices_ptr = self.output_indices_ptr.ptr;
-            let mut output_values_ptr = self.output_values_ptr.ptr;
+    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
+            let input_indices_ptr = self.input_indices_ptr.ptr;
+            let input_values_ptr = self.input_values_ptr.ptr;
+            let output_indices_ptr = self.output_indices_ptr.ptr;
+            let output_values_ptr = self.output_values_ptr.ptr;
 
-            let mut output_sequences_ptr = self.output_sequences.ptr;
+            let output_sequences_ptr = self.output_sequences.ptr;
 
-            for _ in begin..end {
-                let index = row_index * self.batch_size + col_index;
+            for i in begin..end {
                 unsafe {
-                    let input_stride = index * self.topk_size * thread_num;
-                    let output_stride = index * self.topk_size;
-                    let token_index = index + position_begin * self.batch_size;
-                    let token_ptr = output_sequences_ptr.add(token_index);
+                    let input_stride = i * self.topk_size * thread_num;
+                    let output_stride = i * self.topk_size;
+
                     self.compute(
                         input_indices_ptr.add(input_stride),
                         input_values_ptr.add(input_stride),
                         output_indices_ptr.add(output_stride),
                         output_values_ptr.add(output_stride),
-                        token_ptr,
                         thread_num,
                         self.topk_size,
                     );
+
+                    let predict_token = *output_indices_ptr.add(output_stride);
+                    ptr::write(output_sequences_ptr.add(i), predict_token);
                 }
             }
-
-            // --- Phase 2: Process Lift Tokens ---
-            let lift_loop_begin = std::cmp::max(begin, decode_end_index);
-
-            if lift_loop_begin < end {
-                unsafe {
-                    let lift_records_ptr = (*self.token_ptr.ptr).lift_records.as_ptr();
-                    // Calculate offset into lift_records
-                    let lift_start_offset = lift_loop_begin - decode_end_index;
-                    let lift_count = end - lift_loop_begin;
-
-                    for i in 0..lift_count {
-                        let lift_record = &*lift_records_ptr.add(lift_start_offset + i);
-                        let batch_index = lift_record.prefill_end_index;
-                        // Double dereference is unavoidable here without changing data layout
-                        let position_index = (*token_ptr_base.add(batch_index)).position_index;
-
-                        self.process_one(
-                            batch_index,
-                            position_index,
-                            thread_num,
-                            input_stride_factor,
-                            topk_size,
-                            batch_size,
-                            eos_id,
-                            input_indices_ptr,
-                            input_values_ptr,
-                            sums_ptr,
-                            output_indices_ptr,
-                            output_values_ptr,
-                            output_sequences_ptr,
-                            batch_ptr_base,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[inline(always)]
-    unsafe fn process_one(
-        &self,
-        batch_index: usize,
-        position_index: usize,
-        thread_num: usize,
-        input_stride_factor: usize,
-        topk_size: usize,
-        batch_size: usize,
-        eos_id: usize,
-        input_indices_ptr: *const usize,
-        input_values_ptr: *const T,
-        sums_ptr: *const T,
-        output_indices_ptr: *mut usize,
-        output_values_ptr: *mut T,
-        output_sequences_ptr: *mut usize,
-        batch_ptr: *mut BatchRecord,
-    ) {
-        // Optimized stride calculation
-        let input_stride = batch_index * input_stride_factor;
-        let output_stride = batch_index * topk_size;
-
-        let token_ptr = output_sequences_ptr.add((position_index + 1) * batch_size + batch_index);
-        let _output_indices_ptr = output_indices_ptr.add(output_stride);
-
-        self.compute(
-            input_indices_ptr.add(input_stride),
-            input_values_ptr.add(input_stride),
-            sums_ptr.add(batch_index),
-            _output_indices_ptr,
-            output_values_ptr.add(output_stride),
-            thread_num,
-            topk_size,
-        );
-
-        let predict_token = *_output_indices_ptr;
-        ptr::write(token_ptr, predict_token);
-
-        if predict_token == eos_id {
-            let batch_record = batch_ptr.add(batch_index);
-            (*batch_record).phase = Phase::Eos;
         }
     }
 }

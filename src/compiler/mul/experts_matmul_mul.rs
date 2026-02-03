@@ -43,7 +43,6 @@ pub struct ExpertsMatMulDown<T> {
     pub params: MatMulParams,
     _marker: PhantomData<T>,
 
-
     // ---- thread-private scratch pools（按 tid 切片）----
     // B_panel: KC × NR（行主，每行 NR 连续）
     b_panel_pool: Box<[T]>,
@@ -79,7 +78,7 @@ where
 
     pub unsafe fn new(
         nonlin_ptr: *const T,           // [E,B,Hmid]
-        wdown_nt_ptr: *const T,            // [E,Hmid,H]（行主，stride=H）
+        wdown_nt_ptr: *const T,         // [E,Hmid,H]（行主，stride=H）
         experts_indicator: *const bool, // [E]
         indice_ptr: *const bool,        // [E,B]
         weight_ptr: *const T,           // [E,B]
@@ -106,7 +105,6 @@ where
         // -------- (1) 转置 W_down[e]: (Hmid×H) → (H×Hmid) --------
         // wdown_ptr 每个 expert 的 layout： [Hmid][H]
         // 转置后： [H][Hmid]，行距=Hmid
-        
 
         // -------- (2) 分配 thread-private pools --------
         let threads = Self::detect_threads();
@@ -144,7 +142,6 @@ where
 
             params,
             _marker: PhantomData,
-
 
             b_panel_pool,
             b_panel_stride,
@@ -245,18 +242,11 @@ where
         }
     }
 
-    pub fn run(
-        &self,
-        position_index: usize,
-        position_interval: usize,
-        batch_size: usize, // = num_token
-        cpu_num: usize,
-        thread_id: usize,
-    ) {
+    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
         unsafe {
-            let bcap = self.num_token;// bmax
+            let bcap = self.num_token; // bmax
 
-            let m = batch_size; // token 数
+            let m = token_size; // token 数
             let n = self.h; // 输出列 H
             let k = self.hmid; // 输入维 Hmid
 
@@ -274,7 +264,7 @@ where
             // thread-private slices
             let (b_panel, a_tile, acc, idx_buf) = self.thread_slices(thread_id);
 
-            if let Some((tb, te)) = assign(total_tiles, cpu_num, thread_id) {
+            if let Some((tb, te)) = assign(total_tiles, thread_num, thread_id) {
                 for t in tb..te {
                     let tm = t / tiles_n;
                     let tn = t % tiles_n;
@@ -300,7 +290,7 @@ where
                             // 该 expert 的 token 命中数 cnt_e
                             let mut cnt_e = 0usize;
                             for b in 0..m {
-                                if *self.indice_ptr.ptr.add(e * bcap+ b) {
+                                if *self.indice_ptr.ptr.add(e * bcap + b) {
                                     cnt_e += 1;
                                 }
                             }
@@ -622,7 +612,7 @@ mod tests {
             )
         };
 
-        runner.run(0, 1, num_token, 1, 0);
+        runner.run(num_token, 0, 1, 0);
 
         // reference (f32)
         let mut out_ref = vec![0.0f32; num_token * num_topk * h];
@@ -712,7 +702,7 @@ mod tests {
             )
         };
 
-        runner.run(0, 1, num_token, 1, 0);
+        runner.run(num_token, 0, 1, 0);
 
         // reference
         let mut out_ref = vec![0.0f32; num_token * num_topk * h];
@@ -817,7 +807,7 @@ mod tests {
             )
         };
 
-        runner.run(0, 1, num_token, 1, 0);
+        runner.run(num_token, 0, 1, 0);
 
         // token0 只命中 expert0 => slot1 应接近 0
         {
@@ -840,413 +830,422 @@ mod tests {
         }
     }
     #[test]
-fn test_down_multithread_tail_and_accumulate_semantics() {
-    if !std::arch::is_x86_feature_detected!("avx512fp16") {
-        eprintln!("skip: avx512fp16 not detected");
-        return;
-    }
-
-    let num_experts = 2usize; // E
-    let num_token = 9usize;   // B（故意 > MR=3 且 > MB）
-    let hmid = 32usize;       // K（整除 KC）
-    let h = 48usize;          // N：32 + 16 tail
-    let num_topk = 2usize;    // 每 token 两个 expert 槽
-
-    let params = MatMulParams {
-        a_row_step_macro: 6,   // MB
-        b_row_step_macro: 48,  // NB 覆盖整行
-        column_step_macro: 16, // KC（hmid%kc==0）
-        a_row_step_micro: 3,   // MR
-        b_row_step_micro: 32,  // NR
-    };
-
-    // nonlin[E,B,Hmid]
-    let mut nonlin = vec![f16_from_f32(0.0); num_experts * num_token * hmid];
-    // wdown[E,Hmid,H]  (这里仍按你算子输入的 K×N 形式给，算子内部会转置)
-    let mut wdown = vec![f16_from_f32(0.0); num_experts * hmid * h];
-
-    // 输出 [B,Ktop,H]：注意这里验证“+=”语义，所以我们先填一个非零底噪，再跑两次对比
-    let mut out = vec![f16_from_f32(0.01); num_token * num_topk * h];
-
-    let experts_indicator = vec![true; num_experts];
-
-    // indice[E,B]：让 token 奇偶分别命中不同 expert，同时都在 topk 里
-    let mut indice = vec![false; num_experts * num_token];
-    for b in 0..num_token {
-        indice[0 * num_token + b] = true;            // expert0 命中所有
-        indice[1 * num_token + b] = (b % 2 == 0);    // expert1 命中偶数 token
-    }
-
-    // weight[E,B]
-    let mut weight = vec![f16_from_f32(0.0); num_experts * num_token];
-    for e in 0..num_experts {
-        for b in 0..num_token {
-            weight[e * num_token + b] = f16_from_f32(0.2 + 0.01 * e as f32 + 0.001 * b as f32);
+    fn test_down_multithread_tail_and_accumulate_semantics() {
+        if !std::arch::is_x86_feature_detected!("avx512fp16") {
+            eprintln!("skip: avx512fp16 not detected");
+            return;
         }
-    }
 
-    // topk[B,Ktop]：每行 [0,1] 升序
-    let mut topk = vec![0usize; num_token * num_topk];
-    for b in 0..num_token {
-        topk[b * num_topk + 0] = 0;
-        topk[b * num_topk + 1] = 1;
-    }
+        let num_experts = 2usize; // E
+        let num_token = 9usize; // B（故意 > MR=3 且 > MB）
+        let hmid = 32usize; // K（整除 KC）
+        let h = 48usize; // N：32 + 16 tail
+        let num_topk = 2usize; // 每 token 两个 expert 槽
 
-    // 填 nonlin / wdown
-    for e in 0..num_experts {
+        let params = MatMulParams {
+            a_row_step_macro: 6,   // MB
+            b_row_step_macro: 48,  // NB 覆盖整行
+            column_step_macro: 16, // KC（hmid%kc==0）
+            a_row_step_micro: 3,   // MR
+            b_row_step_micro: 32,  // NR
+        };
+
+        // nonlin[E,B,Hmid]
+        let mut nonlin = vec![f16_from_f32(0.0); num_experts * num_token * hmid];
+        // wdown[E,Hmid,H]  (这里仍按你算子输入的 K×N 形式给，算子内部会转置)
+        let mut wdown = vec![f16_from_f32(0.0); num_experts * hmid * h];
+
+        // 输出 [B,Ktop,H]：注意这里验证“+=”语义，所以我们先填一个非零底噪，再跑两次对比
+        let mut out = vec![f16_from_f32(0.01); num_token * num_topk * h];
+
+        let experts_indicator = vec![true; num_experts];
+
+        // indice[E,B]：让 token 奇偶分别命中不同 expert，同时都在 topk 里
+        let mut indice = vec![false; num_experts * num_token];
         for b in 0..num_token {
+            indice[0 * num_token + b] = true; // expert0 命中所有
+            indice[1 * num_token + b] = (b % 2 == 0); // expert1 命中偶数 token
+        }
+
+        // weight[E,B]
+        let mut weight = vec![f16_from_f32(0.0); num_experts * num_token];
+        for e in 0..num_experts {
+            for b in 0..num_token {
+                weight[e * num_token + b] = f16_from_f32(0.2 + 0.01 * e as f32 + 0.001 * b as f32);
+            }
+        }
+
+        // topk[B,Ktop]：每行 [0,1] 升序
+        let mut topk = vec![0usize; num_token * num_topk];
+        for b in 0..num_token {
+            topk[b * num_topk + 0] = 0;
+            topk[b * num_topk + 1] = 1;
+        }
+
+        // 填 nonlin / wdown
+        for e in 0..num_experts {
+            for b in 0..num_token {
+                for kk in 0..hmid {
+                    nonlin[(e * num_token + b) * hmid + kk] =
+                        f16_from_f32(0.01 * e as f32 + 0.002 * b as f32 + 0.0003 * kk as f32);
+                }
+            }
+        }
+        for e in 0..num_experts {
             for kk in 0..hmid {
-                nonlin[(e * num_token + b) * hmid + kk] =
-                    f16_from_f32(0.01 * e as f32 + 0.002 * b as f32 + 0.0003 * kk as f32);
+                for j in 0..h {
+                    // 让不同列/行有区分
+                    wdown[(e * hmid + kk) * h + j] =
+                        f16_from_f32(0.001 * e as f32 + 0.0007 * kk as f32 + 0.0002 * j as f32);
+                }
             }
         }
-    }
-    for e in 0..num_experts {
-        for kk in 0..hmid {
-            for j in 0..h {
-                // 让不同列/行有区分
-                wdown[(e * hmid + kk) * h + j] =
-                    f16_from_f32(0.001 * e as f32 + 0.0007 * kk as f32 + 0.0002 * j as f32);
+
+        let runner = unsafe {
+            ExpertsMatMulDown::<f16>::new(
+                nonlin.as_ptr(),
+                wdown.as_ptr(),
+                experts_indicator.as_ptr(),
+                indice.as_ptr(),
+                weight.as_ptr(),
+                topk.as_ptr(),
+                out.as_mut_ptr(),
+                num_experts,
+                num_token,
+                hmid,
+                h,
+                num_topk,
+                params,
+            )
+        };
+
+        // 用 2 线程跑一遍
+        let cpu_num = 2usize;
+        for tid in 0..cpu_num {
+            runner.run(num_token, 0, cpu_num, tid);
+        }
+
+        // 保存一次结果
+        let out_once = out.clone();
+
+        // 再跑一遍（验证 += 语义：第二次的增量应基本等于第一次的增量）
+        for tid in 0..cpu_num {
+            runner.run(num_token, 0, cpu_num, tid);
+        }
+
+        // reference：我们不做全量 ref（太慢），抽样检查若干点
+        // 关键：检查 tail 区间 j>=32 也被正确写入（len=16），且两次运行的增量一致
+        let mut checks = 0usize;
+        for b in 0..num_token {
+            for slot in 0..num_topk {
+                let e = topk[b * num_topk + slot];
+                if !indice[e * num_token + b] {
+                    continue;
+                }
+                // 抽两个 j：一个在 0..32，一个在 tail 32..48
+                for &j in &[7usize, 40usize] {
+                    let idx = (b * num_topk + slot) * h + j;
+                    let v0 = f32_from_f16(out_once[idx]);
+                    let v1 = f32_from_f16(out[idx]);
+
+                    // v1 - v0 应约等于 v0 - baseline(0.01)，但 baseline 我们只要求“增量一致”
+                    let delta1 = v0 - 0.01;
+                    let delta2 = v1 - v0;
+
+                    assert!(
+                        (delta1 - delta2).abs() <= 8e-2,
+                        "accumulate mismatch at b={},slot={},j={}: delta1={}, delta2={}",
+                        b,
+                        slot,
+                        j,
+                        delta1,
+                        delta2
+                    );
+                    checks += 1;
+                    if checks >= 32 {
+                        break;
+                    }
+                }
+                if checks >= 32 {
+                    break;
+                }
+            }
+            if checks >= 32 {
+                break;
             }
         }
+
+        assert!(checks > 0, "no checks performed");
     }
 
-    let runner = unsafe {
-        ExpertsMatMulDown::<f16>::new(
-            nonlin.as_ptr(),
-            wdown.as_ptr(),
-            experts_indicator.as_ptr(),
-            indice.as_ptr(),
-            weight.as_ptr(),
-            topk.as_ptr(),
-            out.as_mut_ptr(),
-            num_experts,
-            num_token,
-            hmid,
-            h,
-            num_topk,
-            params,
-        )
-    };
-
-    // 用 2 线程跑一遍
-    let cpu_num = 2usize;
-    for tid in 0..cpu_num {
-        runner.run(0, 1, num_token, cpu_num, tid);
-    }
-
-    // 保存一次结果
-    let out_once = out.clone();
-
-    // 再跑一遍（验证 += 语义：第二次的增量应基本等于第一次的增量）
-    for tid in 0..cpu_num {
-        runner.run(0, 1, num_token, cpu_num, tid);
-    }
-
-    // reference：我们不做全量 ref（太慢），抽样检查若干点
-    // 关键：检查 tail 区间 j>=32 也被正确写入（len=16），且两次运行的增量一致
-    let mut checks = 0usize;
-    for b in 0..num_token {
-        for slot in 0..num_topk {
-            let e = topk[b * num_topk + slot];
-            if !indice[e * num_token + b] {
-                continue;
-            }
-            // 抽两个 j：一个在 0..32，一个在 tail 32..48
-            for &j in &[7usize, 40usize] {
-                let idx = (b * num_topk + slot) * h + j;
-                let v0 = f32_from_f16(out_once[idx]);
-                let v1 = f32_from_f16(out[idx]);
-
-                // v1 - v0 应约等于 v0 - baseline(0.01)，但 baseline 我们只要求“增量一致”
-                let delta1 = v0 - 0.01;
-                let delta2 = v1 - v0;
-
-                assert!(
-                    (delta1 - delta2).abs() <= 8e-2,
-                    "accumulate mismatch at b={},slot={},j={}: delta1={}, delta2={}",
-                    b, slot, j, delta1, delta2
-                );
-                checks += 1;
-                if checks >= 32 { break; }
-            }
-            if checks >= 32 { break; }
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    fn test_down_stride_must_use_capacity_not_run_batch() {
+        use std::arch::is_x86_feature_detected;
+        if !is_x86_feature_detected!("avx512fp16") {
+            eprintln!("skip: avx512fp16 not detected");
+            return;
         }
-        if checks >= 32 { break; }
-    }
 
-    assert!(checks > 0, "no checks performed");
-}
+        use crate::kernel::generic::from_f32::FromF32;
 
-#[test]
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-fn test_down_stride_must_use_capacity_not_run_batch() {
-    use std::arch::is_x86_feature_detected;
-    if !is_x86_feature_detected!("avx512fp16") {
-        eprintln!("skip: avx512fp16 not detected");
-        return;
-    }
-
-    use crate::kernel::generic::from_f32::FromF32;
-
-    #[inline]
-    fn f16_from_f32(x: f32) -> f16 {
-        <f16 as FromF32>::from_f32(x)
-    }
-
-    const E: usize = 2;
-    const B_CAP: usize = 9; // capacity（构造时 num_token）
-    const B_RUN: usize = 7; // run 时 batch_size
-    const HMID: usize = 32;
-    const H: usize = 32;
-    const KTOP: usize = 2;
-
-    // 3x32 微核配置（H=32 不会 tail）
-    let params = MatMulParams {
-        a_row_step_macro: 6,   // MB（随便 >= MR 即可）
-        b_row_step_macro: 32,  // NB
-        column_step_macro: 16, // KC（HMID%KC==0）
-        a_row_step_micro: 3,   // MR
-        b_row_step_micro: 32,  // NR
-    };
-
-    // -----------------------
-    // 数据准备
-    // -----------------------
-
-    // NONLIN[e,b,k]
-    // 全设为 1，便于算 expected
-    let mut nonlin = vec![f16_from_f32(1.0); E * B_CAP * HMID];
-
-    // W_down: 原始传入预期是 [E, HMID, H] (K×N) 行主 stride=H
-    // 我们构造：
-    //  - expert0: 全 1
-    //  - expert1: 全 2
-    // 这样 expert0 的输出是 32，expert1 的输出是 64（权重=1）
-    let mut wdown = vec![f16_from_f32(0.0); E * HMID * H];
-    for kk in 0..HMID {
-        for j in 0..H {
-            wdown[0 * (HMID * H) + kk * H + j] = f16_from_f32(1.0);
-            wdown[1 * (HMID * H) + kk * H + j] = f16_from_f32(2.0);
+        #[inline]
+        fn f16_from_f32(x: f32) -> f16 {
+            <f16 as FromF32>::from_f32(x)
         }
-    }
 
-    // experts_indicator：两个 expert 都开
-    let experts_indicator = vec![true; E];
+        const E: usize = 2;
+        const B_CAP: usize = 9; // capacity（构造时 num_token）
+        const B_RUN: usize = 7; // run 时 batch_size
+        const HMID: usize = 32;
+        const H: usize = 32;
+        const KTOP: usize = 2;
 
-    // topk: 每个 token 的 topk 列表为 [0, 1]（升序）
-    let mut topk = vec![0usize; B_CAP * KTOP];
-    for b in 0..B_CAP {
-        topk[b * KTOP + 0] = 0;
-        topk[b * KTOP + 1] = 1;
-    }
+        // 3x32 微核配置（H=32 不会 tail）
+        let params = MatMulParams {
+            a_row_step_macro: 6,   // MB（随便 >= MR 即可）
+            b_row_step_macro: 32,  // NB
+            column_step_macro: 16, // KC（HMID%KC==0）
+            a_row_step_micro: 3,   // MR
+            b_row_step_micro: 32,  // NR
+        };
 
-    // indice: [E, B_CAP]
-    // 关键构造：
-    //  - expert0: 只让 b=7,8 为 true（注意：这两个是“超出 B_RUN 的 token”）
-    //  - expert1: 只让 b=5,6 为 true（这两个在 B_RUN 内）
-    //
-    // 正确实现（stride 用 B_CAP）：
-    //  - expert1 只会写 token5/6 的 slot=1
-    //  - token0/1 的 slot=1 必须保持 0
-    //
-    // 错误实现（stride 用 B_RUN=7）：
-    //  - expert1 读 indice 时 base = 1*7 = 7
-    //    它会把 expert0 的 b=7,8（正好在 indice[7],indice[8]）误当成 expert1 的 b=0,1
-    //  => token0/1 会被错误写入 slot=1（出现非 0）
-    let mut indice = vec![false; E * B_CAP];
-    indice[0 * B_CAP + 7] = true;
-    indice[0 * B_CAP + 8] = true;
-    indice[1 * B_CAP + 5] = true;
-    indice[1 * B_CAP + 6] = true;
+        // -----------------------
+        // 数据准备
+        // -----------------------
 
-    // weight: [E, B_CAP]，全 1
-    let mut weight = vec![f16_from_f32(1.0); E * B_CAP];
+        // NONLIN[e,b,k]
+        // 全设为 1，便于算 expected
+        let mut nonlin = vec![f16_from_f32(1.0); E * B_CAP * HMID];
 
-    // output: [B_CAP, KTOP, H]，先清 0
-    let mut out = vec![f16_from_f32(0.0); B_CAP * KTOP * H];
-
-    // -----------------------
-    // 运行
-    // -----------------------
-    let runner = unsafe {
-        ExpertsMatMulDown::<f16>::new(
-            nonlin.as_ptr(),
-            wdown.as_ptr(), // 如果你的 new() 现在接受的是 wdown_nt_ptr(已经转置)，那这里要传入转置后的；但你这份代码仍按 K×N 传进来更合理
-            experts_indicator.as_ptr(),
-            indice.as_ptr(),
-            weight.as_ptr(),
-            topk.as_ptr(),
-            out.as_mut_ptr(),
-            E,
-            B_CAP,
-            HMID,
-            H,
-            KTOP,
-            params,
-        )
-    };
-
-    // 单线程即可复现问题
-    runner.run(0, 1, B_RUN, 1, 0);
-
-    // -----------------------
-    // 断言：token0/1 的 expert1(slot=1) 必须保持 0
-    // -----------------------
-    for b in 0..2 {
-        let slot = 1usize; // expert1 的位置
-        for j in 0..H {
-            let idx = (b * KTOP + slot) * H + j;
-            let got = out[idx] as f32;
-            assert!(
-                got.abs() <= 1e-3,
-                "stride bug: token {} slot1 should be 0, got {} (j={})",
-                b,
-                got,
-                j
-            );
-        }
-    }
-
-    // 再检查：token5/6 的 expert1(slot=1) 应该是非零（避免“啥都没算”假通过）
-    // 期望值：sum_{kk=0..31} 1 * 2 = 64
-    for b in 5..=6 {
-        let slot = 1usize;
-        for j in 0..H {
-            let idx = (b * KTOP + slot) * H + j;
-            let got = out[idx] as f32;
-            assert!(
-                (got - 64.0).abs() <= 2.0, // fp16 累积误差给点余量
-                "expected token {} slot1 ~= 64, got {} (j={})",
-                b,
-                got,
-                j
-            );
-        }
-    }
-}
-#[test]
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-fn test_down_stride_must_use_capacity_not_run_batch_nt_weight() {
-    use std::arch::is_x86_feature_detected;
-    if !is_x86_feature_detected!("avx512fp16") {
-        eprintln!("skip: avx512fp16 not detected");
-        return;
-    }
-
-    use crate::kernel::generic::from_f32::FromF32;
-    #[inline]
-    fn f16_from_f32(x: f32) -> f16 {
-        <f16 as FromF32>::from_f32(x)
-    }
-
-    const E: usize = 2;
-    const B_CAP: usize = 9; // capacity（构造时 num_token）
-    const B_RUN: usize = 7; // run 时 batch_size
-    const HMID: usize = 32;
-    const H: usize = 32;
-    const KTOP: usize = 2;
-
-    let params = MatMulParams {
-        a_row_step_macro: 6,   // MB
-        b_row_step_macro: 32,  // NB
-        column_step_macro: 16, // KC (HMID%KC==0)
-        a_row_step_micro: 3,   // MR
-        b_row_step_micro: 32,  // NR
-    };
-
-    // NONLIN[e,b,k]：全 1
-    let nonlin = vec![f16_from_f32(1.0); E * B_CAP * HMID];
-
-    // W_down_nt: [E, H, HMID]（你现在外部已经转置好就是这个）
-    // 构造：
-    //   expert0: 全 1
-    //   expert1: 全 2
-    // 则对任意输出列 j：dot = sum_k 1*W = 32 或 64（weight=1）
-    let mut wdown_nt = vec![f16_from_f32(0.0); E * H * HMID];
-    for j in 0..H {
+        // W_down: 原始传入预期是 [E, HMID, H] (K×N) 行主 stride=H
+        // 我们构造：
+        //  - expert0: 全 1
+        //  - expert1: 全 2
+        // 这样 expert0 的输出是 32，expert1 的输出是 64（权重=1）
+        let mut wdown = vec![f16_from_f32(0.0); E * HMID * H];
         for kk in 0..HMID {
-            wdown_nt[0 * (H * HMID) + j * HMID + kk] = f16_from_f32(1.0);
-            wdown_nt[1 * (H * HMID) + j * HMID + kk] = f16_from_f32(2.0);
+            for j in 0..H {
+                wdown[0 * (HMID * H) + kk * H + j] = f16_from_f32(1.0);
+                wdown[1 * (HMID * H) + kk * H + j] = f16_from_f32(2.0);
+            }
+        }
+
+        // experts_indicator：两个 expert 都开
+        let experts_indicator = vec![true; E];
+
+        // topk: 每个 token 的 topk 列表为 [0, 1]（升序）
+        let mut topk = vec![0usize; B_CAP * KTOP];
+        for b in 0..B_CAP {
+            topk[b * KTOP + 0] = 0;
+            topk[b * KTOP + 1] = 1;
+        }
+
+        // indice: [E, B_CAP]
+        // 关键构造：
+        //  - expert0: 只让 b=7,8 为 true（注意：这两个是“超出 B_RUN 的 token”）
+        //  - expert1: 只让 b=5,6 为 true（这两个在 B_RUN 内）
+        //
+        // 正确实现（stride 用 B_CAP）：
+        //  - expert1 只会写 token5/6 的 slot=1
+        //  - token0/1 的 slot=1 必须保持 0
+        //
+        // 错误实现（stride 用 B_RUN=7）：
+        //  - expert1 读 indice 时 base = 1*7 = 7
+        //    它会把 expert0 的 b=7,8（正好在 indice[7],indice[8]）误当成 expert1 的 b=0,1
+        //  => token0/1 会被错误写入 slot=1（出现非 0）
+        let mut indice = vec![false; E * B_CAP];
+        indice[0 * B_CAP + 7] = true;
+        indice[0 * B_CAP + 8] = true;
+        indice[1 * B_CAP + 5] = true;
+        indice[1 * B_CAP + 6] = true;
+
+        // weight: [E, B_CAP]，全 1
+        let mut weight = vec![f16_from_f32(1.0); E * B_CAP];
+
+        // output: [B_CAP, KTOP, H]，先清 0
+        let mut out = vec![f16_from_f32(0.0); B_CAP * KTOP * H];
+
+        // -----------------------
+        // 运行
+        // -----------------------
+        let runner = unsafe {
+            ExpertsMatMulDown::<f16>::new(
+                nonlin.as_ptr(),
+                wdown.as_ptr(), // 如果你的 new() 现在接受的是 wdown_nt_ptr(已经转置)，那这里要传入转置后的；但你这份代码仍按 K×N 传进来更合理
+                experts_indicator.as_ptr(),
+                indice.as_ptr(),
+                weight.as_ptr(),
+                topk.as_ptr(),
+                out.as_mut_ptr(),
+                E,
+                B_CAP,
+                HMID,
+                H,
+                KTOP,
+                params,
+            )
+        };
+
+        // 单线程即可复现问题
+        runner.run(B_RUN, 0, 1, 0);
+
+        // -----------------------
+        // 断言：token0/1 的 expert1(slot=1) 必须保持 0
+        // -----------------------
+        for b in 0..2 {
+            let slot = 1usize; // expert1 的位置
+            for j in 0..H {
+                let idx = (b * KTOP + slot) * H + j;
+                let got = out[idx] as f32;
+                assert!(
+                    got.abs() <= 1e-3,
+                    "stride bug: token {} slot1 should be 0, got {} (j={})",
+                    b,
+                    got,
+                    j
+                );
+            }
+        }
+
+        // 再检查：token5/6 的 expert1(slot=1) 应该是非零（避免“啥都没算”假通过）
+        // 期望值：sum_{kk=0..31} 1 * 2 = 64
+        for b in 5..=6 {
+            let slot = 1usize;
+            for j in 0..H {
+                let idx = (b * KTOP + slot) * H + j;
+                let got = out[idx] as f32;
+                assert!(
+                    (got - 64.0).abs() <= 2.0, // fp16 累积误差给点余量
+                    "expected token {} slot1 ~= 64, got {} (j={})",
+                    b,
+                    got,
+                    j
+                );
+            }
         }
     }
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    fn test_down_stride_must_use_capacity_not_run_batch_nt_weight() {
+        use std::arch::is_x86_feature_detected;
+        if !is_x86_feature_detected!("avx512fp16") {
+            eprintln!("skip: avx512fp16 not detected");
+            return;
+        }
 
-    let experts_indicator = vec![true; E];
+        use crate::kernel::generic::from_f32::FromF32;
+        #[inline]
+        fn f16_from_f32(x: f32) -> f16 {
+            <f16 as FromF32>::from_f32(x)
+        }
 
-    // topk: 每 token 的 topk 列表为 [0,1]（升序）
-    let mut topk = vec![0usize; B_CAP * KTOP];
-    for b in 0..B_CAP {
-        topk[b * KTOP + 0] = 0;
-        topk[b * KTOP + 1] = 1;
-    }
+        const E: usize = 2;
+        const B_CAP: usize = 9; // capacity（构造时 num_token）
+        const B_RUN: usize = 7; // run 时 batch_size
+        const HMID: usize = 32;
+        const H: usize = 32;
+        const KTOP: usize = 2;
 
-    // indice: [E, B_CAP]
-    // 关键构造（看解释）：
-    let mut indice = vec![false; E * B_CAP];
-    indice[0 * B_CAP + 7] = true;
-    indice[0 * B_CAP + 8] = true;
-    indice[1 * B_CAP + 5] = true;
-    indice[1 * B_CAP + 6] = true;
+        let params = MatMulParams {
+            a_row_step_macro: 6,   // MB
+            b_row_step_macro: 32,  // NB
+            column_step_macro: 16, // KC (HMID%KC==0)
+            a_row_step_micro: 3,   // MR
+            b_row_step_micro: 32,  // NR
+        };
 
-    // weight: [E, B_CAP] 全 1
-    let weight = vec![f16_from_f32(1.0); E * B_CAP];
+        // NONLIN[e,b,k]：全 1
+        let nonlin = vec![f16_from_f32(1.0); E * B_CAP * HMID];
 
-    // output: [B_CAP, KTOP, H] 先清 0
-    let mut out = vec![f16_from_f32(0.0); B_CAP * KTOP * H];
-
-    let runner = unsafe {
-        ExpertsMatMulDown::<f16>::new(
-            nonlin.as_ptr(),
-            wdown_nt.as_ptr(), // ✅ 直接传 NT
-            experts_indicator.as_ptr(),
-            indice.as_ptr(),
-            weight.as_ptr(),
-            topk.as_ptr(),
-            out.as_mut_ptr(),
-            E,
-            B_CAP,
-            HMID,
-            H,
-            KTOP,
-            params,
-        )
-    };
-
-    // 单线程足够复现
-    runner.run(0, 1, B_RUN, 1, 0);
-
-    // 断言1：token0/1 的 expert1(slot=1) 必须仍为 0
-    for b in 0..2 {
-        let slot = 1usize;
+        // W_down_nt: [E, H, HMID]（你现在外部已经转置好就是这个）
+        // 构造：
+        //   expert0: 全 1
+        //   expert1: 全 2
+        // 则对任意输出列 j：dot = sum_k 1*W = 32 或 64（weight=1）
+        let mut wdown_nt = vec![f16_from_f32(0.0); E * H * HMID];
         for j in 0..H {
-            let idx = (b * KTOP + slot) * H + j;
-            let got = out[idx] as f32;
-            assert!(
-                got.abs() <= 1e-3,
-                "stride bug: token {} slot1 should be 0, got {} (j={})",
-                b,
-                got,
-                j
-            );
+            for kk in 0..HMID {
+                wdown_nt[0 * (H * HMID) + j * HMID + kk] = f16_from_f32(1.0);
+                wdown_nt[1 * (H * HMID) + j * HMID + kk] = f16_from_f32(2.0);
+            }
+        }
+
+        let experts_indicator = vec![true; E];
+
+        // topk: 每 token 的 topk 列表为 [0,1]（升序）
+        let mut topk = vec![0usize; B_CAP * KTOP];
+        for b in 0..B_CAP {
+            topk[b * KTOP + 0] = 0;
+            topk[b * KTOP + 1] = 1;
+        }
+
+        // indice: [E, B_CAP]
+        // 关键构造（看解释）：
+        let mut indice = vec![false; E * B_CAP];
+        indice[0 * B_CAP + 7] = true;
+        indice[0 * B_CAP + 8] = true;
+        indice[1 * B_CAP + 5] = true;
+        indice[1 * B_CAP + 6] = true;
+
+        // weight: [E, B_CAP] 全 1
+        let weight = vec![f16_from_f32(1.0); E * B_CAP];
+
+        // output: [B_CAP, KTOP, H] 先清 0
+        let mut out = vec![f16_from_f32(0.0); B_CAP * KTOP * H];
+
+        let runner = unsafe {
+            ExpertsMatMulDown::<f16>::new(
+                nonlin.as_ptr(),
+                wdown_nt.as_ptr(), // ✅ 直接传 NT
+                experts_indicator.as_ptr(),
+                indice.as_ptr(),
+                weight.as_ptr(),
+                topk.as_ptr(),
+                out.as_mut_ptr(),
+                E,
+                B_CAP,
+                HMID,
+                H,
+                KTOP,
+                params,
+            )
+        };
+
+        // 单线程足够复现
+        runner.run(B_RUN, 0, 1, 0);
+
+        // 断言1：token0/1 的 expert1(slot=1) 必须仍为 0
+        for b in 0..2 {
+            let slot = 1usize;
+            for j in 0..H {
+                let idx = (b * KTOP + slot) * H + j;
+                let got = out[idx] as f32;
+                assert!(
+                    got.abs() <= 1e-3,
+                    "stride bug: token {} slot1 should be 0, got {} (j={})",
+                    b,
+                    got,
+                    j
+                );
+            }
+        }
+
+        // 断言2：token5/6 的 expert1(slot=1) 应该是非零，并且接近 64
+        // ref: sum_k 1*2 = 64
+        for b in 5..=6 {
+            let slot = 1usize;
+            for j in 0..H {
+                let idx = (b * KTOP + slot) * H + j;
+                let got = out[idx] as f32;
+                assert!(
+                    (got - 64.0).abs() <= 2.0,
+                    "expected token {} slot1 ~= 64, got {} (j={})",
+                    b,
+                    got,
+                    j
+                );
+            }
         }
     }
-
-    // 断言2：token5/6 的 expert1(slot=1) 应该是非零，并且接近 64
-    // ref: sum_k 1*2 = 64
-    for b in 5..=6 {
-        let slot = 1usize;
-        for j in 0..H {
-            let idx = (b * KTOP + slot) * H + j;
-            let got = out[idx] as f32;
-            assert!(
-                (got - 64.0).abs() <= 2.0,
-                "expected token {} slot1 ~= 64, got {} (j={})",
-                b,
-                got,
-                j
-            );
-        }
-    }
-}
-
 }

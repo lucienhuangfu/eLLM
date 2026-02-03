@@ -71,18 +71,11 @@ where
         }
     }
 
-    pub fn run(
-        &self,
-        _position_index: usize,
-        _position_interval: usize,
-        batch_size: usize,
-        thread_num: usize,
-        thread_id: usize,
-    ) {
+    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
         unsafe {
             let thread_num = thread_num.max(1);
 
-            let num_tokens = self.sequence_chunk_size * batch_size;
+            let num_tokens = self.sequence_chunk_size * token_size;
             let H = self.hidden_size;
             let K = self.num_experts_per_token;
 
@@ -237,7 +230,7 @@ mod tests {
             false,
         );
 
-        runner.run(0, 1, batch, 1, 0);
+        runner.run(batch, 0, 1, 0);
 
         verify_output(&out, &out_ref, 5e-2, "k1_basic");
     }
@@ -292,7 +285,7 @@ mod tests {
             false,
         );
 
-        runner.run(0, 1, num_tokens, 1, 0);
+        runner.run(num_tokens, 0, 1, 0);
 
         verify_output(&out, &out_ref, 5e-2, "k3_sum");
     }
@@ -347,7 +340,7 @@ mod tests {
             false,
         );
 
-        runner.run(0, 1, num_tokens, 1, 0);
+        runner.run(num_tokens, 0, 1, 0);
 
         verify_output(&out, &out_ref, 5e-2, "tail_h48");
     }
@@ -383,8 +376,8 @@ mod tests {
             true,
         );
 
-        runner.run(0, 1, batch, 2, 0);
-        runner.run(0, 1, batch, 2, 1);
+        runner.run(batch, 0, 2, 0);
+        runner.run(batch, 0, 2, 1);
 
         for e in 0..num_experts {
             assert_eq!(experts_indicator[e], false, "experts_indicator not cleared at e={}", e);
@@ -454,7 +447,7 @@ mod tests {
             );
 
             for tid in 0..num_threads {
-                op.run(0, 0, batch_size, num_threads, tid);
+                op.run(batch_size, 0, num_threads, tid);
             }
         }
 
@@ -539,7 +532,7 @@ fn test_merge_add_respects_run_batch_smaller_than_capacity() {
 
     // 单线程运行：关键是把 batch_run 传进去
     // 你的 run() 现在把 _batch_size 忽略了，所以这个测试会失败（会写满 10 tokens）
-    op.run(0, 1, batch_run, 1, 0);
+    op.run(batch_run, 0, 1, 0);
 
     // 1) 检查 run 范围内：out == residual + input0 + input1
     for t in 0..num_tokens_run {

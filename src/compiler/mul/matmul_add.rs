@@ -97,17 +97,10 @@ where
     /// 执行：先把 residual 覆盖到 output，然后做 output += A×B
     ///
     /// run 声明保持不变（与 Operator 统一），但 position_index/interval 不使用
-    pub fn run(
-    &self,
-    position_index: usize,
-    position_interval: usize,
-    batch_size: usize,
-    cpu_num: usize,
-    thread_id: usize,
-) {
+    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
     unsafe {
         // ===== 维度 =====
-        let m_run = batch_size;     // 真实 M
+        let m_run = token_size;     // 真实 M
         let n = self.n_max;         // N
         let k = self.k_max;         // K
 
@@ -127,8 +120,8 @@ where
         debug_assert!(mb % mr == 0);
         debug_assert!(n % nr == 0);
         debug_assert!(k % kc == 0);
-        debug_assert!(cpu_num <= self.cpu_max_for_scratch);
-        debug_assert!(thread_id < cpu_num);
+        debug_assert!(thread_num <= self.cpu_max_for_scratch);
+        debug_assert!(thread_id < thread_num);
 
         // ===== 基址与 stride（元素计）=====
         let a_base = self.ptr1.ptr;        // A[M×K]
@@ -167,7 +160,7 @@ where
         let tiles_n = (n + nb - 1) / nb;
         let tiles = tiles_m * tiles_n;
 
-        if let Some((tb, te)) = assign(tiles, cpu_num, thread_id) {
+        if let Some((tb, te)) = assign(tiles, thread_num, thread_id) {
             for t in tb..te {
                 let tm = t / tiles_n;
                 let tn = t % tiles_n;
@@ -353,7 +346,7 @@ mod tests {
         };
 
         for tid in 0..thread_num {
-            runner.run(0, 1, M, thread_num, tid);
+            runner.run(M, 0, thread_num, tid);
         }
 
         for i in 0..M {
@@ -430,7 +423,7 @@ fn test_matmul_add_runner_f16_nt_batch7_pad_to9() {
 
     let used = thread_num.min(runner.cpu_max_for_scratch);
     for tid in 0..used {
-        runner.run(0, 1, M_RUN, used, tid); // batch=7（非 3 倍数）
+        runner.run(M_RUN, 0, used, tid); // batch=7（非 3 倍数）
     }
 
     // 只验证前 7 行

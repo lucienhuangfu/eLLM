@@ -2707,7 +2707,7 @@ mod tests {
         let cpu_num = thread_num.min(matmul.panel_threads()).max(1);
 
         for tid in 0..cpu_num {
-            matmul.run(0, 1, M, cpu_num, tid);
+            matmul.run(M, 0, cpu_num, tid);
         }
 
         // reference: sum += A[i,kk] * B_nt[j,kk]

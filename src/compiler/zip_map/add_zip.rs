@@ -59,11 +59,11 @@ where
     }
      */
 
-    pub fn run(&self, batch_size: usize, cpu_num: usize, thread_id: usize) {
+    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
         //  [batch_size, head_num， head_size]
-        let len = batch_size * self.head_num;
+        let len = token_size * self.head_num;
 
-        if let Some((begin, end)) = assign(len, cpu_num, thread_id) {
+        if let Some((begin, end)) = assign(len, thread_num, thread_id) {
             let ptr1 = self.ptr1.ptr;
             let ptr2 = self.ptr2.ptr;
             let output_ptr = self.output_ptr.ptr;
@@ -182,7 +182,7 @@ mod test {
         // operator.set_chunk(chunks);
 
         for i in 0..thread_num {
-            operator.run(batch_size, thread_num, i);
+            operator.run(batch_size, 0, thread_num, i);
         }
 
         // 如需打印输出数据，请取消以下注释

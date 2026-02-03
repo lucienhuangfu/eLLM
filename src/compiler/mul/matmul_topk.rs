@@ -206,22 +206,15 @@ where
         }
     }
 
-    pub fn run(
-    &self,
-    _position_index: usize,
-    _position_interval: usize,
-    batch_size: usize,
-    cpu_num: usize,
-    thread_id: usize,
-) {
+    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
     unsafe {
-        assert!(batch_size <= self.batch_max);
+        assert!(token_size <= self.batch_max);
 
         // ✅ cpu_num/thread_id 合法，且 cpu_num <= thread_max
-        assert!(cpu_num <= self.thread_max);
-        assert!(thread_id < cpu_num);
+        assert!(thread_num <= self.thread_max);
+        assert!(thread_id < thread_num);
 
-        let m_run = batch_size;
+        let m_run = token_size;
         let n = self.b_row;
         let k = self.column;
 
@@ -264,7 +257,7 @@ where
         let tiles_n = (n + nb - 1) / nb;
         let tiles_total = tiles_m * tiles_n;
 
-        if let Some((tb, te)) = assign(tiles_total, cpu_num, thread_id) {
+        if let Some((tb, te)) = assign(tiles_total, thread_num, thread_id) {
             for t in tb..te {
                 let tm = t / tiles_n;
                 let tn = t % tiles_n;
@@ -519,7 +512,7 @@ mod tests {
 
             let used = cpu_num.min(runner.thread_max());
             for tid in 0..used {
-                runner.run(0, 0, M, used, tid);
+                runner.run(M, 0, used, tid);
             }
 
             verify_topk_result_from_bnt(
@@ -588,7 +581,7 @@ mod tests {
 
             let used = cpu_num.min(runner.thread_max());
             for tid in 0..used {
-                runner.run(0, 0, M, used, tid);
+                runner.run(M, 0, used, tid);
             }
 
             verify_topk_result_from_bnt(
@@ -655,7 +648,7 @@ mod tests {
 
             let used = cpu_num.min(runner.thread_max());
             for tid in 0..used {
-                runner.run(0, 0, M, used, tid);
+                runner.run(M, 0, used, tid);
             }
 
             verify_topk_result_from_bnt(
@@ -729,7 +722,7 @@ fn test_matmul_topk_f16_batch7_pad_to9_no_ties() {
 
         let used = cpu_num.min(runner.thread_max());
         for tid in 0..used {
-            runner.run(0, 0, M_RUN, used, tid); // batch_size=7
+            runner.run(M_RUN, 0, used, tid); // batch_size=7
         }
 
         // 期望 topk：因为输出随 j 单调递增，topk 就是最大的 TOPK 个列索引

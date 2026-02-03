@@ -104,19 +104,10 @@ where
         }
     }
 
-    pub fn run(
-    &self,
-    position_index: usize,
-    position_interval: usize,
-    batch_size: usize, // = M_run（可能不是 3 的倍数）
-    cpu_num: usize,
-    thread_id: usize,
-) {
-    let _ = position_index;
-    let _ = position_interval;
+    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
 
     unsafe {
-        let m_run = batch_size;
+        let m_run = token_size;
 
         let n = self.n_max;
         let k = self.k_max;
@@ -145,9 +136,9 @@ where
 
         // 线程数只要不超过 pool 支持即可
         let max_threads = self.panel_threads();
-        debug_assert!(cpu_num >= 1);
-        debug_assert!(thread_id < cpu_num);
-        debug_assert!(cpu_num <= max_threads);
+        debug_assert!(thread_num >= 1);
+        debug_assert!(thread_id < thread_num);
+        debug_assert!(thread_num <= max_threads);
 
         let a_base = self.ptr1.ptr;
         let c_base = self.output_ptr.ptr;
@@ -185,7 +176,7 @@ where
         let tiles_n = (n + nb - 1) / nb;
         let tiles = tiles_m * tiles_n;
 
-        if let Some((tb, te)) = assign(tiles, cpu_num, thread_id) {
+        if let Some((tb, te)) = assign(tiles, thread_num, thread_id) {
             for t in tb..te {
                 let tm = t / tiles_n;
                 let tn = t % tiles_n;
@@ -340,12 +331,13 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 
         // 顺序模拟多线程调用
         for tid in 0..thread_num {
-            matmul.run(0, 1, M, thread_num, tid);
+            matmul.run(M, 0, thread_num, tid);
         }
 
         for i in 0..M {
@@ -407,11 +399,12 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 
         for tid in 0..thread_num {
-            matmul.run(0, 1, M, thread_num, tid);
+            matmul.run(M, 0, thread_num, tid);
         }
 
         for i in 0..M {
@@ -426,83 +419,84 @@ mod tests {
         }
     }
     #[test]
-fn test_matmul_runner_f16_batch7_pad_to9() {
-    const M_RUN: usize = 7;
-    const MR: usize = 3;
-    const M_MAX: usize = 9; // ceil_div(7,3)*3=9
-    const K: usize = 64;
-    const N: usize = 32;
+    fn test_matmul_runner_f16_batch7_pad_to9() {
+        const M_RUN: usize = 7;
+        const MR: usize = 3;
+        const M_MAX: usize = 9; // ceil_div(7,3)*3=9
+        const K: usize = 64;
+        const N: usize = 32;
 
-    let thread_num = 1; // 单线程先验证逻辑，避免并发干扰
+        let thread_num = 1; // 单线程先验证逻辑，避免并发干扰
 
-    // A/C 按 M_MAX 分配，前 M_RUN 行填数据，pad 行填 0
-    let mut a = vec![0.0f16; M_MAX * K];
-    let mut b_nt = vec![0.0f16; N * K]; // B_nt[N×K]
-    let mut c = vec![0.0f16; M_MAX * N];
+        // A/C 按 M_MAX 分配，前 M_RUN 行填数据，pad 行填 0
+        let mut a = vec![0.0f16; M_MAX * K];
+        let mut b_nt = vec![0.0f16; N * K]; // B_nt[N×K]
+        let mut c = vec![0.0f16; M_MAX * N];
 
-    // 填 A：前 7 行有值，剩下两行保持 0
-    for i in 0..M_RUN {
-        for kk in 0..K {
-            let v = 0.01f32 * (i as f32) + 0.001f32 * (kk as f32);
-            a[i * K + kk] = v as f16;
-        }
-    }
-
-    // 填 B_nt：按 N×K row-major
-    for j in 0..N {
-        for kk in 0..K {
-            let v = 0.02f32 * (kk as f32) + 0.003f32 * (j as f32);
-            b_nt[j * K + kk] = v as f16;
-        }
-    }
-
-    let params = MatMulParams {
-        a_row_step_macro: 6,   // MB（是 MR 的倍数）
-        b_row_step_macro: 32,  // NB
-        column_step_macro: 64, // KC
-        a_row_step_micro: 3,   // MR
-        b_row_step_micro: 32,  // NR
-    };
-
-    let matmul = unsafe {
-        MatMul::<f16>::new(
-            a.as_ptr(),
-            b_nt.as_ptr(),
-            c.as_mut_ptr(),
-            false,
-            params,
-            M_MAX, // m_max=9
-            N,
-            K,
-        )
-    };
-
-    // batch_size 传 7（不是 3 的倍数），内部会 pad 到 9
-    for tid in 0..thread_num {
-        matmul.run(0, 1, M_RUN, thread_num, tid);
-    }
-
-    // 只检查前 7 行（真实 batch），pad 行不检查
-    for i in 0..M_RUN {
-        for j in 0..N {
-            let mut sum = 0.0f32;
+        // 填 A：前 7 行有值，剩下两行保持 0
+        for i in 0..M_RUN {
             for kk in 0..K {
-                sum += (a[i * K + kk] as f32) * (b_nt[j * K + kk] as f32);
+                let v = 0.01f32 * (i as f32) + 0.001f32 * (kk as f32);
+                a[i * K + kk] = v as f16;
             }
-            let got = c[i * N + j] as f32;
-            approx::assert_abs_diff_eq!(got, sum, epsilon = 1e-1);
         }
-    }
 
-    // 可选：pad 行如果 A pad 行为 0，那么 C pad 行应该仍为 0（这里只是额外 sanity）
-    for i in M_RUN..M_MAX {
+        // 填 B_nt：按 N×K row-major
         for j in 0..N {
-            let got = c[i * N + j] as f32;
-            approx::assert_abs_diff_eq!(got, 0.0, epsilon = 1e-1);
+            for kk in 0..K {
+                let v = 0.02f32 * (kk as f32) + 0.003f32 * (j as f32);
+                b_nt[j * K + kk] = v as f16;
+            }
         }
-    }
 
-    // 额外：确认 MR 固定=3 的前提没被破坏
-    assert_eq!(MR, 3);
-}
+        let params = MatMulParams {
+            a_row_step_macro: 6,   // MB（是 MR 的倍数）
+            b_row_step_macro: 32,  // NB
+            column_step_macro: 64, // KC
+            a_row_step_micro: 3,   // MR
+            b_row_step_micro: 32,  // NR
+        };
+
+        let matmul = unsafe {
+            MatMul::<f16>::new(
+                a.as_ptr(),
+                b_nt.as_ptr(),
+                c.as_mut_ptr(),
+                false,
+                params,
+                M_MAX, // m_max=9
+                N,
+                K,
+                false,
+            )
+        };
+
+        // batch_size 传 7（不是 3 的倍数），内部会 pad 到 9
+        for tid in 0..thread_num {
+            matmul.run(M_RUN, 0, thread_num, tid);
+        }
+
+        // 只检查前 7 行（真实 batch），pad 行不检查
+        for i in 0..M_RUN {
+            for j in 0..N {
+                let mut sum = 0.0f32;
+                for kk in 0..K {
+                    sum += (a[i * K + kk] as f32) * (b_nt[j * K + kk] as f32);
+                }
+                let got = c[i * N + j] as f32;
+                approx::assert_abs_diff_eq!(got, sum, epsilon = 1e-1);
+            }
+        }
+
+        // 可选：pad 行如果 A pad 行为 0，那么 C pad 行应该仍为 0（这里只是额外 sanity）
+        for i in M_RUN..M_MAX {
+            for j in 0..N {
+                let got = c[i * N + j] as f32;
+                approx::assert_abs_diff_eq!(got, 0.0, epsilon = 1e-1);
+            }
+        }
+
+        // 额外：确认 MR 固定=3 的前提没被破坏
+        assert_eq!(MR, 3);
+    }
 }

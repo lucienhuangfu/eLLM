@@ -51,8 +51,8 @@ where
     //    self.chunks = chunks;
     // }
 
-    pub fn run(&self, batch_size: usize, thread_num: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(batch_size, thread_num, thread_id) {
+    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
             let mut ptr1 = self.ptr1.ptr;
             let mut ptr2 = self.ptr2.ptr;
             let mut output_ptr = self.output_ptr.ptr;
@@ -207,7 +207,7 @@ mod test {
         // argmax_operator.set_chunk(chunks);
 
         for i in 0..thread_num {
-            operator.run(batch_size, thread_num, i);
+            operator.run(batch_size, 0, thread_num, i);
         }
 
         // 如需打印输出数据，请取消以下注释

@@ -265,21 +265,11 @@ where
     }
 
     /// 入口：不再有 S 维度，只针对当前 A[M×K] 做一次 K/Q/V。
-    pub fn run(
-    &self,
-    position_index: usize,
-    position_interval: usize,
-    batch_size: usize, // M_run（可能不是 3 的倍数）
-    cpu_num: usize,
-    thread_id: usize,
-) where
+    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) where
     Self: MatMulkqvTrait<T>,
 {
-    let _ = position_index;
-    let _ = position_interval;
-
     unsafe {
-        let m_run = batch_size;
+        let m_run = token_size;
 
         let k = self.col;
         let n_q = self.b_q_row;
@@ -311,17 +301,17 @@ where
 
         // === 1) V 路径：通常不做 RMS+RoPE ===
         self.gemm_one_path_tiles(
-            a_base, cv_base, wv_nt, m_pad, n_kv, k, ldv, rope_base, cpu_num, thread_id, false,
+            a_base, cv_base, wv_nt, m_pad, n_kv, k, ldv, rope_base, thread_num, thread_id, false,
         );
 
         // === 2) K 路径：做 RMS+RoPE（3×128） ===
         self.gemm_one_path_tiles(
-            a_base, ck_base, wk_nt, m_pad, n_kv, k, ldk, rope_base, cpu_num, thread_id, true,
+            a_base, ck_base, wk_nt, m_pad, n_kv, k, ldk, rope_base, thread_num, thread_id, true,
         );
 
         // === 3) Q 路径 ===
         self.gemm_one_path_tiles(
-            a_base, cq_base, wq_nt, m_pad, n_q, k, ldq, rope_base, cpu_num, thread_id, true,
+            a_base, cq_base, wq_nt, m_pad, n_q, k, ldq, rope_base, thread_num, thread_id, true,
         );
     }
 }
@@ -510,7 +500,7 @@ mod tests {
 
     fn run_runner(runner: &MatMul3<f16>, m: usize, thread_num: usize) {
         for tid in 0..thread_num {
-            runner.run(0, 1, m, thread_num, tid);
+            runner.run(m, 0, thread_num, tid);
         }
     }
 
@@ -590,7 +580,7 @@ mod tests {
                 32,  // NR
             );
 
-            matmul.run(0, 0, m, 1, 0);
+            matmul.run(m, 0, 1, 0);
 
             // reference（从 W_nt 计算）
             ref_matmul_f32_from_wnt(m, k, n_q, &a, &wq_nt, &mut cq_ref);

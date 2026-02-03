@@ -196,16 +196,9 @@ where
         }
     }
 
-    pub fn run(
-        &self,
-        _position_index: usize,
-        _position_interval: usize,
-        batch_size: usize,
-        cpu_num: usize,
-        thread_id: usize,
-    ) {
+    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
         unsafe {
-            let b = batch_size;
+            let b = token_size;
             let n = self.inter;
             let k = self.hidden;
 
@@ -232,7 +225,7 @@ where
             let tiles_m = (b + mb - 1) / mb;
             let tiles_n = (n + nb - 1) / nb;
 
-            if let Some((tb, te)) = assign(tiles_m * tiles_n, cpu_num, thread_id) {
+            if let Some((tb, te)) = assign(tiles_m * tiles_n, thread_num, thread_id) {
                 for t in tb..te {
                     let tm = t / tiles_n;
                     let tn = t % tiles_n;
@@ -482,7 +475,7 @@ mod tests {
 
     fn run_all_threads(runner: &ExpertsMatMulSilu<f16>, batch: usize, cpu_num: usize) {
         for tid in 0..cpu_num {
-            runner.run(0, 1, batch, cpu_num, tid);
+            runner.run(batch, 0, cpu_num, tid);
         }
     }
 
@@ -830,7 +823,7 @@ fn test_experts_matmul_silu_qwen_moe_config() {
         let used = num_threads.min(threads_cap).max(1);
 
         for tid in 0..used {
-            op.run(0, 0, batch, used, tid);
+            op.run(batch, 0, used, tid);
         }
     }
 
@@ -975,7 +968,7 @@ fn test_experts_silu_batch7_capacity9_must_not_touch_rows_7_8() {
 
     // run 只跑 B_RUN
     for tid in 0..cpu_num {
-        runner.run(0, 0, B_RUN, cpu_num, tid);
+        runner.run(B_RUN, 0, cpu_num, tid);
     }
 
     // 断言：row 7,8 必须仍然是 0（没被触碰）
@@ -1081,7 +1074,7 @@ fn test_experts_matmul_silu_moe_smoke_fast_sampled() {
 
         // 你说固定机器跑，这里就直接用 num_threads（确保不超过你那台机的 threads）
         for tid in 0..num_threads {
-            op.run(0, 0, batch, num_threads, tid);
+            op.run(batch, 0, num_threads, tid);
         }
     }
 
@@ -1219,7 +1212,7 @@ fn test_silu_stride_capacity_batch_run_must_not_touch_rows_7_8() {
     };
 
     // 单线程即可复现
-    op.run(0, 0, B_RUN, 1, 0);
+    op.run(B_RUN, 0, 1, 0);
 
     // row 7/8 必须仍为 0（没被触碰）
     for b in B_RUN..B_CAP {
