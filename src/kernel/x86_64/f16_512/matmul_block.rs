@@ -4,7 +4,7 @@
 use std::arch::x86_64::{_mm512_fmadd_ph, _mm512_loadu_ph, _mm512_set1_ph, _mm512_storeu_ph};
 use std::f16;
 
-use crate::init::matmul_params::MatmulParams;
+use crate::init::matmul_params::MatMulParams;
 
 /// 广播式 3x32 FP16 AVX-512 微核：
 /// 约定把 (lda/ldc/kc) 映射进 matmulParams 的 5 字段中：
@@ -19,10 +19,10 @@ use crate::init::matmul_params::MatmulParams;
 /// C_tile: 3 x 32（行主，行距=ldc）
 #[inline(always)]
 pub unsafe fn matmul_block(
-    a: *const f16,        // A tile base: 3xkc
-    b_panel: *const f16,  // packed B panel: kc x 32
-    c: *mut f16,          // C tile base: 3x32
-    param: &MatmulParams,
+    a: *const f16,       // A tile base: 3xkc
+    b_panel: *const f16, // packed B panel: kc x 32
+    c: *mut f16,         // C tile base: 3x32
+    param: &MatMulParams,
 ) {
     // 形状校验
     debug_assert_eq!(param.a_row_step_micro, 3);
@@ -30,17 +30,17 @@ pub unsafe fn matmul_block(
     debug_assert!(param.column_step_macro > 0);
 
     // 取 stride/尺寸（元素计）
-    let lda = param.a_row_step_macro;    // A 行距
-    let ldc = param.b_row_step_macro;    // C 行距
-    let kc  = param.column_step_macro;   // K 面板长度
-    let b_stride = 32usize;              // B_panel 每行 32
+    let lda = param.a_row_step_macro; // A 行距
+    let ldc = param.b_row_step_macro; // C 行距
+    let kc = param.column_step_macro; // K 面板长度
+    let b_stride = 32usize; // B_panel 每行 32
 
     // A 三行基址
     let a0 = a;
     let a1 = a.add(lda);
     let a2 = a.add(2 * lda);
 
-    // 读入 C 累加器
+    // 读入 C 累加器（unaligned load，方便上层随意对齐）
     let mut c_row0 = _mm512_loadu_ph(c.add(0 * ldc));
     let mut c_row1 = _mm512_loadu_ph(c.add(1 * ldc));
     let mut c_row2 = _mm512_loadu_ph(c.add(2 * ldc));
@@ -63,45 +63,152 @@ pub unsafe fn matmul_block(
     _mm512_storeu_ph(c.add(2 * ldc), c_row2);
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::arch::is_x86_feature_detected;
-    use std::f16;
+    use approx::assert_abs_diff_eq;
 
-    #[inline] fn f16v(v: f32) -> f16 { let h = half::f16::from_f32(v); f16::from_bits(h.to_bits()) }
-    #[inline] fn to_f32(x: f16) -> f32 { half::f16::from_bits(x.to_bits()).to_f32() }
-    fn all_close(a: &[f16], b: &[f16], tol: f32) -> bool {
-        a.len() == b.len() && a.iter().zip(b).all(|(x,y)| (to_f32(*x)-to_f32(*y)).abs() <= tol)
+    #[test]
+    fn test_matmul_block_kernel() {
+        if !is_x86_feature_detected!("avx512fp16") {
+            println!("Skipping avx512fp16 test on unsupported hardware");
+            return;
+        }
+
+        let kc = 64;
+        let lda = 128;
+        let ldc = 64;
+
+        let params = MatMulParams {
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+            column_step_macro: kc,
+            a_row_step_macro: lda,
+            b_row_step_macro: ldc,
+        };
+
+        let mut a_vec = vec![0.0f16; 3 * lda];
+        let mut b_vec = vec![0.0f16; kc * 32];
+        let mut c_vec = vec![0.0f16; 3 * ldc];
+
+        // 初始化 A
+        for i in 0..3 {
+            for k in 0..kc {
+                let val = (i + k) as f32 * 0.1;
+                a_vec[i * lda + k] = val as f16;
+            }
+        }
+
+        // 初始化 B
+        for k in 0..kc {
+            for j in 0..32 {
+                let val = (k + j) as f32 * 0.1;
+                b_vec[k * 32 + j] = val as f16;
+            }
+        }
+
+        // 初始化 C (累加基底)
+        for i in 0..3 {
+            for j in 0..32 {
+                c_vec[i * ldc + j] = 1.0f16;
+            }
+        }
+
+        unsafe {
+            matmul_block(a_vec.as_ptr(), b_vec.as_ptr(), c_vec.as_mut_ptr(), &params);
+        }
+
+        // 验证结果
+        for i in 0..3 {
+            for j in 0..32 {
+                let mut sum = 1.0f32;
+                for k in 0..kc {
+                    let a_val = a_vec[i * lda + k] as f32;
+                    let b_val = b_vec[k * 32 + j] as f32;
+                    sum += a_val * b_val;
+                }
+                let got = c_vec[i * ldc + j] as f32;
+                assert_abs_diff_eq!(got, sum, epsilon = 1.0);
+            }
+        }
     }
 
     #[test]
-    fn test_broadcast_microkernel_3x32_k64_ones() {
+    fn test_matmul_block_large_scale() {
         if !is_x86_feature_detected!("avx512fp16") {
-            eprintln!("Skipping: CPU lacks avx512fp16");
+            println!("Skipping avx512fp16 test on unsupported hardware");
             return;
         }
+
+        // 模拟用户场景：Left 128x2048, Right 2048x2048
+        // 我们测试其中一个 3x32 的 block 计算
+        let m = 128;
+        let k_dim = 2048;
+        let n = 2048;
+
+        let kc = k_dim; // K 维度全长
+        let lda = k_dim; // A 的行距 (128x2048)
+        let ldc = n; // C 的行距 (128x2048)
+
+        let params = MatMulParams {
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+            column_step_macro: kc,
+            a_row_step_macro: lda,
+            b_row_step_macro: ldc,
+        };
+
+        let mut a_vec = vec![0.0f16; m * k_dim];
+        // B 需要是 packed panel: K x 32
+        let mut b_packed = vec![0.0f16; k_dim * 32];
+        let mut c_vec = vec![0.0f16; m * n];
+
+        // 初始化 A (使用较小数值防止溢出/精度问题)
+        for i in 0..m {
+            for k in 0..k_dim {
+                let val = ((i + k) % 17) as f32 * 0.01;
+                a_vec[i * lda + k] = val as f16;
+            }
+        }
+
+        // 初始化 B packed
+        for k in 0..k_dim {
+            for j in 0..32 {
+                let val = ((k + j) % 19) as f32 * 0.01;
+                b_packed[k * 32 + j] = val as f16;
+            }
+        }
+
+        // 初始化 C
+        for i in 0..m {
+            for j in 0..n {
+                c_vec[i * ldc + j] = 0.0f16;
+            }
+        }
+
+        // 计算左上角 3x32 块
         unsafe {
-            let mr=3; let nr=32; let kc=64;
-            let lda=kc; let ldc=nr;
+            matmul_block(
+                a_vec.as_ptr(),
+                b_packed.as_ptr(),
+                c_vec.as_mut_ptr(),
+                &params,
+            );
+        }
 
-            let param = MatmulParams {
-                a_row_step_macro: lda,
-                b_row_step_macro: ldc,
-                column_step_macro: kc,
-                a_row_step_micro: mr,
-                b_row_step_micro: nr,
-            };
-
-            let a: Vec<f16> = (0..mr*kc).map(|_| f16v(1.0)).collect();
-            let b_panel: Vec<f16> = (0..kc*nr).map(|_| f16v(1.0)).collect();
-            let mut c: Vec<f16> = (0..mr*ldc).map(|_| f16v(0.0)).collect();
-
-            matmul_block(a.as_ptr(), b_panel.as_ptr(), c.as_mut_ptr(), &param);
-
-            let expected: Vec<f16> = (0..mr*ldc).map(|_| f16v(kc as f32)).collect();
-            assert!(all_close(&c, &expected, 1e-3));
+        // 验证结果
+        for i in 0..3 {
+            for j in 0..32 {
+                let mut sum = 0.0f32;
+                for k in 0..kc {
+                    let a_val = a_vec[i * lda + k] as f32;
+                    let b_val = b_packed[k * 32 + j] as f32;
+                    sum += a_val * b_val;
+                }
+                let got = c_vec[i * ldc + j] as f32;
+                // K=2048 累加误差容忍度
+                assert_abs_diff_eq!(got, sum, epsilon = 1.0);
+            }
         }
     }
-} */
+}

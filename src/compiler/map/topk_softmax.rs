@@ -14,9 +14,6 @@ use crate::kernel::generic::sqrt::Sqrt;
 pub struct TopKSoftmax<T> {
     input_indices_ptr: ConstPtr<usize>,
     input_values_ptr: ConstPtr<T>,
-    sums_ptr: ConstPtr<T>,
-    token_ptr: ConstPtr<TokenList>,
-    batch_ptr: MutPtr<BatchList>,
     output_indices_ptr: MutPtr<usize>,
     output_values_ptr: MutPtr<T>,
     output_sequences: MutPtr<usize>,
@@ -29,9 +26,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
     pub fn new(
         input_indices_ptr: *const usize,
         input_values_ptr: *const T,
-        sums_ptr: *const T,
-        token_ptr: *const TokenList,
-        batch_ptr: *mut BatchList,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
         output_sequences: *mut usize,
@@ -46,9 +40,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
             input_values_ptr: ConstPtr {
                 ptr: input_values_ptr,
             },
-            sums_ptr: ConstPtr { ptr: sums_ptr },
-            token_ptr: ConstPtr { ptr: token_ptr },
-            batch_ptr: MutPtr { ptr: batch_ptr },
             output_indices_ptr: MutPtr {
                 ptr: output_indices_ptr,
             },
@@ -64,61 +55,39 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         }
     }
 
-    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
-        // Assign a range of tasks [begin, end) to the current thread based on decode_size.
-        // Note: decode_size here represents the total number of tokens to process in this batch (decode + lift).
-        if let Some((begin, end)) = assign(decode_size, thread_num, thread_id) {
-            // Optimization: Cache pointers and constants in registers to avoid repeated self dereferencing
-            let input_indices_ptr = self.input_indices_ptr.ptr;
-            let input_values_ptr = self.input_values_ptr.ptr;
-            let sums_ptr = self.sums_ptr.ptr;
-            let output_indices_ptr = self.output_indices_ptr.ptr;
-            let output_values_ptr = self.output_values_ptr.ptr;
-            let output_sequences_ptr = self.output_sequences.ptr;
+    pub fn run(
+        &self,
+        position_begin: usize,
+        position_interval: usize,
+        batch_size: usize,
+        thread_num: usize,
+        thread_id: usize,
+    ) {
+        if let Some((begin, end)) = assign(batch_size * position_interval, thread_num, thread_id) {
+            let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
+            let mut input_indices_ptr = self.input_indices_ptr.ptr;
+            let mut input_values_ptr = self.input_values_ptr.ptr;
+            let mut output_indices_ptr = self.output_indices_ptr.ptr;
+            let mut output_values_ptr = self.output_values_ptr.ptr;
 
-            let topk_size = self.topk_size;
-            let batch_size = self.batch_size;
-            let eos_id = self.eos_id;
+            let mut output_sequences_ptr = self.output_sequences.ptr;
 
-            // Optimization: Pre-calculate stride factor (topk_size * thread_num)
-            let input_stride_factor = topk_size * thread_num;
-
-            let token_ptr_base = unsafe { (*self.token_ptr.ptr).token_records.as_ptr() };
-            let batch_ptr_base = unsafe { (*self.batch_ptr.ptr).records.as_mut_ptr() };
-
-            // Retrieve the number of tokens in the "lift" phase.
-            let lift_size = unsafe { (*self.token_ptr.ptr).current_lift_size };
-
-            // Calculate boundary
-            let decode_end_index = decode_size - lift_size;
-
-            // --- Phase 1: Process Decode Tokens ---
-            let decode_loop_end = std::cmp::min(end, decode_end_index);
-
-            if begin < decode_loop_end {
-                for i in begin..decode_loop_end {
-                    unsafe {
-                        let token_record = &*token_ptr_base.add(i);
-                        let batch_index = token_record.batch_index;
-                        let position_index = token_record.position_index;
-
-                        self.process_one(
-                            batch_index,
-                            position_index,
-                            thread_num,
-                            input_stride_factor,
-                            topk_size,
-                            batch_size,
-                            eos_id,
-                            input_indices_ptr,
-                            input_values_ptr,
-                            sums_ptr,
-                            output_indices_ptr,
-                            output_values_ptr,
-                            output_sequences_ptr,
-                            batch_ptr_base,
-                        );
-                    }
+            for _ in begin..end {
+                let index = row_index * self.batch_size + col_index;
+                unsafe {
+                    let input_stride = index * self.topk_size * thread_num;
+                    let output_stride = index * self.topk_size;
+                    let token_index = index + position_begin * self.batch_size;
+                    let token_ptr = output_sequences_ptr.add(token_index);
+                    self.compute(
+                        input_indices_ptr.add(input_stride),
+                        input_values_ptr.add(input_stride),
+                        output_indices_ptr.add(output_stride),
+                        output_values_ptr.add(output_stride),
+                        token_ptr,
+                        thread_num,
+                        self.topk_size,
+                    );
                 }
             }
 
@@ -211,7 +180,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmaxTr
         &self,
         input_indices_ptr: *const usize,
         input_values_ptr: *const T,
-        sums_ptr: *const T,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
         // output_token_ptr: *mut usize,
@@ -236,7 +204,6 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
         &self,
         input_indices_ptr: *const usize,
         input_values_ptr: *const f16,
-        sums_ptr: *const f16,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut f16,
         // output_token_ptr: *mut usize,
@@ -271,7 +238,6 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
         &self,
         input_indices_ptr: *const usize,
         input_values_ptr: *const f32,
-        sums_ptr: *const f32,
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut f32,
         // output_token_ptr: *mut usize,
@@ -281,7 +247,6 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
         kernel::x86_64::f32_256::truncated_topk_softmax::truncated_topk_softmax(
             input_values_ptr,
             input_indices_ptr,
-            sums_ptr,
             output_values_ptr,
             output_indices_ptr,
             // output_token_ptr,
@@ -354,9 +319,6 @@ mod test {
         let operator = TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
             input_values.as_ptr(),
-            sums.as_ptr(),
-            &token_list,
-            &mut batch_list,
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
@@ -473,9 +435,6 @@ mod test {
         let operator = TopKSoftmax::<f16>::new(
             input_indices.as_ptr(),
             input_values.as_ptr(),
-            sums.as_ptr(),
-            &token_list,
-            &mut batch_list,
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),

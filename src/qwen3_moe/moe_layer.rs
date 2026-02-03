@@ -6,7 +6,6 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
@@ -15,14 +14,26 @@ use super::mlp::MLP;
 use super::sparse_moe_block::SparseMoeBlock;
 
 #[derive(Clone)]
-pub enum MoeLayer<T> {
+pub enum MoeLayer<T>
+where
+    T: Copy + PartialOrd,
+{
     MLP(MLP<T>),
     SparseMoe(SparseMoeBlock<T>),
 }
 
 impl<T> MoeLayer<T>
 where
-    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
+    T: Copy
+        + PartialOrd
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid<T>
+        + Sqrt
+        + AddAssign,
 {
     pub fn new_mlp(
         hidden_size: usize,
@@ -32,7 +43,6 @@ where
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         MoeLayer::MLP(MLP::new(
-            
             hidden_size,
             intermediate_size,
             parent_scope_name,

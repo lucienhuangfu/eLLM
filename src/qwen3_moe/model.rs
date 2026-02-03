@@ -2,6 +2,7 @@ use core_affinity;
 use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::ptr::null;
 use std::rc::Rc;
 
 use std::sync::Barrier;
@@ -22,7 +23,7 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 // use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::operator::Operator;
-use super::super::init::matmul_params::MatmulParams;
+use super::super::init::matmul_params::MatMulParams;
 use super::super::memory::cache::Cache;
 // use super::super::memory::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
@@ -32,8 +33,11 @@ use crate::init::record::{BatchList, TokenList, TokenRecord};
 
 // use super::rope::precompute_freqs_cis;
 
-#[derive(Clone)]
-pub struct Model<T> {
+// #[derive(Clone)]
+pub struct Model<T>
+where
+    T: Copy + PartialOrd,
+{
     // config: Config,
     // sequences: Vec<usize>,
     word_embedding: Rc<Tensor<T>>,
@@ -52,6 +56,7 @@ pub struct Model<T> {
 impl<T> Model<T>
 where
     T: Copy
+        + PartialOrd
         + Default
         + Sub<Output = T>
         + Neg<Output = T>
@@ -64,7 +69,13 @@ where
         + Send
         + Sync,
 {
-    pub fn new(config: &Config, sequence_length: usize, batch_size: usize) -> Self {
+    pub fn new(
+        config: &Config,
+        sequence_length: usize,
+        sequence_chunk_size: usize,
+        batch_size: usize,
+        topk_size: usize,
+    ) -> Self {
         let scope_name = String::from("model");
 
         // let torch_file = String::from("D:/llama-3-chinese-8b-instruct-v3");
@@ -110,7 +121,7 @@ where
             word_embedding: word_embedding.clone(),
             position_embedding: position_embedding.clone(),
             lm_head_weight: Tensor::zeros(
-                vec![config.hidden_size, config.vocab_size],
+                vec![config.vocab_size, config.hidden_size],
                 String::from("lm_head.weight"),
                 cache.clone(),
                 operator_queue.clone(),
@@ -118,7 +129,8 @@ where
             layers: layers,
             batch_size: batch_size,
             hidden_size: config.hidden_size,
-            topk_size: config.num_experts_per_tok,
+            sequence_chunk_size: sequence_chunk_size,
+            topk_size: topk_size,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
             cache: cache,
@@ -165,32 +177,31 @@ where
             true,
             format!("{}.norm_hidden", self.scope_name),
         );
-
-        let (indices_ptr, values_tensor, sum_tensor) = norm_state.matmul_local_topk(
+   
+        let (indices_ptr, values_tensor) = norm_state.matmul_local_topk(
             &self.lm_head_weight,
-            MatmulParams {
-                a_row_step_macro: 16,
-                b_row_step_macro: 16,
-                column_step_macro: 16,
-                a_row_step_micro: 8,
-                b_row_step_micro: 8,
-            },
-            8,
+           MatMulParams {
+                    a_row_step_macro: 3,
+                    b_row_step_macro: 64,
+                    column_step_macro: 64,
+                    a_row_step_micro: 3,
+                    b_row_step_micro: 32,
+                },
+            self.topk_size,
             format!("{}.lm_head", self.scope_name),
         );
 
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
             indices_ptr,
-            &sum_tensor,
-            token_list_ptr,
-            batch_list_ptr,
-            unsafe { input_sequences },
+
+            unsafe { sequences.add(self.batch_size) },
             self.topk_size,
             eos_id,
             format!("{}.softmax", self.scope_name),
         );
 
         (topk_indice, topk_value)
+        // (null(), values_tensor)
     }
 }
 
@@ -214,7 +225,9 @@ mod test {
     fn test_model_forward() {
         // let cpu_num =  thread::available_parallelism().unwrap().get();
         let sequence_length = 128;
-        let batch_size = 6;
+        let sequence_chunk_size = 1;
+        let batch_size = 3;
+        let topk_size = 8;
 
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
@@ -223,62 +236,22 @@ mod test {
             &config,
             sequence_length,
             batch_size,
-            // word_embedding,
-            // position_embedding,
-            // norm_weight,
-            // cpu_num,
-            // cache.clone(),
-            // operator_queue.clone(),
+            topk_size, // word_embedding,
+                       // position_embedding,
+                       // norm_weight,
+                       // cpu_num,
+                       // cache.clone(),
+                       // operator_queue.clone(),
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-        let mut sequences =
-            allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
+        let mut sequences = allocate_init::<usize>((sequence_length + 1) * batch_size, 0);
+        let output_tensor = unsafe { model.forward(sequences) };
 
-        let token_records: Vec<TokenRecord> = (0..batch_size)
-            .map(|i| TokenRecord {
-                // token_id: 0,
-                batch_index: i,
-                position_index: 0,
-            })
-            .collect();
-
-        let lift_records: Vec<PrefillEndRecord> = Vec::new();
-
-        let token_list = TokenList {
-            token_records: token_records.into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: lift_records.into_boxed_slice(),
-            current_lift_size: 0,
-        };
-
-        let batch_records: Vec<BatchRecord> = (0..batch_size)
-            .map(|i| BatchRecord {
-                sequence_index: i,
-                kv_index: i,
-                phase: Phase::Decode,
-                prompt_length: i,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-            })
-            .collect();
-
-        let mut batch_list = BatchList {
-            records: batch_records.into_boxed_slice(),
-            current_size: batch_size,
-        };
-
-        let eos_id = 151643;
-
-        let (output_indices, output_tensor) = unsafe {
-            model.forward(
-                sequences,
-                &token_list as *const TokenList,
-                &mut batch_list as *mut BatchList,
-                eos_id,
-            )
-        };
-
-        let thread_num: usize = num_cpus::get();
+        
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
                 operator.run(batch_size, 0, thread_num, i);
@@ -290,61 +263,35 @@ mod test {
         // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
     }
 
-    /*
-       #[test]
-       fn test_model_forward_f16() {
-           let cpu_num = thread::available_parallelism().unwrap().get();
-           let mut config: Config = Config::new();
-           config.load_model_config(r"models/Llama-2-7b-hf/config.json");
-           config.load_compile_config(r"models/Llama-2-7b-hf.json");
+    #[test]
+    fn test_model_forward_f16() {
+        let sequence_length = 128;
+        let sequence_chunk_size = 1;
+        let batch_size = 3;
+        let topk_size = 8;
 
-           let model_dir = "models/Llama-2-7b-hf"; // Define model_dir
-           let loader = SafeTensorsLoader::new("D:/llama-3-chinese-8b-instruct-v3").unwrap();
+        let config =
+            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-           // 分别加载配置和权重
-           // let config = loader.load_config()?;
-           let weights = loader.load_all_weights_f16().unwrap();
+        let mut model = Model::<f16>::new(
+            &config,
+            sequence_length,
+            sequence_chunk_size,
+            batch_size,
+            topk_size,
+        );
 
-           let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(weights)));
-           let operator_queue = Rc::new(RefCell::new(Vec::new()));
+        let mut sequences =
+            allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
+        let output_tensor = unsafe { model.forward(sequences) };
 
-           let word_embedding = Tensor::zeros(vec![config.vocab_size, config.hidden_size], String::from("model.embed_tokens.weight"), cache.clone(), operator_queue.clone());
-           let position_embedding = Tensor::zeros(vec![config.max_position_embeddings, 1, 1, config.attention_head_size], String::from("model.position_embedding.output"), cache.clone(), operator_queue.clone());
-           let norm_weight = Tensor::zeros(vec![1, config.hidden_size], String::from("model.norm.weight"), cache.clone(), operator_queue.clone());
-
-           let model = Transformer::<f16>::new(
-               config.clone(),
-               // word_embedding,
-               // position_embedding,
-               // norm_weight,
-               // cpu_num,
-               // cache.clone(),
-               // operator_queue.clone(),
-           );
-
-           let sequence_length = 128;
-           // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-           let mut sequences = allocate_init::<usize>((sequence_length + 1)*config.batch_size, 0);
-
-           let output_tensor = unsafe {
-               model.build(sequences)
-           };
-    */
-    /*
-    let thread_num: usize = cpu_num;
-
-    for p in 0..sequence_length {
-        for operator in output_tensor.operator_queue.borrow().iter() {
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, p, i);
+                operator.run(0, 1, batch_size, thread_num, i);
             }
-            println!("{}", p);
         }
     }
-    */
-
-    // Add assertions to verify the output_tensor
-    // For example:
-    // assert_eq!(output_tensor.shape, vec![config.batch_size, config.hidden_size]);
-    // }
 }

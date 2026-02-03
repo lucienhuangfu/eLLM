@@ -1,22 +1,21 @@
 use std::arch::x86_64::{
-    _mm512_add_ph, _mm512_fmadd_ph, _mm512_load_ph, _mm512_mul_ph, _mm512_reduce_add_ph,
-    _mm512_set1_ph, _mm512_setzero_ph, _mm512_store_ph,
+    _mm512_add_ph, _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_reduce_add_ph,
+    _mm512_set1_ph, _mm512_setzero_ph, _mm512_storeu_ph,
 };
 use std::f16;
+
 #[inline(always)]
 fn sum_square(input_ptr: *const f16, length: usize) -> f16 {
     unsafe {
-        let mut chunks_sum = 0.0;
         let mut chunks_simd = _mm512_setzero_ph();
         for ptr in (0..length).step_by(32).map(|x| input_ptr.add(x)) {
-            let x = _mm512_load_ph(ptr);
+            let x = _mm512_loadu_ph(ptr);
             chunks_simd = _mm512_fmadd_ph(x, x, chunks_simd);
         }
-        chunks_sum = _mm512_reduce_add_ph(chunks_simd);
-        // f16::sqrt(chunks_sum  / length as f16)
-        chunks_sum
+        _mm512_reduce_add_ph(chunks_simd)
     }
 }
+
 #[inline(always)]
 fn add_sum_square(
     input_ptr1: *const f16,
@@ -25,57 +24,57 @@ fn add_sum_square(
     length: usize,
 ) -> f16 {
     unsafe {
-        // let mut chunks_sum = 0.0;
         let mut chunks_simd = _mm512_setzero_ph();
-        for (ptr1, ptr2, o_ptr) in (0..length)
-            .step_by(32)
-            .map(|x| (input_ptr1.add(x), input_ptr2, output_ptr))
-        {
-            let x = _mm512_load_ph(ptr1);
-            let y = _mm512_load_ph(ptr2);
-            let z = _mm512_add_ph(x, y);
+
+        // 每 32 个元素做一次：z = x + y，写回 output，然后累加 z^2
+        for x in (0..length).step_by(32) {
+            let ptr1 = input_ptr1.add(x);
+            let ptr2 = input_ptr2.add(x);
+            let optr = output_ptr.add(x);
+
+            let v1 = _mm512_loadu_ph(ptr1);
+            let v2 = _mm512_loadu_ph(ptr2);
+            let z = _mm512_add_ph(v1, v2);
+
             chunks_simd = _mm512_fmadd_ph(z, z, chunks_simd);
-            _mm512_store_ph(o_ptr, z);
+            _mm512_storeu_ph(optr, z);
         }
-        let chunks_sum = _mm512_reduce_add_ph(chunks_simd);
-        // f16::sqrt(chunks_sum  / length as f16)
-        chunks_sum
+
+        _mm512_reduce_add_ph(chunks_simd)
     }
 }
+
 #[inline(always)]
 pub fn norm(
     input_ptr: *const f16,
     output_ptr: *mut f16,
     length: usize,
-    // weight: *const f16,
     denominator: f16,
 ) {
     unsafe {
         let rrms_ = _mm512_set1_ph(denominator);
-        for (vptr, optr) in (0..length)
-            .step_by(32)
-            .map(|x| (input_ptr.add(x), output_ptr.add(x)))
-        {
-            let x = _mm512_load_ph(vptr);
-            //let y = _mm512_load_ph(gptr);
-            // let weighted = _mm512_mul_ph(x, y);
-            let result = _mm512_mul_ph(x, rrms_);
-            _mm512_store_ph(optr, result);
+        for x in (0..length).step_by(32) {
+            let vptr = input_ptr.add(x);
+            let optr = output_ptr.add(x);
+
+            let v = _mm512_loadu_ph(vptr);
+            let result = _mm512_mul_ph(v, rrms_);
+            _mm512_storeu_ph(optr, result);
         }
     }
 }
+
 #[inline(always)]
 pub fn rms_norm(
     input_ptr: *const f16,
     output_ptr: *mut f16,
     length: usize,
-    // weight: *const f16,
     eps: f16,
 ) {
     let sum = sum_square(input_ptr, length);
     let square_root = f16::sqrt(sum / length as f16);
     let denominator = (square_root + eps).recip();
-    norm(input_ptr, output_ptr, length,  denominator);
+    norm(input_ptr, output_ptr, length, denominator);
 }
 
 pub fn add_rms_norm(
@@ -83,15 +82,13 @@ pub fn add_rms_norm(
     input_ptr2: *const f16,
     output_ptr: *mut f16,
     length: usize,
-    // weight: *const f16,
     eps: f16,
 ) {
     let sum = add_sum_square(input_ptr1, input_ptr2, output_ptr, length);
     let square_root = f16::sqrt(sum / length as f16);
     let denominator = (square_root + eps).recip();
-    norm(output_ptr, output_ptr, length,  denominator);
+    norm(output_ptr, output_ptr, length, denominator);
 }
-
 #[cfg(test)]
 mod tests {
     // use approx::assert_ulps_eq;
@@ -165,3 +162,4 @@ mod tests {
         }
     }
 }
+
