@@ -8,12 +8,15 @@ use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::memory::cache::Cache;
 // use super::super::ptensor::linear::Linear;
-use super::super::init::matmul_params::MatmulParams;
+use super::super::init::matmul_params::MatMulParams;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
 
 #[derive(Clone)]
-pub struct MLP<T> {
+pub struct MLP<T>
+where
+    T: Copy + PartialOrd,
+{
     // sequence_chunk_size: usize,
     // head_size: usize,
     gate_weight: Tensor<T>,
@@ -26,7 +29,16 @@ pub struct MLP<T> {
 
 impl<T> MLP<T>
 where
-    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
+    T: Copy
+        + PartialOrd
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid<T>
+        + Sqrt
+        + AddAssign,
 {
     pub fn new(
         // sequence_chunk_size: usize,
@@ -75,7 +87,7 @@ where
         let nonlinear_product = hidden_states.matmul_silu_mul_matmul(
             &self.gate_weight,
             &self.up_weight,
-            MatmulParams {
+            MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,
@@ -88,7 +100,7 @@ where
         let down_product = nonlinear_product.matmul_add(
             &self.down_weight,
             residual,
-            MatmulParams {
+            MatMulParams {
                 a_row_step_macro: 16,
                 b_row_step_macro: 16,
                 column_step_macro: 16,

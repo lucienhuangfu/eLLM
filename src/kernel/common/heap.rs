@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 use std::ptr;
-
+#[derive(Clone)]
 pub struct FixedMinHeap<T: PartialOrd + Copy> {
     values: *mut T,
     indices: *mut usize,
@@ -40,6 +40,9 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
                 self.sift_down(0);
             }
         }
+    }
+    pub fn clear(&mut self) {
+        self.len = 0;
     }
 
     pub fn sort_desc(&mut self) {
@@ -163,5 +166,73 @@ mod tests {
             assert_ulps_eq!(values[i], exp.0);
             assert_eq!(indices[i], exp.1);
         }
+    }
+
+    #[test]
+    fn test_fixed_min_heap_empty() {
+        let mut values = [0.0f32; 3];
+        let mut indices = [0usize; 3];
+        let heap = FixedMinHeap::new(values.as_mut_ptr(), indices.as_mut_ptr(), values.len());
+        assert_eq!(heap.len(), 0);
+    }
+
+    #[test]
+    fn test_fixed_min_heap_limit_zero() {
+        let mut values = [0.0f32; 0];
+        let mut indices = [0usize; 0];
+        let mut heap = FixedMinHeap::new(values.as_mut_ptr(), indices.as_mut_ptr(), 0);
+        heap.push(1.0, 0);
+        assert_eq!(heap.len(), 0);
+    }
+
+    #[test]
+    fn test_fixed_min_heap_partial_fill() {
+        let mut values = [0.0f32; 5];
+        let mut indices = [0usize; 5];
+        let mut heap = FixedMinHeap::new(values.as_mut_ptr(), indices.as_mut_ptr(), 5);
+        heap.push(1.0, 0);
+        heap.push(2.0, 1);
+        assert_eq!(heap.len(), 2);
+
+        heap.sort_desc();
+        assert_ulps_eq!(values[0], 2.0);
+        assert_eq!(indices[0], 1);
+        assert_ulps_eq!(values[1], 1.0);
+        assert_eq!(indices[1], 0);
+    }
+
+    #[test]
+    fn test_fixed_min_heap_duplicates() {
+        let mut values = [0.0f32; 2];
+        let mut indices = [0usize; 2];
+        let mut heap = FixedMinHeap::new(values.as_mut_ptr(), indices.as_mut_ptr(), 2);
+
+        heap.push(1.0, 0);
+        heap.push(1.0, 1);
+        heap.push(1.0, 2);
+
+        assert_eq!(heap.len(), 2);
+        heap.sort_desc();
+
+        // Expect (1.0, 2) and (1.0, 1) because they are "larger" than (1.0, 0) due to index tie-breaking
+        assert_ulps_eq!(values[0], 1.0);
+        assert_eq!(indices[0], 2);
+        assert_ulps_eq!(values[1], 1.0);
+        assert_eq!(indices[1], 1);
+    }
+
+    #[test]
+    fn test_fixed_min_heap_clear() {
+        let mut values = [0.0f32; 3];
+        let mut indices = [0usize; 3];
+        let mut heap = FixedMinHeap::new(values.as_mut_ptr(), indices.as_mut_ptr(), 3);
+        heap.push(1.0, 0);
+        assert_eq!(heap.len(), 1);
+        heap.clear();
+        assert_eq!(heap.len(), 0);
+        heap.push(2.0, 1);
+        assert_eq!(heap.len(), 1);
+        assert_ulps_eq!(values[0], 2.0);
+        assert_eq!(indices[0], 1);
     }
 }

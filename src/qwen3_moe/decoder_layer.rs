@@ -1,7 +1,6 @@
 use std::cell::RefCell;
-use std::rc::Rc;
-// use serde::{Deserialize, Serialize};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::rc::Rc;
 
 use crate::kernel::generic::from_f32::FromF32;
 use crate::kernel::generic::sigmoid::Sigmoid;
@@ -19,9 +18,11 @@ use crate::init::record::{TokenList, TokenRecord};
 // use crate::qwen3_moe::mlp;
 // use super::feedforward::FeedForward;
 
-#[derive(Clone)]
-pub struct DecoderLayer<T> {
-    // sequences: *mut usize,
+// #[derive(Clone)]
+pub struct DecoderLayer<T>
+where
+    T: Copy + PartialOrd,
+{
     sequence_length: usize,
     // sequence_chunk_size: usize,
     batch_size: usize,
@@ -42,6 +43,7 @@ pub struct DecoderLayer<T> {
 impl<T> DecoderLayer<T>
 where
     T: Copy
+        + PartialOrd
         + Default
         + Sub<Output = T>
         + Neg<Output = T>
@@ -107,6 +109,7 @@ where
                 cache.clone(),
                 operator_queue.clone(),
             ),
+            
             sparse_moe_block: SparseMoeBlock::new(
                 config.hidden_size,
                 config.moe_intermediate_size,
@@ -174,19 +177,32 @@ where
             decode_only_flag,
             format!("{}.norm_hidden2", self.scope_name),
         );
-
-        norm_hidden_states.data;
+        
+        
         let output_hidden_states = self.sparse_moe_block.forward(
             &norm_hidden_states,
             &attention_hidden_states,
             decode_only_flag,
             format!("{}.attention_hidden3", self.scope_name),
+        );/* 
+
+
+        let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],
+            attention_hidden2.shape[1]/self.head_dim,
+            self.head_dim]);
+
+        let view_attention_hidden3 = attention_hidden3.view(vec![attention_hidden3.shape[0],
+            attention_hidden3.shape[1]/self.head_dim,
+            self.head_dim]);
+
+
+        // [batch_size, head_num, head_size]
+        let out = view_attention_hidden2.add(
+            &view_attention_hidden3,
+            format!("{}.output", self.scope_name),
         );
 
         output_hidden_states
-        // hidden_states.clone()
-        // attention_hidden_states
-        // norm_hidden_states
     }
 }
 
@@ -198,6 +214,8 @@ mod test {
 
     #[test]
     fn test_decoder_layer_f32() {
+        let sequence_chunk_size = 1;
+        let position_window_size = sequence_chunk_size;
         let batch_size = 6;
 
         let config =
@@ -251,21 +269,8 @@ mod test {
             }
         }
 
-        let sequences: Vec<TokenRecord> = (0..batch_size)
-            .map(|i| TokenRecord {
-                batch_index: i,
-                position_index: 0,
-            })
-            .collect();
+        let mut sequences = vec![0; sequence_chunk_size * batch_size];
 
-        let token_list = TokenList {
-            token_records: sequences.into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: vec![].into_boxed_slice(),
-            current_lift_size: 0,
-        };
-
-        let mut input_sequences = vec![0; batch_size];
         let output_tensor = layer.forward(
             &input,
             input_sequences.as_mut_ptr(),
@@ -278,7 +283,9 @@ mod test {
         debug_assert_eq!(output_tensor.shape, vec![batch_size, hidden_size]);
 
         // Execute the operator queue
-        let thread_num: usize = num_cpus::get();
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
@@ -289,13 +296,13 @@ mod test {
         assert_eq!(output_tensor.shape, vec![batch_size, hidden_size]);
     }
 
-    /*
     #[test]
     fn test_decoder_layer_f16() {
-        let position_window_size = 4;
-        let batch_size = 6;
+        let position_window_size = 1;
+        let batch_size = 3;
 
-        let config = Config::load_from_file(r"models/Qwen2.5-0.5B-Instruct/config.json").unwrap();
+        let config =
+            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let sequence_chunk_size = position_window_size;
         let hidden_size = config.hidden_size;
@@ -361,11 +368,13 @@ mod test {
         );
 
         // Execute the operator queue
-        let thread_num: usize = num_cpus::get();
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(1, 1, batch_size, thread_num, i);
+                operator.run(0, 1, batch_size, thread_num, i);
             }
         }
 
@@ -373,5 +382,5 @@ mod test {
             output_tensor.shape,
             vec![position_window_size, batch_size, hidden_size]
         );
-    } */
+    }
 }
