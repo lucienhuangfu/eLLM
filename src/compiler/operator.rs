@@ -3,6 +3,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
+use super::left_vector::LiftVector;
 use super::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::map::lookup_rms_map::LookupRMSMap;
 use super::map::rms_map::RMSMap;
@@ -39,6 +40,7 @@ where
     ExpertsMatMulSilu(ExpertsMatMulSilu<T>),
     ExpertsMergeAdd(ExpertsMergeAdd<T>),
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
+    LiftVector(LiftVector<T>),
     LookupRMSMap(LookupRMSMap<T>),
     MatMul(MatMul<T>),
     MatMul3(MatMul3<T>),
@@ -65,50 +67,34 @@ where
         + Sqrt
         + AddAssign,
 {
-    pub fn run(
-        &self,
-        position_index: usize,
-        position_interval: usize,
-        batch_size: usize,
-        cpu_num: usize,
-        thread_id: usize,
-    ) {
+    pub fn run(&self, batch_size: usize, decode_size: usize, cpu_num: usize, thread_id: usize) {
         match self {
+            /*
             Self::AddRMSZipMap(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
             Self::AddZipMap(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
-            Self::Attention(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
+                        Self::ComplexZipMap(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
-            Self::ComplexZipMap(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
+
+                        Self::MatmulSiluMulMatmul(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+
+                        Self::SiluMulZipMap(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+
+
+
+            Self::ArgmaxReduce(operator) => {
+                operator.run(batch_size, thread_id);
+            },
+            Self::SoftmaxMap(operator) => {
+                operator.run(batch_size, thread_id);
             }
             Self::ExpertsMatMulDown(operator) => {
                 operator.run(
@@ -130,31 +116,16 @@ where
                 );
             }
             Self::ExpertsMergeAdd(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
             Self::ExpertsSoftmaxNorm(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
+            }
+            Self::LiftVector(operator) => {
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
             Self::LookupRMSMap(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
             Self::MatMul(operator) => {
                 operator.run(
@@ -168,9 +139,8 @@ where
 
             Self::MatMul3(operator) => {
                 operator.run(
-                    position_index,
-                    position_interval,
                     batch_size,
+                    decode_size,
                     cpu_num,
                     thread_id,
                 );
@@ -204,42 +174,13 @@ where
                 );
             }
             Self::RMSMap(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
-            Self::SiluMulZipMap(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
-            }
+
             Self::TopKSoftmax(operator) => {
-                operator.run(
-                    position_index,
-                    position_interval,
-                    batch_size,
-                    cpu_num,
-                    thread_id,
-                );
+                operator.run(batch_size, decode_size, cpu_num, thread_id);
             }
 
-            /*
-
-            Self::ArgmaxReduce(operator) => {
-                operator.run(batch_size, position_index, thread_id);
-            },
-            Self::SoftmaxMap(operator) => {
-                operator.run(batch_size, position_index, thread_id);
-            }
-             */
             _ => panic!(),
         }
     }
@@ -256,19 +197,21 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::init::record::{BatchList, BatchRecord, Phase, TokenList, TokenRecord};
     use approx::assert_ulps_eq;
+    use rand::seq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use std::sync::{Arc, Barrier};
     // use std::thread;
 
     #[test]
     fn test_add_zip() {
-        let sequence_chunk_size = 1;
+        // let sequence_chunk_size = 1;
         let batch_size = 10;
         let head_num = 3;
         let head_size = 6;
 
-        let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
+        let shapes = vec![batch_size, head_num, head_size];
         let length = shapes.iter().product();
 
         let input_data1: Vec<f32> = (0..=17).cycle().take(length).map(|x| x as f32).collect();
@@ -281,20 +224,14 @@ mod test {
             input_data1.as_ptr(),
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
-            batch_size,
+            // batch_size,
             head_num,
             head_size,
         ));
 
-        let position_index = 0;
+        // let position_index = 0;
         for i in 0..thread_num {
-            operator.run(
-                position_index,
-                sequence_chunk_size,
-                batch_size,
-                thread_num,
-                i,
-            );
+            operator.run(batch_size, 1, thread_num, i);
         }
 
         assert_ulps_eq!(output_data[0..180], results[0..180], max_ulps = 4);
@@ -303,13 +240,13 @@ mod test {
 
     #[test]
     fn test_rms() {
-        let sequence_chunk_size = 1;
+        // let sequence_chunk_size = 1;
         let batch_size = 10;
         let hidden_size = 18;
-        let position_index = 0;
+        // let position_index = 0;
         let cpu_num = num_cpus::get();
 
-        let shapes = vec![sequence_chunk_size, batch_size, hidden_size];
+        let shapes = vec![batch_size, hidden_size];
         let length = shapes.iter().product();
         let input_data: Vec<f32> = (1..=hidden_size)
             .cycle()
@@ -323,10 +260,11 @@ mod test {
         let operator = Operator::RMSMap(RMSMap::new(
             input_data.as_ptr(),
             output_data.as_mut_ptr(),
-            batch_size,
+            // batch_size,
             hidden_size,
             // weight.as_ptr(),
             eps,
+            false,
         ));
 
         let result = [
@@ -351,7 +289,7 @@ mod test {
         ];
         let thread_num: usize = cpu_num;
         for i in 0..thread_num {
-            operator.run(position_index, sequence_chunk_size, batch_size, cpu_num, i);
+            operator.run(batch_size, 1, cpu_num, i);
         }
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
         println!("{:?}", output_data);
@@ -360,12 +298,12 @@ mod test {
     #[test]
     fn test_complexmul() {
         let sequence_length = 10;
-        let sequence_chunk_size = 8;
-        let batch_size = 10;
+        // let sequence_chunk_size = 8;
+        let batch_size = 80;
         let head_num = 10;
         let head_size = 34;
 
-        let shape1 = vec![sequence_chunk_size, batch_size, head_num, head_size];
+        let shape1 = vec![batch_size, head_num, head_size];
         let shape2 = vec![sequence_length, head_size];
 
         let length1: usize = shape1.iter().product();
@@ -395,14 +333,14 @@ mod test {
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
             // sequence_chunk_size,
-            batch_size,
+            //batch_size,
             head_num,
             head_size,
             false,
         ));
 
         for i in 0..thread_num {
-            operator.run(0, sequence_chunk_size, batch_size, thread_num, i);
+            operator.run(batch_size, 1, thread_num, i);
         }
 
         assert_eq!(output_data[3434..3468], expected);
@@ -410,13 +348,13 @@ mod test {
 
     #[test]
     fn test_silu() {
-        let sequence_chunk_size = 8;
-        let batch_size = 10;
+        // let sequence_chunk_size = 8;
+        let batch_size = 80;
         // let hidden_size = 19;
         let head_num = 1;
         let head_size = 19;
 
-        let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
+        let shapes = vec![batch_size, head_num, head_size];
 
         let length = shapes.iter().product();
         let input_data1: Vec<f32> = vec![
@@ -440,7 +378,7 @@ mod test {
             0.5145581364631653,
             0.6260590553283691,
         ]
-        .repeat(sequence_chunk_size * batch_size);
+        .repeat(batch_size);
         // let input_data2: [f32; 190] = [1.0; 190];
 
         let mut input_data2: Vec<f32> = vec![1.0; length];
@@ -451,13 +389,13 @@ mod test {
             input_data1.as_ptr(),
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
-            batch_size,
+            // batch_size,
             head_num,
             head_size,
         ));
 
         for i in 0..thread_num {
-            operator.run(0, sequence_chunk_size, batch_size, thread_num, i);
+            operator.run(batch_size, 1, thread_num, i);
         }
         let result = vec![
             1.9444659948349,
@@ -480,7 +418,7 @@ mod test {
             0.32204875349998474,
             0.4079371392726898,
         ]
-        .repeat(sequence_chunk_size * batch_size);
+        .repeat(batch_size);
         assert_ulps_eq!(output_data[..], result, max_ulps = 4);
     }
 
@@ -491,11 +429,11 @@ mod test {
             return;
         }
 
-        let sequence_chunk_size = 1;
+        // let sequence_chunk_size = 1;
         let batch_size = 2;
         let num_experts = 16;
         let num_topk = 4;
-        let num_tokens = sequence_chunk_size * batch_size;
+        let num_tokens = batch_size;
 
         let input_data1: Vec<f32> = vec![
             0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
@@ -519,15 +457,16 @@ mod test {
             indice_ptr.as_mut_ptr(),
             weight_ptr.as_mut_ptr(),
             topk_indices_ptr.as_mut_ptr(),
-            sequence_chunk_size,
+            // sequence_chunk_size,
             batch_size,
             num_experts,
             num_topk,
+            false,
         ));
 
         let thread_num = 1;
         let thread_id = 0;
-        operator.run(0, sequence_chunk_size, batch_size, thread_num, thread_id);
+        operator.run(batch_size, 1, thread_num, thread_id);
 
         // Verification for token 0
         let mut expected1: Vec<(usize, f32)> = input_data1.iter().copied().enumerate().collect();
@@ -571,26 +510,54 @@ mod test {
         let batch_size = 2;
         let topk_size = 8;
         let thread_num = 4;
-        let position_begin = 0;
-        let position_interval = 1;
+        let sequence_length = 2;
+        let eos_id = 100;
+        // let position_begin = 0;
+        // let position_interval = 1;
 
         let total_candidates_per_item = topk_size * thread_num;
         let input_len = batch_size * total_candidates_per_item;
 
         let mut input_values = Vec::<f32>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
+        let mut token_records = Vec::with_capacity(batch_size);
+        let mut user_records = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
+            token_records.push(TokenRecord {
+                // token_id: 0,
+                batch_index: i,
+                position_index: 0,
+            });
+            user_records.push(BatchRecord {
+                sequence_index: i,
+                kv_index: 0,
+                phase: Phase::Decode,
+                prompt_length: i,
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            });
             for j in 0..total_candidates_per_item {
                 input_values.push(5.0 - (j as f32 * 0.1) - (i as f32));
                 input_indices.push(i * 1000 + j);
             }
         }
 
-        let sums = vec![0.0f32; batch_size * position_interval];
+        let token_list = TokenList {
+            token_records: token_records.into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: Box::new([]),
+            current_lift_size: 0,
+        };
+
+        let mut batch_list = BatchList {
+            records: user_records.into_boxed_slice(),
+            current_size: batch_size,
+        };
+
+        let sums = vec![0.0f32; batch_size];
         let mut output_values = vec![0.0f32; batch_size * topk_size];
         let mut output_indices = vec![0usize; batch_size * topk_size];
-        let mut output_sequences = vec![0usize; batch_size * position_interval];
+        let mut output_sequences = vec![0usize; batch_size * sequence_length];
 
         let operator = Operator::TopKSoftmax(TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
@@ -601,10 +568,11 @@ mod test {
             output_sequences.as_mut_ptr(),
             batch_size,
             topk_size,
+            eos_id,
         ));
 
         for i in 0..thread_num {
-            operator.run(position_begin, position_interval, batch_size, thread_num, i);
+            operator.run(batch_size, batch_size, thread_num, i);
         }
 
         for i in 0..batch_size {
@@ -635,7 +603,7 @@ mod test {
 
             assert_ulps_eq!(output_vals_slice, expected_probs.as_slice(), max_ulps = 4);
             assert_eq!(output_idx_slice, expected_indices.as_slice());
-            assert_eq!(output_sequences[i], expected_indices[0]);
+            assert_eq!(output_sequences[batch_size + i], expected_indices[0]);
         }
     }
 

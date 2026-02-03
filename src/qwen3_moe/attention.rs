@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
 
 use crate::kernel::generic::from_f32::FromF32;
@@ -11,6 +11,7 @@ use super::super::memory::cache::Cache;
 // use crate::compiler::mul::attention_add::AttentionAdd;
 use super::super::init::matmul_params::MatMulParams;
 use crate::compiler::operator::Operator;
+use crate::init::record::TokenList;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 
@@ -57,8 +58,6 @@ where
     pub fn new(
         config: &Config,
         layer_idx: usize,
-        // sequence_chunk_size: usize,
-        // batch_size: usize,
         parent_scope_name: &str,
         cache: Rc<RefCell<Cache<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
@@ -114,6 +113,8 @@ where
         hidden_states: &Tensor<T>,
         residual: &Tensor<T>,
         position_embedding: &Tensor<T>,
+        token_list_ptr: *const TokenList,
+        decode_only_flag: bool,
         // tensor_name: String,
     ) -> Tensor<T> {
         unsafe {
@@ -202,7 +203,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use approx::assert_ulps_eq;
+    use crate::init::record::{TokenList, TokenRecord};
 
     #[test]
     fn test_self_attention() {
@@ -216,7 +217,7 @@ mod test {
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-        let inverse_sqrt_head = 1.0 / (config.hidden_size as f32).sqrt();
+        // let inverse_sqrt_head = 1.0 / (config.hidden_size as f32).sqrt();
         let attention_head_size: usize = config.head_dim;
         // config.hidden_size / config.num_attention_heads;
 
@@ -262,7 +263,27 @@ mod test {
             operator_queue.clone(),
         );
 
-        let output = self_attention.forward(&hidden_states, &residual_tensor, &position_embedding);
+        let token_list = TokenList {
+            token_records: vec![
+                TokenRecord {
+                    batch_index: 0,
+                    position_index: 0,
+                };
+                batch_size
+            ]
+            .into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: vec![].into_boxed_slice(),
+            current_lift_size: 0,
+        };
+
+        let output = self_attention.forward(
+            &hidden_states,
+            &residual_tensor,
+            &position_embedding,
+            &token_list,
+            false,
+        );
 
         // Add assertions to validate the output
         debug_assert_eq!(

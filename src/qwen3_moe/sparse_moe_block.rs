@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
+use serde::de;
+
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
@@ -97,6 +99,7 @@ where
         &self,
         hidden_states: &Tensor<T>,
         residual: &Tensor<T>,
+        decode_only_flag: bool,
         tensor_name: String,
     ) -> Tensor<T> {
         println!("Entering SparseMoeBlock forward: {}", tensor_name);
@@ -112,6 +115,7 @@ where
                 b_row_step_micro: 32,
             },
             hidden_states.shape[0],
+            decode_only_flag,
             format!("{}.gate", self.scope_name),
         );
 
@@ -143,6 +147,7 @@ where
                 a_row_step_micro: 3,
                 b_row_step_micro: 32,
             },
+            decode_only_flag,
             format!("{}.gate_up", self.scope_name),
         );
 
@@ -165,6 +170,7 @@ where
                 a_row_step_micro: 3,
                 b_row_step_micro: 32,
             },
+            decode_only_flag,
             format!("{}.down", self.scope_name),
         );
 
@@ -178,6 +184,7 @@ where
             experts_indicator,
             indice_ptr,
             self.num_experts,
+            decode_only_flag,
             format!("{}.merge", self.scope_name),
         );
         merge_tensor

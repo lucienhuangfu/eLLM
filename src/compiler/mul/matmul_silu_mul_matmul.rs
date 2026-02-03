@@ -162,10 +162,10 @@ where
     /// - 整个 K 完成后，compute2 把 SiLU(gate) ⊙ up 写回 C
     pub fn run(
         &self,
-        position_index: usize,
-        position_interval: usize,
+        // position_index: usize,
+        // position_interval: usize,
         batch_size: usize,
-        cpu_num: usize,
+        thread_num: usize,
         thread_id: usize,
     ) {
         

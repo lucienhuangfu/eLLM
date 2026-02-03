@@ -7,13 +7,13 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::config::Config;
-
 use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
 use super::attention::Attention;
+use super::config::Config;
 use super::sparse_moe_block::SparseMoeBlock;
+use crate::init::record::{TokenList, TokenRecord};
 // use super::moe_layer::MoeLayer;
 // use crate::qwen3_moe::mlp;
 // use super::feedforward::FeedForward;
@@ -24,7 +24,7 @@ where
     T: Copy + PartialOrd,
 {
     sequence_length: usize,
-    sequence_chunk_size: usize,
+    // sequence_chunk_size: usize,
     batch_size: usize,
     hidden_size: usize,
     head_dim: usize,
@@ -57,8 +57,8 @@ where
     pub fn new(
         config: &Config,
         layer_idx: usize,
+        // sequences: *mut usize,
         sequence_length: usize,
-        sequence_chunk_size: usize,
         batch_size: usize,
         word_embedding: Rc<Tensor<T>>,
         position_embedding: Rc<Tensor<T>>,
@@ -95,8 +95,8 @@ where
             };*/
 
         Self {
+            // sequences,
             sequence_length: config.max_position_embeddings,
-            sequence_chunk_size: sequence_chunk_size,
             batch_size: batch_size,
             hidden_size: config.hidden_size,
             head_dim: config.head_dim,
@@ -132,27 +132,32 @@ where
         &self,
         hidden_states: &Tensor<T>,
         input_sequences: *mut usize,
-        // sequences: *mut usize,
+        token_list_ptr: *const TokenList,
+        decode_only_flag: bool,
         tensor_name: String,
     ) -> Tensor<T> {
         // # Attention 层
         let (hidden_states_owned, norm_hidden) = if self.layer_idx != 0 {
             let norm_hidden = hidden_states.rms(
                 self.rms_norm_eps,
+                false,
                 format!("{}.norm_hidden", self.scope_name),
             );
             (hidden_states.clone(), norm_hidden)
         } else {
-            Tensor::lookup_rms(
-                input_sequences,
-                &*self.word_embedding,
-                self.sequence_chunk_size,
-                self.batch_size,
-                self.rms_norm_eps,
-                self.scope_name.clone(),
-                self.cache.clone(),
-                self.operator_queue.clone(),
-            )
+            unsafe {
+                // let token_ptr = (*token_list_ptr).token_records.as_ptr();
+                Tensor::lookup_rms(
+                    input_sequences,
+                    token_list_ptr,
+                    &*self.word_embedding,
+                    self.batch_size,
+                    self.rms_norm_eps,
+                    self.scope_name.clone(),
+                    self.cache.clone(),
+                    self.operator_queue.clone(),
+                )
+            }
         };
         let hidden_states = &hidden_states_owned;
 
@@ -161,12 +166,15 @@ where
             &norm_hidden,
             hidden_states,
             &*self.position_embedding,
+            token_list_ptr,
+            decode_only_flag,
             // format!("{}.attention_hidden1", self.scope_name),
         );
 
         let norm_hidden_states = attention_hidden_states.rms(
             // self.layernorm_weight.data,
             self.rms_norm_eps,
+            decode_only_flag,
             format!("{}.norm_hidden2", self.scope_name),
         );
         
@@ -174,6 +182,7 @@ where
         let output_hidden_states = self.sparse_moe_block.forward(
             &norm_hidden_states,
             &attention_hidden_states,
+            decode_only_flag,
             format!("{}.attention_hidden3", self.scope_name),
         );/* 
 
@@ -193,8 +202,6 @@ where
             format!("{}.output", self.scope_name),
         );
 
-        out.view(attention_hidden2.shape.clone())
-        */
         output_hidden_states
     }
 }
@@ -202,7 +209,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::slice;
+    use crate::init::record::TokenRecord;
+    // use std::slice;
 
     #[test]
     fn test_decoder_layer_f32() {
@@ -238,7 +246,7 @@ mod test {
             &config,
             1,
             max_position_embeddings,
-            sequence_chunk_size,
+            // sequence_chunk_size,
             batch_size,
             word_embedding.clone(),
             position_embedding.clone(),
@@ -247,7 +255,7 @@ mod test {
             operator_queue.clone(),
         );
 
-        let shape = vec![position_window_size, batch_size, hidden_size];
+        let shape = vec![batch_size, hidden_size];
         let input = Tensor::from_cache(
             shape.clone(),
             String::from("model.layers.1.input_tensor"),
@@ -265,15 +273,14 @@ mod test {
 
         let output_tensor = layer.forward(
             &input,
-            sequences.as_mut_ptr(),
+            input_sequences.as_mut_ptr(),
+            &token_list,
+            false,
             String::from("model.layers.1.output_tensor"),
         );
 
         // Validate output shape
-        debug_assert_eq!(
-            output_tensor.shape,
-            vec![position_window_size, batch_size, hidden_size]
-        );
+        debug_assert_eq!(output_tensor.shape, vec![batch_size, hidden_size]);
 
         // Execute the operator queue
         let thread_num = std::thread::available_parallelism()
@@ -282,14 +289,11 @@ mod test {
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(0, 1, batch_size, thread_num, i);
+                operator.run(batch_size, 0, thread_num, i);
             }
         }
 
-        assert_eq!(
-            output_tensor.shape,
-            vec![position_window_size, batch_size, hidden_size]
-        );
+        assert_eq!(output_tensor.shape, vec![batch_size, hidden_size]);
     }
 
     #[test]

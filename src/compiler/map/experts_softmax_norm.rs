@@ -1,3 +1,6 @@
+use std::f16;
+use std::ops::{AddAssign, Sub};
+
 use super::map_trait::SoftmaxTrait;
 use crate::compiler::assign::assign;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
@@ -5,12 +8,10 @@ use crate::kernel::generic;
 use crate::kernel::generic::{exp::Exp, sqrt::Sqrt};
 use crate::kernel::x86_64;
 use crate::memory::allocator::allocate_init;
-use std::f16;
-use std::ops::{AddAssign, Sub};
 
 #[derive(Clone)]
 pub struct ExpertsSoftmaxNorm<T> {
-    // [sequence_chunk_size, batch_size, num_experts]
+    // [token_size, num_experts]
     ptr1: ConstPtr<T>,
     topk_values_ptr: MutPtr<T>,
     topk_indices_ptr: MutPtr<usize>,
@@ -18,10 +19,10 @@ pub struct ExpertsSoftmaxNorm<T> {
     experts_indicator: MutPtr<bool>,
     indice_ptr: MutPtr<bool>,
     weight_ptr: MutPtr<T>,
-    num_tokens: usize,
     batch_size: usize,
     num_experts: usize,
     num_topk: usize,
+    decode_only_flag: bool,
 }
 
 impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
@@ -31,12 +32,12 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
         indice_ptr: *mut bool,
         weight_ptr: *mut T,
         topk_indices_ptr: *mut usize,
-        sequence_chunk_size: usize,
         batch_size: usize,
         num_experts: usize,
         num_topk: usize,
+        decode_only_flag: bool,
     ) -> Self {
-        let length = sequence_chunk_size * batch_size * num_topk;
+        let length = (batch_size * num_topk);
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
 
@@ -52,36 +53,33 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
             },
             indice_ptr: MutPtr { ptr: indice_ptr },
             weight_ptr: MutPtr { ptr: weight_ptr },
-            num_tokens: sequence_chunk_size * batch_size,
+            // num_tokens: batch_size,
             batch_size,
             num_experts,
             num_topk,
+            decode_only_flag,
         }
     }
 }
 
 impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftmaxNorm<T> {
-    pub fn run(
-        &self,
-        position_begin: usize,
-        position_interval: usize,
-        batch_size: usize,
-        thread_num: usize,
-        thread_id: usize,
-    ) {
-        if let Some((begin, end)) = assign(batch_size * position_interval, thread_num, thread_id) {
-            let (mut row_index, mut col_index) = (begin / batch_size, begin % batch_size);
+    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+        let task_size = if self.decode_only_flag == true {
+            decode_size
+        } else {
+            token_size
+        };
 
+        if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
             let ptr1 = self.ptr1.ptr;
             let topk_indices_ptr = self.topk_indices_ptr.ptr;
             let topk_values_ptr = self.topk_values_ptr.ptr;
 
-            for _ in begin..end {
-                let index = row_index * self.batch_size + col_index;
+            for i in begin..end {
                 unsafe {
-                    let p1 = index * self.num_experts;
-                    let p2 = index * self.num_topk;
-                    let token_index = col_index + row_index * batch_size;
+                    let p1 = i * (self.num_experts);
+                    let p2 = i * (self.num_topk);
+                    let token_index = i;
                     self.compute(
                         ptr1.add(p1),
                         topk_values_ptr.add(p2),
@@ -93,11 +91,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
                         self.num_experts,
                         self.num_topk,
                     );
-                }
-                col_index += 1;
-                if col_index == batch_size {
-                    col_index = 0;
-                    row_index += 1;
                 }
             }
         }
@@ -127,9 +120,10 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<
             indice_ptr,
             weight_ptr,
             token_index,
-            self.num_tokens,
+            self.batch_size,
             input_length,
             output_length,
+            true,
         );
     }
 }
@@ -156,7 +150,7 @@ impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
             indice_ptr,
             weight_ptr,
             token_index,
-            self.num_tokens,
+            self.batch_size,
             input_length,
             output_length,
             true,
@@ -185,9 +179,10 @@ impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
             indice_ptr,
             weight_ptr,
             token_index,
-            self.num_tokens,
+            self.batch_size,
             input_length,
             output_length,
+            true,
         );
     }
 }
@@ -204,11 +199,10 @@ mod test {
             return;
         }
 
-        let sequence_chunk_size = 1;
         let batch_size = 2;
         let num_experts = 16;
         let num_topk = 4;
-        let num_tokens = sequence_chunk_size * batch_size;
+        let num_tokens = batch_size;
 
         let input_data1: Vec<f32> = vec![
             0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
@@ -222,10 +216,10 @@ mod test {
         input_data.extend_from_slice(&input_data2);
 
         let mut experts_indicator = vec![false; num_experts];
-        let mut indice_ptr = vec![false; num_experts * num_tokens];
-        let mut weight_ptr = vec![0.0f32; num_experts * num_tokens];
+        let mut indice_ptr = vec![false; (num_experts * num_tokens)];
+        let mut weight_ptr = vec![0.0f32; (num_experts * num_tokens)];
 
-        let mut topk_indices_ptr = vec![0usize; num_topk * num_tokens];
+        let mut topk_indices_ptr = vec![0; (num_topk * num_tokens)];
 
         let operator = ExpertsSoftmaxNorm::<f32>::new(
             input_data.as_ptr(),
@@ -233,15 +227,15 @@ mod test {
             indice_ptr.as_mut_ptr(),
             weight_ptr.as_mut_ptr(),
             topk_indices_ptr.as_mut_ptr(),
-            sequence_chunk_size,
             batch_size,
             num_experts,
             num_topk,
+            false,
         );
 
         let thread_num = 1;
         let thread_id = 0;
-        operator.run(0, sequence_chunk_size, batch_size, thread_num, thread_id);
+        operator.run(batch_size, 0, thread_num, thread_id);
 
         // Verification for token 0
         let mut expected1: Vec<(usize, f32)> = input_data1.iter().copied().enumerate().collect();
@@ -250,15 +244,26 @@ mod test {
             .iter()
             .copied()
             .fold(f32::NEG_INFINITY, f32::max);
+
+        // Calculate denominator using all values (standard softmax)
         let denom1: f32 = input_data1.iter().map(|v| (v - max_val1).exp()).sum();
+
+        // Calculate sum of probabilities for top-k
+        let mut prob_sum1 = 0.0;
+        for i in 0..num_topk {
+            let (_, val) = expected1[i];
+            prob_sum1 += (val - max_val1).exp() / denom1;
+        }
 
         for i in 0..num_topk {
             let (idx, val) = expected1[i];
             let prob = (val - max_val1).exp() / denom1;
+            let normalized_prob = prob / prob_sum1;
+
             assert!(experts_indicator[idx]);
-            let offset = idx * num_tokens + 0;
+            let offset = idx * (num_tokens) + 0;
             assert!(indice_ptr[offset]);
-            assert_ulps_eq!(weight_ptr[offset], prob, max_ulps = 4);
+            assert_ulps_eq!(weight_ptr[offset], normalized_prob, epsilon = 1e-4);
         }
 
         // Verification for token 1
@@ -268,15 +273,26 @@ mod test {
             .iter()
             .copied()
             .fold(f32::NEG_INFINITY, f32::max);
+
+        // Calculate denominator using all values (standard softmax)
         let denom2: f32 = input_data2.iter().map(|v| (v - max_val2).exp()).sum();
+
+        // Calculate sum of probabilities for top-k
+        let mut prob_sum2 = 0.0;
+        for i in 0..num_topk {
+            let (_, val) = expected2[i];
+            prob_sum2 += (val - max_val2).exp() / denom2;
+        }
 
         for i in 0..num_topk {
             let (idx, val) = expected2[i];
             let prob = (val - max_val2).exp() / denom2;
+            let normalized_prob = prob / prob_sum2;
+
             assert!(experts_indicator[idx]);
-            let offset = idx * num_tokens + 1;
+            let offset = idx * (num_tokens) + 1;
             assert!(indice_ptr[offset]);
-            assert_ulps_eq!(weight_ptr[offset], prob, max_ulps = 4);
+            assert_ulps_eq!(weight_ptr[offset], normalized_prob, epsilon = 1e-4);
         }
     }
 
@@ -295,7 +311,7 @@ mod test {
         let num_tokens = sequence_chunk_size * batch_size;
 
         // Generate input data for batch_size tokens * num_experts
-        let mut input_vals: Vec<f32> = Vec::with_capacity(num_tokens * num_experts);
+        let mut input_vals: Vec<f32> = Vec::with_capacity((num_tokens * num_experts));
         for t in 0..num_tokens {
             for i in 0..num_experts {
                 // Create some variation based on token index t and expert index i
@@ -305,17 +321,17 @@ mod test {
             // Ensure distinct top values for this token to avoid sorting ambiguity in tests
             let base = t * num_experts;
             // Make index `t` the absolute winner to distinguish tokens slightly
-            input_vals[base + (t % num_experts)] = 30.0;
+            input_vals[(base + (t % num_experts))] = 30.0;
             // Make index `(t+1)` second
-            input_vals[base + ((t + 1) % num_experts)] = 25.0;
+            input_vals[(base + ((t + 1) % num_experts))] = 25.0;
         }
 
         let input_data: Vec<f16> = input_vals.iter().map(|&x| (x as f16)).collect();
 
         let mut experts_indicator = vec![false; num_experts];
-        let mut indice_ptr = vec![false; num_experts * num_tokens];
-        let mut weight_ptr = vec![(0.0f16); num_experts * num_tokens];
-        let mut topk_indices_ptr = vec![0usize; num_topk * num_tokens];
+        let mut indice_ptr = vec![false; (num_experts * num_tokens)];
+        let mut weight_ptr = vec![(0.0f16); (num_experts * num_tokens)];
+        let mut topk_indices_ptr = vec![0; (num_topk * num_tokens)];
 
         let operator = ExpertsSoftmaxNorm::<f16>::new(
             input_data.as_ptr(),
@@ -323,21 +339,21 @@ mod test {
             indice_ptr.as_mut_ptr(),
             weight_ptr.as_mut_ptr(),
             topk_indices_ptr.as_mut_ptr(),
-            sequence_chunk_size,
             batch_size,
             num_experts,
             num_topk,
+            false,
         );
 
         let thread_num = 8;
         for thread_id in 0..thread_num {
-            operator.run(0, sequence_chunk_size, batch_size, thread_num, thread_id);
+            operator.run(batch_size, 0, thread_num, thread_id);
         }
 
         // Verification
         for t in 0..num_tokens {
-            let start = t * num_experts;
-            let end = start + num_experts;
+            let start = (t * num_experts);
+            let end = start + (num_experts);
             let token_input = &input_vals[start..end];
 
             let mut expected: Vec<(usize, f32)> = token_input.iter().copied().enumerate().collect();
@@ -360,7 +376,7 @@ mod test {
                     idx, t
                 );
 
-                let offset = idx * num_tokens + t;
+                let offset = idx * (num_tokens) + (t);
                 assert!(
                     indice_ptr[offset],
                     "Index ptr for expert {} token {} should be true",

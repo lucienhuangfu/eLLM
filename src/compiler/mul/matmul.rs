@@ -52,6 +52,7 @@ where
         m_max: usize,
         n_max: usize,
         k_max: usize,
+        decode_only_flag: bool,
     ) -> Self {
         // === (1) 不再构造期转置：ptr2 直接引用传入的 B_nt[N×K] ===
         let b_nt_base = ptr2_b_nt_nxk;

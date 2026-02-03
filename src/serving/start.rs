@@ -1,89 +1,217 @@
 use core_affinity;
-use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
-use std::rc::Rc;
+use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
-use std::time::Instant;
-
-// use hurdles::Barrier;
-// use super::barrier::Barrier;
-// use serde::{Deserialize, Serialize};
-use std::ops::{AddAssign, Neg, Sub};
+use std::time::{Duration, Instant};
 
 use super::super::compiler::operator::Operator;
-// use crate::kernel::generic::from_f32::FromF32;
-use crate::kernel::generic::sigmoid::Sigmoid;
-use crate::kernel::generic::sqrt::Sqrt;
-use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
-// use super::state::State;
 
-pub fn start<T>(operator_queue: Vec<Operator<T>>)
-where
-    T: PartialOrd
+use super::super::kernel::generic::{exp::Exp, neg_infinity::NegInfinity, sqrt::Sqrt};
+use crate::init::record::{BatchList, Phase, PrefillEndRecord, TokenList, TokenRecord};
+use crate::init::send_sync_ptr::MutPtr;
+
+/// Helper function to fill a range of token records.
+/// Returns the number of tokens added.
+#[inline(always)]
+fn fill_token_batch(
+    token_raw_ptr: &mut [TokenRecord],
+    start_index: usize,
+    batch_index: usize,
+    start_pos: usize,
+    count: usize,
+) {
+    let end_index = start_index + count;
+    for (p, token_record) in token_raw_ptr[start_index..end_index].iter_mut().enumerate() {
+        token_record.batch_index = batch_index;
+        token_record.position_index = start_pos + p;
+    }
+}
+
+fn schedule_batch(batch_list: &mut BatchList, token_list: &mut TokenList) -> (usize, usize) {
+    let max_token_size = token_list.token_records.len();
+    let current_batch_size = batch_list.current_size;
+    let batch_raw_ptr = &mut batch_list.records;
+
+    let TokenList {
+        token_records,
+        lift_records,
+        current_lift_size,
+        ..
+    } = token_list;
+
+    let token_raw_ptr = token_records;
+    let max_lift_size = lift_records.len();
+    let lift_raw_ptr = lift_records;
+
+    loop {
+        let mut token_index = 0;
+        // Reset the size for the current batch generation
+        *current_lift_size = 0;
+
+        // Pass 1: Handle Decode Phase (Priority)
+        for (i, batch_record) in batch_raw_ptr
+            .iter_mut()
+            .take(current_batch_size)
+            .enumerate()
+        {
+            if token_index >= max_token_size {
+                break;
+            }
+            if let Phase::Decode = batch_record.phase {
+                batch_record.kv_index += 1;
+
+                // Optimization: Inline single token write for Decode phase to avoid function call overhead
+                // fill_token_batch(token_raw_ptr, token_index, i, batch_record.kv_index, 1);
+                let token_record = &mut token_raw_ptr[token_index];
+                token_record.batch_index = i;
+                token_record.position_index = batch_record.kv_index;
+                token_index += 1;
+            }
+        }
+
+        let mut decode_index = token_index;
+
+        // Pass 2: Handle Prefill Phase
+        let mut lift_index = decode_index;
+        for (i, batch_record) in batch_raw_ptr
+            .iter_mut()
+            .take(current_batch_size)
+            .enumerate()
+        {
+            if token_index >= max_token_size {
+                break;
+            }
+
+            // Calculate remaining length safely
+            let len = match batch_record.phase {
+                Phase::Prefill_begin | Phase::Prefill_end => batch_record
+                    .sequence_index
+                    .saturating_sub(batch_record.kv_index)
+                    .saturating_sub(1),
+                _ => 0,
+            };
+
+            if len > 0 {
+                let take = std::cmp::min(len, max_token_size - token_index);
+
+                fill_token_batch(
+                    token_raw_ptr,
+                    token_index,
+                    i,
+                    batch_record.kv_index + 1,
+                    take,
+                );
+
+                batch_record.kv_index += take;
+
+                if let Phase::Prefill_end = batch_record.phase {
+                    // Optimization: Direct indexing into pre-allocated buffer instead of push
+                    if *current_lift_size < max_lift_size {
+                        lift_raw_ptr[*current_lift_size] = PrefillEndRecord {
+                            prefill_end_index: (token_index + take),
+                            lift_index: lift_index,
+                        };
+                        *current_lift_size += 1;
+                    }
+                    lift_index += 1;
+                    decode_index += 1;
+                }
+
+                token_index += take;
+            }
+        }
+
+        if token_index > 0 {
+            return (token_index, decode_index);
+        } else {
+            thread::sleep(Duration::from_micros(1));
+        }
+    }
+}
+
+/// Starts the inference serving loop.
+/// This function initializes a thread pool where Thread 0 schedules tasks by monitoring
+/// user request phases (Prefill/Decode) and populating the token list. All threads
+/// then synchronize to execute the operators in the queue for the current batch.
+pub fn start<T>(
+    batch_list_ptr: MutPtr<BatchList>,
+    token_list_ptr: MutPtr<TokenList>,
+    operator_queue: Vec<Operator<T>>,
+) where
+    T: Send
+        + Sync
+        + 'static
         + Copy
         + Default
+        + Add<Output = T>
         + Sub<Output = T>
+        + Mul<Output = T>
+        + Div<Output = T>
         + Neg<Output = T>
-        + Exp
-        + NegInfinity
-        + Sigmoid<T>
-        + Sqrt
         + AddAssign
-        + Send
-        + Sync
-        + 'static,
+        + Exp
+        + Sqrt
+        + NegInfinity,
 {
     println!("start");
-    // let prompt_operator_num;
-    // let data = SyncUnsafeCell::new(DataReader::new(prompt_data));
-    let thread_num = thread::available_parallelism().unwrap().get();
-    let sync_operator_queue = Arc::new(operator_queue);
+    // let thread_num = thread::available_parallelism().unwrap().get();
+    let core_ids = core_affinity::get_core_ids().unwrap();
+    let thread_num = core_ids.len();
+
+    // Optimization: Convert Vec to Arc<[T]> to reduce one level of indirection compared to Arc<Vec<T>>
+    let sync_operator_queue: Arc<[Operator<T>]> = operator_queue.into();
 
     let barrier = Arc::new(Barrier::new(thread_num));
-
-    let sequence_chunk_size = 64;
+    let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
     let mut handles = Vec::with_capacity(thread_num);
-    let core_ids = core_affinity::get_core_ids().unwrap();
+    // let core_ids = core_affinity::get_core_ids().unwrap();
+
     for (i, core_id) in core_ids.into_iter().enumerate() {
         // println!("thread id {}", i);
-        // let _state = &state;
-        // let _prompt_begin = &prompt_begin;
-        // let _prompt_end = &prompt_end;
-        // let _generation_end = &generation_end;
-        // let _batch_size = &batch_size;
         let b = Arc::clone(&barrier);
-        // let mut b = barrier .clone();
         let queue = Arc::clone(&sync_operator_queue);
+        let shared_sizes: Arc<SyncUnsafeCell<(usize, usize)>> = Arc::clone(&shared_sizes);
 
-        // let start_pos = start_pos; // 显式捕获当前值
-
-        // let decode_start = 40;
+        // Wrap pointers in SyncUnsafeCell to ensure safe transport across threads.
+        // This creates a new cell for each thread containing a copy of the pointer.
+        let batch_list_ptr_addr = SyncUnsafeCell::new(batch_list_ptr);
+        let token_list_ptr_addr = SyncUnsafeCell::new(token_list_ptr);
+        // let last_prefill_list_ptr_addr = SyncUnsafeCell::new(last_prefill_list_ptr);
 
         let handle = thread::spawn(move || {
             let thread_id = i;
             core_affinity::set_for_current(core_id);
             println!("{} start", thread_id);
-            // let mut counter = 0;
-
-            // 预先创建子切片，避免在热循环中重复操作
-            // let prompt_queue_slice = &queue[..decode_start.min(queue.len())];
-            // let decode_queue_slice = &queue[decode_start.min(queue.len())..];
-
-            let sequence_length = 128;
-
             let s = Instant::now();
-            let batch_size = 1;
-            for p in 0..sequence_length {
-                println!("thread {} position {}", thread_id, p);
+            let sizes_ptr = shared_sizes.get();
+
+            // Main inference loop: continuously processes batches of tokens
+            loop {
+                // Thread 0 acts as the scheduler: monitors user states and prepares the token batch
+                if thread_id == 0 {
+                    unsafe {
+                        let batch_list = &mut *(*batch_list_ptr_addr.get()).ptr;
+                        let token_list = &mut *(*token_list_ptr_addr.get()).ptr;
+                        *sizes_ptr = schedule_batch(batch_list, token_list);
+                    }
+                }
+
+                // Synchronization barrier: Wait for Thread 0 to finish scheduling
+                b.wait();
+
+                let (token_size, decode_size) = unsafe { *sizes_ptr };
+
+                // Execute the operator queue in parallel
                 for operator in queue.iter() {
-                    operator.run(0, 1, batch_size, thread_num, thread_id);
+                    operator.run(token_size, decode_size, thread_num, thread_id);
                     b.wait();
                 }
             }
-            let t = s.elapsed();
-            println!("thread {} decode time {:?}", thread_id, t);
+
+            // let t = s.elapsed();
+            // println!("thread {} decode time {:?}", thread_id, t);
         });
 
         // std::mem::forget(handle);
@@ -98,18 +226,215 @@ where
 #[cfg(test)]
 mod test {
     use approx::assert_relative_eq;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     use super::*;
-    use crate::memory::allocator::allocate_init;
+    use crate::init::record::{BatchRecord, PrefillEndRecord, TokenRecord};
     use crate::memory::cache::Cache;
     use crate::ptensor::tensor::Tensor;
-    use crate::qwen3_moe::config::Config;
-    use crate::qwen3_moe::model::Model;
-    // use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
+    use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
 
     // use crate::memory::allocator::allocate_init;
 
     /*
+    #[test]
+    fn test_fill_token_batch() {
+        let mut records = vec![
+            TokenRecord {
+                // token_id: 0,
+                batch_index: 0,
+                position_index: 0
+            };
+            10
+        ];
+
+        // Fill 3 tokens starting at index 2, for batch 5, starting position 100
+        fill_token_batch(&mut records, 2, 5, 100, 3);
+
+        // Verify modified range
+        for i in 2..5 {
+            assert_eq!(records[i].batch_index, 5);
+            assert_eq!(records[i].position_index, 100 + (i - 2));
+        }
+
+        // Verify untouched areas
+        assert_eq!(records[0].batch_index, 0);
+        assert_eq!(records[5].batch_index, 0);
+    }
+
+    #[test]
+    fn test_schedule_batch_mixed_phases() {
+        // Setup BatchList with mixed phases
+        // User 0: Decode (should produce 1 token)
+        // User 1: Prefill_begin (should produce tokens up to max)
+        // User 2: Decode (should produce 1 token)
+        let batch_records = vec![
+            BatchRecord {
+                sequence_index: 100,
+                // snapshot_sequence_index: 0,
+                kv_index: 10,
+                phase: Phase::Decode,
+                prompt_length: 100,
+                notify: Arc::new(tokio::sync::Notify::new()),
+            },
+            BatchRecord {
+                sequence_index: 20,
+                // snapshot_sequence_index: 0,
+                kv_index: 0,
+                phase: Phase::Prefill_begin,
+                prompt_length: 20,
+                notify: Arc::new(tokio::sync::Notify::new()),
+            },
+            BatchRecord {
+                sequence_index: 100,
+                // snapshot_sequence_index: 0,
+                kv_index: 50,
+                phase: Phase::Decode,
+                prompt_length: 100,
+                notify: Arc::new(tokio::sync::Notify::new()),
+            },
+        ]
+        .into_boxed_slice();
+
+        let mut batch_list = BatchList {
+            records: batch_records,
+            current_size: 3,
+        };
+
+        // Setup TokenList
+        let token_records = vec![
+            TokenRecord {
+                // token_id: 0,
+                batch_index: 0,
+                position_index: 0
+            };
+            100
+        ]
+        .into_boxed_slice();
+
+        // Setup LastPrefillList
+        let last_prefill_records = vec![
+            PrefillEndRecord {
+                prefill_end_index: 0,
+                lift_index: 0
+            };
+            10
+        ]
+        .into_boxed_slice();
+
+        let mut token_list = TokenList {
+            token_records: token_records,
+            current_token_size: 0,
+            lift_records: last_prefill_records,
+            current_lift_size: 0,
+        };
+
+        // Run schedule_batch
+        let (token_count, decode_count) = schedule_batch(&mut batch_list, &mut token_list);
+
+        let lift_count = token_list.current_lift_size;
+
+        // Verification:
+        // Pass 1 (Decode):
+        // - User 0: adds 1 token. kv_index -> 11.
+        // - User 2: adds 1 token. kv_index -> 51.
+        // decode_count should be 2.
+        assert_eq!(decode_count, 2);
+
+        // Total tokens = 2 (decode) + 19 (prefill) = 21.
+        assert_eq!(token_count, 21);
+
+        // Lift count starts at decode_count (2). User 1 is Prefill_begin, so no increment.
+        assert_eq!(lift_count, 2);
+
+        // Verify Token Content
+        // Token 0 (User 0)
+        assert_eq!(token_list.token_records[0].batch_index, 0);
+        assert_eq!(token_list.token_records[0].position_index, 11);
+
+        // Token 1 (User 2)
+        assert_eq!(token_list.token_records[1].batch_index, 2);
+        assert_eq!(token_list.token_records[1].position_index, 51);
+
+        // Token 2 (User 1 start)
+        assert_eq!(token_list.token_records[2].batch_index, 1);
+        // kv_index is 0 (meaning token 0 processed), so start_pos is kv_index + 1 = 1
+        assert_eq!(token_list.token_records[2].position_index, 1);
+
+        // Verify User State Updates
+        assert_eq!(batch_list.records[0].kv_index, 11);
+        assert_eq!(batch_list.records[1].kv_index, 19);
+        assert_eq!(batch_list.records[2].kv_index, 51);
+    }
+
+    #[test]
+    fn test_schedule_batch_prefill_end() {
+        // Test specifically for Prefill_end logic which updates LastPrefillList
+        let batch_records = vec![BatchRecord {
+            sequence_index: 10,
+            // snapshot_sequence_index: 0,
+            kv_index: 5,
+            phase: Phase::Prefill_end,
+            prompt_length: 10,
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }]
+        .into_boxed_slice();
+
+        let mut batch_list = BatchList {
+            records: batch_records,
+            current_size: 1,
+        };
+
+        let token_records = vec![
+            TokenRecord {
+                // token_id: 0,
+                batch_index: 0,
+                position_index: 0
+            };
+            100
+        ]
+        .into_boxed_slice();
+
+        let last_prefill_records = vec![
+            PrefillEndRecord {
+                prefill_end_index: 0,
+                lift_index: 0
+            };
+            10
+        ]
+        .into_boxed_slice();
+
+        let mut token_list = TokenList {
+            token_records: token_records,
+            current_token_size: 0,
+            lift_records: last_prefill_records,
+            current_lift_size: 0,
+        };
+
+        let (token_count, decode_count) = schedule_batch(&mut batch_list, &mut token_list);
+
+        let lift_count = token_list.current_lift_size;
+
+        // Decode count = 0.
+        // Prefill len = 10 - 5 - 1 = 4.
+        // Token count = 4.
+        assert_eq!(decode_count, 0);
+        assert_eq!(token_count, 4);
+
+        // Prefill_end triggers:
+        // - last_prefill_list entry added.
+        // - lift_index increments (starts at 0, becomes 1).
+        assert_eq!(lift_count, 1);
+
+        assert_eq!(token_list.current_lift_size, 1);
+        assert_eq!(token_list.lift_records[0].prefill_end_index, 3); // token_index (0) + take (4) - 1
+        assert_eq!(token_list.lift_records[0].lift_index, 0); // lift_index before increment
+
+        // Verify kv_index update: 5 + 4 = 9
+        assert_eq!(batch_list.records[0].kv_index, 9);
+    }
+
     #[test]
     fn test_start() {
         let position_window_size = 4;
@@ -169,6 +494,7 @@ mod test {
         let output_tensor = sparse_moe.forward(
             &input,
             &residual,
+            false,
             String::from("model.layers.0.output_tensor"),
         );
 
@@ -181,27 +507,57 @@ mod test {
             }
         }*/
 
-        // output_tensor.operator_queue.borrow().to_vec()
-        start(output_tensor.operator_queue.take());
-    } */
+        let max_token_size = 100;
+        let token_records = (0..max_token_size)
+            .map(|_| TokenRecord {
+                // token_id: 0,
+                batch_index: 0,
+                position_index: 0,
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
 
-    #[test]
-    fn test_model_start() {
-        let sequence_length = 128;
-        let sequence_chunk_size = 1;
-        let batch_size = 6;
-        let topk_size = 8;
+        let batch_records = (0..batch_size)
+            .map(|_| BatchRecord {
+                sequence_index: 50,
+                // snapshot_sequence_index: 0,
+                kv_index: 0,
+                phase: Phase::Prefill_begin,
+                prompt_length: 50,
+                notify: Arc::new(tokio::sync::Notify::new()),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
 
-        let config =
-            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+        // Pre-allocate LastPrefillList buffer
+        let last_prefill_records = vec![
+            PrefillEndRecord {
+                prefill_end_index: 0,
+                lift_index: 0
+            };
+            batch_size
+        ]
+        .into_boxed_slice();
 
-        let mut model =
-            Model::<f32>::new(&config, sequence_length, sequence_chunk_size, batch_size, topk_size);
+        let mut token_list = TokenList {
+            token_records: token_records,
+            current_token_size: 0,
+            lift_records: last_prefill_records,
+            current_lift_size: 0,
+        };
 
-        let mut sequences =
-            allocate_init::<usize>((sequence_length + 1) * batch_size, 0);
-        let _ = unsafe { model.forward(sequences) };
+        let mut batch_list = BatchList {
+            records: batch_records,
+            current_size: batch_size,
+        };
 
-        start(model.operator_queue.take());
+        let token_ptr = MutPtr {
+            ptr: &mut token_list as *mut TokenList,
+        };
+        let batch_ptr = MutPtr {
+            ptr: &mut batch_list as *mut BatchList,
+        };
+
+        start(batch_ptr, token_ptr, output_tensor.operator_queue.take());
     }
 }

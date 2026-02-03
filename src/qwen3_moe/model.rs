@@ -21,7 +21,7 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::compiler::map::rms_map::RMSMap;
+// use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::operator::Operator;
 use super::super::init::matmul_params::MatMulParams;
 use super::super::memory::cache::Cache;
@@ -29,6 +29,7 @@ use super::super::memory::cache::Cache;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
+use crate::init::record::{BatchList, TokenList, TokenRecord};
 
 // use super::rope::precompute_freqs_cis;
 
@@ -44,7 +45,6 @@ where
     lm_head_weight: Tensor<T>,
     pub layers: Vec<DecoderLayer<T>>,
     rms_norm_eps: T,
-    pub sequence_chunk_size: usize,
     pub batch_size: usize,
     pub hidden_size: usize,
     pub topk_size: usize,
@@ -106,7 +106,7 @@ where
                 &config,
                 i,
                 sequence_length,
-                sequence_chunk_size,
+                // sequence_chunk_size,
                 batch_size,
                 word_embedding.clone(),
                 position_embedding.clone(),
@@ -138,7 +138,13 @@ where
         }
     }
 
-    pub fn forward(&mut self, sequences: *mut usize) -> (*const usize, Tensor<T>) {
+    pub fn forward(
+        &mut self,
+        input_sequences: *mut usize,
+        token_list_ptr: *const TokenList,
+        batch_list_ptr: *mut BatchList,
+        eos_id: usize,
+    ) -> (*const usize, Tensor<T>) {
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
@@ -150,9 +156,17 @@ where
         );
 
         for (i, layer_module) in self.layers.iter().enumerate() {
+            let decode_only_flag = if i == (self.layers.len() - 1) {
+                true
+            } else {
+                false
+            };
+
             hidden_state = layer_module.forward(
                 &hidden_state,
-                sequences,
+                input_sequences,
+                token_list_ptr,
+                decode_only_flag,
                 format!("{}.hidden_states.{}.output", self.scope_name, i),
             );
             // all_hidden_states.push(hidden_states);
@@ -160,6 +174,7 @@ where
 
         let norm_state = hidden_state.rms(
             self.rms_norm_eps,
+            true,
             format!("{}.norm_hidden", self.scope_name),
         );
    
@@ -181,6 +196,7 @@ where
 
             unsafe { sequences.add(self.batch_size) },
             self.topk_size,
+            eos_id,
             format!("{}.softmax", self.scope_name),
         );
 
@@ -194,13 +210,13 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use std::thread;
 
     use super::*;
     // use crate::init::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
+    use crate::init::record::{
+        BatchList, BatchRecord, Phase, PrefillEndRecord, TokenList, TokenRecord,
+    };
     use crate::memory::allocator::allocate_init;
     use crate::memory::cache::Cache;
     use crate::ptensor::tensor::Tensor;
@@ -219,7 +235,6 @@ mod test {
         let mut model = Model::<f32>::new(
             &config,
             sequence_length,
-            sequence_chunk_size,
             batch_size,
             topk_size, // word_embedding,
                        // position_embedding,
@@ -239,7 +254,7 @@ mod test {
             .unwrap_or(1);
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(0, 1, batch_size, thread_num, i);
+                operator.run(batch_size, 0, thread_num, i);
             }
         }
 

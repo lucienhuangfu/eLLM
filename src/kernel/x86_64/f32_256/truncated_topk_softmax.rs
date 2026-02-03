@@ -15,7 +15,7 @@ pub fn truncated_topk_softmax(
     // [topk_size]
     output_indices_ptr: *mut usize,
     // [1]
-    output_token_ptr: *mut usize,
+    // output_token_ptr: *mut usize,
     thread_num: usize,
     topk_size: usize,
 ) {
@@ -61,7 +61,7 @@ pub fn truncated_topk_softmax(
         }
     }
 
-    unsafe { ptr::write(output_token_ptr, *output_indices_ptr) };
+    // unsafe { ptr::write(output_token_ptr, *output_indices_ptr) };
 }
 
 #[cfg(test)]
@@ -90,7 +90,7 @@ mod tests {
             // sums.as_ptr(),
             out_vals.as_mut_ptr(),
             out_idx.as_mut_ptr(),
-            &mut out_token,
+            // &mut out_token,
             thread_num,
             topk_size,
         );

@@ -59,8 +59,8 @@ pub unsafe fn get_topk(
         let chunk_take = topk.min(LANES);
         for i in 0..chunk_take {
             let val = chunk_vals[i];
-            let local_idx = chunk_idx[i] as usize;
-            let global_idx = chunk_start + local_idx;
+            let local_idx = chunk_idx[i];
+            let global_idx = chunk_start + local_idx as usize;
             heap.push(val, global_idx);
         }
 

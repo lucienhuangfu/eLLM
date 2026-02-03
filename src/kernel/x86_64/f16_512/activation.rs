@@ -134,7 +134,7 @@ mod tests {
             std::ptr::copy_nonoverlapping(input_vals.as_ptr(), v, length);
 
             let a = _mm512_load_ph(v);
-            let o = exp512(a);
+            let o = tanh512(a);
 
             let mut res = allocate_init::<f16>(length, 0.0);
             _mm512_store_ph(res, o);
