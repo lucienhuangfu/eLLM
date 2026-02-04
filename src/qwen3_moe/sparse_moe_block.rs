@@ -127,6 +127,7 @@ where
             .experts_softmax_norm(
                 self.num_experts,
                 self.num_topk,
+                decode_only_flag,
                 format!("{}.router_probs", self.scope_name),
             );
 
@@ -244,7 +245,7 @@ mod test {
         for op in output.operator_queue.borrow().iter() {
             for tid in 0..thread_num {
                 // 本次不考虑 position，按你现有约定固定 (0,1)
-                op.run(0, 1, batch_size, thread_num, tid);
+                op.run(batch_size,0, thread_num, tid);
             }
         }
     }
@@ -296,7 +297,7 @@ mod test {
     fn test_sparse_moe_queue_structure() {
         let (moe, input, residual) = build_case(1, 24, 256, 1024, 128, 8);
 
-        let out = moe.forward(&input, &residual, "model.layers.0.output".to_string());
+        let out = moe.forward(&input, &residual, false,"model.layers.0.output".to_string());
         let q = out.operator_queue.borrow();
 
         assert!(q.len() >= 5, "Expected >=5 operators, got {}", q.len());
@@ -317,7 +318,7 @@ mod test {
         fill_tensor_f16(&input, f16_one());
         fill_tensor_f16(&residual, f16_one());
 
-        let out = moe.forward(&input, &residual, "model.layers.0.output".to_string());
+        let out = moe.forward(&input, &residual, false, "model.layers.0.output".to_string());
 
         run_queue(&out, 24, num_cpus::get());
 
@@ -333,7 +334,7 @@ mod test {
         fill_tensor_f16(&input, f16_one());
         fill_tensor_f16(&residual, f16_one());
 
-        let out = moe.forward(&input, &residual, "model.layers.0.output".to_string());
+        let out = moe.forward(&input, &residual, false, "model.layers.0.output".to_string());
 
         // 单线程
         run_queue(&out, 24, 1);

@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
 
+use serde::de;
+
 use crate::kernel::generic::from_f32::FromF32;
 use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
@@ -170,7 +172,9 @@ where
             let attn_output = view_query_states.attention(
                 &view_key_position_tensor,
                 &view_value_states2,
+                token_list_ptr,
                 self.scaling,
+                decode_only_flag,
                 format!("{}.attn_output", self.scope_name),
             );
 
@@ -281,7 +285,7 @@ mod test {
             &hidden_states,
             &residual_tensor,
             &position_embedding,
-            &token_list,
+            &token_list as *const TokenList,
             false,
         );
 
@@ -299,7 +303,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(0, 1, batch_size, thread_num, i);
+                operator.run(batch_size, 0, thread_num, i);
             }
         }
 
@@ -356,7 +360,27 @@ mod test {
             operator_queue.clone(),
         );
 
-        let output = self_attention.forward(&hidden_states, &residual_tensor, &position_embedding);
+        let token_list = TokenList {
+            token_records: vec![
+                TokenRecord {
+                    batch_index: 0,
+                    position_index: 0,
+                };
+                batch_size
+            ]
+            .into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: vec![].into_boxed_slice(),
+            current_lift_size: 0,
+        };
+
+        let output = self_attention.forward(
+            &hidden_states,
+            &residual_tensor,
+            &position_embedding,
+            &token_list as *const TokenList,
+            false,
+        );
 
         
         // Add assertions to validate the output
@@ -374,7 +398,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(0, 1, batch_size, thread_num, i);
+                operator.run(batch_size, 0, thread_num, i);
             }
         }
     }

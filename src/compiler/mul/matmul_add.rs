@@ -21,6 +21,8 @@ pub struct MatMulAdd<T> {
     pub ptr3: ConstPtr<T>,     // residual[M×N]
     pub output_ptr: MutPtr<T>, // C[M×N]
 
+    pub decode_only_flag: bool,
+
     /// 仅承载 step 形状（MB/NB/KC/MR/NR）
     pub params: MatMulParams,
     pub _marker: PhantomData<T>,
@@ -72,6 +74,7 @@ where
             },
             ptr3: ConstPtr { ptr: ptr3_residual },
             output_ptr: MutPtr { ptr: output_ptr },
+            decode_only_flag: false,
             params,
             _marker: PhantomData,
             m_max,

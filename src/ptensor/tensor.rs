@@ -205,6 +205,7 @@ where
             self.shape[1],
             self.shape[2],
             false,
+            decode_only_flag,
         ));
 
         self.operator_queue.borrow_mut().push(operator);
@@ -220,6 +221,7 @@ where
         topk_indices_ptr: *mut usize,
         num_experts_per_tok: usize,
         params: MatMulParams,
+        decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
         // down_weights [num_experts, hidden_size, intermediate_size]
@@ -248,6 +250,7 @@ where
                 down_weights.shape[1],
                 num_experts_per_tok,
                 params,
+                decode_only_flag,
             )
         });
 
@@ -263,6 +266,7 @@ where
         indice_ptr: *mut bool,
         // weight_ptr: *mut T,
         params: MatMulParams,
+        decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
         // gate_weights [num_experts, intermediate_size, hidden_size]
@@ -293,6 +297,7 @@ where
                 params.column_step_macro,
                 params.a_row_step_micro,
                 params.b_row_step_micro,
+                decode_only_flag,
             )
         });
 
@@ -900,7 +905,7 @@ mod test {
                 sequence_index: i,
                 kv_index: 0,
                 phase: Phase::Decode,
-                sequence_length: i,
+                prompt_length: i,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
         }
@@ -1044,7 +1049,7 @@ mod test {
                 sequence_index: i,
                 kv_index: 0,
                 phase: Phase::Decode,
-                sequence_length: i,
+                prompt_length: i,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
         }
@@ -2137,6 +2142,7 @@ mod test {
             experts_indicator,
             indice_ptr,
             params,
+            false,
             "model.layers.0.experts_silu".to_string(),
         );
 
@@ -2317,6 +2323,7 @@ mod test {
             topk_indices_ptr,
             num_experts_per_tok,
             params,
+            false,
             "model.layers.0.experts_down".to_string(),
         );
 

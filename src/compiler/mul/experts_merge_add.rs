@@ -35,6 +35,8 @@ pub struct ExpertsMergeAdd<T> {
 
     /// 是否在 run() 中执行 reset gate_routing（避免每次都做 O(E*tokens)）
     pub reset_gating: bool,
+
+    pub decode_only_flag: bool,
 }
 
 impl<T> ExpertsMergeAdd<T>
@@ -53,6 +55,7 @@ where
         num_experts_per_token: usize,
         hidden_size: usize,
         reset_gating: bool,
+        decode_only_flag: bool,
     ) -> Self {
         Self {
             input_ptr: ConstPtr { ptr: input_ptr },
@@ -68,6 +71,7 @@ where
             num_experts_per_token,
             hidden_size,
             reset_gating,
+            decode_only_flag,
         }
     }
 
@@ -228,6 +232,7 @@ mod tests {
             K,
             H,
             false,
+            false,
         );
 
         runner.run(batch, 0, 1, 0);
@@ -282,6 +287,7 @@ mod tests {
             num_experts,
             K,
             H,
+            false,
             false,
         );
 
@@ -338,6 +344,7 @@ mod tests {
             K,
             H,
             false,
+            false,
         );
 
         runner.run(num_tokens, 0, 1, 0);
@@ -374,6 +381,7 @@ mod tests {
             K,
             H,
             true,
+            false,
         );
 
         runner.run(batch, 0, 2, 0);
@@ -444,6 +452,7 @@ mod tests {
                 k,
                 hidden,
                 true,
+                false,
             );
 
             for tid in 0..num_threads {
@@ -528,6 +537,7 @@ fn test_merge_add_respects_run_batch_smaller_than_capacity() {
         k,
         h,
         false,         // reset_gating 不参与本测试
+        false,
     );
 
     // 单线程运行：关键是把 batch_run 传进去

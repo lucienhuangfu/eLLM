@@ -41,6 +41,7 @@ pub struct ExpertsMatMulDown<T> {
     pub num_topk: usize,    // Ktop
 
     pub params: MatMulParams,
+     decode_only_flag: bool,
     _marker: PhantomData<T>,
 
     // ---- thread-private scratch pools（按 tid 切片）----
@@ -92,6 +93,7 @@ where
         num_topk: usize,
 
         params: MatMulParams,
+        decode_only_flag: bool,
     ) -> Self {
         let mb = params.a_row_step_macro.max(1);
         let kc = params.column_step_macro.max(1);
@@ -154,6 +156,7 @@ where
 
             idx_buf_pool,
             idx_stride,
+            decode_only_flag,
         }
     }
 
@@ -609,6 +612,7 @@ mod tests {
                 h,
                 num_topk,
                 params,
+                false
             )
         };
 
@@ -699,6 +703,7 @@ mod tests {
                 h,
                 num_topk,
                 params,
+                false
             )
         };
 
@@ -804,6 +809,7 @@ mod tests {
                 h,
                 num_topk,
                 params,
+                false,
             )
         };
 
@@ -916,6 +922,7 @@ mod tests {
                 h,
                 num_topk,
                 params,
+                false,
             )
         };
 

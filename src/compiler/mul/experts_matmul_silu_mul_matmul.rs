@@ -27,6 +27,7 @@ pub struct ExpertsMatMulSilu<T> {
     pub output_ptr: MutPtr<T>, // NONLIN[E,B,I]
 
     pub params: MatMulParams,
+    pub decode_only_flag: bool,
 
     pub batch: usize,       // B
     pub inter: usize,       // I (N)
@@ -74,6 +75,7 @@ where
         column_step_macro: usize, // KC
         a_row_step_micro: usize,  // MR=3
         b_row_step_micro: usize,  // NR=32
+        decode_only_flag: bool,
     ) -> Self {
         let mb = a_row_step_macro.max(1);
         let kc = column_step_macro.max(1);
@@ -113,6 +115,7 @@ where
                 a_row_step_micro,
                 b_row_step_micro,
             },
+            decode_only_flag,
 
             batch,
             inter,
@@ -541,6 +544,7 @@ mod tests {
                 kc,
                 mr,
                 nr,
+                false,
             )
         };
 
@@ -632,6 +636,7 @@ mod tests {
                 kc,
                 mr,
                 nr,
+                false,
             )
         };
 
@@ -721,6 +726,7 @@ mod tests {
                 kc,
                 mr,
                 nr,
+                false,
             )
         };
 
@@ -816,6 +822,7 @@ fn test_experts_matmul_silu_qwen_moe_config() {
             kc,
             mr,
             nr,
+            false,
         );
 
         // 注意：最好不要超过 available_parallelism()，避免 scratch 越界
@@ -963,6 +970,7 @@ fn test_experts_silu_batch7_capacity9_must_not_touch_rows_7_8() {
             kc,
             mr,
             nr,
+            false,
         )
     };
 
@@ -1070,6 +1078,7 @@ fn test_experts_matmul_silu_moe_smoke_fast_sampled() {
             kc,
             mr,
             nr,
+            false,
         );
 
         // 你说固定机器跑，这里就直接用 num_threads（确保不超过你那台机的 threads）
@@ -1208,6 +1217,7 @@ fn test_silu_stride_capacity_batch_run_must_not_touch_rows_7_8() {
             kc,
             mr,
             nr,
+            false,
         )
     };
 

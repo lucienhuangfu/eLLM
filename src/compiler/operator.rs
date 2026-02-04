@@ -810,6 +810,7 @@ mod test {
                 kc,
                 mr,
                 nr,
+                false,
             );
 
             let op = Operator::ExpertsMatMulSilu(runner);
@@ -921,6 +922,7 @@ mod test {
                 kc,
                 mr,
                 nr,
+                false,
             );
 
             let op = Operator::ExpertsMatMulSilu(runner);
@@ -1371,6 +1373,7 @@ mod test {
                 k,
                 h,
                 false,
+                false,
             );
 
             let op = Operator::ExpertsMergeAdd(runner);
@@ -1438,6 +1441,7 @@ mod test {
                 num_experts,
                 k,
                 h,
+                false,
                 false,
             );
 
@@ -1510,6 +1514,7 @@ mod test {
                 k,
                 h,
                 true,
+                false,
             );
 
             let op = Operator::ExpertsMergeAdd(runner);
