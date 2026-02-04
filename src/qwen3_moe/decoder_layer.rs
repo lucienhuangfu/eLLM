@@ -184,9 +184,9 @@ where
             &attention_hidden_states,
             decode_only_flag,
             format!("{}.attention_hidden3", self.scope_name),
-        );/* 
+        );
 
-
+        /* 
         let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],
             attention_hidden2.shape[1]/self.head_dim,
             self.head_dim]);
@@ -200,8 +200,7 @@ where
         let out = view_attention_hidden2.add(
             &view_attention_hidden3,
             format!("{}.output", self.scope_name),
-        );
-
+        );*/
         output_hidden_states
     }
 }
@@ -270,10 +269,22 @@ mod test {
         }
 
         let mut sequences = vec![0; sequence_chunk_size * batch_size];
+        let token_records: Vec<TokenRecord> = (0..batch_size)
+            .map(|i| TokenRecord {
+                batch_index: i,
+                position_index: 0,
+            })
+            .collect();
+        let token_list = TokenList {
+            token_records: token_records.into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: Box::new([]),
+            current_lift_size: 0,
+        };
 
         let output_tensor = layer.forward(
             &input,
-            input_sequences.as_mut_ptr(),
+            sequences.as_mut_ptr(),
             &token_list,
             false,
             String::from("model.layers.1.output_tensor"),
@@ -331,7 +342,6 @@ mod test {
             &config,
             0,
             max_position_embeddings,
-            sequence_chunk_size,
             batch_size,
             word_embedding.clone(),
             position_embedding.clone(),
@@ -355,9 +365,23 @@ mod test {
         }
 
         let mut sequences = vec![0; sequence_chunk_size * batch_size];
+        let token_records: Vec<TokenRecord> = (0..batch_size)
+            .map(|i| TokenRecord {
+                batch_index: i,
+                position_index: 0,
+            })
+            .collect();
+        let token_list = TokenList {
+            token_records: token_records.into_boxed_slice(),
+            current_token_size: batch_size,
+            lift_records: Box::new([]),
+            current_lift_size: 0,
+        };
         let output_tensor = layer.forward(
             &input,
             sequences.as_mut_ptr(),
+            &token_list,
+            false,
             String::from("model.layers.0.output_tensor"),
         );
 
@@ -374,7 +398,7 @@ mod test {
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(0, 1, batch_size, thread_num, i);
+                operator.run(sequence_chunk_size * batch_size, sequence_chunk_size, thread_num, i);
             }
         }
 

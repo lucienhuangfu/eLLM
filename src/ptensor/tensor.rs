@@ -12,6 +12,7 @@ use super::super::memory::cache::Cache;
 use crate::init::matmul_params::MatMulParams;
 
 use super::super::compiler::left_vector::LiftVector;
+use crate::init::record::{BatchList, BatchRecord, Phase, TokenList, TokenRecord};
 use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
@@ -198,11 +199,11 @@ where
             experts_indicator,
             indice_ptr,
             output_tensor.data,
-            self.shape[0],
+            1,
             num_experts,
+            self.shape[0],
             self.shape[1],
             self.shape[2],
-            self.shape[3],
             false,
         ));
 
@@ -223,7 +224,7 @@ where
     ) -> Self {
         // down_weights [num_experts, hidden_size, intermediate_size]
         // output [batch_size, num_experts_per_token, hidden_size]
-        let output_shape = vec![self.shape[0], num_experts_per_tok, down_weights.shape[1]];
+        let output_shape = vec![self.shape[1], num_experts_per_tok, down_weights.shape[1]];
 
         let output_tensor = Tensor::from_cache(
             output_shape.clone(),
@@ -242,7 +243,7 @@ where
                 topk_indices_ptr,
                 output_tensor.data,
                 down_weights.shape[0],
-                self.shape[1] * self.shape[2],
+                self.shape[1],
                 down_weights.shape[2],
                 down_weights.shape[1],
                 num_experts_per_tok,
@@ -283,9 +284,9 @@ where
                 experts_indicator,
                 indice_ptr,
                 output_tensor.data,
-                self.shape[0] * self.shape[1],
+                self.shape[0],
                 gate_weights.shape[1],
-                self.shape[2],
+                self.shape[1],
                 gate_weights.shape[0],
                 params.a_row_step_macro,
                 params.b_row_step_macro,
@@ -494,7 +495,7 @@ where
             params.b_row_step_micro,
         ));
 
-        self.operator_queue.borrow_mut().push(operator);*/
+        self.operator_queue.borrow_mut().push(operator);
         (q_state, k_state, v_state)
     }
 
@@ -550,13 +551,13 @@ where
         topk: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
-        let m = self.shape[0] * self.shape[1];
-        let k = self.shape[2];
         let n = tensor2.shape[0];
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        let output_shape = vec![self.shape[0], self.shape[1], thread_num * topk];
+        let m = self.shape[0];
+        let k = self.shape[1];
+        let output_shape = vec![self.shape[0], thread_num * topk];
 
         let indice_ptr = unsafe { allocate_init(output_shape.iter().product(), 0usize) };
 
@@ -819,9 +820,9 @@ mod test {
         f32::from_bits(f_bits)
     }
 
-    fn run_operator_all_threads(op: &Operator<f16>, batch: usize, cpu_num: usize) {
+    fn run_operator_all_threads(op: &Operator<f16>, token_size: usize, decode_size: usize, cpu_num: usize) {
         for tid in 0..cpu_num {
-            op.run(0, 1, batch, cpu_num, tid);
+            op.run(token_size, decode_size, cpu_num, tid);
         }
     }
 
@@ -846,7 +847,6 @@ mod test {
         let cache: Rc<RefCell<Cache<f32>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f32>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        // let sequence_chunk_size = 1;
         let batch_size = 2;
         let num_topk = 8;
         let thread_num = 2;
@@ -854,7 +854,7 @@ mod test {
         let num_candidates = num_candidates_per_thread * thread_num;
         let eos_id = 100;
 
-        let value_shape = vec![sequence_chunk_size, batch_size, num_candidates];
+        let value_shape = vec![batch_size, num_candidates];
         let value_tensor = Tensor::<f32>::from_cache(
             value_shape,
             "model.layers.0.values".to_string(),
@@ -862,7 +862,7 @@ mod test {
             operator_queue.clone(),
         );
 
-        let sums_shape = vec![sequence_chunk_size, batch_size, thread_num];
+        let sums_shape = vec![batch_size, thread_num];
         let sums_tensor = Tensor::<f32>::from_cache(
             sums_shape,
             "model.layers.0.sums".to_string(),
@@ -934,7 +934,7 @@ mod test {
 
         for i in 0..thread_num {
             for op in operator_queue.borrow_mut().iter() {
-                op.run(0, sequence_chunk_size, batch_size, thread_num, i);
+                op.run(batch_size, 1, thread_num, i);
             }
         }
 
@@ -990,7 +990,6 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
         let batch_size = 2;
         let num_topk = 8;
         let thread_num = 2;
@@ -998,7 +997,7 @@ mod test {
         let num_candidates = num_candidates_per_thread * thread_num;
         let eos_id = 100;
 
-        let value_shape = vec![sequence_chunk_size, batch_size, num_candidates];
+        let value_shape = vec![batch_size, num_candidates];
         let value_tensor = Tensor::<f16>::from_cache(
             value_shape,
             "model.layers.0.values".to_string(),
@@ -1006,7 +1005,7 @@ mod test {
             operator_queue.clone(),
         );
 
-        let sums_shape = vec![sequence_chunk_size, batch_size, thread_num];
+        let sums_shape = vec![batch_size, thread_num];
         let sums_tensor = Tensor::<f16>::from_cache(
             sums_shape,
             "model.layers.0.sums".to_string(),
@@ -1014,7 +1013,7 @@ mod test {
             operator_queue.clone(),
         );
 
-        let mut output_sequences = vec![0usize; sequence_chunk_size * batch_size];
+        let mut output_sequences = vec![0usize; batch_size];
 
         let values0: Vec<f32> = (0..num_candidates).map(|i| 5.0 - i as f32 * 0.1).collect();
         let indices0: Vec<usize> = (0..num_candidates).collect();
@@ -1079,11 +1078,11 @@ mod test {
 
         for i in 0..thread_num {
             for op in operator_queue.borrow_mut().iter() {
-                op.run(0, sequence_chunk_size, batch_size, thread_num, i);
+                op.run(batch_size, 1, thread_num, i);
             }
         }
 
-        let num_tokens = sequence_chunk_size * batch_size;
+        let num_tokens = batch_size;
         let output_indices =
             unsafe { std::slice::from_raw_parts(output_indices_ptr, num_tokens * num_topk) };
         let output_values =
@@ -1151,14 +1150,13 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
         let batch_size = 3;
         let hidden_size = 64;
         let q_dim = 96;
         let kv_dim = 96;
         let head_dim = 128;
 
-        let input_shape = vec![sequence_chunk_size, batch_size, hidden_size];
+        let input_shape = vec![batch_size, hidden_size];
         let input_tensor = Tensor::<f16>::from_cache(
             input_shape.clone(),
             "model.layers.0.input".to_string(),
@@ -1194,7 +1192,7 @@ mod test {
         );
 
         // input
-        let num_input = sequence_chunk_size * batch_size * hidden_size;
+        let num_input = batch_size * hidden_size;
         let mut input_data = vec![0.0f16; num_input];
         for i in 0..batch_size {
             for k in 0..hidden_size {
@@ -1263,12 +1261,12 @@ mod test {
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(0, sequence_chunk_size, batch_size, 1, 0);
+            op.run(batch_size, 1, 1, 0);
         }
 
         let verify_matmul_nt =
             |output_tensor: &Tensor<f16>, w_nt: &[f16], n_dim: usize, name: &str| {
-                let out_len = sequence_chunk_size * batch_size * n_dim;
+                let out_len = batch_size * n_dim;
                 let out_data = unsafe { std::slice::from_raw_parts(output_tensor.data, out_len) };
 
                 for i in 0..batch_size {
@@ -1309,7 +1307,6 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
         let batch_size = 24;
         let hidden_size = 64;
 
@@ -1318,7 +1315,7 @@ mod test {
         let head_dim = 128;
 
         let input_tensor = Tensor::<f16>::from_cache(
-            vec![sequence_chunk_size, batch_size, hidden_size],
+            vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
             cache.clone(),
             operator_queue.clone(),
@@ -1351,7 +1348,7 @@ mod test {
         );
 
         // input init
-        let m = sequence_chunk_size * batch_size;
+        let m = batch_size;
         let mut input_data = vec![0.0f16; m * hidden_size];
         for b in 0..batch_size {
             for kk in 0..hidden_size {
@@ -1418,14 +1415,14 @@ mod test {
             "model.layers.0.matmul3".to_string(),
         );
 
-        assert_eq!(q_out.shape, vec![sequence_chunk_size, batch_size, q_dim]);
-        assert_eq!(k_out.shape, vec![sequence_chunk_size, batch_size, kv_dim]);
-        assert_eq!(v_out.shape, vec![sequence_chunk_size, batch_size, kv_dim]);
+        assert_eq!(q_out.shape, vec![batch_size, q_dim]);
+        assert_eq!(k_out.shape, vec![batch_size, kv_dim]);
+        assert_eq!(v_out.shape, vec![batch_size, kv_dim]);
         assert_eq!(operator_queue.borrow().len(), 1);
         assert!(matches!(&operator_queue.borrow()[0], Operator::MatMul3(_)));
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(0, sequence_chunk_size, batch_size, 1, 0);
+            op.run(batch_size, 1, 1, 0);
         }
 
         let q_len = m * q_dim;
@@ -1475,7 +1472,6 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
         let batch_size = 12;
         let hidden_size = 64; // K
         let intermediate_size = 96; // N
@@ -1484,7 +1480,7 @@ mod test {
         let thread_num = avail_threads();
 
         let input_tensor = Tensor::<f16>::from_cache(
-            vec![sequence_chunk_size, batch_size, hidden_size],
+            vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
             cache.clone(),
             operator_queue.clone(),
@@ -1497,7 +1493,7 @@ mod test {
             operator_queue.clone(),
         );
 
-        let m = sequence_chunk_size * batch_size;
+        let m = batch_size;
         let k = hidden_size;
         let n = intermediate_size;
 
@@ -1545,7 +1541,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for i in 0..thread_num {
-                op.run(0, sequence_chunk_size, batch_size, thread_num, i);
+                op.run(m, 1, thread_num, i);
             }
         }
 
@@ -1606,7 +1602,6 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
         let batch_size = 12;
         let k = 64;
         let n = 128;
@@ -1615,7 +1610,7 @@ mod test {
         let thread_num = avail_threads().max(1);
 
         let input_tensor = Tensor::<f16>::from_cache(
-            vec![sequence_chunk_size, batch_size, k],
+            vec![batch_size, k],
             "model.layers.0.input".to_string(),
             cache.clone(),
             operator_queue.clone(),
@@ -1629,7 +1624,7 @@ mod test {
         );
 
         // A = 1
-        let m = sequence_chunk_size * batch_size;
+        let m = batch_size;
         let mut a = vec![0.0f16; m * k];
         for x in &mut a {
             *x = 1.0f16;
@@ -1671,7 +1666,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(0, sequence_chunk_size, batch_size, thread_num, tid);
+                op.run(m, 1, thread_num, tid);
             }
         }
 
@@ -1735,13 +1730,12 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
         let batch_size = 12;
         let hidden_size = 64; // K
         let intermediate_size = 96; // N
 
         let input_tensor = Tensor::<f16>::from_cache(
-            vec![sequence_chunk_size, batch_size, hidden_size],
+            vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
             cache.clone(),
             operator_queue.clone(),
@@ -1754,7 +1748,7 @@ mod test {
             operator_queue.clone(),
         );
 
-        let m = sequence_chunk_size * batch_size;
+        let m = batch_size;
         let k = hidden_size;
         let n = intermediate_size;
 
@@ -1794,12 +1788,13 @@ mod test {
         let output_tensor = input_tensor.matmul(
             &weight_tensor,
             params,
-            sequence_chunk_size,
+            1,
+            false,
             "model.layers.0.matmul".to_string(),
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(0, sequence_chunk_size, batch_size, 1, 0);
+            op.run(m, 1, 1, 0);
         }
 
         let out_len = m * n;
@@ -1836,13 +1831,12 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
         let batch_size = 12;
         let hidden_size = 64; // K
         let intermediate_size = 96; // N
 
         let input_tensor = Tensor::<f16>::from_cache(
-            vec![sequence_chunk_size, batch_size, hidden_size],
+            vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
             cache.clone(),
             operator_queue.clone(),
@@ -1856,13 +1850,13 @@ mod test {
         );
 
         let bias_tensor = Tensor::<f16>::from_cache(
-            vec![sequence_chunk_size, batch_size, intermediate_size],
+            vec![batch_size, intermediate_size],
             "bias.weight".to_string(),
             cache.clone(),
             operator_queue.clone(),
         );
 
-        let m = sequence_chunk_size * batch_size;
+        let m = batch_size;
         let k = hidden_size;
         let n = intermediate_size;
 
@@ -1921,7 +1915,7 @@ mod test {
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(0, sequence_chunk_size, batch_size, 1, 0);
+            op.run(m, 1, 1, 0);
         }
 
         let out_len = m * n;
@@ -2053,14 +2047,13 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
         let batch_size = 12;
         let hidden = 64; // H
         let inter = 64; // I
         let num_experts = 2;
 
         let input = Tensor::<f16>::from_cache(
-            vec![sequence_chunk_size, batch_size, hidden],
+            vec![batch_size, hidden],
             "model.layers.0.input".to_string(),
             cache.clone(),
             operator_queue.clone(),
@@ -2080,7 +2073,7 @@ mod test {
             operator_queue.clone(),
         );
 
-        let b = sequence_chunk_size * batch_size;
+        let b = batch_size;
 
         let experts_indicator = unsafe { allocate_init(num_experts, false) };
         let indice_ptr = unsafe { allocate_init(num_experts * b, false) };
@@ -2091,7 +2084,7 @@ mod test {
 
             for bb in 0..b {
                 *indice_ptr.add(0 * b + bb) = true;
-                *indice_ptr.add(1 * b + bb) = false;
+                *indice_ptr.add(b + bb) = false;
             }
         }
 
@@ -2149,7 +2142,7 @@ mod test {
 
         assert_eq!(
             out.shape,
-            vec![num_experts, sequence_chunk_size, batch_size, inter]
+            vec![num_experts, batch_size, inter]
         );
         assert_eq!(operator_queue.borrow().len(), 1);
         assert!(matches!(
@@ -2161,7 +2154,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(0, sequence_chunk_size, batch_size, thread_num, tid);
+                op.run(b, 1, thread_num, tid);
             }
         }
 
@@ -2197,7 +2190,7 @@ mod test {
         // expert1 inactive -> 0
         for bb in 0..b {
             for ii in 0..inter {
-                let got = out_got[1 * (b * inter) + bb * inter + ii] as f32;
+                let got = out_got[(b * inter) + bb * inter + ii] as f32;
                 assert!(
                     got.abs() < 1e-3,
                     "Inactive expert1 should be ~0, but got {} at bb {} ii {}",
@@ -2219,7 +2212,6 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
         let batch_size = 12;
         let num_experts = 2;
 
@@ -2227,11 +2219,11 @@ mod test {
         let hidden = 32; // N (NR=32)
         let num_experts_per_tok = 1;
 
-        let b = sequence_chunk_size * batch_size;
+        let b = batch_size;
 
         // input to down: [E, seq, batch, inter]
         let x = Tensor::<f16>::from_cache(
-            vec![num_experts, sequence_chunk_size, batch_size, inter],
+            vec![num_experts, batch_size, inter],
             "model.layers.0.experts.silu_out".to_string(),
             cache.clone(),
             operator_queue.clone(),
@@ -2258,10 +2250,10 @@ mod test {
 
             for t in 0..b {
                 *indice_ptr.add(0 * b + t) = true;
-                *indice_ptr.add(1 * b + t) = false;
+                *indice_ptr.add(b + t) = false;
 
                 *weight_ptr.add(0 * b + t) = 1.0f16;
-                *weight_ptr.add(1 * b + t) = 0.0f16;
+                *weight_ptr.add(b + t) = 0.0f16;
 
                 *topk_indices_ptr.add(t) = 0usize;
             }
@@ -2279,7 +2271,7 @@ mod test {
                 .add(0 * (b * inter))
                 .copy_from_nonoverlapping(x_e0.as_ptr(), x_e0.len());
             for i in 0..(b * inter) {
-                *x.data.add(1 * (b * inter) + i) = 0.0f16;
+                *x.data.add((b * inter) + i) = 0.0f16;
             }
         }
 
@@ -2305,7 +2297,7 @@ mod test {
                 .copy_from_nonoverlapping(w_e0.as_ptr(), per_w);
             down_w
                 .data
-                .add(1 * per_w)
+                .add(per_w)
                 .copy_from_nonoverlapping(w_e1.as_ptr(), per_w);
         }
 
@@ -2330,7 +2322,7 @@ mod test {
 
         assert_eq!(
             out.shape,
-            vec![sequence_chunk_size, batch_size, num_experts_per_tok, hidden]
+            vec![batch_size, num_experts_per_tok, hidden]
         );
         assert_eq!(operator_queue.borrow().len(), 1);
         assert!(matches!(
@@ -2352,7 +2344,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(0, sequence_chunk_size, batch_size, thread_num, tid);
+                op.run(b, 1, thread_num, tid);
             }
         }
 
@@ -2390,9 +2382,8 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
-        let sequence_chunk_size = 1;
         let batch_size = 12;
-        let num_tokens = sequence_chunk_size * batch_size;
+        let num_tokens = batch_size;
 
         let num_experts = 2; // 仅用于 reset gating（我们这里 reset_gating=false）
         let k = 2usize; // num_experts_per_token == K
@@ -2400,14 +2391,14 @@ mod test {
 
         // input ptr layout: [num_tokens, K, H]
         let input = Tensor::<f16>::from_cache(
-            vec![sequence_chunk_size, batch_size, k, hidden],
+            vec![batch_size, k, hidden],
             "model.layers.0.moe.down_out".to_string(),
             cache.clone(),
             operator_queue.clone(),
         );
 
         let residual = Tensor::<f16>::from_cache(
-            vec![sequence_chunk_size, batch_size, hidden],
+            vec![batch_size, hidden],
             "model.layers.0.residual".to_string(),
             cache.clone(),
             operator_queue.clone(),
@@ -2422,7 +2413,7 @@ mod test {
             *experts_indicator.add(1) = true;
             for t in 0..num_tokens {
                 *indice_ptr.add(0 * num_tokens + t) = true;
-                *indice_ptr.add(1 * num_tokens + t) = true;
+                *indice_ptr.add(num_tokens + t) = true;
             }
         }
 
@@ -2467,10 +2458,11 @@ mod test {
             experts_indicator,
             indice_ptr,
             num_experts,
+            false,
             "model.layers.0.experts_merge_add".to_string(),
         );
 
-        assert_eq!(out.shape, vec![sequence_chunk_size, batch_size, hidden]);
+        assert_eq!(out.shape, vec![batch_size, hidden]);
         assert_eq!(operator_queue.borrow().len(), 1);
         assert!(matches!(
             &operator_queue.borrow()[0],
@@ -2483,7 +2475,7 @@ mod test {
             .unwrap_or(1);
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(0, sequence_chunk_size, batch_size, thread_num, tid);
+                op.run(num_tokens, 1, thread_num, tid);
             }
         }
 
@@ -2567,6 +2559,7 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 
@@ -2618,6 +2611,7 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 
@@ -2701,6 +2695,7 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 
@@ -2726,3 +2721,4 @@ mod tests {
     // 你原来的两个 test 保持不动即可（我就不贴了）
 }
 // 你原来的两个 test 保持不动即可（我就不贴了）
+

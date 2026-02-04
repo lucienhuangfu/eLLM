@@ -237,7 +237,7 @@ mod test {
 
     // use crate::memory::allocator::allocate_init;
 
-    /*
+    
     #[test]
     fn test_fill_token_batch() {
         let mut records = vec![

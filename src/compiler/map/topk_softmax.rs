@@ -170,7 +170,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::init::record::PrefillEndRecord;
+    use crate::init::record::{PrefillEndRecord, BatchList, BatchRecord, Phase, TokenList, TokenRecord};
     use approx::assert_ulps_eq;
 
     #[test]
