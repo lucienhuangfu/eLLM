@@ -2,13 +2,35 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 #[derive(Clone)]
-pub struct TokenRecord {
-    // pub token_id: usize,
-    // 优化: 使用 usize (4 bytes) 代替 usize (8 bytes)。
-    // 内存占用从 16 bytes -> 8 bytes。
+pub struct SequenceSlice {
     pub batch_index: usize,
     pub position_index: usize,
+    pub length: usize,
 }
+
+pub struct ThreadTask {
+    pub slices: Box<[SequenceSlice]>,
+    pub current_size: usize, // 保留，表示有效长度
+}
+
+pub struct AllTask {
+    pub tasks: Box<[ThreadTask]>,
+    pub current_size: usize, // 保留，表示有效长度
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PrefillEndRecord {
+    pub batch_index: usize,
+    pub position_index: usize,
+    pub prefill_end_index: usize,
+    pub lift_index: usize,
+}
+
+pub struct PrefillEndRecordList {
+    pub lift_records: Box<[PrefillEndRecord]>,
+    pub current_size: usize, // 保留，表示有效长度
+}
+
 
 pub struct BatchRecord {
     // 优化: 使用 usize
@@ -23,19 +45,12 @@ pub struct BatchRecord {
     // 现在: 4 + 4 + 1 + 8 (+ ? padding)
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct PrefillEndRecord {
-    // 优化: 使用 usize
-    pub prefill_end_index: usize,
-    pub lift_index: usize,
-}
 
-pub struct TokenList {
-    pub token_records: Box<[TokenRecord]>,
-    pub current_token_size: usize, // 保留，表示有效长度
-    pub lift_records: Box<[PrefillEndRecord]>,
-    pub current_lift_size: usize, // 保留，表示有效长度
-}
+
+
+
+
+
 
 pub struct BatchList {
     pub records: Box<[BatchRecord]>,
@@ -50,3 +65,10 @@ pub enum Phase {
     Decode,
     Eos,
 }
+
+/* 
+pub struct TokenList {
+    pub token_records: Box<[TokenRecord]>,
+    pub current_token_size: usize, // 保留，表示有效长度
+
+}*/
