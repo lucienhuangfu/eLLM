@@ -308,8 +308,9 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_records = (0..batch_size)
         .map(|_| BatchRecord {
             sequence_index: 0,
+            snapshot_sequence_index: 0,
             kv_index: 0,
-            phase: Phase::Prefill_begin,
+            phase: Phase::PrefillBegin,
             prompt_length: 0,
             notify: Arc::new(tokio::sync::Notify::new()),
         })

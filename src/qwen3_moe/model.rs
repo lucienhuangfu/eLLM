@@ -268,6 +268,7 @@ mod test {
         let batch_records: Vec<BatchRecord> = (0..batch_size)
             .map(|i| BatchRecord {
                 sequence_index: i,
+                snapshot_sequence_index: 0,
                 kv_index: i,
                 phase: Phase::Decode,
                 prompt_length: i,
@@ -343,6 +344,7 @@ mod test {
         let batch_records: Vec<BatchRecord> = (0..batch_size)
             .map(|i| BatchRecord {
                 sequence_index: i,
+                snapshot_sequence_index: 0,
                 kv_index: i,
                 phase: Phase::Decode,
                 prompt_length: i,

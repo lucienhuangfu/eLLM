@@ -44,6 +44,7 @@ fn main() {
         let batch_records: Vec<BatchRecord> = (0..batch_size)
             .map(|i| BatchRecord {
                 sequence_index: i,
+                snapshot_sequence_index: 0,
                 kv_index: i,
                 phase: Phase::Decode,
                 prompt_length: i,
@@ -73,9 +74,6 @@ fn main() {
     let batch_ptr = MutPtr {
         ptr: &mut batch_list as *mut BatchList,
     };
-    let token_ptr = MutPtr {
-        ptr: &mut token_list as *mut TokenList,
-    };
 
-    start(batch_ptr, token_ptr, model.operator_queue.take());
+    start(batch_ptr, model.operator_queue.take());
 }

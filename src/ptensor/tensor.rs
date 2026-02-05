@@ -903,6 +903,7 @@ mod test {
             });
             user_records.push(BatchRecord {
                 sequence_index: i,
+                snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
                 prompt_length: i,
@@ -1047,6 +1048,7 @@ mod test {
             });
             user_records.push(BatchRecord {
                 sequence_index: i,
+                snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
                 prompt_length: i,
