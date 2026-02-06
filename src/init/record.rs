@@ -5,6 +5,7 @@ use tokio::sync::Notify;
 pub struct SequenceSlice {
     pub batch_index: usize,
     pub sequence_index: usize,
+    pub token_start_index: usize,
     pub length: usize,
 }
 
@@ -20,21 +21,9 @@ pub struct TaskList {
 
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct PrefillEndRecord {
-    pub batch_index: usize,
-    pub sequence_index: usize,
-    pub prefill_end_index: usize,
-    pub lift_index: usize,
-}
 
-pub struct PrefillEndRecordList {
-    pub lift_records: Box<[PrefillEndRecord]>,
-    pub current_size: usize, // 保留，表示有效长度
-}
 
 pub struct BatchRecord {
-    // 优化: 使用 usize
     pub sequence_index: usize,
     pub snapshot_sequence_index: usize,
     pub kv_index: usize,
@@ -57,3 +46,19 @@ pub enum Phase {
     Decode,
     Eos,
 }
+
+/*
+#[derive(Clone, Copy, Debug)]
+pub struct PrefillEndRecord {
+    pub batch_index: usize,
+    pub sequence_index: usize,
+    pub token_start_index: usize,
+    // pub prefill_end_index: usize,
+    // pub lift_index: usize,
+}
+
+pub struct PrefillEndRecordList {
+    pub lift_records: Box<[PrefillEndRecord]>,
+    pub current_size: usize, // 保留，表示有效长度
+} 
+*/
