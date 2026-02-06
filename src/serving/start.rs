@@ -9,10 +9,12 @@ use std::time::{Duration, Instant};
 use super::super::compiler::operator::Operator;
 
 use super::super::kernel::generic::{exp::Exp, neg_infinity::NegInfinity, sqrt::Sqrt};
-use crate::init::record::{BatchList, Phase};
+use crate::init::record::{BatchList, Phase, SequenceSlice, TaskList, ThreadTask};
 use crate::init::send_sync_ptr::MutPtr;
 
-fn schedule_batch(batch_list: &mut BatchList) -> (usize, usize) {
+fn schedule_batch(batch_list: &mut BatchList, task_list: &mut TaskList) -> (usize, usize) {
+    let max_token_size = task_list.max_token_size;
+    let task_count = task_list.tasks.len();
 
     loop {
         let mut has_decode = false;
@@ -37,31 +39,174 @@ fn schedule_batch(batch_list: &mut BatchList) -> (usize, usize) {
             continue;
         }
 
+        for task in task_list.tasks[..task_count].iter_mut() {
+            task.current_size = 0;
+        }
+        let mut task_token_counts = vec![0usize; task_count];
+
+        if task_count == 0 || max_token_size == 0 {
+            return (0, 0);
+        }
+
         let mut token_count = 0usize;
         let mut decode_count = 0usize;
 
         if has_decode {
-            for record in batch_list.records[..batch_list.current_size].iter_mut() {
-                // record.kv_index = record.kv_index.saturating_add(1);
+            let mut total_tokens = 0usize;
+            for record in batch_list.records[..batch_list.current_size].iter() {
+                if record.phase == Phase::Decode {
+                    total_tokens += 1;
+                }
+            }
+            if total_tokens == 0 {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+            total_tokens = total_tokens.min(max_token_size);
+            let mut task_index = 0usize;
+            let mut task_remaining =
+                (total_tokens + task_count - 1) / task_count;
+            let mut scheduled_tokens = 0usize;
+
+            for (batch_index, record) in batch_list.records[..batch_list.current_size]
+                .iter_mut()
+                .enumerate()
+            {
+                if scheduled_tokens >= total_tokens {
+                    break;
+                }
+                if record.phase != Phase::Decode {
+                    continue;
+                }
+
+                while task_index < task_count && task_remaining == 0 {
+                    task_index += 1;
+                    if task_index < task_count {
+                        task_remaining =
+                            (total_tokens - scheduled_tokens + (task_count - task_index) - 1)
+                                / (task_count - task_index);
+                    }
+                }
+                if task_index >= task_count {
+                    break;
+                }
+
+                let task = &mut task_list.tasks[task_index];
+                if task.current_size >= task.slices.len() {
+                    break;
+                }
+
+                let slice = SequenceSlice {
+                    batch_index,
+                    sequence_index: record.kv_index,
+                    length: 1,
+                };
+                let idx = task.current_size;
+                task.slices[idx] = slice;
+                task.current_size += 1;
+                task_token_counts[task_index] += 1;
+
+                record.kv_index = record.kv_index.saturating_add(1);
+                token_count += 1;
                 decode_count += 1;
+                scheduled_tokens += 1;
+                if task_remaining > 0 {
+                    task_remaining -= 1;
+                }
             }
 
-            return (decode_count, decode_count);
+            return (token_count, decode_count);
         }
 
         if has_prefill {
-            for record in batch_list.records[..batch_list.current_size].iter_mut() {
-                record.snapshot_sequence_index = record.sequence_index;
+            let mut total_tokens = 0usize;
+            for record in batch_list.records[..batch_list.current_size].iter() {
+                if record.phase != Phase::PrefillBegin && record.phase != Phase::PrefillEnd {
+                    continue;
+                }
                 let remaining = record
+                    .sequence_index
+                    .saturating_sub(record.kv_index);
+                total_tokens += remaining;
+            }
+
+            if total_tokens == 0 {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+
+            total_tokens = total_tokens.min(max_token_size);
+            let mut task_index = 0usize;
+            let mut task_remaining =
+                (total_tokens + task_count - 1) / task_count;
+            let mut scheduled_tokens = 0usize;
+
+            for (batch_index, record) in batch_list.records[..batch_list.current_size]
+                .iter_mut()
+                .enumerate()
+            {
+                if scheduled_tokens >= total_tokens {
+                    break;
+                }
+                if record.phase != Phase::PrefillBegin && record.phase != Phase::PrefillEnd {
+                    continue;
+                }
+
+                if record.snapshot_sequence_index != record.sequence_index {
+                    record.snapshot_sequence_index = record.sequence_index;
+                }
+
+                let mut remaining = record
                     .snapshot_sequence_index
                     .saturating_sub(record.kv_index);
-                token_count += remaining;
-                
-                // record.kv_index = record.kv_index.saturating_add(remaining);
-            }
-        }
 
-        return (token_count, decode_count);
+                while remaining > 0 && scheduled_tokens < total_tokens {
+                    while task_index < task_count && task_remaining == 0 {
+                        task_index += 1;
+                        if task_index < task_count {
+                            task_remaining =
+                                (total_tokens - scheduled_tokens + (task_count - task_index) - 1)
+                                    / (task_count - task_index);
+                        }
+                    }
+                    if task_index >= task_count {
+                        break;
+                    }
+
+                    let task = &mut task_list.tasks[task_index];
+                    if task.current_size >= task.slices.len() {
+                        return (token_count, decode_count);
+                    }
+
+                    let available = total_tokens - scheduled_tokens;
+                    let take = remaining.min(task_remaining).min(available);
+                    if take == 0 {
+                        break;
+                    }
+
+                    let slice = SequenceSlice {
+                        batch_index,
+                        sequence_index: record.kv_index,
+                        length: take,
+                    };
+
+                    let idx = task.current_size;
+                    task.slices[idx] = slice;
+                    task.current_size += 1;
+                    task_token_counts[task_index] += take;
+
+                    record.kv_index = record.kv_index.saturating_add(take);
+                    token_count += take;
+                    scheduled_tokens += take;
+                    remaining -= take;
+                    if task_remaining > 0 {
+                        task_remaining = task_remaining.saturating_sub(take);
+                    }
+                }
+            }
+
+            return (token_count, decode_count);
+        }
     }
 }
 
@@ -118,6 +263,35 @@ pub fn start<T>(
             println!("{} start", thread_id);
             let s = Instant::now();
             let sizes_ptr = shared_sizes.get();
+            let mut task_list = if thread_id == 0 {
+                let batch_size = unsafe { (&*(*batch_list_ptr_addr.get()).ptr).current_size };
+                let max_token_size = batch_size.max(1);
+                let task_count = thread_num.max(1);
+                let slices_per_task = (max_token_size + task_count - 1) / task_count;
+                let tasks = (0..task_count)
+                    .map(|_| ThreadTask {
+                        slices: vec![
+                            SequenceSlice {
+                                batch_index: 0,
+                                sequence_index: 0,
+                                length: 0,
+                            };
+                            slices_per_task
+                        ]
+                        .into_boxed_slice(),
+                        current_size: 0,
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice();
+
+                Some(TaskList {
+                    tasks,
+                    current_size: task_count,
+                    max_token_size,
+                })
+            } else {
+                None
+            };
 
             // Main inference loop: continuously processes batches of tokens
             loop {
@@ -125,7 +299,8 @@ pub fn start<T>(
                 if thread_id == 0 {
                     unsafe {
                         let batch_list = &mut *(*batch_list_ptr_addr.get()).ptr;
-                        *sizes_ptr = schedule_batch(batch_list);
+                        let task_list = task_list.as_mut().unwrap();
+                        *sizes_ptr = schedule_batch(batch_list, task_list);
                     }
                 }
 
@@ -204,7 +379,25 @@ mod test {
             current_size: 3,
         };
 
-        let (token_count, decode_count) = schedule_batch(&mut batch_list);
+        let mut task_list = TaskList {
+            tasks: vec![ThreadTask {
+                slices: vec![
+                    SequenceSlice {
+                        batch_index: 0,
+                        sequence_index: 0,
+                        length: 0,
+                    };
+                    4
+                ]
+                .into_boxed_slice(),
+                current_size: 0,
+            }]
+            .into_boxed_slice(),
+            current_size: 1,
+            max_token_size: 4,
+        };
+
+        let (token_count, decode_count) = schedule_batch(&mut batch_list, &mut task_list);
 
         assert_eq!(decode_count, 2);
         assert_eq!(token_count, 2);
@@ -230,7 +423,25 @@ mod test {
             current_size: 1,
         };
 
-        let (token_count, decode_count) = schedule_batch(&mut batch_list);
+        let mut task_list = TaskList {
+            tasks: vec![ThreadTask {
+                slices: vec![
+                    SequenceSlice {
+                        batch_index: 0,
+                        sequence_index: 0,
+                        length: 0,
+                    };
+                    8
+                ]
+                .into_boxed_slice(),
+                current_size: 0,
+            }]
+            .into_boxed_slice(),
+            current_size: 1,
+            max_token_size: 8,
+        };
+
+        let (token_count, decode_count) = schedule_batch(&mut batch_list, &mut task_list);
 
         assert_eq!(decode_count, 0);
         assert_eq!(token_count, 5);
