@@ -49,7 +49,6 @@ pub struct BatchList {
 }
 
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)] // 优化: 显式指定为 u8，确保只占 1 字节
 pub enum Phase {
@@ -58,10 +57,3 @@ pub enum Phase {
     Decode,
     Eos,
 }
-
-/* 
-pub struct TokenList {
-    pub token_records: Box<[TokenRecord]>,
-    pub current_token_size: usize, // 保留，表示有效长度
-
-}*/
