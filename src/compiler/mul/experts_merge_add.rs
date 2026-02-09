@@ -75,11 +75,11 @@ where
         }
     }
 
-    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
         unsafe {
             let thread_num = thread_num.max(1);
 
-            let num_tokens = self.sequence_chunk_size * token_size;
+            let num_tokens = self.sequence_chunk_size * prefill_size;
             let H = self.hidden_size;
             let K = self.num_experts_per_token;
 
@@ -575,3 +575,4 @@ fn test_merge_add_respects_run_batch_smaller_than_capacity() {
     }
 }
 }
+

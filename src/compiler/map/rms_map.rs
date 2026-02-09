@@ -32,11 +32,11 @@ impl<T: Sqrt> RMSMap<T> {
         }
     }
 
-    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
         let task_size = if self.decode_only_flag == true {
             decode_size
         } else {
-            token_size
+            prefill_size
         };
 
         if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
@@ -241,3 +241,4 @@ mod test {
          */
     }*/
 }
+

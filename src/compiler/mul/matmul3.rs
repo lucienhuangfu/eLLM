@@ -265,11 +265,11 @@ where
     }
 
     /// 入口：不再有 S 维度，只针对当前 A[M×K] 做一次 K/Q/V。
-    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) where
+    pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) where
     Self: MatMulkqvTrait<T>,
 {
     unsafe {
-        let m_run = token_size;
+        let m_run = prefill_size;
 
         let k = self.col;
         let n_q = self.b_q_row;
@@ -1040,3 +1040,4 @@ fn test_kqv_f16_avx512_batch7_pad_to9_no_finalize() {
     }
 }
 }
+

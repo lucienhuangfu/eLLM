@@ -10,7 +10,7 @@ pub fn experts_topk_softmax_norm<
     topk_indices_ptr: *mut usize,
     // [num_experts]
     experts_indicator_ptr: *mut bool,
-    // [num_experts, token_size]
+    // [num_experts, prefill_size]
     indices_ptr: *mut bool,
     value_ptr: *mut T,
     index_token: usize,
@@ -217,3 +217,4 @@ mod tests {
         }
     }
 }
+

@@ -53,8 +53,8 @@ impl<T: Sqrt> LookupRMSMap<T> {
     }
 
     // Run the map for a given batch size and thread ID
-    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
+    pub fn run(&self, prefill_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(prefill_size, thread_num, thread_id) {
             unsafe {
                 let sequences_ptr = self.sequences_ptr.ptr;
                 let token_records_ptr = (*self.token_ptr.ptr).token_records.as_ptr();
@@ -210,3 +210,4 @@ mod test {
         assert_ulps_eq!(output_hidden_data[18..36], expected_hidden, max_ulps = 1);
     }
 }
+

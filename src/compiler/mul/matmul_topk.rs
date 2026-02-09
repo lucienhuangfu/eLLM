@@ -206,15 +206,15 @@ where
         }
     }
 
-    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
     unsafe {
-        assert!(token_size <= self.batch_max);
+        assert!(prefill_size <= self.batch_max);
 
         // ✅ cpu_num/thread_id 合法，且 cpu_num <= thread_max
         assert!(thread_num <= self.thread_max);
         assert!(thread_id < thread_num);
 
-        let m_run = token_size;
+        let m_run = prefill_size;
         let n = self.b_row;
         let k = self.column;
 
@@ -747,3 +747,4 @@ fn test_matmul_topk_f16_batch7_pad_to9_no_ties() {
     }
 }
 }
+

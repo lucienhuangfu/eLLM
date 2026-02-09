@@ -41,11 +41,11 @@ impl<T> LiftVector<T> {
     /// 复制到 `lift_index` 位置。操作是并行的，根据线程 ID 分配任务。
     ///
     /// # 参数
-    /// * `token_size` - 当前 token 总数（未使用）。
+    /// * `prefill_size` - 当前 token 总数（未使用）。
     /// * `decode_size` - 解码大小（未使用）。
     /// * `thread_num` - 总线程数，用于任务划分。
     /// * `thread_id` - 当前线程 ID。
-    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
         let token_list_ptr = self.token_list_ptr.ptr;
         // 获取需要进行 lift 操作的记录数量
         let lift_size = unsafe { (*token_list_ptr).current_lift_size };
@@ -126,3 +126,4 @@ mod test {
         assert_eq!(data[4..8], [5.0, 6.0, 7.0, 8.0]);
     }
 }
+

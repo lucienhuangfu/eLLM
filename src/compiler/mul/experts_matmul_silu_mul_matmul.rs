@@ -199,9 +199,9 @@ where
         }
     }
 
-    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
         unsafe {
-            let b = token_size;
+            let b = prefill_size;
             let n = self.inter;
             let k = self.hidden;
 
@@ -1250,3 +1250,4 @@ fn test_silu_stride_capacity_batch_run_must_not_touch_rows_7_8() {
     assert!(any_nonzero, "expected some non-zero outputs for rows 0..6");
 }
 }
+

@@ -65,49 +65,49 @@ where
         + Sqrt
         + AddAssign,
 {
-    pub fn run(&self, batch_size: usize, decode_size: usize, cpu_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, decode_size: usize, cpu_num: usize, thread_id: usize) {
         match self {
             Self::AddRMSZipMap(operator) => {
-                operator.run(batch_size, decode_size, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
             Self::AddZipMap(operator) => {
-                operator.run(batch_size, decode_size, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
             Self::Attention(operator) => {
                 operator.run(
-batch_size, decode_size, cpu_num, thread_id
+prefill_size, decode_size, cpu_num, thread_id
                 );
             }
 
             Self::ExpertsMatMulDown(operator) => {
                 operator.run(
-batch_size, decode_size, cpu_num, thread_id
+prefill_size, decode_size, cpu_num, thread_id
                 );
             }
 
             Self::ExpertsMatMulSilu(operator) => {
-                operator.run(batch_size, decode_size, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
             Self::ExpertsMergeAdd(operator) => {
-                operator.run(batch_size, decode_size, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
             Self::ExpertsSoftmaxNorm(operator) => {
-                operator.run(batch_size, decode_size, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
             Self::LookupRMSMap(operator) => {
                 operator.run(
-batch_size, decode_size, cpu_num, thread_id
+prefill_size, decode_size, cpu_num, thread_id
                 );
             }
             Self::MatMul(operator) => {
-                operator.run(batch_size, decode_size, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
 
             Self::MatMul3(operator) => {
-                operator.run(batch_size, decode_size, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
             Self::MatMulAdd(operator) => {
-                operator.run(batch_size, decode_size, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
             /*
             Self::MatMulSiluMulMatMul(operator) => {
@@ -120,21 +120,21 @@ batch_size, decode_size, cpu_num, thread_id
                 );
             }*/
             Self::MatMulTopK(operator) => {
-                operator.run(batch_size, decode_size, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
 
             Self::TopKSoftmax(operator) => {
-                operator.run(batch_size, decode_size, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
 
             Self::RMSMap(operator) => {
-                operator.run(batch_size, decode_size, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
             Self::SiluMulZipMap(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
+                operator.run(prefill_size, cpu_num, thread_id);
             }
             Self::ComplexZipMap(operator) => {
-                operator.run(batch_size, cpu_num, thread_id);
+                operator.run(prefill_size, cpu_num, thread_id);
             }
 
             _ => panic!(),
@@ -166,7 +166,7 @@ mod test {
         let hidden_size = 18;
         let cpu_num = num_cpus::get();
 
-        let token_size = sequence_chunk_size * batch_size;
+        let prefill_size = sequence_chunk_size * batch_size;
         let decode_size = sequence_chunk_size;
 
         let shapes = vec![sequence_chunk_size, batch_size, hidden_size];
@@ -209,7 +209,7 @@ mod test {
         ];
         let thread_num: usize = cpu_num;
         for i in 0..thread_num {
-            operator.run(token_size, decode_size, cpu_num, i);
+            operator.run(prefill_size, decode_size, cpu_num, i);
         }
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
         println!("{:?}", output_data);
@@ -229,7 +229,7 @@ mod test {
         let num_experts = 16;
         let num_topk = 4;
         let num_tokens = sequence_chunk_size * batch_size;
-        let token_size = num_tokens;
+        let prefill_size = num_tokens;
         let decode_size = sequence_chunk_size;
 
         let input_data1: Vec<f32> = vec![
@@ -262,7 +262,7 @@ mod test {
 
         let thread_num = 1;
         let thread_id = 0;
-        operator.run(token_size, decode_size, thread_num, thread_id);
+        operator.run(prefill_size, decode_size, thread_num, thread_id);
 
         // Verification for token 0
         let mut expected1: Vec<(usize, f32)> = input_data1.iter().copied().enumerate().collect();
@@ -306,7 +306,7 @@ mod test {
         let batch_size = 2;
         let topk_size = 8;
         let thread_num = 4;
-        let token_size = batch_size;
+        let prefill_size = batch_size;
         let decode_size = 1;
 
         let total_candidates_per_item = topk_size * thread_num;
@@ -340,7 +340,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(token_size, decode_size, thread_num, i);
+            operator.run(prefill_size, decode_size, thread_num, i);
         }
 
         for i in 0..batch_size {
@@ -1667,7 +1667,7 @@ mod test {
         let head_num = 3;
         let head_size = 6;
 
-        let token_size = sequence_chunk_size * batch_size;
+        let prefill_size = sequence_chunk_size * batch_size;
         let decode_size = sequence_chunk_size;
 
         let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
@@ -1689,7 +1689,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(token_size, decode_size, thread_num, i);
+            operator.run(prefill_size, decode_size, thread_num, i);
         }
 
         assert_ulps_eq!(output_data[0..180], results[0..180], max_ulps = 4);
@@ -1703,7 +1703,7 @@ mod test {
         let head_num = 10;
         let head_size = 34;
 
-        let token_size = sequence_chunk_size * batch_size;
+        let prefill_size = sequence_chunk_size * batch_size;
         let decode_size = sequence_chunk_size;
 
         let shape1 = vec![sequence_chunk_size, batch_size, head_num, head_size];
@@ -1743,7 +1743,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(token_size, decode_size, thread_num, i);
+            operator.run(prefill_size, decode_size, thread_num, i);
         }
 
         assert_eq!(output_data[0..34], expected);
@@ -1757,7 +1757,7 @@ mod test {
         let head_num = 1;
         let head_size = 19;
 
-        let token_size = sequence_chunk_size * batch_size;
+        let prefill_size = sequence_chunk_size * batch_size;
         let decode_size = sequence_chunk_size;
 
         let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
@@ -1801,7 +1801,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(token_size, decode_size, thread_num, i);
+            operator.run(prefill_size, decode_size, thread_num, i);
         }
         let result = vec![
             1.9444659948349,
@@ -1829,3 +1829,4 @@ mod test {
     }
 
 */
+

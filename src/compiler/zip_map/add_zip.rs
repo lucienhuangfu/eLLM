@@ -59,9 +59,9 @@ where
     }
      */
 
-    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
         //  [batch_size, head_num， head_size]
-        let len = token_size * self.head_num;
+        let len = prefill_size * self.head_num;
 
         if let Some((begin, end)) = assign(len, thread_num, thread_id) {
             let ptr1 = self.ptr1.ptr;
@@ -195,3 +195,4 @@ mod test {
         // println!("{:?}", output);
     }
 }
+

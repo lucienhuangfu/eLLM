@@ -104,10 +104,10 @@ where
         }
     }
 
-    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
 
     unsafe {
-        let m_run = token_size;
+        let m_run = prefill_size;
 
         let n = self.n_max;
         let k = self.k_max;
@@ -500,3 +500,4 @@ mod tests {
         assert_eq!(MR, 3);
     }
 }
+

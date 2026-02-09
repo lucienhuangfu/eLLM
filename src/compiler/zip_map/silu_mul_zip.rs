@@ -56,8 +56,8 @@ where
     //    self.chunks = chunks;
     // }
 
-    pub fn run(&self, batch_size: usize, cpu_num: usize, thread_id: usize) {
-        let total_len = batch_size * self.head_num;
+    pub fn run(&self, prefill_size: usize, cpu_num: usize, thread_id: usize) {
+        let total_len = prefill_size * self.head_num;
         if let Some((begin, end)) = assign(total_len, cpu_num, thread_id) {
             println!("thread_id: {}, begin: {}, end: {}, ", thread_id, begin, end,);
 

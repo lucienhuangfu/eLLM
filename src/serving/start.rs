@@ -404,11 +404,11 @@ pub fn start<T>(
                 // Synchronization barrier: Wait for Thread 0 to finish scheduling
                 b.wait();
 
-                let (token_size, decode_size) = unsafe { *sizes_ptr };
+                let (prefill_size, decode_size) = unsafe { *sizes_ptr };
 
                 // Execute the operator queue in parallel
                 for operator in queue.iter() {
-                    operator.run(token_size, decode_size, thread_num, thread_id);
+                    operator.run(prefill_size, decode_size, thread_num, thread_id);
                     b.wait();
                 }
             }
@@ -642,3 +642,4 @@ mod test {
         start(batch_ptr, output_tensor.operator_queue.take());
     }
 }
+

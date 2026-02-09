@@ -11,7 +11,7 @@ use crate::memory::allocator::allocate_init;
 
 #[derive(Clone)]
 pub struct ExpertsSoftmaxNorm<T> {
-    // [token_size, num_experts]
+    // [prefill_size, num_experts]
     ptr1: ConstPtr<T>,
     topk_values_ptr: MutPtr<T>,
     topk_indices_ptr: MutPtr<usize>,
@@ -63,11 +63,11 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
 }
 
 impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftmaxNorm<T> {
-    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
         let task_size = if self.decode_only_flag == true {
             decode_size
         } else {
-            token_size
+            prefill_size
         };
 
         if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
@@ -398,3 +398,4 @@ mod test {
         }
     }
 }
+

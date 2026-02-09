@@ -100,10 +100,10 @@ where
     /// 执行：先把 residual 覆盖到 output，然后做 output += A×B
     ///
     /// run 声明保持不变（与 Operator 统一），但 position_index/interval 不使用
-    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
     unsafe {
         // ===== 维度 =====
-        let m_run = token_size;     // 真实 M
+        let m_run = prefill_size;     // 真实 M
         let n = self.n_max;         // N
         let k = self.k_max;         // K
 
@@ -442,3 +442,4 @@ fn test_matmul_add_runner_f16_nt_batch7_pad_to9() {
     }
 }
 }
+

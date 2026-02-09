@@ -825,9 +825,9 @@ mod test {
         f32::from_bits(f_bits)
     }
 
-    fn run_operator_all_threads(op: &Operator<f16>, token_size: usize, decode_size: usize, cpu_num: usize) {
+    fn run_operator_all_threads(op: &Operator<f16>, prefill_size: usize, decode_size: usize, cpu_num: usize) {
         for tid in 0..cpu_num {
-            op.run(token_size, decode_size, cpu_num, tid);
+            op.run(prefill_size, decode_size, cpu_num, tid);
         }
     }
 
@@ -2730,4 +2730,5 @@ mod tests {
     // 你原来的两个 test 保持不动即可（我就不贴了）
 }
 // 你原来的两个 test 保持不动即可（我就不贴了）
+
 

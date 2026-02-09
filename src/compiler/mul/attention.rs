@@ -70,8 +70,8 @@ where
         }
     }
 
-    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
+    pub fn run(&self, prefill_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(prefill_size, thread_num, thread_id) {
             unsafe {
                 let q_ptr = self.q_ptr.ptr;
                 let k_ptr = self.k_ptr.ptr;
@@ -80,7 +80,7 @@ where
                 let token_records_ptr = (*self.token_list_ptr.ptr).token_records.as_ptr();
                 let lift_records_ptr = (*self.token_list_ptr.ptr).lift_records.as_ptr();
                 let lift_size = (*self.token_list_ptr.ptr).current_lift_size;
-                let decode_end_index = token_size - lift_size;
+                let decode_end_index = prefill_size - lift_size;
 
                 for i in begin..end {
                     let (batch_index, position_index) = if i < decode_end_index {
@@ -287,3 +287,4 @@ mod test {
         // assert_ulps_eq!(data4[..], result[..], max_ulps = 4);
     }*/
 }
+

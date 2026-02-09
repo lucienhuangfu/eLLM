@@ -54,8 +54,8 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         }
     }
 
-    pub fn run(&self, token_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(token_size, thread_num, thread_id) {
+    pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
+        if let Some((begin, end)) = assign(prefill_size, thread_num, thread_id) {
             let input_indices_ptr = self.input_indices_ptr.ptr;
             let input_values_ptr = self.input_values_ptr.ptr;
             let output_indices_ptr = self.output_indices_ptr.ptr;
@@ -415,3 +415,4 @@ mod test {
         }
     }
 }
+

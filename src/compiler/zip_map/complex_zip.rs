@@ -61,7 +61,7 @@ where
         }
     }
 
-    pub fn run(&self, batch_size: usize, cpu_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, cpu_num: usize, thread_id: usize) {
         let stride =  self.head_num;
 
         if let Some((begin, end)) = assign(stride, cpu_num, thread_id) {

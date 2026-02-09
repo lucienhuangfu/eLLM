@@ -245,11 +245,11 @@ where
         }
     }
 
-    pub fn run(&self, token_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
         unsafe {
             let bcap = self.num_token; // bmax
 
-            let m = token_size; // token 数
+            let m = prefill_size; // token 数
             let n = self.h; // 输出列 H
             let k = self.hmid; // 输入维 Hmid
 
@@ -1256,3 +1256,4 @@ mod tests {
         }
     }
 }
+
