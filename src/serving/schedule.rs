@@ -124,8 +124,6 @@ impl SliceScheduler {
             return 0;
         }
 
-        let mut scheduled = 0usize;
-
         // Schedule tokens contiguously for this sequence.
         while remaining > 0 && !self.is_done() {
             let Some(task_index) = self.allocator.current_task_index() else {
@@ -149,11 +147,10 @@ impl SliceScheduler {
             task.push(slice);
 
             *token_count += take;
-            scheduled += take;
             remaining -= take;
         }
 
-        scheduled
+        self.allocator.scheduled_tokens()
     }
 }
 
@@ -370,28 +367,29 @@ mod tests {
     #[test]
     fn schedule_prefill_only() {
         // Input:
-        // - One BatchRecord in Phase::PrefillBegin
-        // - sequence_index=4, kv_index=0 => 4 tokens remaining to prefill
+        // - Eight BatchRecord in Phase::PrefillBegin
+        // - sequence_index=6, kv_index=0 => 6 tokens remaining per record
         // - sequence_length=8, batch_size=32, thread_num=8
         // Output (expected):
-        // - prefill == 4 (all 4 tokens scheduled)
+        // - prefill == 48 (all 8 * 6 tokens scheduled)
         // - decode == 0 (no decode tokens scheduled in prefill-only case)
-        // - prefill_list[0..4] each has one slice of length 1 with token_start_index 0..3
-        // - prefill_list[4..8] are empty
+        // - prefill_list[0..8] each has one slice of length 6 with token_start_index 0,6,12..42
         // - decode_list is empty across all tasks
         let mut scheduler = BatchScheduler::new(8, 32, 8);
-        let mut batch = vec![BatchRecord {
-            phase: Phase::PrefillBegin,
-            sequence_index: 4,
-            snapshot_sequence_index: 0,
-            kv_index: 0,
-            prompt_length: 0,
-            notify: Notify::new(),
-        }];
+        let mut batch = (0..8)
+            .map(|_| BatchRecord {
+                phase: Phase::PrefillBegin,
+                sequence_index: 6,
+                snapshot_sequence_index: 0,
+                kv_index: 0,
+                prompt_length: 0,
+                notify: Notify::new(),
+            })
+            .collect::<Vec<_>>();
 
         let (prefill, decode) = scheduler.schedule_batch(&mut batch);
 
-        assert_eq!(prefill, 4);
+        assert_eq!(prefill, 48);
         assert_eq!(decode, 0);
 
         assert_eq!(scheduler.prefill_list.len(), 8);
@@ -401,17 +399,55 @@ mod tests {
             assert!(scheduler.decode_list[task_index].is_empty());
         }
 
-        for task_index in 0..4 {
+        for task_index in 0..8 {
             assert_eq!(scheduler.prefill_list[task_index].len(), 1);
             let slice = &scheduler.prefill_list[task_index][0];
-            assert_eq!(slice.batch_index, 0);
-            assert_eq!(slice.sequence_index, 4);
-            assert_eq!(slice.token_start_index, task_index);
-            assert_eq!(slice.length, 1);
+            assert_eq!(slice.batch_index, task_index);
+            assert_eq!(slice.sequence_index, 6);
+            assert_eq!(slice.token_start_index, task_index * 6);
+            assert_eq!(slice.length, 6);
+        }
+    }
+
+    #[test]
+    fn fair_task_allocator_balances_tokens() {
+        // Input:
+        // - task_count=3
+        // - total_tokens=11
+        // Output (expected):
+        // - token allocation per task = [4, 4, 3]
+        // - scheduled_tokens == 11
+        let mut allocator = FairTaskAllocator::new(3);
+        allocator.init(11);
+
+        let mut per_task = [0usize; 3];
+        while let Some(task_index) = allocator.current_task_index() {
+            let taken = allocator.take(10);
+            if taken == 0 {
+                break;
+            }
+            per_task[task_index] += taken;
         }
 
-        for task_index in 4..8 {
-            assert!(scheduler.prefill_list[task_index].is_empty());
-        }
+        assert_eq!(per_task, [4, 4, 3]);
+        assert!(allocator.is_done());
+        assert_eq!(allocator.scheduled_tokens(), 11);
+    }
+
+    #[test]
+    fn fair_task_allocator_zero_tokens() {
+        // Input:
+        // - task_count=4
+        // - total_tokens=0
+        // Output (expected):
+        // - allocator is done immediately
+        // - current_task_index == None
+        // - scheduled_tokens == 0
+        let mut allocator = FairTaskAllocator::new(4);
+        allocator.init(0);
+
+        assert!(allocator.is_done());
+        assert_eq!(allocator.current_task_index(), None);
+        assert_eq!(allocator.scheduled_tokens(), 0);
     }
 }
