@@ -115,22 +115,25 @@ where T: Copy
         tensor_name: String,
     ) -> Tensor<T> {
         // # Attention 层
-        let norm_hidden = if self.index != 0 {
-            hidden_states.rms(
-                    self.input_layernorm.data,
-                    self.rms_norm_eps,
+        let (hidden_states_owned, norm_hidden) = if self.index != 0 {
+            let norm_hidden = hidden_states.rms(
+                self.input_layernorm.data,
+                self.rms_norm_eps,
                 format!("{}.norm_hidden", self.scope_name),
-            )
+            );
+            (hidden_states.clone(), norm_hidden)
         } else {
-            hidden_states.lookup_rms(
-                self.word_embedding.data,
-                    self.input_layernorm.data,
-                    self.rms_norm_eps,
-                    
-             
+            Tensor::lookup_rms(
+                sequences,
+                self.word_embedding,
+                self.max_batch_size,
+                self.rms_norm_eps,
                 format!("{}.norm_hidden", self.scope_name),
+                self.cache.clone(),
+                self.operator_queue.clone(),
             )
         };
+        let hidden_states = &hidden_states_owned;
 
         let attention_hidden1 = self.self_attention.forward(
             &norm_hidden,

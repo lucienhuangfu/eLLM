@@ -74,15 +74,11 @@ where
                 operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
             Self::Attention(operator) => {
-                operator.run(
-prefill_size, decode_size, cpu_num, thread_id
-                );
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
 
             Self::ExpertsMatMulDown(operator) => {
-                operator.run(
-prefill_size, decode_size, cpu_num, thread_id
-                );
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
 
             Self::ExpertsMatMulSilu(operator) => {
@@ -95,9 +91,7 @@ prefill_size, decode_size, cpu_num, thread_id
                 operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
             Self::LookupRMSMap(operator) => {
-                operator.run(
-prefill_size, decode_size, cpu_num, thread_id
-                );
+                operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
             Self::MatMul(operator) => {
                 operator.run(prefill_size, decode_size, cpu_num, thread_id);
@@ -123,9 +117,7 @@ prefill_size, decode_size, cpu_num, thread_id
                 operator.run(prefill_size, decode_size, cpu_num, thread_id);
             }
 
-            Self::TopKSoftmax(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
-            }
+            Self::TopKSoftmax(_) => {}
 
             Self::RMSMap(operator) => {
                 operator.run(prefill_size, decode_size, cpu_num, thread_id);
@@ -153,13 +145,12 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::init::record::{BatchRecord, Phase, SequenceSlice};
     use approx::assert_ulps_eq;
-    use crate::init::record::{BatchList, BatchRecord, Phase, SequenceSlice, TaskList, ThreadTask};
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use std::sync::{Arc, Barrier};
     // use std::thread;
 
-    
     #[test]
     fn test_rms() {
         let sequence_chunk_size = 1;
@@ -215,8 +206,6 @@ mod test {
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
         println!("{:?}", output_data);
     }
-
-    
 
     #[test]
     fn test_experts_softmax_norm() {
@@ -338,13 +327,10 @@ mod test {
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             })
             .collect();
-        let mut batch_list = BatchList {
-            records: batch_records.into_boxed_slice(),
-            current_size: batch_size,
-        };
+        let mut batch_list = batch_records;
 
         let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
-        let mut tasks = Vec::with_capacity(thread_num);
+        let mut decode_lists = Vec::with_capacity(thread_num);
         for tid in 0..thread_num {
             let start = tid * tokens_per_thread;
             let end = (start + tokens_per_thread).min(batch_size);
@@ -354,18 +340,12 @@ mod test {
                     batch_index,
                     sequence_index: 0,
                     token_start_index: batch_index,
+                    lift_index: 0,
                     length: 1,
                 });
             }
-            tasks.push(ThreadTask {
-                slices,
-                current_size: end.saturating_sub(start),
-            });
+            decode_lists.push(slices);
         }
-        let decode_list = TaskList {
-            tasks,
-            current_size: thread_num,
-        };
 
         let operator = Operator::TopKSoftmax(TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
@@ -374,15 +354,22 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
-            &mut batch_list as *mut BatchList,
-            &decode_list as *const TaskList,
             batch_size,
             topk_size,
             eos_id,
         ));
 
         for i in 0..thread_num {
-            operator.run(prefill_size, decode_size, thread_num, i);
+            if let Operator::TopKSoftmax(inner) = &operator {
+                inner.run(
+                    prefill_size,
+                    decode_size,
+                    thread_num,
+                    i,
+                    &decode_lists[i],
+                    &mut batch_list,
+                );
+            }
         }
 
         for i in 0..batch_size {
@@ -1871,4 +1858,3 @@ mod test {
     }
 
 */
-

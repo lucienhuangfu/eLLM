@@ -11,6 +11,7 @@ struct FairTaskAllocator {
     task_remaining: usize,
     base_quota: usize,
     extra_quota: usize,
+    active_task_count: usize,
 }
 
 impl FairTaskAllocator {
@@ -23,6 +24,7 @@ impl FairTaskAllocator {
             task_remaining: 0,
             base_quota: 0,
             extra_quota: 0,
+            active_task_count: 0,
         }
     }
 
@@ -34,9 +36,14 @@ impl FairTaskAllocator {
         self.total_tokens = total_tokens;
         self.base_quota = self.total_tokens / self.task_count;
         self.extra_quota = self.total_tokens % self.task_count;
+        self.active_task_count = if self.base_quota == 0 {
+            self.extra_quota
+        } else {
+            self.task_count
+        };
         self.task_index = 0;
         self.task_remaining = if self.total_tokens > 0 {
-            self.base_quota + if self.extra_quota > 0 { 1 } else { 0 }
+            self.quota_for(0)
         } else {
             0
         };
@@ -51,20 +58,27 @@ impl FairTaskAllocator {
         self.scheduled_tokens
     }
 
+    fn quota_for(&self, task_index: usize) -> usize {
+        if task_index < self.extra_quota {
+            self.base_quota + 1
+        } else {
+            self.base_quota
+        }
+    }
+
     fn current_task_index(&mut self) -> Option<usize> {
         if self.is_done() {
             return None;
         }
 
-        while self.task_index < self.task_count && self.task_remaining == 0 {
+        while self.task_index < self.active_task_count && self.task_remaining == 0 {
             self.task_index += 1;
-            if self.task_index < self.task_count {
-                let has_extra = self.task_index < self.extra_quota;
-                self.task_remaining = self.base_quota + if has_extra { 1 } else { 0 };
+            if self.task_index < self.active_task_count {
+                self.task_remaining = self.quota_for(self.task_index);
             }
         }
 
-        if self.task_index >= self.task_count {
+        if self.task_index >= self.active_task_count {
             return None;
         }
 
@@ -205,13 +219,15 @@ impl BatchScheduler {
         let total_tokens = batch_list
             .iter()
             .filter(|record| record.phase == Phase::Decode)
-            .count()
-            .min(self.max_decode_size);
+            .take(self.max_decode_size)
+            .count();
 
-        self.decode_scheduler
-            .init(total_tokens.min(self.max_decode_size));
+        self.decode_scheduler.init(total_tokens);
 
         for (batch_index, record) in batch_list.iter().enumerate() {
+            if self.decode_scheduler.is_done() {
+                break;
+            }
             if record.phase != Phase::Decode {
                 continue;
             }
@@ -287,7 +303,7 @@ impl BatchScheduler {
                     let remaining = record
                         .snapshot_sequence_index
                         .saturating_sub(record.kv_index);
-                    let scheduled = self.prefill_scheduler.schedule_for_sequence(
+                    self.prefill_scheduler.schedule_for_sequence(
                         batch_index,
                         record.sequence_index,
                         remaining,
@@ -300,7 +316,7 @@ impl BatchScheduler {
                     let remaining = record
                         .snapshot_sequence_index
                         .saturating_sub(record.kv_index);
-                    let scheduled = self.prefill_scheduler.schedule_for_sequence(
+                    self.prefill_scheduler.schedule_for_sequence(
                         batch_index,
                         record.sequence_index,
                         remaining,
@@ -351,10 +367,7 @@ impl BatchScheduler {
                 return (prefill_count, decode_count);
             }
 
-            // if !has_decode && !has_prefill {
             thread::sleep(Duration::from_millis(1));
-            // continue;
-            // }
         }
     }
 }

@@ -3,7 +3,7 @@ use std::ops::{AddAssign, Sub};
 use std::ptr;
 
 use super::map_trait::TopKSoftmaxTrait;
-use crate::init::record::{BatchList, Phase, TaskList};
+use crate::init::record::{BatchRecord, Phase, SequenceSlice};
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::kernel::generic::exp::Exp;
@@ -16,8 +16,6 @@ pub struct TopKSoftmax<T> {
     output_indices_ptr: MutPtr<usize>,
     output_values_ptr: MutPtr<T>,
     output_sequences: MutPtr<usize>,
-    batch_list_ptr: MutPtr<BatchList>,
-    decode_list_ptr: ConstPtr<TaskList>,
     batch_size: usize,
     topk_size: usize,
     eos_id: usize,
@@ -30,8 +28,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
         output_sequences: *mut usize,
-        batch_list_ptr: *mut BatchList,
-        decode_list_ptr: *const TaskList,
         batch_size: usize,
         topk_size: usize,
         eos_id: usize,
@@ -52,8 +48,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
             output_sequences: MutPtr {
                 ptr: output_sequences,
             },
-            batch_list_ptr: MutPtr { ptr: batch_list_ptr },
-            decode_list_ptr: ConstPtr { ptr: decode_list_ptr },
             batch_size,
             topk_size,
             eos_id,
@@ -65,35 +59,22 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         _prefill_size: usize,
         decode_size: usize,
         thread_num: usize,
-        thread_id: usize,
+        _thread_id: usize,
+        decode_list: &[SequenceSlice],
+        batch_list: &mut Vec<BatchRecord>,
     ) {
         if decode_size == 0 {
             return;
         }
 
-        let decode_list_ptr = self.decode_list_ptr.ptr;
-        let batch_list_ptr = self.batch_list_ptr.ptr;
-        if decode_list_ptr.is_null() || batch_list_ptr.is_null() {
-            return;
-        }
-
         unsafe {
-            let decode_list = &*decode_list_ptr;
-            if thread_id >= decode_list.tasks.len() {
-                return;
-            }
-
             let input_indices_ptr = self.input_indices_ptr.ptr;
             let input_values_ptr = self.input_values_ptr.ptr;
             let output_indices_ptr = self.output_indices_ptr.ptr;
             let output_values_ptr = self.output_values_ptr.ptr;
             let output_sequences_ptr = self.output_sequences.ptr;
 
-            let batch_list = &mut *batch_list_ptr;
-
-            let task = &decode_list.tasks[thread_id];
-            for i in 0..task.current_size {
-                let slice = &task.slices[i];
+            for slice in decode_list {
                 let batch_index = slice.batch_index;
                 let mut sequence_index = slice.sequence_index;
                 let token_start_index = slice.token_start_index;
@@ -117,8 +98,8 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
                     ptr::write(output_sequences_ptr.add(out_offset), predict_token);
                     sequence_index = sequence_index.saturating_add(1);
 
-                    if batch_index < batch_list.current_size {
-                        let record = &mut batch_list.records[batch_index];
+                    if batch_index < batch_list.len() {
+                        let record = &mut batch_list[batch_index];
                         if predict_token == self.eos_id {
                             record.phase = Phase::Eos;
                             record.notify.notify_one();
@@ -126,9 +107,9 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
                     }
                 }
 
-                if batch_index < batch_list.current_size {
-                    batch_list.records[batch_index].sequence_index = sequence_index;
-                }
+                // if batch_index < batch_list.len() {
+                //     batch_list[batch_index].sequence_index = sequence_index;
+                // }
             }
         }
     }
@@ -219,9 +200,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::init::record::{
-        BatchList, BatchRecord, Phase, SequenceSlice, TaskList, ThreadTask
-    };
+    use crate::init::record::{BatchRecord, Phase, SequenceSlice};
     use approx::assert_ulps_eq;
 
     #[test]
@@ -237,15 +216,9 @@ mod test {
 
         let mut input_values = Vec::<f32>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
-        let mut token_records_vec = Vec::with_capacity(batch_size);
         let mut user_records_vec = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
-            token_records_vec.push(TokenRecord {
-                // token_id: 0,
-                batch_index: i,
-                position_index: 0,
-            });
             user_records_vec.push(BatchRecord {
                 sequence_index: 1,
                 snapshot_sequence_index: 0,
@@ -261,20 +234,10 @@ mod test {
             }
         }
 
-        let token_list = TokenList {
-            token_records: token_records_vec.into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: Box::new([]),
-            current_lift_size: 0,
-        };
-
-        let mut batch_list = BatchList {
-            records: user_records_vec.into_boxed_slice(),
-            current_size: batch_size,
-        };
+        let mut batch_list = user_records_vec;
 
         let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
-        let mut tasks = Vec::with_capacity(thread_num);
+        let mut decode_lists = Vec::with_capacity(thread_num);
         for tid in 0..thread_num {
             let start = tid * tokens_per_thread;
             let end = (start + tokens_per_thread).min(batch_size);
@@ -284,18 +247,12 @@ mod test {
                     batch_index,
                     sequence_index: 1,
                     token_start_index: batch_index,
+                    lift_index: 0,
                     length: 1,
                 });
             }
-            tasks.push(ThreadTask {
-                slices,
-                current_size: end.saturating_sub(start),
-            });
+            decode_lists.push(slices);
         }
-        let decode_list = TaskList {
-            tasks,
-            current_size: thread_num,
-        };
 
         let sums = vec![0.0f32; batch_size];
         let mut output_values = vec![0.0f32; (batch_size * topk_size)];
@@ -308,15 +265,20 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
-            &mut batch_list as *mut BatchList,
-            &decode_list as *const TaskList,
             batch_size,
             topk_size,
             eos_id,
         );
 
         for i in 0..thread_num {
-            operator.run(batch_size, batch_size, thread_num, i);
+            operator.run(
+                batch_size,
+                batch_size,
+                thread_num,
+                i,
+                &decode_lists[i],
+                &mut batch_list,
+            );
         }
 
         // Verification
@@ -379,15 +341,9 @@ mod test {
 
         let mut input_values = Vec::<f16>::with_capacity(input_len);
         let mut input_indices = Vec::<usize>::with_capacity(input_len);
-        let mut token_records_vec = Vec::with_capacity(batch_size);
         let mut user_records_vec = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
-            token_records_vec.push(TokenRecord {
-                // token_id: 0,
-                batch_index: i,
-                position_index: 0,
-            });
             user_records_vec.push(BatchRecord {
                 sequence_index: 1,
                 snapshot_sequence_index: 0,
@@ -404,20 +360,10 @@ mod test {
             }
         }
 
-        let token_list = TokenList {
-            token_records: token_records_vec.into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: Box::new([]),
-            current_lift_size: 0,
-        };
-
-        let mut batch_list = BatchList {
-            records: user_records_vec.into_boxed_slice(),
-            current_size: batch_size,
-        };
+        let mut batch_list = user_records_vec;
 
         let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
-        let mut tasks = Vec::with_capacity(thread_num);
+        let mut decode_lists = Vec::with_capacity(thread_num);
         for tid in 0..thread_num {
             let start = tid * tokens_per_thread;
             let end = (start + tokens_per_thread).min(batch_size);
@@ -427,18 +373,12 @@ mod test {
                     batch_index,
                     sequence_index: 1,
                     token_start_index: batch_index,
+                    lift_index: 0,
                     length: 1,
                 });
             }
-            tasks.push(ThreadTask {
-                slices,
-                current_size: end.saturating_sub(start),
-            });
+            decode_lists.push(slices);
         }
-        let decode_list = TaskList {
-            tasks,
-            current_size: thread_num,
-        };
 
         let sums = vec![0.0 as f16; batch_size];
         let mut output_values = vec![0.0 as f16; (batch_size * topk_size)];
@@ -451,15 +391,20 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
-            &mut batch_list as *mut BatchList,
-            &decode_list as *const TaskList,
             batch_size,
             topk_size,
             eos_id,
         );
 
         for i in 0..thread_num {
-            operator.run(batch_size, batch_size, thread_num, i);
+            operator.run(
+                batch_size,
+                batch_size,
+                thread_num,
+                i,
+                &decode_lists[i],
+                &mut batch_list,
+            );
         }
 
         // Verification
@@ -518,4 +463,3 @@ mod test {
         }
     }
 }
-

@@ -109,7 +109,7 @@ where
                 cache.clone(),
                 operator_queue.clone(),
             ),
-            
+
             sparse_moe_block: SparseMoeBlock::new(
                 config.hidden_size,
                 config.moe_intermediate_size,
@@ -149,8 +149,6 @@ where
                 // let token_ptr = (*token_list_ptr).token_records.as_ptr();
                 Tensor::lookup_rms(
                     input_sequences,
-                    std::ptr::null(),
-                    std::ptr::null(),
                     &*self.word_embedding,
                     self.batch_size,
                     self.rms_norm_eps,
@@ -178,8 +176,7 @@ where
             decode_only_flag,
             format!("{}.norm_hidden2", self.scope_name),
         );
-        
-        
+
         let output_hidden_states = self.sparse_moe_block.forward(
             &norm_hidden_states,
             &attention_hidden_states,
@@ -187,7 +184,7 @@ where
             format!("{}.attention_hidden3", self.scope_name),
         );
 
-        /* 
+        /*
         let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],
             attention_hidden2.shape[1]/self.head_dim,
             self.head_dim]);
@@ -399,7 +396,12 @@ mod test {
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(sequence_chunk_size * batch_size, sequence_chunk_size, thread_num, i);
+                operator.run(
+                    sequence_chunk_size * batch_size,
+                    sequence_chunk_size,
+                    thread_num,
+                    i,
+                );
             }
         }
 

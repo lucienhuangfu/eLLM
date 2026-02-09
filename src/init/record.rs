@@ -6,9 +6,9 @@ pub struct SequenceSlice {
     pub batch_index: usize,
     pub sequence_index: usize,
     pub token_start_index: usize,
+    pub lift_index: usize,
     pub length: usize,
 }
-
 
 
 pub struct BatchRecord {
@@ -29,18 +29,4 @@ pub enum Phase {
     Eos,
 }
 
-/*
-#[derive(Clone, Copy, Debug)]
-pub struct PrefillEndRecord {
-    pub batch_index: usize,
-    pub sequence_index: usize,
-    pub token_start_index: usize,
-    // pub prefill_end_index: usize,
-    // pub lift_index: usize,
-}
 
-pub struct PrefillEndRecordList {
-    pub lift_records: Box<[PrefillEndRecord]>,
-    pub current_size: usize, // 保留，表示有效长度
-} 
-*/

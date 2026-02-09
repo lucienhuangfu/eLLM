@@ -10,7 +10,7 @@ use tokenizers::Tokenizer;
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, RwLock};
 
-use crate::init::record::{BatchList, BatchRecord, Phase};
+use crate::init::record::{BatchRecord, Phase};
 
 // ===== OpenAI API 结构 =====
 
@@ -110,7 +110,7 @@ pub struct StreamChoice {
 #[derive(Clone)]
 struct AppState {
     batch_prompts: Arc<RwLock<BatchPrompt>>,
-    batch_list: Arc<RwLock<BatchList>>,
+    batch_list: Arc<RwLock<Vec<BatchRecord>>>,
     tokenizer: Arc<Tokenizer>,
 }
 
@@ -137,9 +137,9 @@ async fn chat_completions(
         {
             let mut batch_list = state.batch_list.write().await;
             let mut batch_prompts = state.batch_prompts.write().await;
-            let current_size = batch_list.current_size;
+            let current_size = batch_list.len();
 
-            for (i, record) in batch_list.records[..current_size].iter_mut().enumerate() {
+            for (i, record) in batch_list.iter_mut().take(current_size).enumerate() {
                 if record.prompt_length == 0 {
                     match batch_prompts.write_prompt(i, &prompt, &state.tokenizer) {
                         Ok(write_len) => {
@@ -182,7 +182,7 @@ async fn chat_completions(
     let generated_text = {
         let (start, end, capacity) = {
             let batch_list = state.batch_list.read().await;
-            let record = &batch_list.records[slot_index];
+            let record = &batch_list[slot_index];
             let batch_prompts_meta = state.batch_prompts.read().await;
             let base = slot_index * batch_prompts_meta.capacity;
             (
@@ -206,7 +206,7 @@ async fn chat_completions(
     // 释放槽位并重置状态
     {
         let mut batch_list = state.batch_list.write().await;
-        let record = &mut batch_list.records[slot_index];
+        let record = &mut batch_list[slot_index];
         record.prompt_length = 0;
         record.sequence_index = 0;
         record.kv_index = 0;
@@ -316,10 +316,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect::<Vec<_>>();
 
-    let batch_list = Arc::new(RwLock::new(BatchList {
-        records: batch_records.into_boxed_slice(),
-        current_size: batch_size,
-    }));
+    let batch_list = Arc::new(RwLock::new(batch_records));
 
     let state = AppState {
         batch_prompts,
@@ -347,9 +344,9 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut processed = false;
             {
                 let mut batch_list = loop_state.batch_list.write().await;
-                let current_size = batch_list.current_size;
+                let current_size = batch_list.len();
 
-                for (i, record) in batch_list.records[..current_size].iter_mut().enumerate() {
+                for (i, record) in batch_list.iter_mut().take(current_size).enumerate() {
                     // 如果有 prompt 且处于等待推理的状态
                     if record.prompt_length > 0 && record.sequence_index == 0 {
                         // 模拟推理逻辑：

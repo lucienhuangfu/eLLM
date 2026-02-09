@@ -13,11 +13,17 @@ use crate::init::record::{BatchRecord, Phase};
 use crate::init::send_sync_ptr::MutPtr;
 use crate::serving::schedule::BatchScheduler;
 
-/// Starts the inference serving loop.
-/// This function initializes a thread pool where Thread 0 schedules tasks by monitoring
+/// Runs the inference serving loop.
+///
+/// This initializes a thread pool where Thread 0 schedules tasks by monitoring
 /// user request phases (Prefill/Decode) and populating the token list. All threads
 /// then synchronize to execute the operators in the queue for the current batch.
-pub fn start<T>(batch_list_ptr: MutPtr<Vec<BatchRecord>>, operator_queue: Vec<Operator<T>>)
+pub struct ServingRunner<T> {
+    batch_list_ptr: MutPtr<Vec<BatchRecord>>,
+    operator_queue: Vec<Operator<T>>,
+}
+
+impl<T> ServingRunner<T>
 where
     T: Send
         + Sync
@@ -34,75 +40,84 @@ where
         + Sqrt
         + NegInfinity,
 {
-    println!("start");
-    // let thread_num = thread::available_parallelism().unwrap().get();
-    let core_ids = core_affinity::get_core_ids().unwrap();
-    let thread_num = core_ids.len();
+    pub fn new(batch_list_ptr: MutPtr<Vec<BatchRecord>>, operator_queue: Vec<Operator<T>>) -> Self {
+        Self {
+            batch_list_ptr,
+            operator_queue,
+        }
+    }
 
-    // Optimization: Convert Vec to Arc<[T]> to reduce one level of indirection compared to Arc<Vec<T>>
-    let sync_operator_queue: Arc<[Operator<T>]> = operator_queue.into();
+    pub fn start(self) {
+        println!("start");
+        // let thread_num = thread::available_parallelism().unwrap().get();
+        let core_ids = core_affinity::get_core_ids().unwrap();
+        let thread_num = core_ids.len();
 
-    let barrier = Arc::new(Barrier::new(thread_num));
-    let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
-    let mut handles = Vec::with_capacity(thread_num);
-    // let core_ids = core_affinity::get_core_ids().unwrap();
+        // Optimization: Convert Vec to Arc<[T]> to reduce one level of indirection compared to Arc<Vec<T>>
+        let sync_operator_queue: Arc<[Operator<T>]> = self.operator_queue.into();
 
-    for (i, core_id) in core_ids.into_iter().enumerate() {
-        // println!("thread id {}", i);
-        let b = Arc::clone(&barrier);
-        let queue = Arc::clone(&sync_operator_queue);
-        let shared_sizes: Arc<SyncUnsafeCell<(usize, usize)>> = Arc::clone(&shared_sizes);
+        let barrier = Arc::new(Barrier::new(thread_num));
+        let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
+        let mut handles = Vec::with_capacity(thread_num);
+        // let core_ids = core_affinity::get_core_ids().unwrap();
 
-        // Wrap pointers in SyncUnsafeCell to ensure safe transport across threads.
-        // This creates a new cell for each thread containing a copy of the pointer.
-        let batch_list_ptr_addr = SyncUnsafeCell::new(batch_list_ptr);
-        // let last_prefill_list_ptr_addr = SyncUnsafeCell::new(last_prefill_list_ptr);
+        for (i, core_id) in core_ids.into_iter().enumerate() {
+            // println!("thread id {}", i);
+            let b = Arc::clone(&barrier);
+            let queue = Arc::clone(&sync_operator_queue);
+            let shared_sizes: Arc<SyncUnsafeCell<(usize, usize)>> = Arc::clone(&shared_sizes);
 
-        let handle = thread::spawn(move || {
-            let thread_id = i;
-            core_affinity::set_for_current(core_id);
-            println!("{} start", thread_id);
-            let s = Instant::now();
-            let sizes_ptr = shared_sizes.get();
-            let mut scheduler = if thread_id == 0 {
-                let batch_size = unsafe { (&*(*batch_list_ptr_addr.get()).ptr).len() };
-                Some(BatchScheduler::new(thread_num, batch_size))
-            } else {
-                None
-            };
+            // Wrap pointers in SyncUnsafeCell to ensure safe transport across threads.
+            // This creates a new cell for each thread containing a copy of the pointer.
+            let batch_list_ptr_addr = SyncUnsafeCell::new(self.batch_list_ptr);
+            // let last_prefill_list_ptr_addr = SyncUnsafeCell::new(last_prefill_list_ptr);
 
-            // Main inference loop: continuously processes batches of tokens
-            loop {
-                // Thread 0 acts as the scheduler: monitors user states and prepares the token batch
-                if thread_id == 0 {
-                    unsafe {
-                        let batch_list = &mut *(*batch_list_ptr_addr.get()).ptr;
-                        *sizes_ptr = scheduler.as_mut().unwrap().schedule_batch(batch_list);
+            let handle = thread::spawn(move || {
+                let thread_id = i;
+                core_affinity::set_for_current(core_id);
+                println!("{} start", thread_id);
+                let s = Instant::now();
+                let sizes_ptr = shared_sizes.get();
+                let mut scheduler = if thread_id == 0 {
+                    let batch_size = unsafe { (&*(*batch_list_ptr_addr.get()).ptr).len() };
+                    Some(BatchScheduler::new(thread_num, batch_size))
+                } else {
+                    None
+                };
+
+                // Main inference loop: continuously processes batches of tokens
+                loop {
+                    // Thread 0 acts as the scheduler: monitors user states and prepares the token batch
+                    if thread_id == 0 {
+                        unsafe {
+                            let batch_list = &mut *(*batch_list_ptr_addr.get()).ptr;
+                            *sizes_ptr = scheduler.as_mut().unwrap().schedule_batch(batch_list);
+                        }
+                    }
+
+                    // Synchronization barrier: Wait for Thread 0 to finish scheduling
+                    b.wait();
+
+                    let (prefill_size, decode_size) = unsafe { *sizes_ptr };
+
+                    // Execute the operator queue in parallel
+                    for operator in queue.iter() {
+                        operator.run(prefill_size, decode_size, thread_num, thread_id);
+                        b.wait();
                     }
                 }
 
-                // Synchronization barrier: Wait for Thread 0 to finish scheduling
-                b.wait();
+                // let t = s.elapsed();
+                // println!("thread {} decode time {:?}", thread_id, t);
+            });
 
-                let (prefill_size, decode_size) = unsafe { *sizes_ptr };
+            // std::mem::forget(handle);
+            handles.push(handle);
+        }
 
-                // Execute the operator queue in parallel
-                for operator in queue.iter() {
-                    operator.run(prefill_size, decode_size, thread_num, thread_id);
-                    b.wait();
-                }
-            }
-
-            // let t = s.elapsed();
-            // println!("thread {} decode time {:?}", thread_id, t);
-        });
-
-        // std::mem::forget(handle);
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        handle.join().unwrap();
+        for handle in handles {
+            handle.join().unwrap();
+        }
     }
 }
 
@@ -210,6 +225,6 @@ mod test {
             ptr: &mut batch_list as *mut Vec<BatchRecord>,
         };
 
-        start(batch_ptr, output_tensor.operator_queue.take());
+        ServingRunner::new(batch_ptr, output_tensor.operator_queue.take()).start();
     }
 }

@@ -29,7 +29,7 @@ use super::super::memory::cache::Cache;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
-use crate::init::record::{BatchList, TaskList, TokenList, TokenRecord};
+use crate::init::record::{TokenList, TokenRecord};
 
 // use super::rope::precompute_freqs_cis;
 
@@ -142,8 +142,6 @@ where
         &mut self,
         input_sequences: *mut usize,
         token_list_ptr: *const TokenList,
-        batch_list_ptr: *mut BatchList,
-        decode_list_ptr: *const TaskList,
         eos_id: usize,
     ) -> (*const usize, Tensor<T>) {
         // -> Tensor<T> {
@@ -178,16 +176,16 @@ where
             true,
             format!("{}.norm_hidden", self.scope_name),
         );
-   
+
         let (indices_ptr, values_tensor) = norm_state.matmul_local_topk(
             &self.lm_head_weight,
-           MatMulParams {
-                    a_row_step_macro: 3,
-                    b_row_step_macro: 64,
-                    column_step_macro: 64,
-                    a_row_step_micro: 3,
-                    b_row_step_micro: 32,
-                },
+            MatMulParams {
+                a_row_step_macro: 3,
+                b_row_step_macro: 64,
+                column_step_macro: 64,
+                a_row_step_micro: 3,
+                b_row_step_micro: 32,
+            },
             self.topk_size,
             format!("{}.lm_head", self.scope_name),
         );
@@ -195,8 +193,6 @@ where
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
             indices_ptr,
             input_sequences,
-            batch_list_ptr,
-            decode_list_ptr,
             self.topk_size,
             eos_id,
             format!("{}.softmax", self.scope_name),
@@ -216,10 +212,7 @@ mod test {
     use super::*;
     // use crate::init::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
-    use crate::init::record::{
-        BatchList, BatchRecord, Phase, PrefillEndRecord, SequenceSlice, TaskList, ThreadTask,
-        TokenList, TokenRecord,
-    };
+    use crate::init::record::{BatchRecord, Phase, PrefillEndRecord, TokenList, TokenRecord};
     use crate::memory::allocator::allocate_init;
     use crate::memory::cache::Cache;
     use crate::ptensor::tensor::Tensor;
@@ -247,7 +240,7 @@ mod test {
                        // operator_queue.clone(),
         );
 
- // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
+        // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
         let mut sequences =
             allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
 
@@ -279,47 +272,11 @@ mod test {
             })
             .collect();
 
-        let mut batch_list = BatchList {
-            records: batch_records.into_boxed_slice(),
-            current_size: batch_size,
-        };
-        let thread_num = num_cpus::get().max(1);
-        let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
-        let mut tasks = Vec::with_capacity(thread_num);
-        for tid in 0..thread_num {
-            let start = tid * tokens_per_thread;
-            let end = (start + tokens_per_thread).min(batch_size);
-            let mut slices = Vec::with_capacity(end.saturating_sub(start));
-            for batch_index in start..end {
-                let sequence_index = batch_list.records[batch_index].sequence_index;
-                slices.push(SequenceSlice {
-                    batch_index,
-                    sequence_index,
-                    token_start_index: batch_index,
-                    length: 1,
-                });
-            }
-            tasks.push(ThreadTask {
-                slices,
-                current_size: end.saturating_sub(start),
-            });
-        }
-        let decode_list = TaskList {
-            tasks,
-            current_size: thread_num,
-        };
-
+        let mut batch_list = batch_records;
         let eos_id = 151643;
 
-        let (output_indices, output_tensor) = unsafe {
-            model.forward(
-                sequences,
-                &token_list as *const TokenList,
-                &mut batch_list as *mut BatchList,
-                &decode_list as *const TaskList,
-                eos_id,
-            )
-        };
+        let (output_indices, output_tensor) =
+            unsafe { model.forward(sequences, &token_list as *const TokenList, eos_id) };
 
         let thread_num: usize = num_cpus::get();
         for operator in model.operator_queue.borrow().iter() {
@@ -353,7 +310,7 @@ mod test {
 
         let mut sequences =
             allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
-                let token_records: Vec<TokenRecord> = (0..batch_size)
+        let token_records: Vec<TokenRecord> = (0..batch_size)
             .map(|i| TokenRecord {
                 // token_id: 0,
                 batch_index: i,
@@ -381,50 +338,11 @@ mod test {
             })
             .collect();
 
-        let mut batch_list = BatchList {
-            records: batch_records.into_boxed_slice(),
-            current_size: batch_size,
-        };
-        let thread_num = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-        let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
-        let mut tasks = Vec::with_capacity(thread_num);
-        for tid in 0..thread_num {
-            let start = tid * tokens_per_thread;
-            let end = (start + tokens_per_thread).min(batch_size);
-            let mut slices = Vec::with_capacity(end.saturating_sub(start));
-            for batch_index in start..end {
-                let sequence_index = batch_list.records[batch_index].sequence_index;
-                slices.push(SequenceSlice {
-                    batch_index,
-                    sequence_index,
-                    token_start_index: batch_index,
-                    length: 1,
-                });
-            }
-            tasks.push(ThreadTask {
-                slices,
-                current_size: end.saturating_sub(start),
-            });
-        }
-        let decode_list = TaskList {
-            tasks,
-            current_size: thread_num,
-        };
-
+        let mut batch_list = batch_records;
         let eos_id = 151643;
 
-        let (output_indices, output_tensor) = unsafe {
-            model.forward(
-                sequences,
-                &token_list as *const TokenList,
-                &mut batch_list as *mut BatchList,
-                &decode_list as *const TaskList,
-                eos_id,
-            )
-        };
-
+        let (output_indices, output_tensor) =
+            unsafe { model.forward(sequences, &token_list as *const TokenList, eos_id) };
 
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())

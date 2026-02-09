@@ -12,9 +12,6 @@ use super::super::memory::cache::Cache;
 use crate::init::matmul_params::MatMulParams;
 
 use super::super::compiler::left_vector::LiftVector;
-use crate::init::record::{
-    BatchList, BatchRecord, Phase, SequenceSlice, TaskList, ThreadTask, TokenList, TokenRecord,
-};
 use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
@@ -26,6 +23,9 @@ use super::super::compiler::mul::experts_merge_add::ExpertsMergeAdd;
 use super::super::compiler::mul::matmul::MatMul;
 use super::super::compiler::mul::matmul3::MatMul3;
 use super::super::compiler::mul::matmul_add::MatMulAdd;
+use crate::init::record::{
+    BatchRecord, Phase, SequenceSlice, TaskList, ThreadTask, TokenList, TokenRecord,
+};
 // use super::super::compiler::mul::matmul_silu_mul_matmul::MatMulSilu;
 use super::super::compiler::mul::matmul_topk::MatMulTopK;
 use super::super::compiler::operator::Operator;
@@ -666,8 +666,6 @@ where
         indices_ptr: *const usize,
         // sums_tensor: &Tensor<T>,
         output_sequences: *mut usize,
-        batch_list_ptr: *mut BatchList,
-        decode_list_ptr: *const TaskList,
         num_topk: usize,
         eos_id: usize,
         scope_name: String,
@@ -688,8 +686,6 @@ where
             indice_ptr,
             value_tensor.data,
             output_sequences,
-            batch_list_ptr,
-            decode_list_ptr,
             self.shape[0],
             num_topk,
             eos_id,
@@ -739,8 +735,6 @@ where
 
     pub fn lookup_rms(
         sequences_ptr: *const usize,
-        prefill_list_ptr: *const TaskList,
-        decode_list_ptr: *const TaskList,
         word_embedding: &Tensor<T>,
         batch_size: usize,
         eps: T,
@@ -764,8 +758,6 @@ where
 
         let operator = Operator::LookupRMSMap(LookupRMSMap::new(
             sequences_ptr,
-            prefill_list_ptr,
-            decode_list_ptr,
             word_embedding.data,
             output_hidden_tensor.data,
             output_normal_tensor.data,
@@ -833,7 +825,12 @@ mod test {
         f32::from_bits(f_bits)
     }
 
-    fn run_operator_all_threads(op: &Operator<f16>, prefill_size: usize, decode_size: usize, cpu_num: usize) {
+    fn run_operator_all_threads(
+        op: &Operator<f16>,
+        prefill_size: usize,
+        decode_size: usize,
+        cpu_num: usize,
+    ) {
         for tid in 0..cpu_num {
             op.run(prefill_size, decode_size, cpu_num, tid);
         }
@@ -926,12 +923,9 @@ mod test {
             current_lift_size: 0,
         };
 
-        let mut batch_list = BatchList {
-            records: user_records.into_boxed_slice(),
-            current_size: batch_size,
-        };
+        let mut batch_list = user_records;
         let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
-        let mut tasks = Vec::with_capacity(thread_num);
+        let mut decode_lists = Vec::with_capacity(thread_num);
         for tid in 0..thread_num {
             let start = tid * tokens_per_thread;
             let end = (start + tokens_per_thread).min(batch_size);
@@ -941,18 +935,12 @@ mod test {
                     batch_index,
                     sequence_index: 0,
                     token_start_index: batch_index,
+                    lift_index: 0,
                     length: 1,
                 });
             }
-            tasks.push(ThreadTask {
-                slices,
-                current_size: end.saturating_sub(start),
-            });
+            decode_lists.push(slices);
         }
-        let decode_list = TaskList {
-            tasks,
-            current_size: thread_num,
-        };
 
         unsafe {
             value_tensor
@@ -964,8 +952,6 @@ mod test {
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
             output_sequences.as_mut_ptr(),
-            &mut batch_list as *mut BatchList,
-            &decode_list as *const TaskList,
             num_topk,
             eos_id,
             "model.layers.0.topk_softmax".to_string(),
@@ -973,7 +959,18 @@ mod test {
 
         for i in 0..thread_num {
             for op in operator_queue.borrow_mut().iter() {
-                op.run(batch_size, 1, thread_num, i);
+                if let Operator::TopKSoftmax(operator) = op {
+                    operator.run(
+                        batch_size,
+                        1,
+                        thread_num,
+                        i,
+                        &decode_lists[i],
+                        &mut batch_list,
+                    );
+                } else {
+                    op.run(batch_size, 1, thread_num, i);
+                }
             }
         }
 
@@ -1096,12 +1093,9 @@ mod test {
             current_lift_size: 0,
         };
 
-        let mut batch_list = BatchList {
-            records: user_records.into_boxed_slice(),
-            current_size: batch_size,
-        };
+        let mut batch_list = user_records;
         let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
-        let mut tasks = Vec::with_capacity(thread_num);
+        let mut decode_lists = Vec::with_capacity(thread_num);
         for tid in 0..thread_num {
             let start = tid * tokens_per_thread;
             let end = (start + tokens_per_thread).min(batch_size);
@@ -1111,18 +1105,12 @@ mod test {
                     batch_index,
                     sequence_index: 0,
                     token_start_index: batch_index,
+                    lift_index: 0,
                     length: 1,
                 });
             }
-            tasks.push(ThreadTask {
-                slices,
-                current_size: end.saturating_sub(start),
-            });
+            decode_lists.push(slices);
         }
-        let decode_list = TaskList {
-            tasks,
-            current_size: thread_num,
-        };
 
         unsafe {
             value_tensor
@@ -1134,8 +1122,6 @@ mod test {
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
             output_sequences.as_mut_ptr(),
-            &mut batch_list as *mut BatchList,
-            &decode_list as *const TaskList,
             num_topk,
             eos_id,
             "model.layers.0.topk_softmax".to_string(),
@@ -1143,7 +1129,18 @@ mod test {
 
         for i in 0..thread_num {
             for op in operator_queue.borrow_mut().iter() {
-                op.run(batch_size, 1, thread_num, i);
+                if let Operator::TopKSoftmax(operator) = op {
+                    operator.run(
+                        batch_size,
+                        1,
+                        thread_num,
+                        i,
+                        &decode_lists[i],
+                        &mut batch_list,
+                    );
+                } else {
+                    op.run(batch_size, 1, thread_num, i);
+                }
             }
         }
 
@@ -2206,10 +2203,7 @@ mod test {
             "model.layers.0.experts_silu".to_string(),
         );
 
-        assert_eq!(
-            out.shape,
-            vec![num_experts, batch_size, inter]
-        );
+        assert_eq!(out.shape, vec![num_experts, batch_size, inter]);
         assert_eq!(operator_queue.borrow().len(), 1);
         assert!(matches!(
             &operator_queue.borrow()[0],
@@ -2387,10 +2381,7 @@ mod test {
             "model.layers.0.experts_down".to_string(),
         );
 
-        assert_eq!(
-            out.shape,
-            vec![batch_size, num_experts_per_tok, hidden]
-        );
+        assert_eq!(out.shape, vec![batch_size, num_experts_per_tok, hidden]);
         assert_eq!(operator_queue.borrow().len(), 1);
         assert!(matches!(
             &operator_queue.borrow()[0],
@@ -2788,5 +2779,3 @@ mod tests {
     // 你原来的两个 test 保持不动即可（我就不贴了）
 }
 // 你原来的两个 test 保持不动即可（我就不贴了）
-
-
