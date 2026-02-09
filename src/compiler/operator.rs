@@ -358,14 +358,13 @@ mod test {
                 });
             }
             tasks.push(ThreadTask {
-                slices: slices.into_boxed_slice(),
+                slices,
                 current_size: end.saturating_sub(start),
             });
         }
         let decode_list = TaskList {
-            tasks: tasks.into_boxed_slice(),
+            tasks,
             current_size: thread_num,
-            max_token_size: batch_size,
         };
 
         let operator = Operator::TopKSoftmax(TopKSoftmax::<f32>::new(

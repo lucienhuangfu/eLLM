@@ -121,6 +121,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
                         let record = &mut batch_list.records[batch_index];
                         if predict_token == self.eos_id {
                             record.phase = Phase::Eos;
+                            record.notify.notify_one();
                         }
                     }
                 }
@@ -219,7 +220,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 mod test {
     use super::*;
     use crate::init::record::{
-        BatchList, BatchRecord, Phase, SequenceSlice, TaskList, ThreadTask, TokenList, TokenRecord,
+        BatchList, BatchRecord, Phase, SequenceSlice, TaskList, ThreadTask
     };
     use approx::assert_ulps_eq;
 
@@ -287,14 +288,13 @@ mod test {
                 });
             }
             tasks.push(ThreadTask {
-                slices: slices.into_boxed_slice(),
+                slices,
                 current_size: end.saturating_sub(start),
             });
         }
         let decode_list = TaskList {
-            tasks: tasks.into_boxed_slice(),
+            tasks,
             current_size: thread_num,
-            max_token_size: batch_size,
         };
 
         let sums = vec![0.0f32; batch_size];
@@ -431,14 +431,13 @@ mod test {
                 });
             }
             tasks.push(ThreadTask {
-                slices: slices.into_boxed_slice(),
+                slices,
                 current_size: end.saturating_sub(start),
             });
         }
         let decode_list = TaskList {
-            tasks: tasks.into_boxed_slice(),
+            tasks,
             current_size: thread_num,
-            max_token_size: batch_size,
         };
 
         let sums = vec![0.0 as f16; batch_size];

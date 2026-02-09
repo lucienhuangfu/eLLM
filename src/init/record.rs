@@ -9,18 +9,6 @@ pub struct SequenceSlice {
     pub length: usize,
 }
 
-pub struct ThreadTask {
-    pub slices: Box<[SequenceSlice]>,
-    pub current_size: usize, // 保留，表示有效长度
-}
-
-pub struct TaskList {
-    pub tasks: Box<[ThreadTask]>,
-    pub current_size: usize, // 保留，表示有效长度
-    pub max_token_size: usize,
-
-}
-
 
 
 pub struct BatchRecord {
@@ -29,14 +17,8 @@ pub struct BatchRecord {
     pub kv_index: usize,
     pub phase: Phase,
     pub prompt_length: usize,
-    pub notify: Arc<Notify>,
+    pub notify: Notify,
 }
-
-pub struct BatchList {
-    pub records: Box<[BatchRecord]>,
-    pub current_size: usize, // 保留，表示有效长度
-}
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)] // 优化: 显式指定为 u8，确保只占 1 字节

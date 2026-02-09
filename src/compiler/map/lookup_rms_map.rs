@@ -172,28 +172,25 @@ mod test {
                 });
             }
             tasks.push(ThreadTask {
-                slices: slices.into_boxed_slice(),
+                slices,
                 current_size: end.saturating_sub(start),
             });
         }
 
         let prefill_list = TaskList {
-            tasks: tasks.into_boxed_slice(),
+            tasks,
             current_size: thread_num,
-            max_token_size: batch_size,
         };
 
         let decode_tasks = (0..thread_num)
             .map(|_| ThreadTask {
-                slices: Box::new([]),
+                slices: Vec::new(),
                 current_size: 0,
             })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+            .collect::<Vec<_>>();
         let decode_list = TaskList {
             tasks: decode_tasks,
             current_size: 0,
-            max_token_size: 0,
         };
 
         let mut sequences = vec![0; (batch_size * batch_size)];
