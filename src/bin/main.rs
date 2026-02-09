@@ -3,7 +3,10 @@
 
 use ellm::memory::allocator::allocate_init;
 use ellm::qwen3_moe::config::Config;
-use ellm::init::record::{BatchList, TokenList, TokenRecord, BatchRecord, PrefillEndRecord, Phase};
+use ellm::init::record::{
+    BatchList, BatchRecord, Phase, PrefillEndRecord, SequenceSlice, TaskList, ThreadTask, TokenList,
+    TokenRecord,
+};
 use ellm::qwen3_moe::model::Model;
 use ellm::init::send_sync_ptr::MutPtr;
 use ellm::serving::start::start;
@@ -56,6 +59,32 @@ fn main() {
             records: batch_records.into_boxed_slice(),
             current_size: batch_size,
         };
+        let thread_num = num_cpus::get().max(1);
+        let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
+        let mut tasks = Vec::with_capacity(thread_num);
+        for tid in 0..thread_num {
+            let start = tid * tokens_per_thread;
+            let end = (start + tokens_per_thread).min(batch_size);
+            let mut slices = Vec::with_capacity(end.saturating_sub(start));
+            for batch_index in start..end {
+                let sequence_index = batch_list.records[batch_index].sequence_index;
+                slices.push(SequenceSlice {
+                    batch_index,
+                    sequence_index,
+                    token_start_index: batch_index,
+                    length: 1,
+                });
+            }
+            tasks.push(ThreadTask {
+                slices: slices.into_boxed_slice(),
+                current_size: end.saturating_sub(start),
+            });
+        }
+        let decode_list = TaskList {
+            tasks: tasks.into_boxed_slice(),
+            current_size: thread_num,
+            max_token_size: batch_size,
+        };
 
         let eos_id = 151643;
 
@@ -64,6 +93,7 @@ fn main() {
                 sequences,
                 &token_list as *const TokenList,
                 &mut batch_list as *mut BatchList,
+                &decode_list as *const TaskList,
                 eos_id,
             )
         };

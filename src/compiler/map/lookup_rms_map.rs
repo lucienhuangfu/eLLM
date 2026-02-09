@@ -3,9 +3,8 @@ use std::ptr;
 
 use super::super::super::kernel;
 use super::map_trait::MapTrait;
-use crate::compiler::assign::assign;
 
-use crate::init::record::TokenList;
+use crate::init::record::TaskList;
 use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::generic::sqrt::Sqrt;
 
@@ -13,7 +12,8 @@ use crate::kernel::generic::sqrt::Sqrt;
 #[derive(Clone)]
 pub struct LookupRMSMap<T> {
     sequences_ptr: ConstPtr<usize>,
-    token_ptr: ConstPtr<TokenList>,
+    prefill_list_ptr: ConstPtr<TaskList>,
+    decode_list_ptr: ConstPtr<TaskList>,
     word_embedding: ConstPtr<T>,
     output_hidden_ptr: MutPtr<T>,
     output_normal_ptr: MutPtr<T>,
@@ -26,7 +26,8 @@ impl<T: Sqrt> LookupRMSMap<T> {
     // Constructor for LookupRMSMap
     pub fn new(
         sequences_ptr: *const usize,
-        token_ptr: *const TokenList,
+        prefill_list_ptr: *const TaskList,
+        decode_list_ptr: *const TaskList,
         word_embedding: *const T,
         output_hidden_ptr: *mut T,
         output_normal_ptr: *mut T,
@@ -36,7 +37,12 @@ impl<T: Sqrt> LookupRMSMap<T> {
     ) -> Self {
         Self {
             sequences_ptr: ConstPtr { ptr: sequences_ptr },
-            token_ptr: ConstPtr { ptr: token_ptr },
+            prefill_list_ptr: ConstPtr {
+                ptr: prefill_list_ptr,
+            },
+            decode_list_ptr: ConstPtr {
+                ptr: decode_list_ptr,
+            },
             output_hidden_ptr: MutPtr {
                 ptr: output_hidden_ptr,
             },
@@ -54,21 +60,38 @@ impl<T: Sqrt> LookupRMSMap<T> {
 
     // Run the map for a given batch size and thread ID
     pub fn run(&self, prefill_size: usize, decode_size: usize, thread_num: usize, thread_id: usize) {
-        if let Some((begin, end)) = assign(prefill_size, thread_num, thread_id) {
-            unsafe {
-                let sequences_ptr = self.sequences_ptr.ptr;
-                let token_records_ptr = (*self.token_ptr.ptr).token_records.as_ptr();
-                let output_normal_ptr = self.output_normal_ptr.ptr;
-                let output_hidden_ptr = self.output_hidden_ptr.ptr;
+        if prefill_size > 0 {
+            self.run_task_list(self.prefill_list_ptr.ptr, thread_num, thread_id);
+        } else if decode_size > 0 {
+            self.run_task_list(self.decode_list_ptr.ptr, thread_num, thread_id);
+        }
+    }
 
-                for i in begin..end {
-                    let token_record = &*token_records_ptr.add(i);
-                    let batch_index = token_record.batch_index;
-                    let position_index = token_record.position_index;
+    fn run_task_list(&self, task_list_ptr: *const TaskList, thread_num: usize, thread_id: usize) {
+        unsafe {
+            let task_list = &*task_list_ptr;
+            if thread_id >= task_list.tasks.len() {
+                return;
+            }
+
+            let sequences_ptr = self.sequences_ptr.ptr;
+            let output_normal_ptr = self.output_normal_ptr.ptr;
+            let output_hidden_ptr = self.output_hidden_ptr.ptr;
+
+            let task = &task_list.tasks[thread_id];
+            for i in 0..task.current_size {
+                let slice = &task.slices[i];
+                let batch_index = slice.batch_index;
+                let position_start = slice.sequence_index;
+                let token_start = slice.token_start_index;
+
+                for t in 0..slice.length {
+                    let position_index = position_start + t;
+                    let token_index = token_start + t;
                     let token_id =
                         *sequences_ptr.add((position_index * self.batch_size + batch_index));
-                    let embedding_ptr = self.word_embedding.ptr.add((token_id * self.hidden_size));
-                    let offset = i * (self.hidden_size);
+                    let embedding_ptr = self.word_embedding.ptr.add(token_id * self.hidden_size);
+                    let offset = token_index * self.hidden_size;
 
                     let hidden_ptr = output_hidden_ptr.add(offset);
                     // Copy embedding to output hidden
@@ -121,8 +144,7 @@ impl MapTrait<f32> for LookupRMSMap<f32> {
 mod test {
     use super::*;
     use approx::assert_ulps_eq;
-
-    use crate::init::record::TokenRecord;
+    use crate::init::record::{SequenceSlice, ThreadTask};
 
     #[test]
     fn test_lookup_f32() {
@@ -135,19 +157,43 @@ mod test {
         let length = shapes.iter().product::<usize>(); // Total number of elements
 
         let eps = 1e-6;
-        let token_records: Vec<TokenRecord> = (0..batch_size)
-            .map(|i| TokenRecord {
-                // token_id: 1,
-                batch_index: i,
-                position_index: 0,
-            })
-            .collect();
+        let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
+        let mut tasks = Vec::with_capacity(thread_num);
+        for tid in 0..thread_num {
+            let start = tid * tokens_per_thread;
+            let end = (start + tokens_per_thread).min(batch_size);
+            let mut slices = Vec::with_capacity(end.saturating_sub(start));
+            for i in start..end {
+                slices.push(SequenceSlice {
+                    batch_index: i,
+                    sequence_index: 0,
+                    token_start_index: i,
+                    length: 1,
+                });
+            }
+            tasks.push(ThreadTask {
+                slices: slices.into_boxed_slice(),
+                current_size: end.saturating_sub(start),
+            });
+        }
 
-        let token_list = TokenList {
-            token_records: token_records.into_boxed_slice(),
-            lift_records: Box::new([]),
-            current_token_size: batch_size,
-            current_lift_size: 0,
+        let prefill_list = TaskList {
+            tasks: tasks.into_boxed_slice(),
+            current_size: thread_num,
+            max_token_size: batch_size,
+        };
+
+        let decode_tasks = (0..thread_num)
+            .map(|_| ThreadTask {
+                slices: Box::new([]),
+                current_size: 0,
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let decode_list = TaskList {
+            tasks: decode_tasks,
+            current_size: 0,
+            max_token_size: 0,
         };
 
         let mut sequences = vec![0; (batch_size * batch_size)];
@@ -167,7 +213,8 @@ mod test {
         // Initialize LookupRMSMap with these chunks and length
         let o = LookupRMSMap::new(
             sequences.as_ptr(),
-            &token_list,
+            &prefill_list,
+            &decode_list,
             word_embedding.as_ptr(),
             output_hidden_data.as_mut_ptr(),
             output_normal_data.as_mut_ptr(),
@@ -200,7 +247,7 @@ mod test {
         let expected_hidden: Vec<f32> = (1..=hidden_size).map(|x| x as f32).collect();
 
         for i in 0..thread_num {
-            o.run(batch_size, batch_size, thread_num, i);
+            o.run(batch_size, 0, thread_num, i);
         }
 
         // Verify output_normal_data
@@ -210,4 +257,3 @@ mod test {
         assert_ulps_eq!(output_hidden_data[18..36], expected_hidden, max_ulps = 1);
     }
 }
-

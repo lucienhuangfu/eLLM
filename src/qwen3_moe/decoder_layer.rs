@@ -149,7 +149,8 @@ where
                 // let token_ptr = (*token_list_ptr).token_records.as_ptr();
                 Tensor::lookup_rms(
                     input_sequences,
-                    token_list_ptr,
+                    std::ptr::null(),
+                    std::ptr::null(),
                     &*self.word_embedding,
                     self.batch_size,
                     self.rms_norm_eps,

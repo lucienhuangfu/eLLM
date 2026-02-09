@@ -29,7 +29,7 @@ use super::super::memory::cache::Cache;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
-use crate::init::record::{BatchList, TokenList, TokenRecord};
+use crate::init::record::{BatchList, TaskList, TokenList, TokenRecord};
 
 // use super::rope::precompute_freqs_cis;
 
@@ -143,6 +143,7 @@ where
         input_sequences: *mut usize,
         token_list_ptr: *const TokenList,
         batch_list_ptr: *mut BatchList,
+        decode_list_ptr: *const TaskList,
         eos_id: usize,
     ) -> (*const usize, Tensor<T>) {
         // -> Tensor<T> {
@@ -193,8 +194,9 @@ where
 
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
             indices_ptr,
-
-            unsafe { input_sequences.add(self.batch_size) },
+            input_sequences,
+            batch_list_ptr,
+            decode_list_ptr,
             self.topk_size,
             eos_id,
             format!("{}.softmax", self.scope_name),
@@ -215,7 +217,8 @@ mod test {
     // use crate::init::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::init::record::{
-        BatchList, BatchRecord, Phase, PrefillEndRecord, TokenList, TokenRecord,
+        BatchList, BatchRecord, Phase, PrefillEndRecord, SequenceSlice, TaskList, ThreadTask,
+        TokenList, TokenRecord,
     };
     use crate::memory::allocator::allocate_init;
     use crate::memory::cache::Cache;
@@ -280,6 +283,32 @@ mod test {
             records: batch_records.into_boxed_slice(),
             current_size: batch_size,
         };
+        let thread_num = num_cpus::get().max(1);
+        let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
+        let mut tasks = Vec::with_capacity(thread_num);
+        for tid in 0..thread_num {
+            let start = tid * tokens_per_thread;
+            let end = (start + tokens_per_thread).min(batch_size);
+            let mut slices = Vec::with_capacity(end.saturating_sub(start));
+            for batch_index in start..end {
+                let sequence_index = batch_list.records[batch_index].sequence_index;
+                slices.push(SequenceSlice {
+                    batch_index,
+                    sequence_index,
+                    token_start_index: batch_index,
+                    length: 1,
+                });
+            }
+            tasks.push(ThreadTask {
+                slices: slices.into_boxed_slice(),
+                current_size: end.saturating_sub(start),
+            });
+        }
+        let decode_list = TaskList {
+            tasks: tasks.into_boxed_slice(),
+            current_size: thread_num,
+            max_token_size: batch_size,
+        };
 
         let eos_id = 151643;
 
@@ -288,6 +317,7 @@ mod test {
                 sequences,
                 &token_list as *const TokenList,
                 &mut batch_list as *mut BatchList,
+                &decode_list as *const TaskList,
                 eos_id,
             )
         };
@@ -356,6 +386,34 @@ mod test {
             records: batch_records.into_boxed_slice(),
             current_size: batch_size,
         };
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
+        let mut tasks = Vec::with_capacity(thread_num);
+        for tid in 0..thread_num {
+            let start = tid * tokens_per_thread;
+            let end = (start + tokens_per_thread).min(batch_size);
+            let mut slices = Vec::with_capacity(end.saturating_sub(start));
+            for batch_index in start..end {
+                let sequence_index = batch_list.records[batch_index].sequence_index;
+                slices.push(SequenceSlice {
+                    batch_index,
+                    sequence_index,
+                    token_start_index: batch_index,
+                    length: 1,
+                });
+            }
+            tasks.push(ThreadTask {
+                slices: slices.into_boxed_slice(),
+                current_size: end.saturating_sub(start),
+            });
+        }
+        let decode_list = TaskList {
+            tasks: tasks.into_boxed_slice(),
+            current_size: thread_num,
+            max_token_size: batch_size,
+        };
 
         let eos_id = 151643;
 
@@ -364,6 +422,7 @@ mod test {
                 sequences,
                 &token_list as *const TokenList,
                 &mut batch_list as *mut BatchList,
+                &decode_list as *const TaskList,
                 eos_id,
             )
         };

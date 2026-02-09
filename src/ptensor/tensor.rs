@@ -12,7 +12,9 @@ use super::super::memory::cache::Cache;
 use crate::init::matmul_params::MatMulParams;
 
 use super::super::compiler::left_vector::LiftVector;
-use crate::init::record::{BatchList, BatchRecord, Phase, TokenList, TokenRecord};
+use crate::init::record::{
+    BatchList, BatchRecord, Phase, SequenceSlice, TaskList, ThreadTask, TokenList, TokenRecord,
+};
 use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
 use super::super::compiler::map::rms_map::RMSMap;
@@ -664,6 +666,8 @@ where
         indices_ptr: *const usize,
         // sums_tensor: &Tensor<T>,
         output_sequences: *mut usize,
+        batch_list_ptr: *mut BatchList,
+        decode_list_ptr: *const TaskList,
         num_topk: usize,
         eos_id: usize,
         scope_name: String,
@@ -684,6 +688,8 @@ where
             indice_ptr,
             value_tensor.data,
             output_sequences,
+            batch_list_ptr,
+            decode_list_ptr,
             self.shape[0],
             num_topk,
             eos_id,
@@ -733,7 +739,8 @@ where
 
     pub fn lookup_rms(
         sequences_ptr: *const usize,
-        token_list_ptr: *const TokenList,
+        prefill_list_ptr: *const TaskList,
+        decode_list_ptr: *const TaskList,
         word_embedding: &Tensor<T>,
         batch_size: usize,
         eps: T,
@@ -757,7 +764,8 @@ where
 
         let operator = Operator::LookupRMSMap(LookupRMSMap::new(
             sequences_ptr,
-            token_list_ptr,
+            prefill_list_ptr,
+            decode_list_ptr,
             word_embedding.data,
             output_hidden_tensor.data,
             output_normal_tensor.data,
@@ -902,7 +910,7 @@ mod test {
                 position_index: 0,
             });
             user_records.push(BatchRecord {
-                sequence_index: i,
+                sequence_index: 0,
                 snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
@@ -922,6 +930,30 @@ mod test {
             records: user_records.into_boxed_slice(),
             current_size: batch_size,
         };
+        let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
+        let mut tasks = Vec::with_capacity(thread_num);
+        for tid in 0..thread_num {
+            let start = tid * tokens_per_thread;
+            let end = (start + tokens_per_thread).min(batch_size);
+            let mut slices = Vec::with_capacity(end.saturating_sub(start));
+            for batch_index in start..end {
+                slices.push(SequenceSlice {
+                    batch_index,
+                    sequence_index: 0,
+                    token_start_index: batch_index,
+                    length: 1,
+                });
+            }
+            tasks.push(ThreadTask {
+                slices: slices.into_boxed_slice(),
+                current_size: end.saturating_sub(start),
+            });
+        }
+        let decode_list = TaskList {
+            tasks: tasks.into_boxed_slice(),
+            current_size: thread_num,
+            max_token_size: batch_size,
+        };
 
         unsafe {
             value_tensor
@@ -933,6 +965,8 @@ mod test {
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
             output_sequences.as_mut_ptr(),
+            &mut batch_list as *mut BatchList,
+            &decode_list as *const TaskList,
             num_topk,
             eos_id,
             "model.layers.0.topk_softmax".to_string(),
@@ -1047,7 +1081,7 @@ mod test {
                 position_index: 0,
             });
             user_records.push(BatchRecord {
-                sequence_index: i,
+                sequence_index: 0,
                 snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
@@ -1067,6 +1101,30 @@ mod test {
             records: user_records.into_boxed_slice(),
             current_size: batch_size,
         };
+        let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
+        let mut tasks = Vec::with_capacity(thread_num);
+        for tid in 0..thread_num {
+            let start = tid * tokens_per_thread;
+            let end = (start + tokens_per_thread).min(batch_size);
+            let mut slices = Vec::with_capacity(end.saturating_sub(start));
+            for batch_index in start..end {
+                slices.push(SequenceSlice {
+                    batch_index,
+                    sequence_index: 0,
+                    token_start_index: batch_index,
+                    length: 1,
+                });
+            }
+            tasks.push(ThreadTask {
+                slices: slices.into_boxed_slice(),
+                current_size: end.saturating_sub(start),
+            });
+        }
+        let decode_list = TaskList {
+            tasks: tasks.into_boxed_slice(),
+            current_size: thread_num,
+            max_token_size: batch_size,
+        };
 
         unsafe {
             value_tensor
@@ -1078,6 +1136,8 @@ mod test {
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
             output_sequences.as_mut_ptr(),
+            &mut batch_list as *mut BatchList,
+            &decode_list as *const TaskList,
             num_topk,
             eos_id,
             "model.layers.0.topk_softmax".to_string(),

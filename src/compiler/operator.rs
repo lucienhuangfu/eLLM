@@ -154,6 +154,7 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 mod test {
     use super::*;
     use approx::assert_ulps_eq;
+    use crate::init::record::{BatchList, BatchRecord, Phase, SequenceSlice, TaskList, ThreadTask};
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use std::sync::{Arc, Barrier};
     // use std::thread;
@@ -327,6 +328,46 @@ mod test {
         let mut output_sequences = vec![0usize; batch_size];
         let eos_id = 0usize;
 
+        let batch_records: Vec<BatchRecord> = (0..batch_size)
+            .map(|_| BatchRecord {
+                sequence_index: 0,
+                snapshot_sequence_index: 0,
+                kv_index: 0,
+                phase: Phase::Decode,
+                prompt_length: 0,
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            })
+            .collect();
+        let mut batch_list = BatchList {
+            records: batch_records.into_boxed_slice(),
+            current_size: batch_size,
+        };
+
+        let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
+        let mut tasks = Vec::with_capacity(thread_num);
+        for tid in 0..thread_num {
+            let start = tid * tokens_per_thread;
+            let end = (start + tokens_per_thread).min(batch_size);
+            let mut slices = Vec::with_capacity(end.saturating_sub(start));
+            for batch_index in start..end {
+                slices.push(SequenceSlice {
+                    batch_index,
+                    sequence_index: 0,
+                    token_start_index: batch_index,
+                    length: 1,
+                });
+            }
+            tasks.push(ThreadTask {
+                slices: slices.into_boxed_slice(),
+                current_size: end.saturating_sub(start),
+            });
+        }
+        let decode_list = TaskList {
+            tasks: tasks.into_boxed_slice(),
+            current_size: thread_num,
+            max_token_size: batch_size,
+        };
+
         let operator = Operator::TopKSoftmax(TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
             input_values.as_ptr(),
@@ -334,6 +375,8 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
+            &mut batch_list as *mut BatchList,
+            &decode_list as *const TaskList,
             batch_size,
             topk_size,
             eos_id,
