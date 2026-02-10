@@ -10,7 +10,6 @@ use super::super::compiler::operator::Operator;
 
 use super::super::kernel::generic::{exp::Exp, neg_infinity::NegInfinity, sqrt::Sqrt};
 use crate::init::record::{BatchRecord, Phase};
-use crate::init::send_sync_ptr::MutPtr;
 use crate::serving::schedule::BatchScheduler;
 
 /// Runs the inference serving loop.
@@ -19,8 +18,8 @@ use crate::serving::schedule::BatchScheduler;
 /// user request phases (Prefill/Decode) and populating the token list. All threads
 /// then synchronize to execute the operators in the queue for the current batch.
 pub struct ServingRunner<T> {
-    batch_list_ptr: MutPtr<Vec<BatchRecord>>,
     operator_queue: Vec<Operator<T>>,
+    batch_scheduler: BatchScheduler,
 }
 
 impl<T> ServingRunner<T>
@@ -40,10 +39,10 @@ where
         + Sqrt
         + NegInfinity,
 {
-    pub fn new(batch_list_ptr: MutPtr<Vec<BatchRecord>>, operator_queue: Vec<Operator<T>>) -> Self {
+    pub fn new(operator_queue: Vec<Operator<T>>, batch_scheduler: BatchScheduler) -> Self {
         Self {
-            batch_list_ptr,
             operator_queue,
+            batch_scheduler,
         }
     }
 
@@ -58,6 +57,7 @@ where
 
         let barrier = Arc::new(Barrier::new(thread_num));
         let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
+        let shared_scheduler = Arc::new(SyncUnsafeCell::new(self.batch_scheduler));
         let mut handles = Vec::with_capacity(thread_num);
         // let core_ids = core_affinity::get_core_ids().unwrap();
 
@@ -66,11 +66,8 @@ where
             let b = Arc::clone(&barrier);
             let queue = Arc::clone(&sync_operator_queue);
             let shared_sizes: Arc<SyncUnsafeCell<(usize, usize)>> = Arc::clone(&shared_sizes);
-
-            // Wrap pointers in SyncUnsafeCell to ensure safe transport across threads.
-            // This creates a new cell for each thread containing a copy of the pointer.
-            let batch_list_ptr_addr = SyncUnsafeCell::new(self.batch_list_ptr);
-            // let last_prefill_list_ptr_addr = SyncUnsafeCell::new(last_prefill_list_ptr);
+            let shared_scheduler: Arc<SyncUnsafeCell<BatchScheduler>> =
+                Arc::clone(&shared_scheduler);
 
             let handle = thread::spawn(move || {
                 let thread_id = i;
@@ -78,20 +75,15 @@ where
                 println!("{} start", thread_id);
                 let s = Instant::now();
                 let sizes_ptr = shared_sizes.get();
-                let mut scheduler = if thread_id == 0 {
-                    let batch_size = unsafe { (&*(*batch_list_ptr_addr.get()).ptr).len() };
-                    Some(BatchScheduler::new(thread_num, batch_size))
-                } else {
-                    None
-                };
+                let scheduler_ptr = shared_scheduler.get();
 
                 // Main inference loop: continuously processes batches of tokens
                 loop {
                     // Thread 0 acts as the scheduler: monitors user states and prepares the token batch
                     if thread_id == 0 {
                         unsafe {
-                            let batch_list = &mut *(*batch_list_ptr_addr.get()).ptr;
-                            *sizes_ptr = scheduler.as_mut().unwrap().schedule_batch(batch_list);
+                            let scheduler = &mut *scheduler_ptr;
+                            *sizes_ptr = scheduler.schedule_batch();
                         }
                     }
 
@@ -100,9 +92,26 @@ where
 
                     let (prefill_size, decode_size) = unsafe { *sizes_ptr };
 
+                    let (prefill_list, decode_list, batch_list) = unsafe {
+                        let scheduler = &mut *scheduler_ptr;
+                        (
+                            &scheduler.prefill_list,
+                            &scheduler.decode_list,
+                            &mut scheduler.batch_list,
+                        )
+                    };
+
                     // Execute the operator queue in parallel
                     for operator in queue.iter() {
-                        operator.run(prefill_size, decode_size, thread_num, thread_id);
+                        operator.run(
+                            prefill_size,
+                            decode_size,
+                            thread_num,
+                            thread_id,
+                            prefill_list,
+                            decode_list,
+                            batch_list,
+                        );
                         b.wait();
                     }
                 }
@@ -207,24 +216,19 @@ mod test {
             }
         }*/
 
-        let batch_records = (0..batch_size)
+        let thread_num = core_affinity::get_core_ids().unwrap().len();
+        let mut batch_scheduler = BatchScheduler::new(position_window_size, batch_size, thread_num);
+        batch_scheduler.batch_list = (0..batch_size)
             .map(|_| BatchRecord {
                 sequence_index: 50,
                 snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::PrefillBegin,
                 prompt_length: 50,
-                notify: Arc::new(tokio::sync::Notify::new()),
+                notify: tokio::sync::Notify::new(),
             })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+            .collect();
 
-        let mut batch_list = batch_records.into_vec();
-
-        let batch_ptr = MutPtr {
-            ptr: &mut batch_list as *mut Vec<BatchRecord>,
-        };
-
-        ServingRunner::new(batch_ptr, output_tensor.operator_queue.take()).start();
+        ServingRunner::new(output_tensor.operator_queue.take(), batch_scheduler).start();
     }
 }

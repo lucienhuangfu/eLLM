@@ -29,7 +29,7 @@ use super::super::memory::cache::Cache;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
-use crate::init::record::{TokenList, TokenRecord};
+use crate::init::record::TokenRecord;
 
 // use super::rope::precompute_freqs_cis;
 
@@ -141,7 +141,6 @@ where
     pub fn forward(
         &mut self,
         input_sequences: *mut usize,
-        token_list_ptr: *const TokenList,
         eos_id: usize,
     ) -> (*const usize, Tensor<T>) {
         // -> Tensor<T> {
@@ -164,7 +163,6 @@ where
             hidden_state = layer_module.forward(
                 &hidden_state,
                 input_sequences,
-                token_list_ptr,
                 decode_only_flag,
                 format!("{}.hidden_states.{}.output", self.scope_name, i),
             );
@@ -244,23 +242,6 @@ mod test {
         let mut sequences =
             allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
 
-        let token_records: Vec<TokenRecord> = (0..batch_size)
-            .map(|i| TokenRecord {
-                // token_id: 0,
-                batch_index: i,
-                position_index: 0,
-            })
-            .collect();
-
-        let lift_records: Vec<PrefillEndRecord> = Vec::new();
-
-        let token_list = TokenList {
-            token_records: token_records.into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: lift_records.into_boxed_slice(),
-            current_lift_size: 0,
-        };
-
         let batch_records: Vec<BatchRecord> = (0..batch_size)
             .map(|i| BatchRecord {
                 sequence_index: i,
@@ -268,20 +249,19 @@ mod test {
                 kv_index: i,
                 phase: Phase::Decode,
                 prompt_length: i,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+                notify: tokio::sync::Notify::new(),
             })
             .collect();
 
         let mut batch_list = batch_records;
         let eos_id = 151643;
 
-        let (output_indices, output_tensor) =
-            unsafe { model.forward(sequences, &token_list as *const TokenList, eos_id) };
+        let (output_indices, output_tensor) = unsafe { model.forward(sequences, eos_id) };
 
         let thread_num: usize = num_cpus::get();
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i);
+                operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
             }
         }
 
@@ -310,23 +290,6 @@ mod test {
 
         let mut sequences =
             allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
-        let token_records: Vec<TokenRecord> = (0..batch_size)
-            .map(|i| TokenRecord {
-                // token_id: 0,
-                batch_index: i,
-                position_index: 0,
-            })
-            .collect();
-
-        let lift_records: Vec<PrefillEndRecord> = Vec::new();
-
-        let token_list = TokenList {
-            token_records: token_records.into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: lift_records.into_boxed_slice(),
-            current_lift_size: 0,
-        };
-
         let batch_records: Vec<BatchRecord> = (0..batch_size)
             .map(|i| BatchRecord {
                 sequence_index: i,
@@ -334,22 +297,21 @@ mod test {
                 kv_index: i,
                 phase: Phase::Decode,
                 prompt_length: i,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+                notify: tokio::sync::Notify::new(),
             })
             .collect();
 
         let mut batch_list = batch_records;
         let eos_id = 151643;
 
-        let (output_indices, output_tensor) =
-            unsafe { model.forward(sequences, &token_list as *const TokenList, eos_id) };
+        let (output_indices, output_tensor) = unsafe { model.forward(sequences, eos_id) };
 
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
         for operator in model.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i);
+                operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
             }
         }
     }

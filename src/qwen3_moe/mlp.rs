@@ -172,7 +172,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in output_tensor.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, 0, i);
+                operator.run(1, 0, thread_num, i, &[], &[], &mut Vec::new());
             }
         }
 
@@ -235,7 +235,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in output_tensor.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, 0, i);
+                operator.run(1, 0, thread_num, i, &[], &[], &mut Vec::new());
             }
         }
 

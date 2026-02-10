@@ -86,19 +86,43 @@ pub fn start(&mut self) {
                 for position_index in (prompt_begin..prompt_end).step_by(sequence_chunk_size) {
                     for operator in prompt_queue_slice {
                         // println!("o index {}", o_index);
-                        operator.run(position_index, sequence_chunk_size, batch_size, thread_id);
+                        operator.run(
+                            position_index,
+                            sequence_chunk_size,
+                            batch_size,
+                            thread_id,
+                            &[],
+                            &[],
+                            &mut Vec::new(),
+                        );
                         b.wait();
                     }
                 }
          
                 // last chunk prompt
                 for operator in prompt_queue_slice {
-                    operator.run(last_position, last_interval, batch_size, thread_id);
+                    operator.run(
+                        last_position,
+                        last_interval,
+                        batch_size,
+                        thread_id,
+                        &[],
+                        &[],
+                        &mut Vec::new(),
+                    );
                     b.wait();
                 }
                 // only decode part
                 for operator in decode_queue_slice {
-                    operator.run(last_position, 1, batch_size, thread_id);
+                    operator.run(
+                        last_position,
+                        1,
+                        batch_size,
+                        thread_id,
+                        &[],
+                        &[],
+                        &mut Vec::new(),
+                    );
                     b.wait();
                 }
 
@@ -106,7 +130,15 @@ pub fn start(&mut self) {
                 // decode only 
                 
                 for operator in queue.iter() {
-                    operator.run(last_position, 1, batch_size, thread_id);
+                    operator.run(
+                        last_position,
+                        1,
+                        batch_size,
+                        thread_id,
+                        &[],
+                        &[],
+                        &mut Vec::new(),
+                    );
                     b.wait();
                 }
                 

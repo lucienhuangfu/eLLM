@@ -13,7 +13,6 @@ use super::super::memory::cache::Cache;
 // use crate::compiler::mul::attention_add::AttentionAdd;
 use super::super::init::matmul_params::MatMulParams;
 use crate::compiler::operator::Operator;
-use crate::init::record::TokenList;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 
@@ -80,7 +79,7 @@ where
             is_causal: false,
             layer_idx: layer_idx,
             q_weight: Tensor::zeros(
-                vec![ config.num_attention_heads * head_dim, config.hidden_size],
+                vec![config.num_attention_heads * head_dim, config.hidden_size],
                 format!("{}.q_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
@@ -92,7 +91,7 @@ where
                 operator_queue.clone(),
             ),
             v_weight: Tensor::zeros(
-                vec![config.num_key_value_heads * head_dim, config.hidden_size ],
+                vec![config.num_key_value_heads * head_dim, config.hidden_size],
                 format!("{}.v_proj.weight", scope_name),
                 cache.clone(),
                 operator_queue.clone(),
@@ -115,13 +114,11 @@ where
         hidden_states: &Tensor<T>,
         residual: &Tensor<T>,
         position_embedding: &Tensor<T>,
-        token_list_ptr: *const TokenList,
         decode_only_flag: bool,
         // tensor_name: String,
     ) -> Tensor<T> {
         unsafe {
             //println!("hidden_states shape: {:?}", hidden_states.shape);
-
 
             // mul_rms_complex 合并operators
             // [sequence_chunk_size, batch_size, hidden_size]
@@ -141,7 +138,7 @@ where
                 },
                 self.scope_name.clone(),
             );
-            
+
             let view_query_states = query_states.view(vec![
                 query_states.shape[0],
                 query_states.shape[1],
@@ -172,7 +169,6 @@ where
             let attn_output = view_query_states.attention(
                 &view_key_position_tensor,
                 &view_value_states2,
-                token_list_ptr,
                 self.scaling,
                 decode_only_flag,
                 format!("{}.attn_output", self.scope_name),
@@ -182,7 +178,7 @@ where
             let mut view_context_tensor = attn_output.view(vec![
                 attn_output.shape[0],
                 attn_output.shape[1],
-                attn_output.shape[2] * attn_output.shape[3]
+                attn_output.shape[2] * attn_output.shape[3],
             ]);
 
             // [sequence_chunk_size, batch_size, hidden_size]
@@ -207,7 +203,6 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::init::record::{TokenList, TokenRecord};
 
     #[test]
     fn test_self_attention() {
@@ -267,43 +262,20 @@ mod test {
             operator_queue.clone(),
         );
 
-        let token_list = TokenList {
-            token_records: vec![
-                TokenRecord {
-                    batch_index: 0,
-                    position_index: 0,
-                };
-                batch_size
-            ]
-            .into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: vec![].into_boxed_slice(),
-            current_lift_size: 0,
-        };
-
-        let output = self_attention.forward(
-            &hidden_states,
-            &residual_tensor,
-            &position_embedding,
-            &token_list as *const TokenList,
-            false,
-        );
+        let output =
+            self_attention.forward(&hidden_states, &residual_tensor, &position_embedding, false);
 
         // Add assertions to validate the output
         debug_assert_eq!(
             output.shape,
-            vec![
-                sequence_chunk_size,
-                batch_size,
-                config.hidden_size
-            ]
+            vec![sequence_chunk_size, batch_size, config.hidden_size]
         );
 
         // Execute the operator queue
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i);
+                operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
             }
         }
 
@@ -319,7 +291,6 @@ mod test {
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let attention_head_size: usize = config.head_dim;
-
 
         let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::<
             String,
@@ -343,11 +314,7 @@ mod test {
         );
 
         let residual_tensor = Tensor::zeros(
-            vec![
-                sequence_chunk_size,
-                batch_size,
-                config.hidden_size,
-            ],
+            vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
             cache.clone(),
             operator_queue.clone(),
@@ -360,45 +327,20 @@ mod test {
             operator_queue.clone(),
         );
 
-        let token_list = TokenList {
-            token_records: vec![
-                TokenRecord {
-                    batch_index: 0,
-                    position_index: 0,
-                };
-                batch_size
-            ]
-            .into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: vec![].into_boxed_slice(),
-            current_lift_size: 0,
-        };
+        let output =
+            self_attention.forward(&hidden_states, &residual_tensor, &position_embedding, false);
 
-        let output = self_attention.forward(
-            &hidden_states,
-            &residual_tensor,
-            &position_embedding,
-            &token_list as *const TokenList,
-            false,
-        );
-
-        
         // Add assertions to validate the output
         debug_assert_eq!(
             output.shape,
-            vec![
-                sequence_chunk_size,
-                batch_size,
-                config.hidden_size
-            ]
+            vec![sequence_chunk_size, batch_size, config.hidden_size]
         );
-         
 
         // Execute the operator queue
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i);
+                operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
             }
         }
     }

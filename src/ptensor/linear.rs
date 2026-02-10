@@ -2,16 +2,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 // use std::sync::{Arc, Barrier};
 
-use std::ops::{Add, Sub, Div, Mul, AddAssign, Neg};
-use crate::kernel::generic::sqrt::Sqrt;
-use crate::kernel::generic::{neg_infinity::NegInfinity, exp::Exp};
 use crate::kernel::generic::sigmoid::Sigmoid;
+use crate::kernel::generic::sqrt::Sqrt;
+use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use super::super::memory::cache::Cache;
 use super::super::ptensor::tensor::Tensor;
 // use crate::compiler::mul::mat_mul::matmul;
-use crate::init::matmul_params::MatMulParams;
 use crate::compiler::operator::Operator;
+use crate::init::matmul_params::MatMulParams;
 
 #[derive(Clone)]
 pub struct Linear<T> {
@@ -23,15 +23,9 @@ pub struct Linear<T> {
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
 }
 
-impl<T> Linear<T> 
-where T: Copy 
-    + Default 
-    + Sub<Output = T>
-    + Neg<Output = T>
-    + Exp
-    + NegInfinity
-    + Sigmoid<T>
-    + Sqrt
+impl<T> Linear<T>
+where
+    T: Copy + Default + Sub<Output = T> + Neg<Output = T> + Exp + NegInfinity + Sigmoid<T> + Sqrt,
 {
     pub fn new(
         in_features: usize,
@@ -61,7 +55,7 @@ where T: Copy
     pub fn forward(&self, input: &Tensor<T>, tensor_name: String) -> Tensor<T> {
         // [position_window_size, batch_size , hidden_size]   <- [position_window_size, batch_size, hidden_size]   [ hidden_size, hidden_size]
         let a_row = input.shape[1];
-        let b_row =  self.weight.shape[0];
+        let b_row = self.weight.shape[0];
         let column = self.weight.shape[1];
         let a_row_step_macro = 16;
         let b_row_step_macro = 16;
@@ -70,7 +64,6 @@ where T: Copy
         let b_row_step_micro = 8;
 
         let params: MatMulParams = MatMulParams {
-
             a_row_step_macro,
             b_row_step_macro,
             column_step_macro,
@@ -98,23 +91,33 @@ mod test {
         let batch_size = 32;
         let head_num = 64;
         let head_size = 128;
-        
-        let hidden_size = head_num * head_size;
-        
 
+        let hidden_size = head_num * head_size;
 
         let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
-        let linear = Linear::<f32>::new(hidden_size, hidden_size, sequence_length, String::from("model.layers.0"), cache.clone(), operator_queue.clone());
-        
+        let linear = Linear::<f32>::new(
+            hidden_size,
+            hidden_size,
+            sequence_length,
+            String::from("model.layers.0"),
+            cache.clone(),
+            operator_queue.clone(),
+        );
+
         for i in 0..linear.weight.shape.iter().product() {
             unsafe { linear.weight.data.add(i).write(1.0f32) };
         }
 
         let shape1 = vec![sequence_chunk_size, batch_size, hidden_size];
 
-        let input = Tensor::from_cache(shape1, String::from("model.layer.0.input_tensor"), cache.clone(), operator_queue.clone());
+        let input = Tensor::from_cache(
+            shape1,
+            String::from("model.layer.0.input_tensor"),
+            cache.clone(),
+            operator_queue.clone(),
+        );
         for i in 0..input.shape.iter().product() {
             unsafe {
                 input.data.add(i).write(1.0);
@@ -128,15 +131,23 @@ mod test {
             result[i] = hidden_size as f32;
         }
 
-        let output_tensor = linear.forward(&input, String::from("model.layer.0.self_attn.value_tensor"));
-        
+        let output_tensor =
+            linear.forward(&input, String::from("model.layer.0.self_attn.value_tensor"));
+
         let thread_num: usize = num_cpus::get();
         for i in 0..thread_num {
-            output_tensor.operator_queue.borrow()[0].run(0, sequence_chunk_size, batch_size, thread_num, i);
+            output_tensor.operator_queue.borrow()[0].run(
+                0,
+                sequence_chunk_size,
+                thread_num,
+                i,
+                &[],
+                &[],
+                &mut Vec::new(),
+            );
         }
 
         let output_slice = unsafe { std::slice::from_raw_parts(output_tensor.data, size3) };
         assert_relative_eq!(output_slice, &result[..], max_relative = 1e-6);
     }
-    
 }

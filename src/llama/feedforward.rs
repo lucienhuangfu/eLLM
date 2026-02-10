@@ -10,7 +10,6 @@ use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use crate::compiler::operator::Operator;
 
-
 #[derive(Clone)]
 pub struct FeedForward<T> {
     head_size: usize,
@@ -99,10 +98,8 @@ where
             self.head_size * 2,
         ]);
 
-        let nonlinear = view_linear1.silu_mul(
-            &view_linear3,
-            format!("{}.nonlinear", self.scope_name),
-        );
+        let nonlinear =
+            view_linear1.silu_mul(&view_linear3, format!("{}.nonlinear", self.scope_name));
 
         let view_nonlinear = nonlinear.view(linear1.shape.clone());
         let linear2 = self.w2.forward(&view_nonlinear, tensor_name);
@@ -120,15 +117,13 @@ mod test {
 
     #[test]
     fn test_feedforward() {
-        
         let position_window_size = 4;
         let batch_size = 32;
         let head_size = 128;
 
-
         let hidden_size = 8192;
         let hidden_dim = 4 * hidden_size;
-        
+
         let position_index = 1;
 
         let multiple_of = 256;
@@ -168,7 +163,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in output_tensor.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, 0, i);
+                operator.run(1, 0, thread_num, i, &[], &[], &mut Vec::new());
             }
         }
 
@@ -185,7 +180,7 @@ mod test {
          */
     }
 
-    /* 
+    /*
     #[test]
     fn test_feedforward_f16() {
         let batch_size = 32;
@@ -231,7 +226,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in output_tensor.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, 0, i);
+                operator.run(1, 0, thread_num, i, &[], &[], &mut Vec::new());
             }
         }
 

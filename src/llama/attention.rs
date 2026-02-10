@@ -168,6 +168,8 @@ where
             let context_tensor = query_position_tensor.attention(
                 &view_key_position_tensor,
                 &view_value_tensor2,
+                self.inverse_sqrt_head,
+                false,
                 format!("{}.context_tensor", self.scope_name),
             );
 
@@ -247,7 +249,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(1, 1, i);
+                operator.run(1, 1, thread_num, i, &[], &[], &mut Vec::new());
             }
         }
 
@@ -308,7 +310,15 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(current_batch_size, position_index, i);
+                operator.run(
+                    current_batch_size,
+                    position_index,
+                    thread_num,
+                    i,
+                    &[],
+                    &[],
+                    &mut Vec::new(),
+                );
             }
         }
         // Add more assertions as needed

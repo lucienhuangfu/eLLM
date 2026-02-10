@@ -13,7 +13,6 @@ use super::super::ptensor::tensor::Tensor;
 use super::attention::Attention;
 use super::config::Config;
 use super::sparse_moe_block::SparseMoeBlock;
-use crate::init::record::{TokenList, TokenRecord};
 // use super::moe_layer::MoeLayer;
 // use crate::qwen3_moe::mlp;
 // use super::feedforward::FeedForward;
@@ -132,7 +131,6 @@ where
         &self,
         hidden_states: &Tensor<T>,
         input_sequences: *mut usize,
-        token_list_ptr: *const TokenList,
         decode_only_flag: bool,
         tensor_name: String,
     ) -> Tensor<T> {
@@ -146,7 +144,6 @@ where
             (hidden_states.clone(), norm_hidden)
         } else {
             unsafe {
-                // let token_ptr = (*token_list_ptr).token_records.as_ptr();
                 Tensor::lookup_rms(
                     input_sequences,
                     &*self.word_embedding,
@@ -165,7 +162,6 @@ where
             &norm_hidden,
             hidden_states,
             &*self.position_embedding,
-            token_list_ptr,
             decode_only_flag,
             // format!("{}.attention_hidden1", self.scope_name),
         );
@@ -206,7 +202,6 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::init::record::TokenRecord;
     // use std::slice;
 
     #[test]
@@ -267,23 +262,9 @@ mod test {
         }
 
         let mut sequences = vec![0; sequence_chunk_size * batch_size];
-        let token_records: Vec<TokenRecord> = (0..batch_size)
-            .map(|i| TokenRecord {
-                batch_index: i,
-                position_index: 0,
-            })
-            .collect();
-        let token_list = TokenList {
-            token_records: token_records.into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: Box::new([]),
-            current_lift_size: 0,
-        };
-
         let output_tensor = layer.forward(
             &input,
             sequences.as_mut_ptr(),
-            &token_list,
             false,
             String::from("model.layers.1.output_tensor"),
         );
@@ -298,7 +279,7 @@ mod test {
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i);
+                operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
             }
         }
 
@@ -363,22 +344,9 @@ mod test {
         }
 
         let mut sequences = vec![0; sequence_chunk_size * batch_size];
-        let token_records: Vec<TokenRecord> = (0..batch_size)
-            .map(|i| TokenRecord {
-                batch_index: i,
-                position_index: 0,
-            })
-            .collect();
-        let token_list = TokenList {
-            token_records: token_records.into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: Box::new([]),
-            current_lift_size: 0,
-        };
         let output_tensor = layer.forward(
             &input,
             sequences.as_mut_ptr(),
-            &token_list,
             false,
             String::from("model.layers.0.output_tensor"),
         );

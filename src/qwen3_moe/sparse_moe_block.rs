@@ -245,7 +245,7 @@ mod test {
         for op in output.operator_queue.borrow().iter() {
             for tid in 0..thread_num {
                 // 本次不考虑 position，按你现有约定固定 (0,1)
-                op.run(batch_size,0, thread_num, tid);
+                op.run(batch_size, 0, thread_num, tid, &[], &[], &mut Vec::new());
             }
         }
     }
@@ -258,7 +258,9 @@ mod test {
         num_experts: usize,
         top_k: usize,
     ) -> (SparseMoeBlock<f16>, Tensor<f16>, Tensor<f16>) {
-        let cache = Rc::new(RefCell::new(Cache::<f16>::new(std::collections::HashMap::new())));
+        let cache = Rc::new(RefCell::new(Cache::<f16>::new(
+            std::collections::HashMap::new(),
+        )));
         let operator_queue = Rc::new(RefCell::new(Vec::<Operator<f16>>::new()));
 
         let moe = SparseMoeBlock::<f16>::new(
@@ -297,17 +299,37 @@ mod test {
     fn test_sparse_moe_queue_structure() {
         let (moe, input, residual) = build_case(1, 24, 256, 1024, 128, 8);
 
-        let out = moe.forward(&input, &residual, false,"model.layers.0.output".to_string());
+        let out = moe.forward(
+            &input,
+            &residual,
+            false,
+            "model.layers.0.output".to_string(),
+        );
         let q = out.operator_queue.borrow();
 
         assert!(q.len() >= 5, "Expected >=5 operators, got {}", q.len());
 
         // 如果你的 Operator enum 名字不同，只需要改下面 match 的分支名
-        match &q[0] { Operator::MatMul(_) => {} _ => panic!("op[0] should be MatMul") }
-        match &q[1] { Operator::ExpertsSoftmaxNorm(_) => {} _ => panic!("op[1] should be ExpertsSoftmaxNorm") }
-        match &q[2] { Operator::ExpertsMatMulSilu(_) => {} _ => panic!("op[2] should be ExpertsMatMulSilu") }
-        match &q[3] { Operator::ExpertsMatMulDown(_) => {} _ => panic!("op[3] should be ExpertsMatMulDown") }
-        match &q[4] { Operator::ExpertsMergeAdd(_) => {} _ => panic!("op[4] should be ExpertsMergeAdd") }
+        match &q[0] {
+            Operator::MatMul(_) => {}
+            _ => panic!("op[0] should be MatMul"),
+        }
+        match &q[1] {
+            Operator::ExpertsSoftmaxNorm(_) => {}
+            _ => panic!("op[1] should be ExpertsSoftmaxNorm"),
+        }
+        match &q[2] {
+            Operator::ExpertsMatMulSilu(_) => {}
+            _ => panic!("op[2] should be ExpertsMatMulSilu"),
+        }
+        match &q[3] {
+            Operator::ExpertsMatMulDown(_) => {}
+            _ => panic!("op[3] should be ExpertsMatMulDown"),
+        }
+        match &q[4] {
+            Operator::ExpertsMergeAdd(_) => {}
+            _ => panic!("op[4] should be ExpertsMergeAdd"),
+        }
     }
 
     #[test]
@@ -318,7 +340,12 @@ mod test {
         fill_tensor_f16(&input, f16_one());
         fill_tensor_f16(&residual, f16_one());
 
-        let out = moe.forward(&input, &residual, false, "model.layers.0.output".to_string());
+        let out = moe.forward(
+            &input,
+            &residual,
+            false,
+            "model.layers.0.output".to_string(),
+        );
 
         run_queue(&out, 24, num_cpus::get());
 
@@ -334,7 +361,12 @@ mod test {
         fill_tensor_f16(&input, f16_one());
         fill_tensor_f16(&residual, f16_one());
 
-        let out = moe.forward(&input, &residual, false, "model.layers.0.output".to_string());
+        let out = moe.forward(
+            &input,
+            &residual,
+            false,
+            "model.layers.0.output".to_string(),
+        );
 
         // 单线程
         run_queue(&out, 24, 1);
@@ -347,6 +379,9 @@ mod test {
         run_queue(&out, 24, num_cpus::get());
         let outn_bits = tensor_to_bits_vec(&out);
 
-        assert_eq!(out1_bits, outn_bits, "single-thread != multi-thread (bit-level)");
+        assert_eq!(
+            out1_bits, outn_bits,
+            "single-thread != multi-thread (bit-level)"
+        );
     }
 }
