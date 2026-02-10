@@ -48,6 +48,95 @@ where
     // pub is_contiguous: bool,
 }
 
+#[derive(Clone)]
+pub struct TensorCtx<T>
+where
+    T: Copy + PartialOrd,
+{
+    pub cache: Rc<RefCell<Cache<T>>>,
+    pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+}
+
+impl<T> TensorCtx<T>
+where
+    T: Copy + PartialOrd,
+{
+    pub fn new(
+        cache: Rc<RefCell<Cache<T>>>,
+        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+    ) -> Self {
+        Self {
+            cache,
+            operator_queue,
+        }
+    }
+
+    pub fn take_operator_queue(&self) -> Vec<Operator<T>> {
+        std::mem::take(&mut *self.operator_queue.borrow_mut())
+    }
+}
+
+impl<T> TensorCtx<T>
+where
+    T: Copy
+        + PartialOrd
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid
+        + Sqrt
+        + AddAssign,
+{
+    pub fn tensor(&self, shape: Vec<usize>, tensor_name: String) -> Tensor<T> {
+        Tensor::from_cache(
+            shape,
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        )
+    }
+
+    pub fn tensor_from_vec(&self, shape: Vec<usize>, data: Vec<T>, tensor_name: String) -> Tensor<T> {
+        Tensor::from_vec(
+            shape,
+            data,
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        )
+    }
+
+    pub fn zeros(&self, shape: Vec<usize>, tensor_name: String) -> Tensor<T> {
+        Tensor::zeros(
+            shape,
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        )
+    }
+
+    pub fn lookup_rms(
+        &self,
+        sequences_ptr: *const usize,
+        word_embedding: &Tensor<T>,
+        batch_size: usize,
+        eps: T,
+        scope_name: String,
+    ) -> (Tensor<T>, Tensor<T>) {
+        Tensor::lookup_rms(
+            sequences_ptr,
+            word_embedding,
+            batch_size,
+            eps,
+            scope_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        )
+    }
+}
+
 impl<T> Tensor<T>
 where
     T: Copy

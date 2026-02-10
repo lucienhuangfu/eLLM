@@ -141,7 +141,7 @@ mod test {
     use super::*;
     use crate::common::record::BatchRecord;
     use crate::mem_mgr::cache::Cache;
-    use crate::runtime::tensor::Tensor;
+    use crate::runtime::tensor::{Tensor, TensorCtx};
     use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
 
     // use crate::mem_mgr::allocator::allocate_init;
@@ -162,6 +162,7 @@ mod test {
             std::collections::HashMap::new(),
         )));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
+        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
 
         let sparse_moe = SparseMoeBlock::<f32>::new(
             // position_window_size,
@@ -171,23 +172,18 @@ mod test {
             top_k,
             norm_topk_prob,
             "model.layers.0",
-            cache.clone(),
-            operator_queue.clone(),
+            ctx.clone(),
         );
 
         let shape = vec![position_window_size, batch_size, hidden_size];
-        let input = Tensor::from_cache(
+        let input = ctx.tensor(
             shape.clone(),
             String::from("model.layers.0.input_tensor"),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
-        let residual = Tensor::from_cache(
+        let residual = ctx.tensor(
             shape.clone(),
             String::from("model.layers.0.residual_tensor"),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
         for i in 0..input.shape.iter().product() {

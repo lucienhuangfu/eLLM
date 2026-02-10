@@ -41,6 +41,6 @@ fn main() {
             notify: tokio::sync::Notify::new(),
         }));
 
-    ServingRunner::new(model.operator_queue.take(), batch_scheduler).start();
+    ServingRunner::new(model.ctx.take_operator_queue(), batch_scheduler).start();
 }
 

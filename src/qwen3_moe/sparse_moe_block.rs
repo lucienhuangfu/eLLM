@@ -10,7 +10,7 @@ use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::common::matmul_params::MatMulParams;
 use super::super::mem_mgr::cache::Cache;
-use super::super::runtime::tensor::Tensor;
+use super::super::runtime::tensor::{Tensor, TensorCtx};
 use crate::runtime::operator::Operator;
 
 // use super::mlp::MLP;
@@ -30,8 +30,7 @@ where
     experts_up_weight: Tensor<T>,
     experts_down_weight: Tensor<T>,
     scope_name: String,
-    cache: Rc<RefCell<Cache<T>>>,
-    operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+    ctx: Rc<TensorCtx<T>>,
 }
 
 impl<T> SparseMoeBlock<T>
@@ -54,8 +53,7 @@ where
         num_topk: usize,
         norm_topk_prob: bool,
         parent_scope_name: &str,
-        cache: Rc<RefCell<Cache<T>>>,
-        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+        ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         let scope_name = format!("{}.mlp", parent_scope_name);
         Self {
@@ -64,34 +62,25 @@ where
             num_experts,
             num_topk,
             norm_topk_prob,
-            gate_weight: Tensor::zeros(
+            gate_weight: ctx.zeros(
                 vec![num_experts, hidden_size],
                 format!("{}.gate.weight", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
             ),
-            experts_gate_weight: Tensor::zeros(
+            experts_gate_weight: ctx.zeros(
                 vec![num_experts, moe_intermediate_size, hidden_size],
                 format!("{}.experts.gate_proj.weight", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
             ),
-            experts_up_weight: Tensor::zeros(
+            experts_up_weight: ctx.zeros(
                 vec![num_experts, moe_intermediate_size, hidden_size],
                 format!("{}.experts.up_proj.weight", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
             ),
 
-            experts_down_weight: Tensor::zeros(
+            experts_down_weight: ctx.zeros(
                 vec![num_experts, hidden_size, moe_intermediate_size],
                 format!("{}.experts.down_proj.weight", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
             ),
             scope_name: scope_name,
-            cache: cache,
-            operator_queue: operator_queue,
+            ctx: ctx,
         }
     }
 
@@ -262,6 +251,7 @@ mod test {
             std::collections::HashMap::new(),
         )));
         let operator_queue = Rc::new(RefCell::new(Vec::<Operator<f16>>::new()));
+        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
 
         let moe = SparseMoeBlock::<f16>::new(
             hidden_size,
@@ -270,24 +260,19 @@ mod test {
             top_k,
             true,
             "model.layers.0",
-            cache.clone(),
-            operator_queue.clone(),
+            ctx.clone(),
         );
 
         let shape = vec![sequence_chunk_size, batch_size, hidden_size];
 
-        let input = Tensor::from_cache(
+        let input = ctx.tensor(
             shape.clone(),
             "model.layers.0.input_tensor".to_string(),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
-        let residual = Tensor::from_cache(
+        let residual = ctx.tensor(
             shape.clone(),
             "model.layers.0.residual_tensor".to_string(),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
         (moe, input, residual)

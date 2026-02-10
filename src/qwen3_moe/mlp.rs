@@ -6,11 +6,9 @@ use crate::num_traits::Sigmoid;
 use crate::num_traits::Sqrt;
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::mem_mgr::cache::Cache;
 // use super::super::ptensor::linear::Linear;
 use super::super::common::matmul_params::MatMulParams;
-use super::super::runtime::tensor::Tensor;
-use crate::runtime::operator::Operator;
+use super::super::runtime::tensor::{Tensor, TensorCtx};
 
 #[derive(Clone)]
 pub struct MLP<T>
@@ -23,8 +21,7 @@ where
     up_weight: Tensor<T>,
     down_weight: Tensor<T>,
     scope_name: String,
-    cache: Rc<RefCell<Cache<T>>>,
-    operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+    ctx: Rc<TensorCtx<T>>,
 }
 
 impl<T> MLP<T>
@@ -46,35 +43,27 @@ where
         hidden_size: usize,
         intermediate_size: usize,
         parent_scope_name: &str,
-        cache: Rc<RefCell<Cache<T>>>,
-        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+        ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         let scope_name = format!("{}.mlp", parent_scope_name);
         Self {
             // sequence_chunk_size: sequence_chunk_size,
             // head_size: head_size,
-            gate_weight: Tensor::zeros(
+            gate_weight: ctx.zeros(
                 vec![hidden_size, intermediate_size],
                 format!("{}.gate_proj.weight", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
             ),
-            up_weight: Tensor::zeros(
+            up_weight: ctx.zeros(
                 vec![hidden_size, intermediate_size],
                 format!("{}.up_proj.weight", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
             ),
 
-            down_weight: Tensor::zeros(
+            down_weight: ctx.zeros(
                 vec![intermediate_size, hidden_size],
                 format!("{}.down_proj.weight", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
             ),
             scope_name: scope_name,
-            cache: cache,
-            operator_queue: operator_queue,
+            ctx: ctx,
         }
     }
 

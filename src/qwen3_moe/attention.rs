@@ -12,9 +12,8 @@ use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use super::super::mem_mgr::cache::Cache;
 // use crate::ops::mul::attention_add::AttentionAdd;
 use super::super::common::matmul_params::MatMulParams;
-use crate::runtime::operator::Operator;
 // use super::super::ptensor::linear::Linear;
-use super::super::runtime::tensor::Tensor;
+use super::super::runtime::tensor::{Tensor, TensorCtx};
 
 use super::config::Config;
 
@@ -38,8 +37,7 @@ where
     v_weight: Tensor<T>,
     o_weight: Tensor<T>,
     scope_name: String,
-    cache: Rc<RefCell<Cache<T>>>,
-    operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+    ctx: Rc<TensorCtx<T>>,
 }
 
 impl<T> Attention<T>
@@ -60,8 +58,7 @@ where
         config: &Config,
         layer_idx: usize,
         parent_scope_name: &str,
-        cache: Rc<RefCell<Cache<T>>>,
-        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+        ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         let head_dim: usize = config.head_dim;
         let num_key_value_groups = config.num_attention_heads / config.num_key_value_heads;
@@ -78,33 +75,24 @@ where
             attention_dropout: T::default(),
             is_causal: false,
             layer_idx: layer_idx,
-            q_weight: Tensor::zeros(
+            q_weight: ctx.zeros(
                 vec![config.num_attention_heads * head_dim, config.hidden_size],
                 format!("{}.q_proj.weight", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
             ),
-            k_weight: Tensor::zeros(
+            k_weight: ctx.zeros(
                 vec![config.num_key_value_heads * head_dim, config.hidden_size],
                 format!("{}.k_proj.weight", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
             ),
-            v_weight: Tensor::zeros(
+            v_weight: ctx.zeros(
                 vec![config.num_key_value_heads * head_dim, config.hidden_size],
                 format!("{}.v_proj.weight", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
             ),
 
-            o_weight: Tensor::zeros(
+            o_weight: ctx.zeros(
                 vec![config.hidden_size, config.num_attention_heads * head_dim],
                 format!("{}.o_proj.weight", scope_name),
-                cache.clone(),
-                operator_queue.clone(),
             ),
-            cache: cache,
-            operator_queue: operator_queue,
+            ctx: ctx,
             scope_name: scope_name,
         }
     }
@@ -225,6 +213,7 @@ mod test {
             Vec<f32>,
         >::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
+        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
 
         let self_attention = Attention::new(
             // hidden_size,
@@ -237,29 +226,22 @@ mod test {
             &config,
             1,
             "model.layers.1.self_attn",
-            cache.clone(),
-            operator_queue.clone(),
+            ctx.clone(),
         );
 
-        let hidden_states = Tensor::zeros(
+        let hidden_states = ctx.zeros(
             vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
-        let residual_tensor = Tensor::zeros(
+        let residual_tensor = ctx.zeros(
             vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
-        let position_embedding = Tensor::zeros(
+        let position_embedding = ctx.zeros(
             vec![config.max_position_embeddings, 1, 1, attention_head_size],
             String::from("model.position_embedding.weight"),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
         let output =
@@ -297,34 +279,28 @@ mod test {
             Vec<f16>,
         >::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
+        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
 
         let self_attention = Attention::new(
             &config,
             1,
             "model.layers.1.self_attn",
-            cache.clone(),
-            operator_queue.clone(),
+            ctx.clone(),
         );
 
-        let hidden_states = Tensor::zeros(
+        let hidden_states = ctx.zeros(
             vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
-        let residual_tensor = Tensor::zeros(
+        let residual_tensor = ctx.zeros(
             vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
-        let position_embedding = Tensor::zeros(
+        let position_embedding = ctx.zeros(
             vec![config.max_position_embeddings, 1, 1, attention_head_size],
             String::from("model.position_embedding.weight"),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
         let output =

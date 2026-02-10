@@ -6,9 +6,7 @@ use crate::num_traits::Sigmoid;
 use crate::num_traits::Sqrt;
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::mem_mgr::cache::Cache;
-use super::super::runtime::tensor::Tensor;
-use crate::runtime::operator::Operator;
+use super::super::runtime::tensor::{Tensor, TensorCtx};
 
 use super::mlp::MLP;
 use super::sparse_moe_block::SparseMoeBlock;
@@ -39,15 +37,13 @@ where
         hidden_size: usize,
         intermediate_size: usize,
         parent_scope_name: &str,
-        cache: Rc<RefCell<Cache<T>>>,
-        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+        ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         MoeLayer::MLP(MLP::new(
             hidden_size,
             intermediate_size,
             parent_scope_name,
-            cache,
-            operator_queue,
+            ctx,
         ))
     }
 
@@ -59,8 +55,7 @@ where
         num_topk: usize,
         norm_topk_prob: bool,
         parent_scope_name: &str,
-        cache: Rc<RefCell<Cache<T>>>,
-        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+        ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         MoeLayer::SparseMoe(SparseMoeBlock::new(
             hidden_size,
@@ -69,8 +64,7 @@ where
             num_topk,
             norm_topk_prob,
             parent_scope_name,
-            cache,
-            operator_queue,
+            ctx,
         ))
     }
 

@@ -7,9 +7,8 @@ use crate::num_traits::Sigmoid;
 use crate::num_traits::Sqrt;
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::runtime::operator::Operator;
 use super::super::mem_mgr::cache::Cache;
-use super::super::runtime::tensor::Tensor;
+use super::super::runtime::tensor::{Tensor, TensorCtx};
 use super::attention::Attention;
 use super::config::Config;
 use super::sparse_moe_block::SparseMoeBlock;
@@ -35,8 +34,7 @@ where
     // moe_layer: MoeLayer<T>,
     sparse_moe_block: SparseMoeBlock<T>,
     scope_name: String,
-    cache: Rc<RefCell<Cache<T>>>,
-    operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+    ctx: Rc<TensorCtx<T>>,
 }
 
 impl<T> DecoderLayer<T>
@@ -62,8 +60,7 @@ where
         word_embedding: Rc<Tensor<T>>,
         position_embedding: Rc<Tensor<T>>,
         parent_scope_name: &str,
-        cache: Rc<RefCell<Cache<T>>>,
-        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+        ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         let scope_name = format!("{}.layers.{}", parent_scope_name, layer_idx);
 
@@ -105,8 +102,7 @@ where
                 config,
                 layer_idx,
                 &scope_name,
-                cache.clone(),
-                operator_queue.clone(),
+                ctx.clone(),
             ),
 
             sparse_moe_block: SparseMoeBlock::new(
@@ -116,13 +112,11 @@ where
                 config.num_experts_per_tok,
                 config.norm_topk_prob,
                 &scope_name,
-                cache.clone(),
-                operator_queue.clone(),
+                ctx.clone(),
             ),
             word_embedding: word_embedding,
             position_embedding: position_embedding,
-            cache: cache,
-            operator_queue: operator_queue,
+            ctx: ctx,
             scope_name: scope_name,
         }
     }
@@ -144,14 +138,12 @@ where
             (hidden_states.clone(), norm_hidden)
         } else {
             unsafe {
-                Tensor::lookup_rms(
+                self.ctx.lookup_rms(
                     input_sequences,
                     &*self.word_embedding,
                     self.batch_size,
                     self.rms_norm_eps,
                     self.scope_name.clone(),
-                    self.cache.clone(),
-                    self.operator_queue.clone(),
                 )
             }
         };
@@ -219,19 +211,16 @@ mod test {
 
         let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
+        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
 
         let vocab_size = config.vocab_size;
-        let word_embedding = Rc::new(Tensor::zeros(
+        let word_embedding = Rc::new(ctx.zeros(
             vec![vocab_size, hidden_size],
             String::from("model.embed_tokens.weight"),
-            cache.clone(),
-            operator_queue.clone(),
         ));
-        let position_embedding = Rc::new(Tensor::zeros(
+        let position_embedding = Rc::new(ctx.zeros(
             vec![max_position_embeddings, 1, 1, head_dim],
             String::from("model.rotary_emb.weight"),
-            cache.clone(),
-            operator_queue.clone(),
         ));
 
         let layer = DecoderLayer::<f32>::new(
@@ -243,16 +232,13 @@ mod test {
             word_embedding.clone(),
             position_embedding.clone(),
             "model",
-            cache.clone(),
-            operator_queue.clone(),
+            ctx.clone(),
         );
 
         let shape = vec![batch_size, hidden_size];
-        let input = Tensor::from_cache(
+        let input = ctx.tensor(
             shape.clone(),
             String::from("model.layers.1.input_tensor"),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
         for i in 0..input.shape.iter().product() {
@@ -302,19 +288,16 @@ mod test {
         let cache: Rc<RefCell<Cache<f16>>> =
             Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
+        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
 
         let vocab_size = config.vocab_size;
-        let word_embedding = Rc::new(Tensor::zeros(
+        let word_embedding = Rc::new(ctx.zeros(
             vec![vocab_size, hidden_size],
             String::from("model.embed_tokens.weight"),
-            cache.clone(),
-            operator_queue.clone(),
         ));
-        let position_embedding = Rc::new(Tensor::zeros(
+        let position_embedding = Rc::new(ctx.zeros(
             vec![max_position_embeddings, 1, 1, head_dim],
             String::from("model.rotary_emb.weight"),
-            cache.clone(),
-            operator_queue.clone(),
         ));
 
         let layer = DecoderLayer::<f16>::new(
@@ -325,16 +308,13 @@ mod test {
             word_embedding.clone(),
             position_embedding.clone(),
             "model",
-            cache.clone(),
-            operator_queue.clone(),
+            ctx.clone(),
         );
 
         let shape = vec![position_window_size, batch_size, hidden_size];
-        let input = Tensor::from_cache(
+        let input = ctx.tensor(
             shape.clone(),
             String::from("model.layers.0.input_tensor"),
-            cache.clone(),
-            operator_queue.clone(),
         );
 
         for i in 0..input.shape.iter().product() {

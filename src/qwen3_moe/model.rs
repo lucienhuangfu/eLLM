@@ -27,7 +27,7 @@ use super::super::common::matmul_params::MatMulParams;
 use super::super::mem_mgr::cache::Cache;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
-use super::super::runtime::tensor::Tensor;
+use super::super::runtime::tensor::{Tensor, TensorCtx};
 use super::decoder_layer::DecoderLayer;
 // use crate::common::record::TokenRecord;
 
@@ -49,8 +49,7 @@ where
     pub hidden_size: usize,
     pub topk_size: usize,
     scope_name: String,
-    pub cache: Rc<RefCell<Cache<T>>>,
-    pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+    pub ctx: Rc<TensorCtx<T>>,
 }
 
 impl<T> Model<T>
@@ -84,21 +83,18 @@ where
         let parameter_tensors = std::collections::HashMap::new();
         let cache = Rc::new(RefCell::new(Cache::new(parameter_tensors)));
         let operator_queue: Rc<RefCell<Vec<Operator<T>>>> = Rc::new(RefCell::new(Vec::new()));
+        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
 
         // Create default tensors
-        let word_embedding = Rc::new(Tensor::zeros(
+        let word_embedding = Rc::new(ctx.zeros(
             vec![config.vocab_size, config.hidden_size],
             String::from("model.embed_tokens.weight"),
-            cache.clone(),
-            operator_queue.clone(),
         ));
 
-        let position_embedding = Rc::new(Tensor::from_vec(
+        let position_embedding = Rc::new(ctx.tensor_from_vec(
             vec![config.max_position_embeddings, 1, 1, config.head_dim],
             position_vec,
             String::from("model.position_embedding.weight"),
-            cache.clone(),
-            operator_queue.clone(),
         ));
 
         let mut layers: Vec<DecoderLayer<T>> = Vec::new();
@@ -112,8 +108,7 @@ where
                 word_embedding.clone(),
                 position_embedding.clone(),
                 &scope_name.clone(),
-                cache.clone(),
-                operator_queue.clone(),
+                ctx.clone(),
             ));
         }
 
@@ -121,11 +116,9 @@ where
             // sequences: vec![0; (config.max_position_embeddings + 1) * batch_size],
             word_embedding: word_embedding.clone(),
             position_embedding: position_embedding.clone(),
-            lm_head_weight: Tensor::zeros(
+            lm_head_weight: ctx.zeros(
                 vec![config.vocab_size, config.hidden_size],
                 String::from("lm_head.weight"),
-                cache.clone(),
-                operator_queue.clone(),
             ),
             layers: layers,
             batch_size: batch_size,
@@ -134,8 +127,7 @@ where
             topk_size: topk_size,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
-            cache: cache,
-            operator_queue: operator_queue,
+            ctx: ctx,
         }
     }
 
@@ -147,11 +139,9 @@ where
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
-        let mut hidden_state = Tensor::<T>::zeros(
+        let mut hidden_state = self.ctx.zeros(
             vec![self.batch_size, self.hidden_size],
             format!("{}.hidden_state.output", self.scope_name),
-            self.cache.clone(),
-            self.operator_queue.clone(),
         );
 
         for (i, layer_module) in self.layers.iter().enumerate() {
@@ -214,7 +204,6 @@ mod test {
     use crate::common::record::{BatchRecord, Phase};
     use crate::qwen3_moe::rope::precompute_freqs_cis_t;
     use crate::mem_mgr::allocator::allocate_init;
-    use crate::mem_mgr::cache::Cache;
     use crate::runtime::tensor::Tensor;
 
     #[test]
@@ -267,7 +256,7 @@ mod test {
         let (output_indices, output_tensor) = unsafe { model.forward(sequences, eos_id) };
 
         let thread_num: usize = num_cpus::get();
-        for operator in model.operator_queue.borrow().iter() {
+        for operator in model.ctx.operator_queue.borrow().iter() {
             for i in 0..thread_num {
                 operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
             }
@@ -323,7 +312,7 @@ mod test {
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        for operator in model.operator_queue.borrow().iter() {
+        for operator in model.ctx.operator_queue.borrow().iter() {
             for i in 0..thread_num {
                 operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
             }
