@@ -16,10 +16,10 @@ use std::time::Instant;
 // use serde::{Deserialize, Serialize};
 
 use super::config::Config;
-use crate::kernel::generic::from_f32::FromF32;
-use crate::kernel::generic::sigmoid::Sigmoid;
-use crate::kernel::generic::sqrt::Sqrt;
-use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+use crate::traits::from_f32::FromF32;
+use crate::traits::sigmoid::Sigmoid;
+use crate::traits::sqrt::Sqrt;
+use crate::traits::{exp::Exp, neg_infinity::NegInfinity};
 
 // use super::super::compiler::map::rms_map::RMSMap;
 use super::super::compiler::operator::Operator;
@@ -29,7 +29,7 @@ use super::super::memory::cache::Cache;
 // use super::super::ptensor::linear::Linear;
 use super::super::ptensor::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
-use crate::init::record::TokenRecord;
+// use crate::init::record::TokenRecord;
 
 // use super::rope::precompute_freqs_cis;
 
@@ -62,7 +62,7 @@ where
         + Neg<Output = T>
         + Exp
         + NegInfinity
-        + Sigmoid<T>
+        + Sigmoid
         + Sqrt
         + FromF32
         + AddAssign
@@ -210,7 +210,7 @@ mod test {
     use super::*;
     // use crate::init::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
-    use crate::init::record::{BatchRecord, Phase, PrefillEndRecord, TokenList, TokenRecord};
+    use crate::init::record::{BatchRecord, Phase};
     use crate::memory::allocator::allocate_init;
     use crate::memory::cache::Cache;
     use crate::ptensor::tensor::Tensor;
@@ -316,3 +316,5 @@ mod test {
         }
     }
 }
+
+

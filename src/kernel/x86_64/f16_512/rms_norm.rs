@@ -122,7 +122,7 @@ mod tests {
         let expected = allocate_init::<f16>(length, 0.0);
         let expected_slice = unsafe { slice::from_raw_parts(expected, length) };
 
-        kernel::generic::rms_norm::rms_norm(v1, expected, length, 1e-6);
+        kernel::scalar::rms_norm::rms_norm(v1, expected, length, 1e-6);
 
         for j in 0..length {
             assert!(f16::abs(output_slice[j] - expected_slice[j]) < 1e-6);
@@ -155,7 +155,7 @@ mod tests {
         let expected = allocate_init::<f16>(length, 0.0);
         let expected_slice = unsafe { slice::from_raw_parts(expected, length) };
 
-        kernel::generic::rms_norm::add_rms_norm(v1, v2, expected, length,  1e-6);
+        kernel::scalar::rms_norm::add_rms_norm(v1, v2, expected, length,  1e-6);
 
         for j in 0..length {
             assert!(f16::abs(output_slice[j] - expected_slice[j]) < 1e-6);

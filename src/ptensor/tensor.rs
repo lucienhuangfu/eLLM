@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
-use crate::kernel::generic::sigmoid::Sigmoid;
-use crate::kernel::generic::sqrt::Sqrt;
-use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+use crate::traits::sigmoid::Sigmoid;
+use crate::traits::sqrt::Sqrt;
+use crate::traits::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::init::tensor_utils::get_strides;
 use super::super::memory::allocator::allocate_init;
@@ -14,7 +14,7 @@ use crate::init::matmul_params::MatMulParams;
 use super::super::compiler::left_vector::LiftVector;
 use super::super::compiler::map::experts_softmax_norm::ExpertsSoftmaxNorm;
 use super::super::compiler::map::lookup_rms_map::LookupRMSMap;
-use super::super::compiler::map::rms_map::RMSMap;
+
 use super::super::compiler::map::topk_softmax::TopKSoftmax;
 use super::super::compiler::mul::attention::Attention;
 use super::super::compiler::mul::experts_matmul_mul::ExpertsMatMulDown;
@@ -23,16 +23,15 @@ use super::super::compiler::mul::experts_merge_add::ExpertsMergeAdd;
 use super::super::compiler::mul::matmul::MatMul;
 use super::super::compiler::mul::matmul3::MatMul3;
 use super::super::compiler::mul::matmul_add::MatMulAdd;
-use crate::init::record::{
-    BatchRecord, Phase, SequenceSlice, TaskList, ThreadTask, TokenList, TokenRecord,
-};
+use crate::init::record::{BatchRecord, Phase, SequenceSlice};
 // use super::super::compiler::mul::matmul_silu_mul_matmul::MatMulSilu;
 use super::super::compiler::mul::matmul_topk::MatMulTopK;
 use super::super::compiler::operator::Operator;
 use super::super::compiler::zip_map::add_zip::AddZipMap;
-use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
-use super::super::compiler::zip_map::silu_mul_zip::SiluMulZipMap;
 use crate::compiler::zip_map::add_rms_zip::AddRMSZipMap;
+// use super::super::compiler::zip_map::complex_zip::ComplexZipMap;
+// use super::super::compiler::zip_map::silu_mul_zip::SiluMulZipMap;
+use super::super::compiler::map::rms_map::RMSMap;
 
 #[derive(Clone)]
 pub struct Tensor<T>
@@ -58,7 +57,7 @@ where
         + Neg<Output = T>
         + Exp
         + NegInfinity
-        + Sigmoid<T>
+        + Sigmoid
         + Sqrt
         + AddAssign,
 {
@@ -142,37 +141,7 @@ where
         output_tensor
     }
 
-    pub fn complex_mul(
-        &self,
-        b_tensor: &Tensor<T>,
-        sequence_length: usize,
-        tensor_name: String,
-    ) -> Self {
-        let output_to_kv = if self.shape[0] == sequence_length {
-            false
-        } else {
-            true
-        };
-        let output_shape = vec![self.shape[0], self.shape[1], b_tensor.shape[2]];
-        let output_tensor = Tensor::from_cache(
-            output_shape,
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-        let operator = Operator::ComplexZipMap(ComplexZipMap::new(
-            self.data,
-            b_tensor.data,
-            output_tensor.data,
-            // sequence_length,
-            // self.shape[0],
-            self.shape[1],
-            self.shape[2],
-            output_to_kv,
-        ));
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
-    }
+
 
     pub fn experts_merge_add(
         &self,
@@ -620,44 +589,6 @@ where
         }
     }
 
-    pub fn rms(&self, eps: T, decode_only_flag: bool, scope_name: String) -> Self {
-        let output_tensor = Tensor::<T>::from_cache(
-            self.shape.clone(),
-            format!("{}.output", scope_name),
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-
-        let operator = Operator::RMSMap(RMSMap::new(
-            self.data,
-            output_tensor.data,
-            // self.shape[0],
-            self.shape[1],
-            eps,
-            decode_only_flag,
-        ));
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
-    }
-
-    pub fn silu_mul(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
-        let output_tensor = Tensor::<T>::from_cache(
-            self.shape.clone(),
-            tensor_name,
-            self.cache.clone(),
-            self.operator_queue.clone(),
-        );
-        let operator = Operator::SiluMulZipMap(SiluMulZipMap::new(
-            self.data,
-            b_tensor.data,
-            output_tensor.data,
-            // self.shape[0],
-            self.shape[1],
-            self.shape[2],
-        ));
-        self.operator_queue.borrow_mut().push(operator);
-        output_tensor
-    }
 
     pub fn topk_softmax(
         &self,
@@ -766,6 +697,31 @@ where
 
         operator_queue.borrow_mut().push(operator);
         (output_hidden_tensor, output_normal_tensor)
+    }
+
+    pub fn lift_vector(&self) {
+        let operator = Operator::LiftVector(LiftVector::new(self.data, self.shape[1]));
+        self.operator_queue.borrow_mut().push(operator);
+    }
+
+            pub fn rms(&self, eps: T, decode_only_flag: bool, scope_name: String) -> Self {
+        let output_tensor = Tensor::<T>::from_cache(
+            self.shape.clone(),
+            format!("{}.output", scope_name),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let operator = Operator::RMSMap(RMSMap::new(
+            self.data,
+            output_tensor.data,
+            // self.shape[0],
+            self.shape[1],
+            eps,
+            decode_only_flag,
+        ));
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
     }
 }
 
@@ -904,32 +860,17 @@ mod test {
 
         let indices_ptr = all_indices.as_ptr();
 
-        let mut token_records = Vec::with_capacity(batch_size);
-        let mut user_records = Vec::with_capacity(batch_size);
+        let mut batch_list = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
-            token_records.push(TokenRecord {
-                // token_id: 0,
-                batch_index: i,
-                position_index: 0,
-            });
-            user_records.push(BatchRecord {
+            batch_list.push(BatchRecord {
                 sequence_index: 0,
                 snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
                 prompt_length: i,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+                notify: tokio::sync::Notify::new(),
             });
         }
-
-        let token_list = TokenList {
-            token_records: token_records.into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: Box::new([]),
-            current_lift_size: 0,
-        };
-
-        let mut batch_list = user_records;
         let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
         let mut decode_lists = Vec::with_capacity(thread_num);
         for tid in 0..thread_num {
@@ -1074,32 +1015,17 @@ mod test {
 
         let indices_ptr = all_indices.as_ptr();
 
-        let mut token_records = Vec::with_capacity(batch_size);
-        let mut user_records = Vec::with_capacity(batch_size);
+        let mut batch_list = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
-            token_records.push(TokenRecord {
-                // token_id: 0,
-                batch_index: i,
-                position_index: 0,
-            });
-            user_records.push(BatchRecord {
+            batch_list.push(BatchRecord {
                 sequence_index: 0,
                 snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
                 prompt_length: i,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+                notify: tokio::sync::Notify::new(),
             });
         }
-
-        let token_list = TokenList {
-            token_records: token_records.into_boxed_slice(),
-            current_token_size: batch_size,
-            lift_records: Box::new([]),
-            current_lift_size: 0,
-        };
-
-        let mut batch_list = user_records;
         let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
         let mut decode_lists = Vec::with_capacity(thread_num);
         for tid in 0..thread_num {
@@ -2567,6 +2493,7 @@ mod test {
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+    use std::f16;
 
     fn avail_threads() -> usize {
         std::thread::available_parallelism()
@@ -2785,3 +2712,60 @@ mod tests {
     // 你原来的两个 test 保持不动即可（我就不贴了）
 }
 // 你原来的两个 test 保持不动即可（我就不贴了）
+
+/*
+    pub fn complex_mul(
+        &self,
+        b_tensor: &Tensor<T>,
+        sequence_length: usize,
+        tensor_name: String,
+    ) -> Self {
+        let output_to_kv = if self.shape[0] == sequence_length {
+            false
+        } else {
+            true
+        };
+        let output_shape = vec![self.shape[0], self.shape[1], b_tensor.shape[2]];
+        let output_tensor = Tensor::from_cache(
+            output_shape,
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+        let operator = Operator::ComplexZipMap(ComplexZipMap::new(
+            self.data,
+            b_tensor.data,
+            output_tensor.data,
+            // sequence_length,
+            // self.shape[0],
+            self.shape[1],
+            self.shape[2],
+            output_to_kv,
+        ));
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+    
+        pub fn silu_mul(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
+        let output_tensor = Tensor::<T>::from_cache(
+            self.shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+        let operator = Operator::SiluMulZipMap(SiluMulZipMap::new(
+            self.data,
+            b_tensor.data,
+            output_tensor.data,
+            // self.shape[0],
+            self.shape[1],
+            self.shape[2],
+        ));
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+
+*/
+
+

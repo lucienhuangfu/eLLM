@@ -1,32 +1,41 @@
 use crate::init::record::{BatchRecord, SequenceSlice};
-use crate::kernel::generic::sigmoid::Sigmoid;
-use crate::kernel::generic::sqrt::Sqrt;
-use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+use crate::traits::sigmoid::Sigmoid;
+use crate::traits::sqrt::Sqrt;
+use crate::traits::{exp::Exp, neg_infinity::NegInfinity};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
-use super::map::experts_softmax_norm::ExpertsSoftmaxNorm;
-use super::map::lookup_rms_map::LookupRMSMap;
+use super::ops::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;
+use super::ops::normalization::lookup_rms_map::LookupRMSMap;
 
-use super::map::topk_softmax::TopKSoftmax;
+use super::ops::softmax::topk_softmax::TopKSoftmax;
 // Add missing imports for zip map operations
-use super::mul::matmul::MatMul;
-use super::mul::matmul3::MatMul3;
-use super::mul::matmul_add::MatMulAdd;
+use super::ops::matmul::matmul::MatMul;
+use super::ops::matmul::matmul3::MatMul3;
+use super::ops::matmul::matmul_add::MatMulAdd;
 // use super::mul::matmul_silu_mul_matmul::MatMulSilu;
-use super::mul::attention::Attention;
-use super::mul::experts_matmul_mul::ExpertsMatMulDown;
-use super::mul::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
-use super::mul::experts_merge_add::ExpertsMergeAdd;
-use super::mul::matmul_topk::MatMulTopK;
-use super::zip_map::add_rms_zip::AddRMSZipMap;
-use super::zip_map::add_zip::AddZipMap;
-// use super::map::rms_map::RMSMap;
+use super::ops::vector::left_vector::LiftVector;
+use super::ops::attention::attention::Attention;
+use super::ops::experts::experts_matmul_mul::ExpertsMatMulDown;
+use super::ops::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
+use super::ops::experts::experts_merge_add::ExpertsMergeAdd;
+use super::ops::matmul::matmul_topk::MatMulTopK;
+use super::ops::normalization::add_rms_zip::AddRMSZipMap;
+use super::ops::elementwise::add_zip::AddZipMap;
+use super::ops::normalization::rms_map::RMSMap;
 // use super::zip_map::complex_zip::ComplexZipMap;
 // use super::zip_map::silu_mul_zip::SiluMulZipMap;
 // use crate::init::matmul_params::MatMulParams;
 // use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
+
+#[inline]
+fn thread_slices<'a>(
+    list: &'a [Vec<SequenceSlice>],
+    thread_id: usize,
+) -> &'a [SequenceSlice] {
+    list.get(thread_id).map(Vec::as_slice).unwrap_or(&[])
+}
 
 #[derive(Clone)]
 pub enum Operator<T>
@@ -41,13 +50,14 @@ where
     ExpertsMatMulSilu(ExpertsMatMulSilu<T>),
     ExpertsMergeAdd(ExpertsMergeAdd<T>),
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
+    LiftVector(LiftVector<T>),
     LookupRMSMap(LookupRMSMap<T>),
     MatMul(MatMul<T>),
     MatMul3(MatMul3<T>),
     MatMulAdd(MatMulAdd<T>),
     // MatMulSiluMulMatMul(MatMulSilu<T>),
     MatMulTopK(MatMulTopK<T>),
-    // RMSMap(RMSMap<T>),
+    RMSMap(RMSMap<T>),
     // SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
     TopKSoftmax(TopKSoftmax<T>),
@@ -63,7 +73,7 @@ where
         + Neg<Output = T>
         + Exp
         + NegInfinity
-        + Sigmoid<T>
+        + Sigmoid
         + Sqrt
         + AddAssign,
 {
@@ -73,40 +83,47 @@ where
         decode_size: usize,
         cpu_num: usize,
         thread_id: usize,
-        _prefill_list: &[Vec<SequenceSlice>],
+        prefill_list: &[Vec<SequenceSlice>],
         decode_list: &[Vec<SequenceSlice>],
         batch_list: &mut Vec<BatchRecord>,
     ) {
+        let prefill_slices = thread_slices(prefill_list, thread_id);
+        let decode_slices = thread_slices(decode_list, thread_id);
+
+        macro_rules! run_simple {
+            ($op:expr) => {
+                $op.run(prefill_size, decode_size, cpu_num, thread_id)
+            };
+        }
+
         match self {
             Self::AddRMSZipMap(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
             }
             Self::AddZipMap(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
             }
             Self::Attention(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
             }
 
             Self::ExpertsMatMulDown(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
             }
 
             Self::ExpertsMatMulSilu(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
             }
             Self::ExpertsMergeAdd(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
             }
             Self::ExpertsSoftmaxNorm(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
+            }
+            Self::LiftVector(operator) => {
+                operator.run(prefill_size, decode_size, decode_slices, cpu_num, thread_id);
             }
             Self::LookupRMSMap(operator) => {
-                let prefill_slices = _prefill_list
-                    .get(thread_id)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let decode_slices = decode_list.get(thread_id).map(Vec::as_slice).unwrap_or(&[]);
                 operator.run(
                     prefill_size,
                     decode_size,
@@ -117,14 +134,14 @@ where
                 );
             }
             Self::MatMul(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
             }
 
             Self::MatMul3(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
             }
             Self::MatMulAdd(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
             }
             /*
             Self::MatMulSiluMulMatMul(operator) => {
@@ -137,34 +154,29 @@ where
                 );
             }*/
             Self::MatMulTopK(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
             }
 
             Self::TopKSoftmax(operator) => {
-                if let Some(list) = decode_list.get(thread_id) {
-                    operator.run(
-                        prefill_size,
-                        decode_size,
-                        cpu_num,
-                        thread_id,
-                        list,
-                        batch_list,
-                    );
-                }
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    cpu_num,
+                    thread_id,
+                    decode_slices,
+                    batch_list,
+                );
             }
-
-            /*
             Self::RMSMap(operator) => {
-                operator.run(prefill_size, decode_size, cpu_num, thread_id);
+                run_simple!(operator);
             }
-
+/*
             Self::SiluMulZipMap(operator) => {
                 operator.run(prefill_size, cpu_num, thread_id);
             }
             Self::ComplexZipMap(operator) => {
                 operator.run(prefill_size, cpu_num, thread_id);
             }*/
-            _ => panic!(),
         }
     }
 }
@@ -1927,3 +1939,5 @@ mod test {
     }
 
 */
+
+

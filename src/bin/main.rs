@@ -6,7 +6,7 @@ use ellm::memory::allocator::allocate_init;
 use ellm::qwen3_moe::config::Config;
 use ellm::qwen3_moe::model::Model;
 use ellm::serving::schedule::BatchScheduler;
-use ellm::serving::start::ServingRunner;
+use ellm::serving::runner::ServingRunner;
 
 fn main() {
     println!("Initializing...");

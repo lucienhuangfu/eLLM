@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
-use crate::kernel::generic::from_f32::FromF32;
-use crate::kernel::generic::sigmoid::Sigmoid;
-use crate::kernel::generic::sqrt::Sqrt;
-use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+use crate::traits::from_f32::FromF32;
+use crate::traits::sigmoid::Sigmoid;
+use crate::traits::sqrt::Sqrt;
+use crate::traits::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::compiler::operator::Operator;
 use super::super::memory::cache::Cache;
@@ -48,7 +48,7 @@ where
         + Neg<Output = T>
         + Exp
         + NegInfinity
-        + Sigmoid<T>
+        + Sigmoid
         + Sqrt
         + FromF32
         + AddAssign,
@@ -369,6 +369,9 @@ mod test {
                     sequence_chunk_size,
                     thread_num,
                     i,
+                    &[],
+                    &[],
+                    &mut Vec::new(),
                 );
             }
         }
@@ -379,3 +382,5 @@ mod test {
         );
     }
 }
+
+

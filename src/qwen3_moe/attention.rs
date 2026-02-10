@@ -4,10 +4,10 @@ use std::rc::Rc;
 
 use serde::de;
 
-use crate::kernel::generic::from_f32::FromF32;
-use crate::kernel::generic::sigmoid::Sigmoid;
-use crate::kernel::generic::sqrt::Sqrt;
-use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
+use crate::traits::from_f32::FromF32;
+use crate::traits::sigmoid::Sigmoid;
+use crate::traits::sqrt::Sqrt;
+use crate::traits::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::memory::cache::Cache;
 // use crate::compiler::mul::attention_add::AttentionAdd;
@@ -51,7 +51,7 @@ where
         + Neg<Output = T>
         + Exp
         + NegInfinity
-        + Sigmoid<T>
+        + Sigmoid
         + Sqrt
         + FromF32
         + AddAssign,
@@ -345,3 +345,5 @@ mod test {
         }
     }
 }
+
+

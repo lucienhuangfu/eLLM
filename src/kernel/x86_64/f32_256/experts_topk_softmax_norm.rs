@@ -1,4 +1,4 @@
-// use crate::kernel::generic::exp::Exp;
+// use crate::traits::exp::Exp;
 
 use num_traits::Inv;
 
@@ -332,3 +332,5 @@ mod tests {
         }
     }
 }
+
+
