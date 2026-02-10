@@ -5,19 +5,19 @@ use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
-use crate::init::{
+use crate::common::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use crate::kernel;
-use crate::kernel::common::heap::FixedMinHeap;
+use crate::common::heap::FixedMinHeap;
 use crate::ops::assign::assign;
 use crate::ops::traits::mul_trait::MatMulTopKTrait;
 
 #[derive(Clone)]
 pub struct MatMulTopK<T>
-where
-    T: PartialOrd + Copy,
+// where
+//     T: PartialOrd + Copy,
 {
     // A / B / 输出 top-k
     ptr1: ConstPtr<T>,         // A[M×K]
@@ -51,7 +51,6 @@ where
 
     // 每 (batch, thread) 一棵 heap
     heaps: Box<[FixedMinHeap<T>]>,
-
     _marker: PhantomData<T>,
 }
 
@@ -747,5 +746,6 @@ fn test_matmul_topk_f16_batch7_pad_to9_no_ties() {
     }
 }
 }
+
 
 

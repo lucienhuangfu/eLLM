@@ -10,7 +10,7 @@ use safetensors::{Dtype, SafeTensors};
 // use serde_json;
 // use std::io::{BufReader, Read};
 // use std::arch::x86_64::bf16;
-// use crate::init::config::Config;
+// use crate::common::config::Config;
 // use crate::llama::model::Model;
 // use crate::runtime::tensor::Tensor;
 
@@ -363,3 +363,4 @@ mod tests {
         assert_eq!(up_merged[1], 6.0f16);
     }
 }
+

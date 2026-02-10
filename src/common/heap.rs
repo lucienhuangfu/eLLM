@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
 use std::ptr;
 #[derive(Clone)]
-pub struct FixedMinHeap<T: PartialOrd + Copy> {
+pub struct FixedMinHeap<T> {
+    // : PartialOrd + Copy
     values: *mut T,
     indices: *mut usize,
     len: usize,

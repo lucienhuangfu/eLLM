@@ -1,4 +1,4 @@
-use crate::kernel::common::heap::FixedMinHeap;
+use crate::common::heap::FixedMinHeap;
 use crate::num_traits::Exp;
 use std::ops::{AddAssign, Div, Mul, Sub};
 use std::ptr;

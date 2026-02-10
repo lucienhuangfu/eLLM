@@ -1,4 +1,4 @@
-use crate::init::record::{BatchRecord, SequenceSlice};
+use crate::common::record::{BatchRecord, SequenceSlice};
 use crate::num_traits::Sigmoid;
 use crate::num_traits::Sqrt;
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
@@ -24,8 +24,8 @@ use crate::ops::elementwise::add_zip::AddZipMap;
 use crate::ops::normalization::rms_map::RMSMap;
 // use super::zip_map::complex_zip::ComplexZipMap;
 // use super::zip_map::silu_mul_zip::SiluMulZipMap;
-// use crate::init::matmul_params::MatMulParams;
-// use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+// use crate::common::matmul_params::MatMulParams;
+// use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 
@@ -39,8 +39,8 @@ fn thread_slices<'a>(
 
 #[derive(Clone)]
 pub enum Operator<T>
-where
-    T: PartialOrd + Copy,
+// where
+//    T: PartialOrd + Copy,
 {
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
@@ -192,7 +192,7 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::init::record::{BatchRecord, Phase, SequenceSlice};
+    use crate::common::record::{BatchRecord, Phase, SequenceSlice};
     use approx::assert_ulps_eq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use std::sync::{Arc, Barrier};
@@ -435,7 +435,7 @@ mod test {
             }
         }
 
-        let params = crate::init::matmul_params::MatMulParams {
+        let params = crate::common::matmul_params::MatMulParams {
             a_row_step_macro: M,  // MB
             b_row_step_macro: N,  // NB
             column_step_macro: K, // KC
@@ -1016,11 +1016,11 @@ mod test {
         }
     }
 
-    use std::mem_mgr;
+    use std::mem;
 
     #[inline]
     fn f32_from_f16(x: f16) -> f32 {
-        let bits: u16 = unsafe { mem_mgr::transmute(x) };
+        let bits: u16 = unsafe { mem::transmute(x) };
         let sign = ((bits & 0x8000) as u32) << 16;
         let exp = (bits & 0x7C00) >> 10;
         let mant = bits & 0x03FF;
@@ -1119,7 +1119,7 @@ mod test {
         let h = 64usize;
         let ktop = 2usize;
 
-        let params = crate::init::matmul_params::MatMulParams {
+        let params = crate::common::matmul_params::MatMulParams {
             a_row_step_macro: 3,
             b_row_step_macro: 32,
             column_step_macro: 32,
@@ -1247,7 +1247,7 @@ mod test {
         let h = 48usize;
         let ktop = 1usize;
 
-        let params = crate::init::matmul_params::MatMulParams {
+        let params = crate::common::matmul_params::MatMulParams {
             a_row_step_macro: 3,
             b_row_step_macro: 48,
             column_step_macro: 16,
@@ -1629,7 +1629,7 @@ mod test {
             }
         }
 
-        let params = crate::init::matmul_params::MatMulParams {
+        let params = crate::common::matmul_params::MatMulParams {
             a_row_step_macro: M,  // MB
             b_row_step_macro: N,  // NB
             column_step_macro: K, // KC
@@ -1948,6 +1948,7 @@ mod test {
     }
 
 */
+
 
 
 

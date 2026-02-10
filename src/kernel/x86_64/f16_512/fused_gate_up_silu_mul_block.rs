@@ -6,7 +6,7 @@ use std::arch::x86_64::{
 };
 use std::f16;
 
-use crate::init::matmul_params::MatMulParams;
+use crate::common::matmul_params::MatMulParams;
 use crate::kernel::x86_64::f16_512::activation::sigmoid512;
 
 /// 逐 kc 累加：把 A×W_gate 与 A×W_up 的部分和累加到各自的 3×32 累加缓冲。
@@ -288,3 +288,4 @@ mod tests {
         }
     }
 }
+

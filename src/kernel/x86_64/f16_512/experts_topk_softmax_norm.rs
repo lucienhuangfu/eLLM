@@ -1,4 +1,4 @@
-use crate::kernel::common::heap::FixedMinHeap;
+use crate::common::heap::FixedMinHeap;
 use crate::kernel::x86_64::f16_512::activation::exp512;
 use crate::kernel::x86_64::f16_512::bitonic_sort::bitonic_sort_f16_desc;
 

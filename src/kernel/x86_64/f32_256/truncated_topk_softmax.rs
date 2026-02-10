@@ -1,4 +1,4 @@
-use crate::kernel::common::heap::FixedMinHeap;
+use crate::common::heap::FixedMinHeap;
 use crate::kernel::x86_64::f32_256::activation::exp256;
 use core::arch::x86_64::*;
 use std::ptr;

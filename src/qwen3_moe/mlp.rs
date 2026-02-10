@@ -8,7 +8,7 @@ use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::mem_mgr::cache::Cache;
 // use super::super::ptensor::linear::Linear;
-use super::super::init::matmul_params::MatMulParams;
+use super::super::common::matmul_params::MatMulParams;
 use super::super::runtime::tensor::Tensor;
 use crate::runtime::operator::Operator;
 
@@ -252,6 +252,7 @@ mod test {
          */
     }*/
 }
+
 
 
 

@@ -3,7 +3,7 @@ use std::f16;
 
 use crate::ops::traits::zip_map_trait::ZipMapTrait;
 use crate::ops::assign::assign;
-use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::num_traits::Sqrt;
 
@@ -215,6 +215,7 @@ mod test {
         // println!("{:?}", output_data);
     }
 }
+
 
 
 

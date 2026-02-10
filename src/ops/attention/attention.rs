@@ -2,7 +2,7 @@ use std::f16;
 use std::ops::{Add, Div, Mul, Sub};
 use std::ptr;
 
-use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
@@ -275,6 +275,7 @@ mod test {
         // assert_ulps_eq!(data4[..], result[..], max_ulps = 4);
     }*/
 }
+
 
 
 

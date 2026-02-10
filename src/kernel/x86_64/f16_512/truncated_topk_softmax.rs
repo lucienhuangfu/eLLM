@@ -3,7 +3,7 @@ use std::f16;
 use std::ptr;
 
 use super::activation::exp512;
-use crate::kernel::common::heap::FixedMinHeap;
+use crate::common::heap::FixedMinHeap;
 
 // #[target_feature(enable = "avx512f", enable = "avx512fp16")]
 pub fn truncated_topk_softmax(

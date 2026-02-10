@@ -1,6 +1,6 @@
 #![feature(f16)]
 
-use ellm::init::record::{BatchRecord, Phase};
+use ellm::common::record::{BatchRecord, Phase};
 use ellm::mem_mgr::allocator::allocate_init;
 use ellm::qwen3_moe::config::Config;
 use ellm::qwen3_moe::model::Model;
@@ -43,3 +43,4 @@ fn main() {
 
     ServingRunner::new(model.operator_queue.take(), batch_scheduler).start();
 }
+

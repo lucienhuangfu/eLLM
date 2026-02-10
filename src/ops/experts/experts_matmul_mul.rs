@@ -1,7 +1,7 @@
 // === ops/mul/experts_matmul_mul.rs ===
 #![allow(non_snake_case)]
 
-use crate::init::{
+use crate::common::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
@@ -1256,6 +1256,7 @@ mod tests {
         }
     }
 }
+
 
 
 

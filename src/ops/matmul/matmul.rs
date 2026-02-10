@@ -5,7 +5,7 @@ use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
-use crate::init::{
+use crate::common::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
@@ -500,5 +500,6 @@ mod tests {
         assert_eq!(MR, 3);
     }
 }
+
 
 

@@ -6,10 +6,10 @@ use crate::num_traits::Sigmoid;
 use crate::num_traits::Sqrt;
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
-use crate::init::tensor_utils::get_strides;
+use crate::common::tensor_utils::get_strides;
 use crate::mem_mgr::allocator::allocate_init;
 use crate::mem_mgr::cache::Cache;
-use crate::init::matmul_params::MatMulParams;
+use crate::common::matmul_params::MatMulParams;
 
 use crate::ops::left_vector::LiftVector;
 use crate::ops::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;
@@ -23,7 +23,7 @@ use crate::ops::experts::experts_merge_add::ExpertsMergeAdd;
 use crate::ops::matmul::matmul::MatMul;
 use crate::ops::matmul::matmul3::MatMul3;
 use crate::ops::matmul::matmul_add::MatMulAdd;
-use crate::init::record::{BatchRecord, Phase, SequenceSlice};
+use crate::common::record::{BatchRecord, Phase, SequenceSlice};
 // use super::super::ops::mul::matmul_silu_mul_matmul::MatMulSilu;
 use crate::ops::matmul::matmul_topk::MatMulTopK;
 use crate::runtime::operator::Operator;
@@ -327,6 +327,27 @@ where
             cache: cache.clone(),
             operator_queue: operator_queue.clone(),
         }
+    }
+
+    pub fn from_vec(
+        shape: Vec<usize>,
+        data: Vec<T>,
+        tensor_name: String,
+        cache: Rc<RefCell<Cache<T>>>,
+        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+    ) -> Self {
+        let length: usize = shape.iter().product();
+        assert!(
+            data.len() == length,
+            "Tensor::from_vec length mismatch: shape product {} != data len {}",
+            length,
+            data.len()
+        );
+        let v = Self::from_cache(shape, tensor_name, cache, operator_queue);
+        unsafe {
+            v.data.copy_from_nonoverlapping(data.as_ptr(), data.len());
+        }
+        v
     }
 
     pub fn matmul(
@@ -734,7 +755,7 @@ mod test {
     use approx::{assert_abs_diff_eq, assert_ulps_eq};
     use std::collections::HashMap;
     use std::f16;
-    use std::mem_mgr;
+    use std::mem;
 
     // ============================================================
     // helpers
@@ -749,7 +770,7 @@ mod test {
     #[inline]
     fn f32_from_f16(x: f16) -> f32 {
         // bitcast based f16->f32 (与你原实现一致)
-        let bits: u16 = unsafe { mem_mgr::transmute(x) };
+        let bits: u16 = unsafe { mem::transmute(x) };
         let sign = ((bits & 0x8000) as u32) << 16;
         let exp = (bits & 0x7C00) >> 10;
         let mant = bits & 0x03FF;
@@ -2767,6 +2788,7 @@ mod tests {
 
 
 */
+
 
 
 

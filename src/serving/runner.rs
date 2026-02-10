@@ -4,12 +4,11 @@ use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
-use std::time::Instant;
 
 use super::super::runtime::operator::Operator;
 
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
-use crate::init::record::{BatchRecord, Phase};
+use crate::common::record::{BatchRecord, Phase};
 use crate::serving::schedule::BatchScheduler;
 
 /// Runs the inference serving loop.
@@ -33,7 +32,8 @@ where
         + Sqrt
         + NegInfinity
         + Sigmoid
-        + PartialOrd,
+        + PartialOrd
+        + 'static,
 {
     pub fn new(operator_queue: Vec<Operator<T>>, batch_scheduler: BatchScheduler) -> Self {
         Self {
@@ -51,9 +51,16 @@ where
         // Optimization: Convert Vec to Arc<[T]> to reduce one level of indirection compared to Arc<Vec<T>>
         let sync_operator_queue: Arc<[Operator<T>]> = self.operator_queue.into();
 
+        struct SharedState {
+            sizes: (usize, usize),
+            scheduler: BatchScheduler,
+        }
+
         let barrier = Arc::new(Barrier::new(thread_num));
-        let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
-        let shared_scheduler = Arc::new(SyncUnsafeCell::new(self.batch_scheduler));
+        let shared_state = Arc::new(SyncUnsafeCell::new(SharedState {
+            sizes: (0, 0),
+            scheduler: self.batch_scheduler,
+        }));
         let mut handles = Vec::with_capacity(thread_num);
         // let core_ids = core_affinity::get_core_ids().unwrap();
 
@@ -61,41 +68,40 @@ where
             // println!("thread id {}", i);
             let b = Arc::clone(&barrier);
             let queue = Arc::clone(&sync_operator_queue);
-            let shared_sizes: Arc<SyncUnsafeCell<(usize, usize)>> = Arc::clone(&shared_sizes);
-            let shared_scheduler: Arc<SyncUnsafeCell<BatchScheduler>> =
-                Arc::clone(&shared_scheduler);
+            let shared_state: Arc<SyncUnsafeCell<SharedState>> = Arc::clone(&shared_state);
 
             let handle = thread::spawn(move || {
                 let thread_id = i;
                 core_affinity::set_for_current(core_id);
                 println!("{} start", thread_id);
-                let s = Instant::now();
-                let sizes_ptr = shared_sizes.get();
-                let scheduler_ptr = shared_scheduler.get();
+                let state_ptr = shared_state.get();
 
                 // Main inference loop: continuously processes batches of tokens
                 loop {
                     // Thread 0 acts as the scheduler: monitors user states and prepares the token batch
                     if thread_id == 0 {
                         unsafe {
-                            let scheduler = &mut *scheduler_ptr;
-                            *sizes_ptr = scheduler.schedule_batch();
+                            let state = &mut *state_ptr;
+                            state.sizes = state.scheduler.schedule_batch();
                         }
                     }
 
                     // Synchronization barrier: Wait for Thread 0 to finish scheduling
                     b.wait();
 
-                    let (prefill_size, decode_size) = unsafe { *sizes_ptr };
-
-                    let (prefill_list, decode_list, batch_list) = unsafe {
-                        let scheduler = &mut *scheduler_ptr;
-                        (
-                            &scheduler.prefill_list,
-                            &scheduler.decode_list,
-                            &mut scheduler.batch_list,
-                        )
-                    };
+                    let (prefill_size, decode_size, prefill_list, decode_list, batch_list) =
+                        unsafe {
+                            let state = &mut *state_ptr;
+                            let (prefill_size, decode_size) = state.sizes;
+                            let scheduler = &mut state.scheduler;
+                            (
+                                prefill_size,
+                                decode_size,
+                                &scheduler.prefill_list,
+                                &scheduler.decode_list,
+                                &mut scheduler.batch_list,
+                            )
+                        };
 
                     // Execute the operator queue in parallel
                     for operator in queue.iter() {
@@ -133,7 +139,7 @@ mod test {
     use std::rc::Rc;
 
     use super::*;
-    use crate::init::record::BatchRecord;
+    use crate::common::record::BatchRecord;
     use crate::mem_mgr::cache::Cache;
     use crate::runtime::tensor::Tensor;
     use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
@@ -228,4 +234,5 @@ mod test {
         ServingRunner::new(output_tensor.operator_queue.take(), batch_scheduler).start();
     }
 }
+
 

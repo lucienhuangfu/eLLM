@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::Duration;
 
-use crate::init::record::{BatchRecord, Phase, SequenceSlice};
+use crate::common::record::{BatchRecord, Phase, SequenceSlice};
 
 struct FairTaskAllocator {
     task_count: usize,
@@ -465,3 +465,4 @@ mod tests {
         assert_eq!(allocator.scheduled_tokens(), 0);
     }
 }
+

@@ -1,40 +1,61 @@
-use itertools::Itertools;
-use std::iter::zip;
+use crate::num_traits::FromNumber;
 
-// use num_traits::Float;
-use num::complex::Complex;
-
-pub fn precompute_freqs_cis(dim: usize, 
-            max_sequence_length: usize, 
-            theta: f32) -> Vec<f32> {
-    let end = max_sequence_length * 2;
-    let freqs: Vec<_> = (0..dim).step_by(2).map(
-        |x| {
-            let p =  x as f32 / dim as f32;
+#[inline]
+fn inv_freqs(dim: usize, theta: f32) -> Vec<f32> {
+    debug_assert!(dim % 2 == 0, "RoPE head_dim must be even");
+    (0..dim)
+        .step_by(2)
+        .map(|i| {
+            let p = i as f32 / dim as f32;
             theta.powf(p).recip()
-        }
-    ).collect();
-    let t: Vec<_> = (0..end).collect();
-    let freqs: Vec<_> = t.into_iter().cartesian_product(freqs.into_iter()).map(|(a, b)| a as f32 * b).collect();
-    
-    // println!("{}", freqs_cis.len());
-    let ones = vec![1.0; freqs.len()];
-    let freqs_cis: Vec<_> = zip(ones, freqs).map(|(a, b)| {
-        Complex::new(a, b).to_polar()
-    }).flat_map(|tup| vec![tup.0.clone(),tup.1]).collect();
-    
-    freqs_cis
+        })
+        .collect()
+}
 
+/// Precompute RoPE cache as interleaved [cos, sin, cos, sin, ...] for each position.
+/// Output length = max_sequence_length * dim.
+pub fn precompute_freqs_cis(dim: usize, max_sequence_length: usize, theta: f32) -> Vec<f32> {
+    let inv = inv_freqs(dim, theta);
+    let mut out = Vec::with_capacity(max_sequence_length * dim);
+
+    for pos in 0..max_sequence_length {
+        let t = pos as f32;
+        for &inv_f in &inv {
+            let angle = t * inv_f;
+            out.push(angle.cos());
+            out.push(angle.sin());
+        }
+    }
+    out
+}
+
+/// Same as `precompute_freqs_cis`, but returns a generic numeric type (f16/f32/f64).
+pub fn precompute_freqs_cis_t<T: FromNumber>(
+    dim: usize,
+    max_sequence_length: usize,
+    theta: f32,
+) -> Vec<T> {
+    precompute_freqs_cis(dim, max_sequence_length, theta)
+        .into_iter()
+        .map(T::from_f32)
+        .collect()
 }
 
 #[cfg(test)]
 mod test {
     // use std::f16;
     use super::*;
-    use super::super::super::ops::elementwise::complex_zip::ComplexZipMap;
     #[test]
     fn test_freqs() {
-        precompute_freqs_cis(64, 512, 10000.0);
+        let dim = 64;
+        let max_len = 512;
+        let freqs = precompute_freqs_cis(dim, max_len, 10000.0);
+        assert_eq!(freqs.len(), dim * max_len);
+        // position 0 should be cos=1, sin=0 for all pairs
+        for i in (0..dim).step_by(2) {
+            assert!((freqs[i] - 1.0).abs() < 1e-6);
+            assert!(freqs[i + 1].abs() < 1e-6);
+        }
     }
 
 }

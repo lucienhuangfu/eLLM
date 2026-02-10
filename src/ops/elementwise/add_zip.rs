@@ -5,7 +5,7 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use crate::ops::traits::zip_map_trait::ZipMapTrait;
 use crate::ops::assign::assign;
-use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::num_traits::Sigmoid;
 
@@ -131,7 +131,7 @@ mod test {
 
     use super::*;
     // use super::super::chunk_zipmap::chunk_zipmap;
-    use crate::init::tensor_utils::get_strides;
+    use crate::common::tensor_utils::get_strides;
     use approx::assert_ulps_eq;
     // use nom::sequence;
     // use rand::seq;
@@ -195,6 +195,7 @@ mod test {
         // println!("{:?}", output);
     }
 }
+
 
 
 

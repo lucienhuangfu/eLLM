@@ -5,7 +5,7 @@ use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
-use crate::init::{
+use crate::common::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
@@ -1040,5 +1040,6 @@ fn test_kqv_f16_avx512_batch7_pad_to9_no_finalize() {
     }
 }
 }
+
 
 

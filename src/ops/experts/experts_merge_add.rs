@@ -4,7 +4,7 @@
 use std::f16;
 use std::ops::{Add, Mul};
 
-use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::ops::assign::assign;
 use crate::ops::traits::mul_trait::MoeMergeTrait;
@@ -575,6 +575,7 @@ fn test_merge_add_respects_run_batch_smaller_than_capacity() {
     }
 }
 }
+
 
 
 

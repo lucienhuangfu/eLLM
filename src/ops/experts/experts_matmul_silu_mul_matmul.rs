@@ -5,7 +5,7 @@ use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
-use crate::init::{
+use crate::common::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
@@ -1250,5 +1250,6 @@ fn test_silu_stride_capacity_batch_run_must_not_touch_rows_7_8() {
     assert!(any_nonzero, "expected some non-zero outputs for rows 0..6");
 }
 }
+
 
 

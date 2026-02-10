@@ -3,7 +3,7 @@ use std::ops::{AddAssign, Sub};
 
 use crate::ops::traits::map_trait::SoftmaxTrait;
 use crate::ops::assign::assign;
-use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::scalar;
 use crate::num_traits::{exp::Exp, sqrt::Sqrt};
 use crate::kernel::x86_64;
@@ -112,7 +112,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<
         input_length: usize,
         output_length: usize,
     ) {
-        generic::experts_topk_softmax_norm::experts_topk_softmax_norm(
+        scalar::experts_topk_softmax_norm::experts_topk_softmax_norm(
             input_ptr,
             topk_values_ptr,
             topk_indices_ptr,
@@ -398,6 +398,7 @@ mod test {
         }
     }
 }
+
 
 
 

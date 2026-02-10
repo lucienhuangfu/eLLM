@@ -4,9 +4,9 @@ use std::ptr;
 use crate::kernel;
 use crate::ops::traits::map_trait::MapTrait;
 
-// use crate::init::record::TaskList;
-use crate::init::record::SequenceSlice;
-use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+// use crate::common::record::TaskList;
+use crate::common::record::SequenceSlice;
+use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::num_traits::Sqrt;
 
 // Fuse embedding lookup with RMS normalization
@@ -135,7 +135,7 @@ impl MapTrait<f32> for LookupRMSMap<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::init::record::SequenceSlice;
+    use crate::common::record::SequenceSlice;
     use approx::assert_ulps_eq;
 
     #[test]
@@ -235,6 +235,7 @@ mod test {
         assert_ulps_eq!(output_hidden_data[18..36], expected_hidden, max_ulps = 1);
     }
 }
+
 
 
 

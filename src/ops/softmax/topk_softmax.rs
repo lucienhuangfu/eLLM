@@ -3,8 +3,8 @@ use std::ops::{AddAssign, Sub};
 use std::ptr;
 
 use crate::ops::traits::map_trait::TopKSoftmaxTrait;
-use crate::init::record::{BatchRecord, Phase, SequenceSlice};
-use crate::init::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::common::record::{BatchRecord, Phase, SequenceSlice};
+use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::num_traits::Exp;
 use crate::num_traits::Sqrt;
@@ -200,7 +200,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::init::record::{BatchRecord, Phase, SequenceSlice};
+    use crate::common::record::{BatchRecord, Phase, SequenceSlice};
     use approx::assert_ulps_eq;
 
     #[test]
@@ -463,6 +463,7 @@ mod test {
         }
     }
 }
+
 
 
 

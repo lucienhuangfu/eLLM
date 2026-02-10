@@ -1,7 +1,7 @@
 use std::ptr;
 
-use crate::init::record::SequenceSlice;
-use crate::init::send_sync_ptr::MutPtr;
+use crate::common::record::SequenceSlice;
+use crate::common::send_sync_ptr::MutPtr;
 
 /// `LiftVector` 用于在推理过程中处理向量数据的搬运（Lifting）。
 /// 它主要用于将 Prefill 阶段结束时的状态（向量）复制到新的位置，以便后续 Decode 阶段使用。
@@ -64,7 +64,7 @@ impl<T> LiftVector<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::init::record::SequenceSlice;
+    use crate::common::record::SequenceSlice;
 
     #[test]
     fn test_lift_vector() {
@@ -110,3 +110,4 @@ mod test {
         assert_eq!(data[4..8], [5.0, 6.0, 7.0, 8.0]);
     }
 }
+

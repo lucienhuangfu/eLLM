@@ -23,13 +23,13 @@ use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 // use super::super::ops::map::rms_map::RMSMap;
 use super::super::runtime::operator::Operator;
-use super::super::init::matmul_params::MatMulParams;
+use super::super::common::matmul_params::MatMulParams;
 use super::super::mem_mgr::cache::Cache;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
 use super::super::runtime::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
-// use crate::init::record::TokenRecord;
+// use crate::common::record::TokenRecord;
 
 // use super::rope::precompute_freqs_cis;
 
@@ -71,8 +71,8 @@ where
 {
     pub fn new(
         config: &Config,
+        position_vec: Vec<T>,
         sequence_length: usize,
-        // sequence_chunk_size: usize,
         batch_size: usize,
         topk_size: usize,
     ) -> Self {
@@ -93,8 +93,9 @@ where
             operator_queue.clone(),
         ));
 
-        let position_embedding = Rc::new(Tensor::zeros(
+        let position_embedding = Rc::new(Tensor::from_vec(
             vec![config.max_position_embeddings, 1, 1, config.head_dim],
+            position_vec,
             String::from("model.position_embedding.weight"),
             cache.clone(),
             operator_queue.clone(),
@@ -208,9 +209,10 @@ where
 mod test {
 
     use super::*;
-    // use crate::init::config::Config;
+    // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
-    use crate::init::record::{BatchRecord, Phase};
+    use crate::common::record::{BatchRecord, Phase};
+    use crate::qwen3_moe::rope::precompute_freqs_cis_t;
     use crate::mem_mgr::allocator::allocate_init;
     use crate::mem_mgr::cache::Cache;
     use crate::runtime::tensor::Tensor;
@@ -226,8 +228,14 @@ mod test {
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
+        let position_vec = precompute_freqs_cis_t::<f32>(
+            config.head_dim,
+            config.max_position_embeddings,
+            config.rope_theta as f32,
+        );
         let mut model = Model::<f32>::new(
             &config,
+            position_vec,
             sequence_length,
             batch_size,
             topk_size, // word_embedding,
@@ -280,8 +288,14 @@ mod test {
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
+        let position_vec = precompute_freqs_cis_t::<f16>(
+            config.head_dim,
+            config.max_position_embeddings,
+            config.rope_theta as f32,
+        );
         let mut model = Model::<f16>::new(
             &config,
+            position_vec,
             sequence_length,
             // sequence_chunk_size,
             batch_size,
@@ -316,6 +330,7 @@ mod test {
         }
     }
 }
+
 
 
 

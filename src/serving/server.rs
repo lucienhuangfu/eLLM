@@ -10,7 +10,7 @@ use tokenizers::Tokenizer;
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, RwLock};
 
-use crate::init::record::{BatchList, BatchRecord, Phase};
+use crate::common::record::{BatchList, BatchRecord, Phase};
 
 // ===== OpenAI API 结构 =====
 
@@ -389,3 +389,4 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
     Ok(())
 }
+
