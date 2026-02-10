@@ -25,12 +25,12 @@ pub fn complex_mul(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::allocator::allocate_init;
+    use crate::mem_mgr::allocator::allocate_init;
     use std::ptr;
 
     #[test]
     fn test_complexmul() {
-        //each complex number is represented by two f16 numbers that is next to each other in memory
+        //each complex number is represented by two f16 numbers that is next to each other in mem_mgr
         //34 f16 numbers represent 16 complex numbers
         /*
         let input1: Vec<f16> = vec![

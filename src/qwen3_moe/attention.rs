@@ -4,17 +4,17 @@ use std::rc::Rc;
 
 use serde::de;
 
-use crate::traits::from_f32::FromF32;
-use crate::traits::sigmoid::Sigmoid;
-use crate::traits::sqrt::Sqrt;
-use crate::traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::num_traits::FromNumber;
+use crate::num_traits::Sigmoid;
+use crate::num_traits::Sqrt;
+use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::memory::cache::Cache;
-// use crate::compiler::mul::attention_add::AttentionAdd;
+use super::super::mem_mgr::cache::Cache;
+// use crate::ops::mul::attention_add::AttentionAdd;
 use super::super::init::matmul_params::MatMulParams;
-use crate::compiler::operator::Operator;
+use crate::runtime::operator::Operator;
 // use super::super::ptensor::linear::Linear;
-use super::super::ptensor::tensor::Tensor;
+use super::super::runtime::tensor::Tensor;
 
 use super::config::Config;
 
@@ -53,7 +53,7 @@ where
         + NegInfinity
         + Sigmoid
         + Sqrt
-        + FromF32
+        + FromNumber
         + AddAssign,
 {
     pub fn new(
@@ -345,5 +345,8 @@ mod test {
         }
     }
 }
+
+
+
 
 

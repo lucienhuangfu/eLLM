@@ -4,14 +4,14 @@ use std::rc::Rc;
 
 use serde::de;
 
-use crate::traits::sigmoid::Sigmoid;
-use crate::traits::sqrt::Sqrt;
-use crate::traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::num_traits::Sigmoid;
+use crate::num_traits::Sqrt;
+use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::init::matmul_params::MatMulParams;
-use super::super::memory::cache::Cache;
-use super::super::ptensor::tensor::Tensor;
-use crate::compiler::operator::Operator;
+use super::super::mem_mgr::cache::Cache;
+use super::super::runtime::tensor::Tensor;
+use crate::runtime::operator::Operator;
 
 // use super::mlp::MLP;
 // use super::super::ptensor::linear::Linear;
@@ -195,7 +195,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::compiler::operator::Operator;
+    use crate::runtime::operator::Operator;
     use std::cell::RefCell;
     use std::mem;
     use std::rc::Rc;
@@ -385,5 +385,8 @@ mod test {
         );
     }
 }
+
+
+
 
 

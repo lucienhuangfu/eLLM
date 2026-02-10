@@ -1,6 +1,6 @@
 use core_affinity;
 use std::cell::RefCell;
-use std::cell::SyncUnsafeCell;
+// use std::cell::SyncUnsafeCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::ptr::null;
 use std::rc::Rc;
@@ -16,18 +16,18 @@ use std::time::Instant;
 // use serde::{Deserialize, Serialize};
 
 use super::config::Config;
-use crate::traits::from_f32::FromF32;
-use crate::traits::sigmoid::Sigmoid;
-use crate::traits::sqrt::Sqrt;
-use crate::traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::num_traits::FromNumber;
+use crate::num_traits::Sigmoid;
+use crate::num_traits::Sqrt;
+use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
-// use super::super::compiler::map::rms_map::RMSMap;
-use super::super::compiler::operator::Operator;
+// use super::super::ops::map::rms_map::RMSMap;
+use super::super::runtime::operator::Operator;
 use super::super::init::matmul_params::MatMulParams;
-use super::super::memory::cache::Cache;
-// use super::super::memory::model_loader::SafeTensorsLoader;
+use super::super::mem_mgr::cache::Cache;
+// use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
-use super::super::ptensor::tensor::Tensor;
+use super::super::runtime::tensor::Tensor;
 use super::decoder_layer::DecoderLayer;
 // use crate::init::record::TokenRecord;
 
@@ -64,7 +64,7 @@ where
         + NegInfinity
         + Sigmoid
         + Sqrt
-        + FromF32
+        + FromNumber
         + AddAssign
         + Send
         + Sync,
@@ -211,9 +211,9 @@ mod test {
     // use crate::init::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::init::record::{BatchRecord, Phase};
-    use crate::memory::allocator::allocate_init;
-    use crate::memory::cache::Cache;
-    use crate::ptensor::tensor::Tensor;
+    use crate::mem_mgr::allocator::allocate_init;
+    use crate::mem_mgr::cache::Cache;
+    use crate::runtime::tensor::Tensor;
 
     #[test]
     fn test_model_forward() {
@@ -316,5 +316,8 @@ mod test {
         }
     }
 }
+
+
+
 
 

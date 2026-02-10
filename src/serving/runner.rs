@@ -6,11 +6,9 @@ use std::sync::Barrier;
 use std::thread;
 use std::time::Instant;
 
-use super::super::compiler::operator::Operator;
+use super::super::runtime::operator::Operator;
 
-use super::super::traits::{
-    exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt,
-};
+use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
 use crate::init::record::{BatchRecord, Phase};
 use crate::serving::schedule::BatchScheduler;
 
@@ -118,7 +116,7 @@ where
                 // println!("thread {} decode time {:?}", thread_id, t);
             });
 
-            // std::mem::forget(handle);
+            // std::mem_mgr::forget(handle);
             handles.push(handle);
         }
 
@@ -136,11 +134,11 @@ mod test {
 
     use super::*;
     use crate::init::record::BatchRecord;
-    use crate::memory::cache::Cache;
-    use crate::ptensor::tensor::Tensor;
+    use crate::mem_mgr::cache::Cache;
+    use crate::runtime::tensor::Tensor;
     use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
 
-    // use crate::memory::allocator::allocate_init;
+    // use crate::mem_mgr::allocator::allocate_init;
 
     #[test]
     fn test_start() {

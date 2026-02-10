@@ -117,7 +117,7 @@ pub unsafe fn sigmoid512(x: __m512h) -> __m512h {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::allocator::allocate_init;
+    use crate::mem_mgr::allocator::allocate_init;
     use std::arch::x86_64::{_mm512_load_ph, _mm512_store_ph};
     use std::slice;
 

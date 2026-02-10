@@ -95,7 +95,7 @@ mod tests {
     use super::*;
     use std::slice;
     // use std::f16;
-    use crate::memory::allocator::allocate_init;
+    use crate::mem_mgr::allocator::allocate_init;
 
     #[test]
     fn test_scalar_vector_mul_and_acc() {

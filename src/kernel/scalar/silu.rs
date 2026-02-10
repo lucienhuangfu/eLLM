@@ -1,17 +1,7 @@
-use std::ptr;
 use std::ops::{Add, Mul, Div, Neg};
-// use num_traits::Float;
-use super::sigmoid::{self, Sigmoid};
+use crate::num_traits::Sigmoid;
 
-/* 
-#[inline]
-fn Sigmoid(x: T) -> T 
-where 
- T: Add<Output = T> + Mul<Output = T> + Div<Output = T> + Copy  + Neg<Output = T>,
-{
-    T::from(1.0) / (T::from(1.0) + T::exp(-x))
-    // T::from(1.0)
-}*/
+
 
 pub fn silu<T>(input_ptr: *const T, output_ptr: *mut T, length: usize) 
 where 
@@ -92,3 +82,6 @@ mod tests {
         assert_ulps_eq!(output[..], result, max_ulps=4);      
     }
 }
+
+
+

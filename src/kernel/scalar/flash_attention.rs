@@ -1,5 +1,5 @@
 use std::ops::{Add, Sub, Mul, Div};
-use crate::traits::{neg_infinity::NegInfinity, exp::Exp};
+use crate::num_traits::{neg_infinity::NegInfinity, exp::Exp};
 
 
 
@@ -146,5 +146,6 @@ mod tests {
         } 
     } 
 }
+
 
 

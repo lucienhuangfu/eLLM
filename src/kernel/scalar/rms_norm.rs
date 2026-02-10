@@ -1,5 +1,5 @@
-// use crate::traits::from_usize::FromUsize;
-use crate::traits::sqrt::Sqrt;
+// use crate::num_traits::FromNumber;
+use crate::num_traits::Sqrt;
 // use std::ops::{Add, Div, Mul};
 use std::ptr;
 
@@ -125,5 +125,8 @@ mod tests {
         assert_ulps_eq!(output[..], result, max_ulps = 4);
     }
 }
+
+
+
 
 

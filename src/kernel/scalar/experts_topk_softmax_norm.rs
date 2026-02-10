@@ -1,4 +1,4 @@
-use crate::traits::exp::Exp;
+use crate::num_traits::Exp;
 use std::ops::{AddAssign, Div, Sub};
 use std::ptr;
 
@@ -217,6 +217,9 @@ mod tests {
         }
     }
 }
+
+
+
 
 
 

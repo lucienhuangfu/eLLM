@@ -38,7 +38,7 @@ pub fn silu_multiply(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::allocator::allocate_init;
+    use crate::mem_mgr::allocator::allocate_init;
     use approx::assert_ulps_eq;
     use std::ptr;
     use std::slice;

@@ -103,7 +103,7 @@ mod tests {
     use std::slice;
 
     // 你们自己的对齐分配器
-    use crate::memory::allocator::allocate_init;
+    use crate::mem_mgr::allocator::allocate_init;
 
     fn approx_eq(a: f16, b: f16, tol: f32) -> bool {
         let da = a as f32;

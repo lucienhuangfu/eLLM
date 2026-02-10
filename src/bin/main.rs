@@ -1,8 +1,7 @@
 #![feature(f16)]
-#![feature(duration_millis_float)]
 
 use ellm::init::record::{BatchRecord, Phase};
-use ellm::memory::allocator::allocate_init;
+use ellm::mem_mgr::allocator::allocate_init;
 use ellm::qwen3_moe::config::Config;
 use ellm::qwen3_moe::model::Model;
 use ellm::serving::schedule::BatchScheduler;

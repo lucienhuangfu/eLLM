@@ -1,5 +1,5 @@
 use crate::kernel::common::heap::FixedMinHeap;
-use crate::traits::exp::Exp;
+use crate::num_traits::Exp;
 use std::ops::{AddAssign, Div, Mul, Sub};
 use std::ptr;
 
@@ -125,5 +125,8 @@ mod tests {
         assert_eq!(out_token, paired[0].1);
     }
 }
+
+
+
 
 

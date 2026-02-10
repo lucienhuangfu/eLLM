@@ -31,7 +31,7 @@ pub fn precompute_freqs_cis(dim: usize,
 mod test {
     // use std::f16;
     use super::*;
-    use super::super::super::compiler::zip_map::complex_zip::ComplexZipMap;
+    use super::super::super::ops::elementwise::complex_zip::ComplexZipMap;
     #[test]
     fn test_freqs() {
         precompute_freqs_cis(64, 512, 10000.0);

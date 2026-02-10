@@ -44,7 +44,7 @@ pub fn dot_product(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::allocator::allocate_init;
+    use crate::mem_mgr::allocator::allocate_init;
 
     #[test]
     fn test_dot_product() {
