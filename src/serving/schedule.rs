@@ -329,14 +329,16 @@ impl BatchScheduler {
                         &mut self.prefill_list,
                         prefill_count,
                     );
-                    self.decode_scheduler.schedule_for_sequence(
-                        batch_index,
-                        record.sequence_index.saturating_sub(1),
-                        1,
-                        0,
-                        &mut self.decode_list,
-                        decode_count,
-                    );
+                    if record.snapshot_sequence_index == record.sequence_index {
+                        self.decode_scheduler.schedule_for_sequence(
+                            batch_index,
+                            record.sequence_index.saturating_sub(1),
+                            1,
+                            0,
+                            &mut self.decode_list,
+                            decode_count,
+                        );
+                    }
                 }
                 _ => {}
             }

@@ -2,12 +2,12 @@ use std::f16;
 use std::ops::{AddAssign, Sub};
 use std::ptr;
 
-use crate::ops::traits::map_trait::TopKSoftmaxTrait;
+use crate::common::num_traits::Exp;
+use crate::common::num_traits::Sqrt;
 use crate::common::record::{BatchRecord, Phase, SequenceSlice};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
-use crate::common::num_traits::Exp;
-use crate::common::num_traits::Sqrt;
+use crate::ops::traits::map_trait::TopKSoftmaxTrait;
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {
@@ -63,10 +63,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         decode_list: &[SequenceSlice],
         batch_list: &mut Vec<BatchRecord>,
     ) {
-        if decode_size == 0 {
-            return;
-        }
-
         unsafe {
             let input_indices_ptr = self.input_indices_ptr.ptr;
             let input_values_ptr = self.input_values_ptr.ptr;
@@ -76,40 +72,36 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
 
             for slice in decode_list {
                 let batch_index = slice.batch_index;
-                let mut sequence_index = slice.sequence_index;
+                let sequence_index = slice.sequence_index;
                 let token_start_index = slice.token_start_index;
 
-                for t in 0..slice.length {
-                    let token_index = token_start_index + t;
-                    let input_stride = token_index * self.topk_size * thread_num;
-                    let output_stride = token_index * self.topk_size;
+                let token_index = token_start_index;
+                let input_stride = token_index * self.topk_size * thread_num;
+                let output_stride = token_index * self.topk_size;
 
-                    self.compute(
-                        input_indices_ptr.add(input_stride),
-                        input_values_ptr.add(input_stride),
-                        output_indices_ptr.add(output_stride),
-                        output_values_ptr.add(output_stride),
-                        thread_num,
-                        self.topk_size,
-                    );
+                self.compute(
+                    input_indices_ptr.add(input_stride),
+                    input_values_ptr.add(input_stride),
+                    output_indices_ptr.add(output_stride),
+                    output_values_ptr.add(output_stride),
+                    thread_num,
+                    self.topk_size,
+                );
 
-                    let predict_token = *output_indices_ptr.add(output_stride);
-                    let out_offset = sequence_index * self.batch_size + batch_index;
-                    ptr::write(output_sequences_ptr.add(out_offset), predict_token);
-                    sequence_index = sequence_index.saturating_add(1);
+                let predict_token = *output_indices_ptr.add(output_stride);
+                let out_offset = sequence_index * self.batch_size + batch_index;
+                ptr::write(output_sequences_ptr.add(out_offset), predict_token);
+                
 
-                    if batch_index < batch_list.len() {
-                        let record = &mut batch_list[batch_index];
-                        if predict_token == self.eos_id {
-                            record.phase = Phase::Eos;
-                            record.notify.notify_one();
-                        }
+                if batch_index < batch_list.len() {
+                    let record = &mut batch_list[batch_index];
+                    record.sequence_index = record.snapshot_sequence_index;
+                    record.kv_index = record.snapshot_sequence_index;
+                    if predict_token == self.eos_id {
+                        record.phase = Phase::Eos;
+                        record.notify.notify_one();
                     }
                 }
-
-                // if batch_index < batch_list.len() {
-                //     batch_list[batch_index].sequence_index = sequence_index;
-                // }
             }
         }
     }
@@ -463,11 +455,3 @@ mod test {
         }
     }
 }
-
-
-
-
-
-
-
-

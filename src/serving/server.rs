@@ -12,7 +12,7 @@ use tokio::sync::Notify;
 
 use crate::common::record::BatchRecord;
 use crate::common::send_sync_ptr::SharedMut;
-use crate::serving::batch_prompt::BatchPrompt;
+use crate::serving::batch_sequence::BatchSequence;
 
 // ===== OpenAI API 结构 =====
 
@@ -68,7 +68,7 @@ pub struct StreamChoice {
 
 #[derive(Clone)]
 struct AppState {
-    batch_prompts: Arc<SharedMut<BatchPrompt>>,
+    batch_sequences: Arc<SharedMut<BatchSequence>>,
     batch_list: Arc<SharedMut<Vec<BatchRecord>>>,
     tokenizer: Arc<Tokenizer>,
 }
@@ -95,12 +95,12 @@ async fn chat_completions(
         let mut found_slot = None;
         {
             let batch_list = unsafe { &mut *state.batch_list.get() };
-            let batch_prompts = unsafe { &mut *state.batch_prompts.get() };
+            let batch_sequences = unsafe { &mut *state.batch_sequences.get() };
             let current_size = batch_list.len();
 
             for (i, record) in batch_list[..current_size].iter_mut().enumerate() {
                 if record.prompt_length == 0 {
-                    match batch_prompts.write_prompt(i, &prompt, &state.tokenizer) {
+                    match batch_sequences.write_prompt(i, &prompt, &state.tokenizer) {
                         Ok(write_len) => {
                             record.prompt_length = write_len;
                             found_slot = Some((i, record.notify.clone()));
@@ -141,14 +141,14 @@ async fn chat_completions(
     let generated_text = {
         let (start, end, capacity, sequences_ptr) = {
             let batch_list = unsafe { &*state.batch_list.get() };
-            let batch_prompts_meta = unsafe { &*state.batch_prompts.get() };
+            let batch_sequences_meta = unsafe { &*state.batch_sequences.get() };
             let record = &batch_list[slot_index];
-            let base = slot_index * batch_prompts_meta.col_size;
+            let base = slot_index * batch_sequences_meta.col_size;
             (
                 base + record.prompt_length,
                 base + record.sequence_index,
-                batch_prompts_meta.row_size * batch_prompts_meta.col_size,
-                batch_prompts_meta.sequences,
+                batch_sequences_meta.row_size * batch_sequences_meta.col_size,
+                batch_sequences_meta.sequences,
             )
         };
 
@@ -256,14 +256,14 @@ fn generate_id() -> String {
 // ===== 主函数 =====
 
 pub async fn run(
-    batch_prompts: Arc<SharedMut<BatchPrompt>>,
+    batch_sequences: Arc<SharedMut<BatchSequence>>,
     batch_list: Arc<SharedMut<Vec<BatchRecord>>>,
     tokenizer: Arc<Tokenizer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动单线程架构的 OpenAI 兼容服务器...");
 
     let state = AppState {
-        batch_prompts,
+        batch_sequences,
         batch_list,
         tokenizer,
     };
@@ -298,14 +298,13 @@ pub async fn run(
 
                         // 模拟生成过程：写入几个简单的 token id
                         {
-                            let batch_prompts = unsafe { &mut *loop_state.batch_prompts.get() };
-                            let start = i * batch_prompts.col_size + record.prompt_length;
+                            let batch_sequences = unsafe { &mut *loop_state.batch_sequences.get() };
+                            let start = i * batch_sequences.col_size + record.prompt_length;
                             // 模拟写入 "Hello" 类似的 token ids
                             for j in 0..5 {
-                                if start + j < batch_prompts.row_size * batch_prompts.col_size {
+                                if start + j < batch_sequences.row_size * batch_sequences.col_size {
                                     unsafe {
-                                        *batch_prompts.sequences.add(start + j) =
-                                            77usize + j;
+                                        *batch_sequences.sequences.add(start + j) = 77usize + j;
                                     }
                                 }
                             }
@@ -334,5 +333,3 @@ pub async fn run(
     axum::serve(listener, app).await?;
     Ok(())
 }
-
-

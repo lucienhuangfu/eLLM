@@ -6,7 +6,7 @@ use ellm::mem_mgr::allocator::allocate_init;
 use ellm::qwen3_moe::config::Config;
 use ellm::qwen3_moe::model::Model;
 use ellm::qwen3_moe::rope::precompute_freqs_cis_t;
-use ellm::serving::batch_prompt::BatchPrompt;
+use ellm::serving::batch_sequence::BatchSequence;
 use ellm::serving::runner::ServingRunner;
 use ellm::serving::schedule::BatchScheduler;
 use ellm::serving::server;
@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("无法加载分词器 {}: {}", tokenizer_path, e))?;
     let tokenizer = Arc::new(tokenizer);
 
-    let batch_prompts = Arc::new(SharedMut::new(BatchPrompt::new(
+    let batch_sequences = Arc::new(SharedMut::new(BatchSequence::new(
         sequences,
         batch_size,
         sequence_capacity,
@@ -75,6 +75,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runner.start();
     });
 
-    server::run(batch_prompts, batch_list, tokenizer).await?;
+    server::run(batch_sequences, batch_list, tokenizer).await?;
     Ok(())
 }

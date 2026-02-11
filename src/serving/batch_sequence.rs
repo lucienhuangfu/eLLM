@@ -1,13 +1,13 @@
 use tokenizers::Tokenizer;
 
 #[derive(Debug)]
-pub struct BatchPrompt {
+pub struct BatchSequence {
     pub sequences: *mut usize, // 展平的二维矩阵 [row_size][col_size]
     pub row_size: usize,
     pub col_size: usize,
 }
 
-impl BatchPrompt {
+impl BatchSequence {
     pub fn new(sequences: *mut usize, row_size: usize, col_size: usize) -> Self {
         Self {
             sequences,
@@ -40,7 +40,7 @@ impl BatchPrompt {
         }
 
         println!(
-            "Prompt 已通过 Tokenizer 写入 BatchPrompt Slot {}, 长度: {}",
+            "Prompt 已通过 Tokenizer 写入 BatchSequence Slot {}, 长度: {}",
             slot_index, write_len
         );
         Ok(write_len)
@@ -48,5 +48,5 @@ impl BatchPrompt {
 }
 
 // Raw pointer is shared without locking; callers must ensure safe access.
-unsafe impl Send for BatchPrompt {}
-unsafe impl Sync for BatchPrompt {}
+unsafe impl Send for BatchSequence {}
+unsafe impl Sync for BatchSequence {}
