@@ -89,7 +89,7 @@ where
                     // Synchronization barrier: Wait for Thread 0 to finish scheduling
                     b.wait();
 
-                    let (prefill_size, decode_size, prefill_list, decode_list, batch_list) =
+                    let (prefill_size, decode_size, prefill_list, decode_list, batch_list_guard) =
                         unsafe {
                             let state = &mut *state_ptr;
                             let (prefill_size, decode_size) = state.sizes;
@@ -99,7 +99,7 @@ where
                                 decode_size,
                                 &scheduler.prefill_list,
                                 &scheduler.decode_list,
-                                &mut scheduler.batch_list,
+                                &mut *scheduler.batch_list.get(),
                             )
                         };
 
@@ -112,7 +112,7 @@ where
                             thread_id,
                             prefill_list,
                             decode_list,
-                            batch_list,
+                            batch_list_guard,
                         );
                         b.wait();
                     }
@@ -216,19 +216,21 @@ mod test {
 
         let thread_num = core_affinity::get_core_ids().unwrap().len();
         let mut batch_scheduler = BatchScheduler::new(position_window_size, batch_size, thread_num);
-        batch_scheduler.batch_list = (0..batch_size)
-            .map(|_| BatchRecord {
+        {
+            let mut batch_list = unsafe { &mut *batch_scheduler.batch_list.get() };
+            batch_list.extend((0..batch_size).map(|_| BatchRecord {
                 sequence_index: 50,
                 snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::PrefillBegin,
                 prompt_length: 50,
-                notify: tokio::sync::Notify::new(),
-            })
-            .collect();
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            }));
+        }
 
         ServingRunner::new(output_tensor.operator_queue.take(), batch_scheduler).start();
     }
 }
+
 
 

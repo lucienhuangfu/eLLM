@@ -225,7 +225,7 @@ mod test {
                 kv_index: 0,
                 phase: Phase::Decode,
                 prompt_length: i,
-                notify: tokio::sync::Notify::new(),
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
             for j in 0..total_candidates_per_item {
                 // Create some decreasing values for each batch item
@@ -350,7 +350,7 @@ mod test {
                 kv_index: 0,
                 phase: Phase::Decode,
                 prompt_length: i,
-                notify: tokio::sync::Notify::new(),
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
             for j in 0..total_candidates_per_item {
                 // Create some decreasing values for each batch item
@@ -463,6 +463,7 @@ mod test {
         }
     }
 }
+
 
 
 

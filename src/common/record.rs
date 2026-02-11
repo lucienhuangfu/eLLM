@@ -17,7 +17,7 @@ pub struct BatchRecord {
     pub kv_index: usize,
     pub phase: Phase,
     pub prompt_length: usize,
-    pub notify: Notify,
+    pub notify: Arc<Notify>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

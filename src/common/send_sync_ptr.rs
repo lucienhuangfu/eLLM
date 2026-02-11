@@ -1,3 +1,5 @@
+use std::cell::SyncUnsafeCell;
+
 // define a struct for storing the parameters of the matrix multiplication
 pub struct ConstPtr<T> {
     pub ptr: *const T,
@@ -26,3 +28,22 @@ impl<T> Clone for MutPtr<T> {
         *self
     }
 }
+
+pub struct SharedMut<T> {
+    cell: SyncUnsafeCell<T>,
+}
+
+impl<T> SharedMut<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            cell: SyncUnsafeCell::new(value),
+        }
+    }
+
+    pub fn get(&self) -> *mut T {
+        self.cell.get()
+    }
+}
+
+unsafe impl<T> Sync for SharedMut<T> {}
+unsafe impl<T> Send for SharedMut<T> {}

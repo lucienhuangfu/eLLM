@@ -8,54 +8,13 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokenizers::Tokenizer;
 use tokio::net::TcpListener;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::Notify;
 
-use crate::common::record::{BatchList, BatchRecord, Phase};
+use crate::common::record::BatchRecord;
+use crate::common::send_sync_ptr::SharedMut;
+use crate::serving::batch_prompt::BatchPrompt;
 
 // ===== OpenAI API 结构 =====
-
-#[derive(Debug)]
-struct BatchPrompt {
-    tokens: Vec<u32>, // 展平的二维矩阵 [batch_size][capacity]
-    batch_size: usize,
-    capacity: usize,
-}
-
-impl BatchPrompt {
-    fn new(batch_size: usize, capacity: usize) -> Self {
-        Self {
-            tokens: vec![0; batch_size * capacity],
-            batch_size,
-            capacity,
-        }
-    }
-
-    fn write_prompt(
-        &mut self,
-        slot_index: usize,
-        prompt: &str,
-        tokenizer: &Tokenizer,
-    ) -> Result<usize, String> {
-        // 使用真正的分词器进行编码
-        let tokens = tokenizer
-            .encode(prompt, true)
-            .map_err(|e| format!("Tokenization failed: {}", e))?;
-        let ids = tokens.get_ids();
-        let write_len = ids.len().min(self.capacity);
-
-        // 计算在展平矩阵中的起始偏移量
-        let offset = slot_index * self.capacity;
-
-        // 将 tokens 写入对应 slot 的 buffer
-        self.tokens[offset..offset + write_len].copy_from_slice(&ids[..write_len]);
-
-        println!(
-            "Prompt 已通过 Tokenizer 写入 BatchPrompt Slot {}, 长度: {}",
-            slot_index, write_len
-        );
-        Ok(write_len)
-    }
-}
 
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionRequest {
@@ -109,8 +68,8 @@ pub struct StreamChoice {
 
 #[derive(Clone)]
 struct AppState {
-    batch_prompts: Arc<RwLock<BatchPrompt>>,
-    batch_list: Arc<RwLock<BatchList>>,
+    batch_prompts: Arc<SharedMut<BatchPrompt>>,
+    batch_list: Arc<SharedMut<Vec<BatchRecord>>>,
     tokenizer: Arc<Tokenizer>,
 }
 
@@ -135,11 +94,11 @@ async fn chat_completions(
     let (slot_index, notifier): (usize, Arc<Notify>) = loop {
         let mut found_slot = None;
         {
-            let mut batch_list = state.batch_list.write().await;
-            let mut batch_prompts = state.batch_prompts.write().await;
-            let current_size = batch_list.current_size;
+            let batch_list = unsafe { &mut *state.batch_list.get() };
+            let batch_prompts = unsafe { &mut *state.batch_prompts.get() };
+            let current_size = batch_list.len();
 
-            for (i, record) in batch_list.records[..current_size].iter_mut().enumerate() {
+            for (i, record) in batch_list[..current_size].iter_mut().enumerate() {
                 if record.prompt_length == 0 {
                     match batch_prompts.write_prompt(i, &prompt, &state.tokenizer) {
                         Ok(write_len) => {
@@ -180,23 +139,29 @@ async fn chat_completions(
 
     // 根据 sequence_index - prompt_length 提取生成的 tokens 并解码
     let generated_text = {
-        let (start, end, capacity) = {
-            let batch_list = state.batch_list.read().await;
-            let record = &batch_list.records[slot_index];
-            let batch_prompts_meta = state.batch_prompts.read().await;
-            let base = slot_index * batch_prompts_meta.capacity;
+        let (start, end, capacity, sequences_ptr) = {
+            let batch_list = unsafe { &*state.batch_list.get() };
+            let batch_prompts_meta = unsafe { &*state.batch_prompts.get() };
+            let record = &batch_list[slot_index];
+            let base = slot_index * batch_prompts_meta.col_size;
             (
                 base + record.prompt_length,
                 base + record.sequence_index,
-                batch_prompts_meta.tokens.len(),
+                batch_prompts_meta.row_size * batch_prompts_meta.col_size,
+                batch_prompts_meta.sequences,
             )
         };
 
         if end > start && end <= capacity {
-            let batch_prompts = state.batch_prompts.read().await;
+            let mut token_ids: Vec<u32> = Vec::with_capacity(end - start);
+            for idx in start..end {
+                unsafe {
+                    token_ids.push(*sequences_ptr.add(idx) as u32);
+                }
+            }
             state
                 .tokenizer
-                .decode(&batch_prompts.tokens[start..end], true)
+                .decode(&token_ids, true)
                 .unwrap_or_else(|_| String::from("Decode error"))
         } else {
             String::new()
@@ -205,8 +170,8 @@ async fn chat_completions(
 
     // 释放槽位并重置状态
     {
-        let mut batch_list = state.batch_list.write().await;
-        let record = &mut batch_list.records[slot_index];
+        let batch_list = unsafe { &mut *state.batch_list.get() };
+        let record = &mut batch_list[slot_index];
         record.prompt_length = 0;
         record.sequence_index = 0;
         record.kv_index = 0;
@@ -290,35 +255,12 @@ fn generate_id() -> String {
 
 // ===== 主函数 =====
 
-#[tokio::main(flavor = "current_thread")]
-pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    batch_prompts: Arc<SharedMut<BatchPrompt>>,
+    batch_list: Arc<SharedMut<Vec<BatchRecord>>>,
+    tokenizer: Arc<Tokenizer>,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动单线程架构的 OpenAI 兼容服务器...");
-
-    // 加载分词器
-    let tokenizer_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
-    let tokenizer = Tokenizer::from_file(tokenizer_path)
-        .map_err(|e| format!("无法加载分词器 {}: {}", tokenizer_path, e))?;
-    let tokenizer = Arc::new(tokenizer);
-
-    // 在 main 中创建全局共享的 batch_prompts 和 batch_list
-    let batch_size = 4;
-    let capacity = 50000;
-    let batch_prompts = Arc::new(RwLock::new(BatchPrompt::new(batch_size, capacity)));
-
-    let batch_records = (0..batch_size)
-        .map(|_| BatchRecord {
-            sequence_index: 0,
-            kv_index: 0,
-            phase: Phase::Prefill_begin,
-            prompt_length: 0,
-            notify: Arc::new(tokio::sync::Notify::new()),
-        })
-        .collect::<Vec<_>>();
-
-    let batch_list = Arc::new(RwLock::new(BatchList {
-        records: batch_records.into_boxed_slice(),
-        current_size: batch_size,
-    }));
 
     let state = AppState {
         batch_prompts,
@@ -345,10 +287,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             let mut processed = false;
             {
-                let mut batch_list = loop_state.batch_list.write().await;
-                let current_size = batch_list.current_size;
+                let batch_list = unsafe { &mut *loop_state.batch_list.get() };
+                let current_size = batch_list.len();
 
-                for (i, record) in batch_list.records[..current_size].iter_mut().enumerate() {
+                for (i, record) in batch_list[..current_size].iter_mut().enumerate() {
                     // 如果有 prompt 且处于等待推理的状态
                     if record.prompt_length > 0 && record.sequence_index == 0 {
                         // 模拟推理逻辑：
@@ -356,12 +298,15 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         // 模拟生成过程：写入几个简单的 token id
                         {
-                            let mut batch_prompts = loop_state.batch_prompts.write().await;
-                            let start = i * batch_prompts.capacity + record.prompt_length;
+                            let batch_prompts = unsafe { &mut *loop_state.batch_prompts.get() };
+                            let start = i * batch_prompts.col_size + record.prompt_length;
                             // 模拟写入 "Hello" 类似的 token ids
                             for j in 0..5 {
-                                if start + j < batch_prompts.tokens.len() {
-                                    batch_prompts.tokens[start + j] = 77 + (j as u32);
+                                if start + j < batch_prompts.row_size * batch_prompts.col_size {
+                                    unsafe {
+                                        *batch_prompts.sequences.add(start + j) =
+                                            77usize + j;
+                                    }
                                 }
                             }
                         }
@@ -389,4 +334,5 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
     Ok(())
 }
+
 

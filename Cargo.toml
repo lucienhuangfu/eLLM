@@ -21,7 +21,9 @@ itertools = "0.14.0"
 num = "0.4.3"
 safetensors = "0.4.1"
 memmap2 = "0.9.4"
-
+tokenizers = "0.22.1"
+async-stream = "0.3.6"
+axum = "0.8.4"
 
 [build-dependencies]
 raw-cpuid = "11.0.2"

@@ -246,7 +246,7 @@ mod test {
                 kv_index: i,
                 phase: Phase::Decode,
                 prompt_length: i,
-                notify: tokio::sync::Notify::new(),
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             })
             .collect();
 
@@ -300,7 +300,7 @@ mod test {
                 kv_index: i,
                 phase: Phase::Decode,
                 prompt_length: i,
-                notify: tokio::sync::Notify::new(),
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             })
             .collect();
 
@@ -319,6 +319,7 @@ mod test {
         }
     }
 }
+
 
 
 

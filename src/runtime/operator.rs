@@ -323,7 +323,7 @@ mod test {
                 kv_index: 0,
                 phase: Phase::Decode,
                 prompt_length: 0,
-                notify: tokio::sync::Notify::new(),
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             })
             .collect();
         let mut batch_list = batch_records;
@@ -1948,6 +1948,7 @@ mod test {
     }
 
 */
+
 
 
 

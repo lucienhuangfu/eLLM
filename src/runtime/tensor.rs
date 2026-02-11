@@ -978,7 +978,7 @@ mod test {
                 kv_index: 0,
                 phase: Phase::Decode,
                 prompt_length: i,
-                notify: tokio::sync::Notify::new(),
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
         }
         let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
@@ -1133,7 +1133,7 @@ mod test {
                 kv_index: 0,
                 phase: Phase::Decode,
                 prompt_length: i,
-                notify: tokio::sync::Notify::new(),
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
         }
         let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
@@ -2877,6 +2877,7 @@ mod tests {
 
 
 */
+
 
 
 
