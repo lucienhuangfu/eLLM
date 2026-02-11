@@ -1,4 +1,4 @@
-use crate::common::record::{BatchRecord, SequenceSlice};
+use crate::common::record::{SequenceSlice, SequenceState};
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
@@ -85,7 +85,7 @@ where
         thread_id: usize,
         prefill_list: &[Vec<SequenceSlice>],
         decode_list: &[Vec<SequenceSlice>],
-        batch_list: &mut Vec<BatchRecord>,
+        batch_list: &mut Vec<SequenceState>,
     ) {
         let prefill_slices = thread_slices(prefill_list, thread_id);
         let decode_slices = thread_slices(decode_list, thread_id);
@@ -192,7 +192,7 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::common::record::{BatchRecord, Phase, SequenceSlice};
+    use crate::common::record::{Phase, SequenceSlice, SequenceState};
     use approx::assert_ulps_eq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use std::sync::{Arc, Barrier};
@@ -316,8 +316,8 @@ mod test {
         let mut output_sequences = vec![0usize; batch_size];
         let eos_id = 0usize;
 
-        let batch_records: Vec<BatchRecord> = (0..batch_size)
-            .map(|_| BatchRecord {
+        let batch_records: Vec<SequenceState> = (0..batch_size)
+            .map(|_| SequenceState {
                 sequence_index: 0,
                 snapshot_sequence_index: 0,
                 kv_index: 0,

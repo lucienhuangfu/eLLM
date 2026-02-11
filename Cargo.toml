@@ -24,6 +24,7 @@ memmap2 = "0.9.4"
 tokenizers = "0.22.1"
 async-stream = "0.3.6"
 axum = "0.8.4"
+minijinja = "2.12.0"
 
 [build-dependencies]
 raw-cpuid = "11.0.2"

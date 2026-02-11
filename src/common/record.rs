@@ -10,8 +10,7 @@ pub struct SequenceSlice {
     pub length: usize,
 }
 
-
-pub struct BatchRecord {
+pub struct SequenceState {
     pub sequence_index: usize,
     pub snapshot_sequence_index: usize,
     pub kv_index: usize,
@@ -28,5 +27,3 @@ pub enum Phase {
     Decode,
     Eos,
 }
-
-

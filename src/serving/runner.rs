@@ -7,8 +7,10 @@ use std::thread;
 
 use super::super::runtime::operator::Operator;
 
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
-use crate::common::record::{BatchRecord, Phase};
+use crate::common::num_traits::{
+    exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt,
+};
+use crate::common::record::{Phase, SequenceState};
 use crate::serving::schedule::BatchScheduler;
 
 /// Runs the inference serving loop.
@@ -89,19 +91,18 @@ where
                     // Synchronization barrier: Wait for Thread 0 to finish scheduling
                     b.wait();
 
-                    let (prefill_size, decode_size, prefill_list, decode_list, batch_list_guard) =
-                        unsafe {
-                            let state = &mut *state_ptr;
-                            let (prefill_size, decode_size) = state.sizes;
-                            let scheduler = &mut state.scheduler;
-                            (
-                                prefill_size,
-                                decode_size,
-                                &scheduler.prefill_list,
-                                &scheduler.decode_list,
-                                &mut *scheduler.batch_list.get(),
-                            )
-                        };
+                    let (prefill_size, decode_size, prefill_list, decode_list, batch_list_guard) = unsafe {
+                        let state = &mut *state_ptr;
+                        let (prefill_size, decode_size) = state.sizes;
+                        let scheduler = &mut state.scheduler;
+                        (
+                            prefill_size,
+                            decode_size,
+                            &scheduler.prefill_list,
+                            &scheduler.decode_list,
+                            &mut *scheduler.batch_list.get(),
+                        )
+                    };
 
                     // Execute the operator queue in parallel
                     for operator in queue.iter() {
@@ -139,10 +140,10 @@ mod test {
     use std::rc::Rc;
 
     use super::*;
-    use crate::common::record::BatchRecord;
+    use crate::common::record::SequenceState;
     use crate::mem_mgr::cache::Cache;
-    use crate::runtime::tensor::{Tensor, TensorCtx};
     use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
+    use crate::runtime::tensor::{Tensor, TensorCtx};
 
     // use crate::mem_mgr::allocator::allocate_init;
 
@@ -176,10 +177,7 @@ mod test {
         );
 
         let shape = vec![position_window_size, batch_size, hidden_size];
-        let input = ctx.tensor(
-            shape.clone(),
-            String::from("model.layers.0.input_tensor"),
-        );
+        let input = ctx.tensor(shape.clone(), String::from("model.layers.0.input_tensor"));
 
         let residual = ctx.tensor(
             shape.clone(),
@@ -218,7 +216,7 @@ mod test {
         let mut batch_scheduler = BatchScheduler::new(position_window_size, batch_size, thread_num);
         {
             let mut batch_list = unsafe { &mut *batch_scheduler.batch_list.get() };
-            batch_list.extend((0..batch_size).map(|_| BatchRecord {
+            batch_list.extend((0..batch_size).map(|_| SequenceState {
                 sequence_index: 50,
                 snapshot_sequence_index: 0,
                 kv_index: 0,
@@ -231,6 +229,3 @@ mod test {
         ServingRunner::new(output_tensor.operator_queue.take(), batch_scheduler).start();
     }
 }
-
-
-

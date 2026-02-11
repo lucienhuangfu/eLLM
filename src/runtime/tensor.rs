@@ -6,16 +6,16 @@ use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
+use crate::common::matmul_params::MatMulParams;
 use crate::common::tensor_utils::get_strides;
 use crate::mem_mgr::allocator::allocate_init;
 use crate::mem_mgr::cache::Cache;
-use crate::common::matmul_params::MatMulParams;
 
 use crate::ops::left_vector::LiftVector;
-use crate::ops::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;
 use crate::ops::normalization::lookup_rms_map::LookupRMSMap;
+use crate::ops::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;
 
-use crate::ops::softmax::topk_softmax::TopKSoftmax;
+use crate::common::record::{Phase, SequenceSlice, SequenceState};
 use crate::ops::attention::attention::Attention;
 use crate::ops::experts::experts_matmul_mul::ExpertsMatMulDown;
 use crate::ops::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
@@ -23,12 +23,12 @@ use crate::ops::experts::experts_merge_add::ExpertsMergeAdd;
 use crate::ops::matmul::matmul::MatMul;
 use crate::ops::matmul::matmul3::MatMul3;
 use crate::ops::matmul::matmul_add::MatMulAdd;
-use crate::common::record::{BatchRecord, Phase, SequenceSlice};
+use crate::ops::softmax::topk_softmax::TopKSoftmax;
 // use super::super::ops::mul::matmul_silu_mul_matmul::MatMulSilu;
-use crate::ops::matmul::matmul_topk::MatMulTopK;
-use crate::runtime::operator::Operator;
 use crate::ops::elementwise::add_zip::AddZipMap;
+use crate::ops::matmul::matmul_topk::MatMulTopK;
 use crate::ops::normalization::add_rms_zip::AddRMSZipMap;
+use crate::runtime::operator::Operator;
 // use super::super::ops::zip_map::complex_zip::ComplexZipMap;
 // use super::super::ops::zip_map::silu_mul_zip::SiluMulZipMap;
 use crate::ops::normalization::rms_map::RMSMap;
@@ -98,7 +98,12 @@ where
         )
     }
 
-    pub fn tensor_from_vec(&self, shape: Vec<usize>, data: Vec<T>, tensor_name: String) -> Tensor<T> {
+    pub fn tensor_from_vec(
+        &self,
+        shape: Vec<usize>,
+        data: Vec<T>,
+        tensor_name: String,
+    ) -> Tensor<T> {
         Tensor::from_vec(
             shape,
             data,
@@ -229,8 +234,6 @@ where
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
-
-
 
     pub fn experts_merge_add(
         &self,
@@ -699,7 +702,6 @@ where
         }
     }
 
-
     pub fn topk_softmax(
         &self,
         indices_ptr: *const usize,
@@ -814,7 +816,7 @@ where
         self.operator_queue.borrow_mut().push(operator);
     }
 
-            pub fn rms(&self, eps: T, decode_only_flag: bool, scope_name: String) -> Self {
+    pub fn rms(&self, eps: T, decode_only_flag: bool, scope_name: String) -> Self {
         let output_tensor = Tensor::<T>::from_cache(
             self.shape.clone(),
             format!("{}.output", scope_name),
@@ -972,7 +974,7 @@ mod test {
 
         let mut batch_list = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
-            batch_list.push(BatchRecord {
+            batch_list.push(SequenceState {
                 sequence_index: 0,
                 snapshot_sequence_index: 0,
                 kv_index: 0,
@@ -1127,7 +1129,7 @@ mod test {
 
         let mut batch_list = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
-            batch_list.push(BatchRecord {
+            batch_list.push(SequenceState {
                 sequence_index: 0,
                 snapshot_sequence_index: 0,
                 kv_index: 0,
@@ -2855,7 +2857,7 @@ mod tests {
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
     }
-    
+
         pub fn silu_mul(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
         let output_tensor = Tensor::<T>::from_cache(
             self.shape.clone(),
@@ -2877,10 +2879,3 @@ mod tests {
 
 
 */
-
-
-
-
-
-
-

@@ -480,6 +480,7 @@ dependencies = [
  "env_logger",
  "itertools 0.14.0",
  "memmap2",
+ "minijinja",
  "num",
  "num-traits",
  "num_cpus",
@@ -861,6 +862,15 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+
+[[package]]
+name = "minijinja"
+version = "2.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b479616bb6f0779fb0f3964246beda02d4b01144e1b0d5519616e012ccc2a245"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "minimal-lexical"

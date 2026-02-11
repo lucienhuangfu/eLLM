@@ -10,7 +10,7 @@ use tokenizers::Tokenizer;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
-use crate::common::record::BatchRecord;
+use crate::common::record::{Phase, SequenceState};
 use crate::common::send_sync_ptr::SharedMut;
 use crate::serving::batch_sequence::BatchSequence;
 
@@ -69,7 +69,7 @@ pub struct StreamChoice {
 #[derive(Clone)]
 struct AppState {
     batch_sequences: Arc<SharedMut<BatchSequence>>,
-    batch_list: Arc<SharedMut<Vec<BatchRecord>>>,
+    batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     tokenizer: Arc<Tokenizer>,
 }
 
@@ -99,10 +99,11 @@ async fn chat_completions(
             let current_size = batch_list.len();
 
             for (i, record) in batch_list[..current_size].iter_mut().enumerate() {
-                if record.prompt_length == 0 {
+                if record.phase == Phase::Eos {
                     match batch_sequences.write_prompt(i, &prompt, &state.tokenizer) {
                         Ok(write_len) => {
                             record.prompt_length = write_len;
+                            record.phase = Phase::PrefillBegin;
                             found_slot = Some((i, record.notify.clone()));
                             break;
                         }
@@ -175,6 +176,7 @@ async fn chat_completions(
         record.prompt_length = 0;
         record.sequence_index = 0;
         record.kv_index = 0;
+        record.phase = Phase::Eos;
     }
 
     if is_stream {
@@ -257,7 +259,7 @@ fn generate_id() -> String {
 
 pub async fn run(
     batch_sequences: Arc<SharedMut<BatchSequence>>,
-    batch_list: Arc<SharedMut<Vec<BatchRecord>>>,
+    batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     tokenizer: Arc<Tokenizer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动单线程架构的 OpenAI 兼容服务器...");

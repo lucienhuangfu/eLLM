@@ -4,7 +4,7 @@ use std::ptr;
 
 use crate::common::num_traits::Exp;
 use crate::common::num_traits::Sqrt;
-use crate::common::record::{BatchRecord, Phase, SequenceSlice};
+use crate::common::record::{Phase, SequenceSlice, SequenceState};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::ops::traits::map_trait::TopKSoftmaxTrait;
@@ -61,7 +61,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         thread_num: usize,
         _thread_id: usize,
         decode_list: &[SequenceSlice],
-        batch_list: &mut Vec<BatchRecord>,
+        batch_list: &mut Vec<SequenceState>,
     ) {
         unsafe {
             let input_indices_ptr = self.input_indices_ptr.ptr;
@@ -192,7 +192,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::common::record::{BatchRecord, Phase, SequenceSlice};
+    use crate::common::record::{Phase, SequenceSlice, SequenceState};
     use approx::assert_ulps_eq;
 
     #[test]
@@ -211,7 +211,7 @@ mod test {
         let mut user_records_vec = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
-            user_records_vec.push(BatchRecord {
+            user_records_vec.push(SequenceState {
                 sequence_index: 1,
                 snapshot_sequence_index: 0,
                 kv_index: 0,
@@ -336,7 +336,7 @@ mod test {
         let mut user_records_vec = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
-            user_records_vec.push(BatchRecord {
+            user_records_vec.push(SequenceState {
                 sequence_index: 1,
                 snapshot_sequence_index: 0,
                 kv_index: 0,

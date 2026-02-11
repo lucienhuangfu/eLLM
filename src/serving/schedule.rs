@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crate::common::record::{BatchRecord, Phase, SequenceSlice};
+use crate::common::record::{Phase, SequenceSlice, SequenceState};
 use crate::common::send_sync_ptr::SharedMut;
 
 struct FairTaskAllocator {
@@ -174,7 +174,7 @@ impl SliceScheduler {
 pub struct BatchScheduler {
     pub prefill_list: Vec<Vec<SequenceSlice>>,
     pub decode_list: Vec<Vec<SequenceSlice>>,
-    pub batch_list: Arc<SharedMut<Vec<BatchRecord>>>,
+    pub batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     decode_scheduler: SliceScheduler,
     prefill_scheduler: SliceScheduler,
     max_prefill_size: usize,
@@ -188,7 +188,7 @@ impl BatchScheduler {
     // 2) Call schedule_batch and verify prefill/decode counts and slices.
     // Example:
     // let mut scheduler = BatchScheduler::new(8, 1, 1);
-    // scheduler.batch_list.push(BatchRecord {
+    // scheduler.batch_list.push(SequenceState {
     //     phase: Phase::PrefillBegin,
     //     sequence_index: 4,
     //     snapshot_sequence_index: 0,
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn schedule_prefill_only() {
         // Input:
-        // - Eight BatchRecord in Phase::PrefillBegin
+        // - Eight SequenceState in Phase::PrefillBegin
         // - sequence_index=6, kv_index=0 => 6 tokens remaining per record
         // - sequence_length=8, batch_size=32, thread_num=8
         // Output (expected):
@@ -406,7 +406,7 @@ mod tests {
         {
             let mut batch_list = unsafe { &mut *scheduler.batch_list.get() };
             for _ in 0..8 {
-                batch_list.push(BatchRecord {
+                batch_list.push(SequenceState {
                     phase: Phase::PrefillBegin,
                     sequence_index: 6,
                     snapshot_sequence_index: 0,

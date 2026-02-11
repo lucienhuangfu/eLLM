@@ -1,6 +1,6 @@
 #![feature(f16)]
 
-use ellm::common::record::{BatchRecord, Phase};
+use ellm::common::record::{Phase, SequenceState};
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
 use ellm::qwen3_moe::config::Config;
@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let thread_num = core_affinity::get_core_ids().unwrap().len();
     let mut batch_scheduler = BatchScheduler::new(sequence_length, batch_size, thread_num);
     let mut batch_list = Vec::with_capacity(batch_size);
-    batch_list.extend((0..batch_size).map(|i| BatchRecord {
+    batch_list.extend((0..batch_size).map(|i| SequenceState {
         sequence_index: i,
         snapshot_sequence_index: 0,
         kv_index: i,
