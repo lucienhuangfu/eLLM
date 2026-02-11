@@ -42,19 +42,21 @@ impl<T> LiftVector<T> {
         _thread_num: usize,
         _thread_id: usize,
     ) {
-        unsafe {
-            let ptr = self.ptr.ptr;
+        if _prefill_size > 0 {
+            unsafe {
+                let ptr = self.ptr.ptr;
 
-            for slice in decode_tokens {
-                for offset in 0..slice.length {
-                    let source_index = slice.token_start_index + offset;
-                    let destination_index = slice.lift_index + offset;
+                for slice in decode_tokens {
+                    for offset in 0..slice.length {
+                        let source_index = slice.token_start_index + offset;
+                        let destination_index = slice.lift_index + offset;
 
-                    let source_ptr = ptr.add(source_index * self.length);
-                    let destination_ptr = ptr.add(destination_index * self.length);
+                        let source_ptr = ptr.add(source_index * self.length);
+                        let destination_ptr = ptr.add(destination_index * self.length);
 
-                    // copy_nonoverlapping 类似于 C 的 memcpy，假设内存区域不重叠
-                    ptr::copy_nonoverlapping(source_ptr, destination_ptr, self.length);
+                        // copy_nonoverlapping 类似于 C 的 memcpy，假设内存区域不重叠
+                        ptr::copy_nonoverlapping(source_ptr, destination_ptr, self.length);
+                    }
                 }
             }
         }
@@ -110,4 +112,3 @@ mod test {
         assert_eq!(data[4..8], [5.0, 6.0, 7.0, 8.0]);
     }
 }
-
