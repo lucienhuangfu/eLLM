@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
-use crate::num_traits::Sigmoid;
-use crate::num_traits::Sqrt;
-use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::Sigmoid;
+use crate::common::num_traits::Sqrt;
+use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::runtime::tensor::{Tensor, TensorCtx};
 

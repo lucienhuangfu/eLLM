@@ -7,7 +7,7 @@ use std::thread;
 
 use super::super::runtime::operator::Operator;
 
-use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
+use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
 use crate::common::record::{BatchRecord, Phase};
 use crate::serving::schedule::BatchScheduler;
 

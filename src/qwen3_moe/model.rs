@@ -16,10 +16,10 @@ use std::time::Instant;
 // use serde::{Deserialize, Serialize};
 
 use super::config::Config;
-use crate::num_traits::FromNumber;
-use crate::num_traits::Sigmoid;
-use crate::num_traits::Sqrt;
-use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::FromNumber;
+use crate::common::num_traits::Sigmoid;
+use crate::common::num_traits::Sqrt;
+use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 // use super::super::ops::map::rms_map::RMSMap;
 use super::super::runtime::operator::Operator;

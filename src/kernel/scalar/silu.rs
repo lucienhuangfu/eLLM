@@ -1,5 +1,5 @@
 use std::ops::{Add, Mul, Div, Neg};
-use crate::num_traits::Sigmoid;
+use crate::common::num_traits::Sigmoid;
 
 
 

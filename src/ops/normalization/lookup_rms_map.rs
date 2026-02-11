@@ -7,7 +7,7 @@ use crate::ops::traits::map_trait::MapTrait;
 // use crate::common::record::TaskList;
 use crate::common::record::SequenceSlice;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::num_traits::Sqrt;
+use crate::common::num_traits::Sqrt;
 
 // Fuse embedding lookup with RMS normalization
 #[derive(Clone)]

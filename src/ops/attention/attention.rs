@@ -4,7 +4,7 @@ use std::ptr;
 
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
-use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 use crate::ops::traits::mul_trait::AttentionTrait;
 use crate::ops::assign::assign;

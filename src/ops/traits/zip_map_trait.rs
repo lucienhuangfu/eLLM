@@ -1,6 +1,6 @@
 // use num_traits::real::Real;
 // use std::ops::{Add, Sub, Mul,  Div, Neg};
-// use crate::num_traits::Sigmoid;
+// use crate::common::num_traits::Sigmoid;
 
 pub trait ZipMapTrait<T> 
 // where

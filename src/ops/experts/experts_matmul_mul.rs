@@ -472,7 +472,7 @@ mod tests {
     use std::arch::is_x86_feature_detected;
     use std::mem;
 
-    use crate::num_traits::FromNumber;
+    use crate::common::num_traits::FromNumber;
 
     // ========================================================================
     // Helpers
@@ -994,7 +994,7 @@ mod tests {
             return;
         }
 
-        use crate::num_traits::FromNumber;
+        use crate::common::num_traits::FromNumber;
 
         #[inline]
         fn f16_from_f32(x: f32) -> f16 {
@@ -1141,7 +1141,7 @@ mod tests {
             return;
         }
 
-        use crate::num_traits::FromNumber;
+        use crate::common::num_traits::FromNumber;
         #[inline]
         fn f16_from_f32(x: f32) -> f16 {
             <f16 as FromNumber>::from_f32(x)

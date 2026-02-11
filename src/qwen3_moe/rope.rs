@@ -1,4 +1,4 @@
-use crate::num_traits::FromNumber;
+use crate::common::num_traits::FromNumber;
 
 #[inline]
 fn inv_freqs(dim: usize, theta: f32) -> Vec<f32> {

@@ -4,9 +4,9 @@ use std::rc::Rc;
 
 use serde::de;
 
-use crate::num_traits::Sigmoid;
-use crate::num_traits::Sqrt;
-use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::Sigmoid;
+use crate::common::num_traits::Sqrt;
+use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::common::matmul_params::MatMulParams;
 use super::super::mem_mgr::cache::Cache;

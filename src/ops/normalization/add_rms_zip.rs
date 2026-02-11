@@ -5,7 +5,7 @@ use crate::ops::traits::zip_map_trait::ZipMapTrait;
 use crate::ops::assign::assign;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
-use crate::num_traits::Sqrt;
+use crate::common::num_traits::Sqrt;
 
 #[derive(Clone)]
 pub struct AddRMSZipMap<T> {

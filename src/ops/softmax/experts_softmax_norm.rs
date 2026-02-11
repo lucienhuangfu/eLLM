@@ -5,7 +5,7 @@ use crate::ops::traits::map_trait::SoftmaxTrait;
 use crate::ops::assign::assign;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::scalar;
-use crate::num_traits::{exp::Exp, sqrt::Sqrt};
+use crate::common::num_traits::{exp::Exp, sqrt::Sqrt};
 use crate::kernel::x86_64;
 use crate::mem_mgr::allocator::allocate_init;
 

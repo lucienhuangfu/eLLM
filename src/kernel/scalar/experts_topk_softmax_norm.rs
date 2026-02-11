@@ -1,4 +1,4 @@
-use crate::num_traits::Exp;
+use crate::common::num_traits::Exp;
 use std::ops::{AddAssign, Div, Sub};
 use std::ptr;
 

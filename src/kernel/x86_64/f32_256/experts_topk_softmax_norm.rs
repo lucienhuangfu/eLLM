@@ -1,4 +1,4 @@
-// use crate::num_traits::Exp;
+// use crate::common::num_traits::Exp;
 
 use num_traits::Inv;
 

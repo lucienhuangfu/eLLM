@@ -1,7 +1,7 @@
 use crate::common::record::{BatchRecord, SequenceSlice};
-use crate::num_traits::Sigmoid;
-use crate::num_traits::Sqrt;
-use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::Sigmoid;
+use crate::common::num_traits::Sqrt;
+use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::ops::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;

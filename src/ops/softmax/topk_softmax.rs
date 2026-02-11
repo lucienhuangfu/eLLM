@@ -6,8 +6,8 @@ use crate::ops::traits::map_trait::TopKSoftmaxTrait;
 use crate::common::record::{BatchRecord, Phase, SequenceSlice};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
-use crate::num_traits::Exp;
-use crate::num_traits::Sqrt;
+use crate::common::num_traits::Exp;
+use crate::common::num_traits::Sqrt;
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {

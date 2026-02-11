@@ -1,5 +1,5 @@
 use std::ops::{Add, Sub, Mul, Div};
-use crate::num_traits::{neg_infinity::NegInfinity, exp::Exp};
+use crate::common::num_traits::{neg_infinity::NegInfinity, exp::Exp};
 
 
 

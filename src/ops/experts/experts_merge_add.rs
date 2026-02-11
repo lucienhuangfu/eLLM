@@ -476,7 +476,7 @@ fn test_merge_add_respects_run_batch_smaller_than_capacity() {
         return;
     }
 
-    use crate::num_traits::FromNumber;
+    use crate::common::num_traits::FromNumber;
 
     #[inline]
     fn f16_from_f32(x: f32) -> f16 {
