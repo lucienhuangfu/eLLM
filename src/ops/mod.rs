@@ -8,4 +8,3 @@ pub mod normalization;
 pub mod softmax;
 pub mod traits;
 pub mod vector;
-

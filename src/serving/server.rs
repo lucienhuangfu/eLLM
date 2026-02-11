@@ -103,7 +103,10 @@ async fn chat_completions(
                     match batch_sequences.write_prompt(i, &prompt, &state.tokenizer) {
                         Ok(write_len) => {
                             record.prompt_length = write_len;
-                            record.phase = Phase::PrefillBegin;
+                            record.sequence_index = write_len;
+                            record.snapshot_sequence_index = write_len;
+                            record.kv_index = write_len;
+                            record.phase = Phase::Decode;
                             found_slot = Some((i, record.notify.clone()));
                             break;
                         }
@@ -282,55 +285,7 @@ pub async fn run(
     println!("  POST /v1/chat/completions - OpenAI 兼容的聊天完成 (单线程推理模式)");
     println!("  GET  /status - 服务器状态");
 
-    // 启动背景推理循环 (在同一个单线程 runtime 上运行)
-    let loop_state = state.clone();
-    tokio::spawn(async move {
-        println!("背景推理任务已启动");
-        loop {
-            let mut processed = false;
-            {
-                let batch_list = unsafe { &mut *loop_state.batch_list.get() };
-                let current_size = batch_list.len();
-
-                for (i, record) in batch_list[..current_size].iter_mut().enumerate() {
-                    // 如果有 prompt 且处于等待推理的状态
-                    if record.prompt_length > 0 && record.sequence_index == 0 {
-                        // 模拟推理逻辑：
-                        // 在现实中，这里会启动真正的推理引擎。
-
-                        // 模拟生成过程：写入几个简单的 token id
-                        {
-                            let batch_sequences = unsafe { &mut *loop_state.batch_sequences.get() };
-                            let start = i * batch_sequences.col_size + record.prompt_length;
-                            // 模拟写入 "Hello" 类似的 token ids
-                            for j in 0..5 {
-                                if start + j < batch_sequences.row_size * batch_sequences.col_size {
-                                    unsafe {
-                                        *batch_sequences.sequences.add(start + j) = 77usize + j;
-                                    }
-                                }
-                            }
-                        }
-
-                        // 设定生成的长度
-                        record.sequence_index = record.prompt_length + 5;
-
-                        record.notify.notify_one();
-                        println!("Slot {} 推理完成 (单线程模拟)", i);
-                        processed = true;
-                    }
-                }
-            }
-
-            if !processed {
-                // 如果没有待处理任务，稍微休眠以避免 100% CPU 占用
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            } else {
-                // 处理完一批后，yield 让出执行权给 HTTP server
-                tokio::task::yield_now().await;
-            }
-        }
-    });
+    println!("推理由外部 runner 提供，HTTP 仅负责接收请求与响应");
 
     axum::serve(listener, app).await?;
     Ok(())

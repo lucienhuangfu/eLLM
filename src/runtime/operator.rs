@@ -1,11 +1,11 @@
-use crate::common::record::{SequenceSlice, SequenceState};
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::record::{SequenceSlice, SequenceState};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
-use crate::ops::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;
 use crate::ops::normalization::lookup_rms_map::LookupRMSMap;
+use crate::ops::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;
 
 use crate::ops::softmax::topk_softmax::TopKSoftmax;
 // Add missing imports for zip map operations
@@ -13,15 +13,15 @@ use crate::ops::matmul::matmul::MatMul;
 use crate::ops::matmul::matmul3::MatMul3;
 use crate::ops::matmul::matmul_add::MatMulAdd;
 // use super::mul::matmul_silu_mul_matmul::MatMulSilu;
-use crate::ops::vector::left_vector::LiftVector;
 use crate::ops::attention::attention::Attention;
+use crate::ops::elementwise::add_zip::AddZipMap;
 use crate::ops::experts::experts_matmul_mul::ExpertsMatMulDown;
 use crate::ops::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
 use crate::ops::experts::experts_merge_add::ExpertsMergeAdd;
 use crate::ops::matmul::matmul_topk::MatMulTopK;
 use crate::ops::normalization::add_rms_zip::AddRMSZipMap;
-use crate::ops::elementwise::add_zip::AddZipMap;
 use crate::ops::normalization::rms_map::RMSMap;
+use crate::ops::vector::left_vector::LiftVector;
 // use super::zip_map::complex_zip::ComplexZipMap;
 // use super::zip_map::silu_mul_zip::SiluMulZipMap;
 // use crate::common::matmul_params::MatMulParams;
@@ -30,10 +30,7 @@ use crate::ops::normalization::rms_map::RMSMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 
 #[inline]
-fn thread_slices<'a>(
-    list: &'a [Vec<SequenceSlice>],
-    thread_id: usize,
-) -> &'a [SequenceSlice] {
+fn thread_slices<'a>(list: &'a [Vec<SequenceSlice>], thread_id: usize) -> &'a [SequenceSlice] {
     list.get(thread_id).map(Vec::as_slice).unwrap_or(&[])
 }
 
@@ -169,14 +166,13 @@ where
             }
             Self::RMSMap(operator) => {
                 run_simple!(operator);
-            }
-/*
-            Self::SiluMulZipMap(operator) => {
-                operator.run(prefill_size, cpu_num, thread_id);
-            }
-            Self::ComplexZipMap(operator) => {
-                operator.run(prefill_size, cpu_num, thread_id);
-            }*/
+            } /*
+              Self::SiluMulZipMap(operator) => {
+                  operator.run(prefill_size, cpu_num, thread_id);
+              }
+              Self::ComplexZipMap(operator) => {
+                  operator.run(prefill_size, cpu_num, thread_id);
+              }*/
         }
     }
 }
@@ -565,8 +561,7 @@ mod test {
         let sum_base: f32 = (0..K).map(|kk| (kk as f32) * 1e-6).sum();
 
         unsafe {
-            let thread_max =
-                crate::ops::matmul::matmul_topk::MatMulTopK::<f16>::detect_threads();
+            let thread_max = crate::ops::matmul::matmul_topk::MatMulTopK::<f16>::detect_threads();
             let buf_len = M * thread_max * TOPK;
             let mut indices_buf = vec![0usize; buf_len];
             let mut values_buf = vec![0.0f16; buf_len];
@@ -662,8 +657,7 @@ mod test {
         let sum_base: f32 = (0..K).map(|kk| (kk as f32) * 5e-7).sum();
 
         unsafe {
-            let thread_max =
-                crate::ops::matmul::matmul_topk::MatMulTopK::<f16>::detect_threads();
+            let thread_max = crate::ops::matmul::matmul_topk::MatMulTopK::<f16>::detect_threads();
             let buf_len = M * thread_max * TOPK;
             let mut indices_buf = vec![0usize; buf_len];
             let mut values_buf = vec![0.0f16; buf_len];
@@ -831,26 +825,24 @@ mod test {
 
         unsafe {
             let runner =
-                crate::ops::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu::<
-                f16,
-            >::new(
-                a.as_ptr(),
-                w_gate_nt.as_ptr(), // ✅ 传 NT
-                w_up_nt.as_ptr(),   // ✅ 传 NT
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                out.as_mut_ptr(),
-                B,
-                I,
-                H,
-                E,
-                mb,
-                nb,
-                kc,
-                mr,
-                nr,
-                false,
-            );
+                crate::ops::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu::<f16>::new(
+                    a.as_ptr(),
+                    w_gate_nt.as_ptr(), // ✅ 传 NT
+                    w_up_nt.as_ptr(),   // ✅ 传 NT
+                    experts_indicator.as_ptr(),
+                    indice.as_ptr(),
+                    out.as_mut_ptr(),
+                    B,
+                    I,
+                    H,
+                    E,
+                    mb,
+                    nb,
+                    kc,
+                    mr,
+                    nr,
+                    false,
+                );
 
             let op = Operator::ExpertsMatMulSilu(runner);
             run_operator_all_threads(&op, B, cpu_num);
@@ -944,26 +936,24 @@ mod test {
 
         unsafe {
             let runner =
-                crate::ops::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu::<
-                f16,
-            >::new(
-                a.as_ptr(),
-                w_gate_nt.as_ptr(), // ✅ NT
-                w_up_nt.as_ptr(),   // ✅ NT
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                out.as_mut_ptr(),
-                B,
-                I,
-                H,
-                E,
-                mb,
-                nb,
-                kc,
-                mr,
-                nr,
-                false,
-            );
+                crate::ops::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu::<f16>::new(
+                    a.as_ptr(),
+                    w_gate_nt.as_ptr(), // ✅ NT
+                    w_up_nt.as_ptr(),   // ✅ NT
+                    experts_indicator.as_ptr(),
+                    indice.as_ptr(),
+                    out.as_mut_ptr(),
+                    B,
+                    I,
+                    H,
+                    E,
+                    mb,
+                    nb,
+                    kc,
+                    mr,
+                    nr,
+                    false,
+                );
 
             let op = Operator::ExpertsMatMulSilu(runner);
             run_operator_all_threads(&op, B, cpu_num);
@@ -1181,8 +1171,7 @@ mod test {
         }
 
         unsafe {
-            let runner =
-                crate::ops::experts::experts_matmul_mul::ExpertsMatMulDown::<f16>::new(
+            let runner = crate::ops::experts::experts_matmul_mul::ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown_nt.as_ptr(), // ✅ NT
                 experts_indicator.as_ptr(),
@@ -1287,8 +1276,7 @@ mod test {
         }
 
         unsafe {
-            let runner =
-                crate::ops::experts::experts_matmul_mul::ExpertsMatMulDown::<f16>::new(
+            let runner = crate::ops::experts::experts_matmul_mul::ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown_nt.as_ptr(), // ✅ NT
                 experts_indicator.as_ptr(),
@@ -1403,8 +1391,7 @@ mod test {
         }
 
         unsafe {
-            let runner =
-                crate::ops::experts::experts_merge_add::ExpertsMergeAdd::<f16>::new(
+            let runner = crate::ops::experts::experts_merge_add::ExpertsMergeAdd::<f16>::new(
                 input.as_ptr(),
                 residual.as_ptr(),
                 experts_indicator.as_mut_ptr(),
@@ -1473,8 +1460,7 @@ mod test {
         }
 
         unsafe {
-            let runner =
-                crate::ops::experts::experts_merge_add::ExpertsMergeAdd::<f16>::new(
+            let runner = crate::ops::experts::experts_merge_add::ExpertsMergeAdd::<f16>::new(
                 input.as_ptr(),
                 residual.as_ptr(),
                 experts_indicator.as_mut_ptr(),
@@ -1546,8 +1532,7 @@ mod test {
         let mut indice_ptr = vec![true; num_experts * num_tokens];
 
         unsafe {
-            let runner =
-                crate::ops::experts::experts_merge_add::ExpertsMergeAdd::<f16>::new(
+            let runner = crate::ops::experts::experts_merge_add::ExpertsMergeAdd::<f16>::new(
                 input.as_ptr(),
                 residual.as_ptr(),
                 experts_indicator.as_mut_ptr(),
@@ -1948,10 +1933,3 @@ mod test {
     }
 
 */
-
-
-
-
-
-
-
