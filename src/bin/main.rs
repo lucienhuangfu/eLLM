@@ -58,11 +58,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let thread_num = core_affinity::get_core_ids().unwrap().len();
     let mut batch_scheduler = BatchScheduler::new(sequence_length, batch_size, thread_num);
     let mut batch_list = Vec::with_capacity(batch_size);
-    batch_list.extend((0..batch_size).map(|i| SequenceState {
-        sequence_index: i,
-        kv_index: i,
-        phase: Phase::Decode,
-        prompt_length: i,
+    batch_list.extend((0..batch_size).map(|_| SequenceState {
+        sequence_index: 0,
+        kv_index: 0,
+        phase: Phase::Start,
         notify: std::sync::Arc::new(tokio::sync::Notify::new()),
     }));
     batch_scheduler.batch_list = Arc::new(SharedMut::new(batch_list));

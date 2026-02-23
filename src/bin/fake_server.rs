@@ -53,6 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fake_batch_list = batch_list.clone();
     std::thread::spawn(move || {
         let max_new_tokens = 16usize;
+        let mut slot_prompt_starts = vec![0usize; batch_size];
+        let mut slot_active = vec![false; batch_size];
         loop {
             let mut processed = false;
             {
@@ -62,13 +64,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 for (slot_index, record) in batch_list_guard.iter_mut().enumerate() {
                     if record.phase != Phase::Decode {
+                        slot_active[slot_index] = false;
                         continue;
                     }
 
-                    let generated = record.sequence_index.saturating_sub(record.prompt_length);
+                    if !slot_active[slot_index] {
+                        slot_prompt_starts[slot_index] = record.sequence_index;
+                        slot_active[slot_index] = true;
+                    }
+
+                    let generated =
+                        record.sequence_index.saturating_sub(slot_prompt_starts[slot_index]);
                     if generated >= max_new_tokens {
                         record.phase = Phase::Eos;
                         record.notify.notify_one();
+                        slot_active[slot_index] = false;
                         continue;
                     }
 
@@ -90,10 +100,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     record.sequence_index = record.sequence_index.saturating_add(1);
                     record.kv_index = record.sequence_index;
 
-                    if record.sequence_index.saturating_sub(record.prompt_length) >= max_new_tokens
+                    if record.sequence_index.saturating_sub(slot_prompt_starts[slot_index])
+                        >= max_new_tokens
                     {
                         record.phase = Phase::Eos;
                         record.notify.notify_one();
+                        slot_active[slot_index] = false;
                     }
 
                     processed = true;
