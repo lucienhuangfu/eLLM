@@ -105,7 +105,7 @@ async fn chat_completions(
                             // record.prompt_length = write_len;
                             record.sequence_index = write_len;
                             record.kv_index = write_len;
-                            record.phase = Phase::Decode;
+                            record.phase = Phase::Prefill;
                             found_slot = Some((i, record.notify.clone()));
                             break;
                         }
