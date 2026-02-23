@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     batch_list.extend((0..batch_size).map(|_| SequenceState {
         sequence_index: 0,
         kv_index: 0,
-        phase: Phase::Eos,
+        phase: Phase::Start,
         // prompt_length: 0,
         notify: Arc::new(tokio::sync::Notify::new()),
     }));

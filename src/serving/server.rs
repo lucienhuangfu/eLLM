@@ -14,6 +14,8 @@ use crate::serving::record::{Phase, SequenceState};
 use crate::common::send_sync_ptr::SharedMut;
 use crate::serving::batch_sequence::BatchSequence;
 
+const INFERENCE_TIMEOUT: Duration = Duration::from_secs(60);
+
 // ===== OpenAI API 结构 =====
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +101,7 @@ async fn chat_completions(
             let current_size = batch_list.len();
 
             for (i, record) in batch_list[..current_size].iter_mut().enumerate() {
-                if record.phase == Phase::Eos {
+                if matches!(record.phase, Phase::Start | Phase::Timeout | Phase::Eos) {
                     match batch_sequences.write_prompt(i, &prompt, &state.tokenizer) {
                         Ok(write_len) => {
                             // record.prompt_length = write_len;
@@ -137,8 +139,23 @@ async fn chat_completions(
         if is_stream { "流式" } else { "同步" }
     );
 
-    // 等待推理完成的信号唤醒
-    notifier.notified().await;
+    // 等待推理完成的信号唤醒（超时进入 Timeout 状态）
+    if tokio::time::timeout(INFERENCE_TIMEOUT, notifier.notified())
+        .await
+        .is_err()
+    {
+        let batch_list = unsafe { &mut *state.batch_list.get() };
+        let record = &mut batch_list[slot_index];
+        record.sequence_index = 0;
+        record.kv_index = 0;
+        record.phase = Phase::Timeout;
+
+        return (
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+            format!("Inference timeout after {}s", INFERENCE_TIMEOUT.as_secs()),
+        )
+            .into_response();
+    }
 
     // 根据 sequence_index - prompt_length 提取生成的 tokens 并解码
     let generated_text = {
