@@ -4,7 +4,7 @@ use std::ptr;
 
 use crate::common::num_traits::Exp;
 use crate::common::num_traits::Sqrt;
-use crate::common::record::{Phase, SequenceSlice, SequenceState};
+use crate::serving::record::{Phase, SequenceSlice, SequenceState};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::ops::traits::map_trait::TopKSoftmaxTrait;
@@ -95,8 +95,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
 
                 if batch_index < batch_list.len() {
                     let record = &mut batch_list[batch_index];
-                    record.sequence_index = record.snapshot_sequence_index;
-                    record.kv_index = record.snapshot_sequence_index;
+                    record.kv_index = record.sequence_index;
                     if predict_token == self.eos_id {
                         record.phase = Phase::Eos;
                         record.notify.notify_one();
@@ -192,7 +191,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::common::record::{Phase, SequenceSlice, SequenceState};
+    use crate::serving::record::{Phase, SequenceSlice, SequenceState};
     use approx::assert_ulps_eq;
 
     #[test]
@@ -213,10 +212,8 @@ mod test {
         for i in 0..batch_size {
             user_records_vec.push(SequenceState {
                 sequence_index: 1,
-                snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
-                prompt_length: i,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
             for j in 0..total_candidates_per_item {
@@ -338,10 +335,8 @@ mod test {
         for i in 0..batch_size {
             user_records_vec.push(SequenceState {
                 sequence_index: 1,
-                snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
-                prompt_length: i,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
             for j in 0..total_candidates_per_item {

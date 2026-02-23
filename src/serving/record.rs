@@ -12,18 +12,15 @@ pub struct SequenceSlice {
 
 pub struct SequenceState {
     pub sequence_index: usize,
-    pub snapshot_sequence_index: usize,
     pub kv_index: usize,
     pub phase: Phase,
-    pub prompt_length: usize,
     pub notify: Arc<Notify>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)] // 优化: 显式指定为 u8，确保只占 1 字节
 pub enum Phase {
-    PrefillBegin,
-    PrefillEnd,
+    Prefill,
     Decode,
     Eos,
 }

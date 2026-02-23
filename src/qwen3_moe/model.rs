@@ -29,7 +29,7 @@ use super::super::mem_mgr::cache::Cache;
 // use super::super::ptensor::linear::Linear;
 use super::super::runtime::tensor::{Tensor, TensorCtx};
 use super::decoder_layer::DecoderLayer;
-// use crate::common::record::TokenRecord;
+// use crate::serving::record::TokenRecord;
 
 // use super::rope::precompute_freqs_cis;
 
@@ -201,7 +201,7 @@ mod test {
     use super::*;
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
-    use crate::common::record::{Phase, SequenceState};
+    use crate::serving::record::{Phase, SequenceState};
     use crate::qwen3_moe::rope::precompute_freqs_cis_t;
     use crate::mem_mgr::allocator::allocate_init;
     use crate::runtime::tensor::Tensor;
@@ -242,10 +242,9 @@ mod test {
         let batch_records: Vec<SequenceState> = (0..batch_size)
             .map(|i| SequenceState {
                 sequence_index: i,
-                snapshot_sequence_index: 0,
                 kv_index: i,
                 phase: Phase::Decode,
-                prompt_length: i,
+                // prompt_length: i,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             })
             .collect();
@@ -296,10 +295,9 @@ mod test {
         let batch_records: Vec<SequenceState> = (0..batch_size)
             .map(|i| SequenceState {
                 sequence_index: i,
-                snapshot_sequence_index: 0,
                 kv_index: i,
                 phase: Phase::Decode,
-                prompt_length: i,
+                // prompt_length: i,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             })
             .collect();

@@ -10,7 +10,7 @@ use tokenizers::Tokenizer;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
-use crate::common::record::{Phase, SequenceState};
+use crate::serving::record::{Phase, SequenceState};
 use crate::common::send_sync_ptr::SharedMut;
 use crate::serving::batch_sequence::BatchSequence;
 
@@ -102,9 +102,8 @@ async fn chat_completions(
                 if record.phase == Phase::Eos {
                     match batch_sequences.write_prompt(i, &prompt, &state.tokenizer) {
                         Ok(write_len) => {
-                            record.prompt_length = write_len;
+                            // record.prompt_length = write_len;
                             record.sequence_index = write_len;
-                            record.snapshot_sequence_index = write_len;
                             record.kv_index = write_len;
                             record.phase = Phase::Decode;
                             found_slot = Some((i, record.notify.clone()));
@@ -149,7 +148,7 @@ async fn chat_completions(
             let record = &batch_list[slot_index];
             let base = slot_index * batch_sequences_meta.col_size;
             (
-                base + record.prompt_length,
+                // base + record.prompt_length,
                 base + record.sequence_index,
                 batch_sequences_meta.row_size * batch_sequences_meta.col_size,
                 batch_sequences_meta.sequences,
@@ -176,7 +175,7 @@ async fn chat_completions(
     {
         let batch_list = unsafe { &mut *state.batch_list.get() };
         let record = &mut batch_list[slot_index];
-        record.prompt_length = 0;
+        // record.prompt_length = 0;
         record.sequence_index = 0;
         record.kv_index = 0;
         record.phase = Phase::Eos;

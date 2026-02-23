@@ -1,6 +1,6 @@
 #![feature(f16)]
 
-use ellm::common::record::{Phase, SequenceState};
+use ellm::serving::record::{Phase, SequenceState};
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
 use ellm::qwen3_moe::config::Config;
@@ -60,7 +60,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut batch_list = Vec::with_capacity(batch_size);
     batch_list.extend((0..batch_size).map(|i| SequenceState {
         sequence_index: i,
-        snapshot_sequence_index: 0,
         kv_index: i,
         phase: Phase::Decode,
         prompt_length: i,

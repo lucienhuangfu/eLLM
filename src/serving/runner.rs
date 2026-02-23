@@ -10,7 +10,7 @@ use super::super::runtime::operator::Operator;
 use crate::common::num_traits::{
     exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt,
 };
-use crate::common::record::{Phase, SequenceState};
+use crate::serving::record::{Phase, SequenceState};
 use crate::serving::schedule::BatchScheduler;
 
 /// Runs the inference serving loop.
@@ -140,7 +140,7 @@ mod test {
     use std::rc::Rc;
 
     use super::*;
-    use crate::common::record::SequenceState;
+    use crate::serving::record::SequenceState;
     use crate::mem_mgr::cache::Cache;
     use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
     use crate::runtime::tensor::{Tensor, TensorCtx};
@@ -218,10 +218,9 @@ mod test {
             let mut batch_list = unsafe { &mut *batch_scheduler.batch_list.get() };
             batch_list.extend((0..batch_size).map(|_| SequenceState {
                 sequence_index: 50,
-                snapshot_sequence_index: 0,
                 kv_index: 0,
-                phase: Phase::PrefillBegin,
-                prompt_length: 50,
+                phase: Phase::Prefill,
+                // prompt_length: 50,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             }));
         }

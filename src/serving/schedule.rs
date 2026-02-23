@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crate::common::record::{Phase, SequenceSlice, SequenceState};
+use crate::serving::record::{Phase, SequenceSlice, SequenceState};
 use crate::common::send_sync_ptr::SharedMut;
 
 struct FairTaskAllocator {
@@ -184,14 +184,14 @@ pub struct BatchScheduler {
 
 impl BatchScheduler {
     // Test method (simplest example):
-    // 1) Build a small batch list with one PrefillBegin record.
+    // 1) Build a small batch list with one Prefill record.
     // 2) Call schedule_batch and verify prefill/decode counts and slices.
     // Example:
     // let mut scheduler = BatchScheduler::new(8, 1, 1);
     // scheduler.batch_list.push(SequenceState {
-    //     phase: Phase::PrefillBegin,
+    //     phase: Phase::Prefill,
     //     sequence_index: 4,
-    //     snapshot_sequence_index: 0,
+    //     sequence_index: 4,
     //     kv_index: 0,
     // });
     // let (prefill, decode) = scheduler.schedule_batch();
@@ -257,23 +257,9 @@ impl BatchScheduler {
 
         let mut batch_list = unsafe { &mut *self.batch_list.get() };
         for record in batch_list.iter_mut() {
-            match record.phase {
-                Phase::PrefillBegin => {
-                    record.snapshot_sequence_index = record.sequence_index;
-                    let remaining = record
-                        .snapshot_sequence_index
-                        .saturating_sub(record.kv_index);
-                    prefill_total_tokens += remaining;
-                }
-                Phase::PrefillEnd => {
-                    record.snapshot_sequence_index = record.sequence_index;
-                    let remaining = record
-                        .snapshot_sequence_index
-                        .saturating_sub(record.kv_index);
-                    prefill_total_tokens += remaining;
-                    decode_total_tokens += 1;
-                }
-                _ => {}
+            if record.phase == Phase::Prefill {
+                let remaining = record.sequence_index.saturating_sub(record.kv_index);
+                prefill_total_tokens += remaining;
             }
         }
 
@@ -303,44 +289,16 @@ impl BatchScheduler {
                 break;
             }
 
-            match record.phase {
-                Phase::PrefillBegin => {
-                    let remaining = record
-                        .snapshot_sequence_index
-                        .saturating_sub(record.kv_index);
-                    self.prefill_scheduler.schedule_for_sequence(
-                        batch_index,
-                        record.sequence_index,
-                        remaining,
-                        0,
-                        &mut self.prefill_list,
-                        prefill_count,
-                    );
-                }
-                Phase::PrefillEnd => {
-                    let remaining = record
-                        .snapshot_sequence_index
-                        .saturating_sub(record.kv_index);
-                    self.prefill_scheduler.schedule_for_sequence(
-                        batch_index,
-                        record.sequence_index,
-                        remaining,
-                        0,
-                        &mut self.prefill_list,
-                        prefill_count,
-                    );
-                    if record.snapshot_sequence_index == record.sequence_index {
-                        self.decode_scheduler.schedule_for_sequence(
-                            batch_index,
-                            record.sequence_index.saturating_sub(1),
-                            1,
-                            0,
-                            &mut self.decode_list,
-                            decode_count,
-                        );
-                    }
-                }
-                _ => {}
+            if record.phase == Phase::Prefill {
+                let remaining = record.sequence_index.saturating_sub(record.kv_index);
+                self.prefill_scheduler.schedule_for_sequence(
+                    batch_index,
+                    record.sequence_index,
+                    remaining,
+                    0,
+                    &mut self.prefill_list,
+                    prefill_count,
+                );
             }
         }
     }
@@ -370,9 +328,7 @@ impl BatchScheduler {
 
             let has_prefill = {
                 let batch_list = unsafe { &*self.batch_list.get() };
-                batch_list.iter().any(|record| {
-                    record.phase == Phase::PrefillBegin || record.phase == Phase::PrefillEnd
-                })
+                batch_list.iter().any(|record| record.phase == Phase::Prefill)
             };
 
             if has_prefill {
@@ -393,7 +349,7 @@ mod tests {
     #[test]
     fn schedule_prefill_only() {
         // Input:
-        // - Eight SequenceState in Phase::PrefillBegin
+        // - Eight SequenceState in Phase::Prefill
         // - sequence_index=6, kv_index=0 => 6 tokens remaining per record
         // - sequence_length=8, batch_size=32, thread_num=8
         // Output (expected):
@@ -407,11 +363,9 @@ mod tests {
             let mut batch_list = unsafe { &mut *scheduler.batch_list.get() };
             for _ in 0..8 {
                 batch_list.push(SequenceState {
-                    phase: Phase::PrefillBegin,
+                    phase: Phase::Prefill,
                     sequence_index: 6,
-                    snapshot_sequence_index: 0,
                     kv_index: 0,
-                    prompt_length: 0,
                     notify: std::sync::Arc::new(Notify::new()),
                 });
             }

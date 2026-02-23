@@ -1,6 +1,6 @@
 #![feature(f16)]
 
-use ellm::common::record::{Phase, SequenceState};
+use ellm::serving::record::{Phase, SequenceState};
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
 use ellm::serving::batch_sequence::BatchSequence;
@@ -41,10 +41,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut batch_list = Vec::with_capacity(batch_size);
     batch_list.extend((0..batch_size).map(|_| SequenceState {
         sequence_index: 0,
-        snapshot_sequence_index: 0,
         kv_index: 0,
         phase: Phase::Eos,
-        prompt_length: 0,
+        // prompt_length: 0,
         notify: Arc::new(tokio::sync::Notify::new()),
     }));
     let batch_list = Arc::new(SharedMut::new(batch_list));
@@ -89,7 +88,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     record.sequence_index = record.sequence_index.saturating_add(1);
-                    record.snapshot_sequence_index = record.sequence_index;
                     record.kv_index = record.sequence_index;
 
                     if record.sequence_index.saturating_sub(record.prompt_length) >= max_new_tokens

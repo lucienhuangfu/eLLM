@@ -15,7 +15,7 @@ use crate::ops::left_vector::LiftVector;
 use crate::ops::normalization::lookup_rms_map::LookupRMSMap;
 use crate::ops::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;
 
-use crate::common::record::{Phase, SequenceSlice, SequenceState};
+use crate::serving::record::{Phase, SequenceSlice, SequenceState};
 use crate::ops::attention::attention::Attention;
 use crate::ops::experts::experts_matmul_mul::ExpertsMatMulDown;
 use crate::ops::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
@@ -976,10 +976,9 @@ mod test {
         for i in 0..batch_size {
             batch_list.push(SequenceState {
                 sequence_index: 0,
-                snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
-                prompt_length: i,
+                // prompt_length: i,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
         }
@@ -1131,10 +1130,9 @@ mod test {
         for i in 0..batch_size {
             batch_list.push(SequenceState {
                 sequence_index: 0,
-                snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
-                prompt_length: i,
+                // prompt_length: i,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
         }

@@ -1,7 +1,7 @@
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
-use crate::common::record::{SequenceSlice, SequenceState};
+use crate::serving::record::{SequenceSlice, SequenceState};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::ops::normalization::lookup_rms_map::LookupRMSMap;
@@ -188,7 +188,7 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::common::record::{Phase, SequenceSlice, SequenceState};
+    use crate::serving::record::{Phase, SequenceSlice, SequenceState};
     use approx::assert_ulps_eq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use std::sync::{Arc, Barrier};
@@ -315,10 +315,9 @@ mod test {
         let batch_records: Vec<SequenceState> = (0..batch_size)
             .map(|_| SequenceState {
                 sequence_index: 0,
-                snapshot_sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
-                prompt_length: 0,
+                // prompt_length: 0,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             })
             .collect();
