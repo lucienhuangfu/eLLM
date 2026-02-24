@@ -4,7 +4,6 @@ use ellm::serving::record::{Phase, SequenceState};
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
 use ellm::serving::batch_sequence::BatchSequence;
-use ellm::serving::chat_template::ChatTemplate;
 use ellm::serving::server;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,22 +28,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sequences = allocate_init::<usize>(sequence_capacity * batch_size, 0);
 
     let tokenizer_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
-    let tokenizer = Tokenizer::from_file(tokenizer_path)
-        .map_err(|e| format!("Unable to load tokenizer {}: {}", tokenizer_path, e))?;
-    let tokenizer = Arc::new(tokenizer);
     let chat_template_path = "models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
-    let chat_template = Arc::new(
-        ChatTemplate::new(chat_template_path)
-            .map_err(|e| format!("Unable to load chat template {}: {}", chat_template_path, e))?,
-    );
 
-    let batch_sequences = Arc::new(SharedMut::new(BatchSequence::new(
-        sequences,
-        batch_size,
-        sequence_capacity,
-        tokenizer.clone(),
-        chat_template,
-    )));
+    let batch_sequences = Arc::new(SharedMut::new(
+        BatchSequence::new(
+            sequences,
+            batch_size,
+            sequence_capacity,
+            tokenizer_path,
+            chat_template_path,
+        )
+        .map_err(|e| format!("Unable to initialize BatchSequence: {}", e))?,
+    ));
 
     let mut batch_list = Vec::with_capacity(batch_size);
     batch_list.extend((0..batch_size).map(|_| SequenceState {
@@ -56,6 +51,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     let batch_list = Arc::new(SharedMut::new(batch_list));
 
+    let tokenizer = {
+        let guard = unsafe { &*batch_sequences.get() };
+        guard.tokenizer.clone()
+    };
     let fake_tokens = build_fake_tokens(&tokenizer);
     let fake_sequences = batch_sequences.clone();
     let fake_batch_list = batch_list.clone();
