@@ -15,7 +15,7 @@ use crate::ops::left_vector::LiftVector;
 use crate::ops::normalization::lookup_rms_map::LookupRMSMap;
 use crate::ops::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;
 
-use crate::serving::record::{Phase, SequenceSlice, SequenceState};
+use crate::runtime::inference::state::{Phase, SequenceSlice, SequenceState};
 use crate::ops::attention::attention::Attention;
 use crate::ops::experts::experts_matmul_mul::ExpertsMatMulDown;
 use crate::ops::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
@@ -2877,3 +2877,4 @@ mod tests {
 
 
 */
+

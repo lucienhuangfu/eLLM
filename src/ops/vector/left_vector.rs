@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::serving::record::SequenceSlice;
+use crate::runtime::inference::state::SequenceSlice;
 use crate::common::send_sync_ptr::MutPtr;
 
 /// `LiftVector` 用于在推理过程中处理向量数据的搬运（Lifting）。
@@ -66,7 +66,7 @@ impl<T> LiftVector<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::serving::record::SequenceSlice;
+    use crate::runtime::inference::state::SequenceSlice;
 
     #[test]
     fn test_lift_vector() {
@@ -112,3 +112,4 @@ mod test {
         assert_eq!(data[4..8], [5.0, 6.0, 7.0, 8.0]);
     }
 }
+

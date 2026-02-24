@@ -1,6 +1,6 @@
 #![feature(f16)]
 
-use ellm::serving::record::{Phase, SequenceState};
+use ellm::runtime::inference::state::{Phase, SequenceState};
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
 use ellm::serving::batch_sequence::BatchSequence;
@@ -130,3 +130,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     server::run(batch_sequences, batch_list).await?;
     Ok(())
 }
+

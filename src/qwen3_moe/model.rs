@@ -29,7 +29,7 @@ use super::super::mem_mgr::cache::Cache;
 // use super::super::ptensor::linear::Linear;
 use super::super::runtime::tensor::{Tensor, TensorCtx};
 use super::decoder_layer::DecoderLayer;
-// use crate::serving::record::TokenRecord;
+// use crate::runtime::inference::state::TokenRecord;
 
 // use super::rope::precompute_freqs_cis;
 
@@ -201,7 +201,7 @@ mod test {
     use super::*;
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
-    use crate::serving::record::{Phase, SequenceState};
+    use crate::runtime::inference::state::{Phase, SequenceState};
     use crate::qwen3_moe::rope::precompute_freqs_cis_t;
     use crate::mem_mgr::allocator::allocate_init;
     use crate::runtime::tensor::Tensor;
@@ -317,6 +317,7 @@ mod test {
         }
     }
 }
+
 
 
 

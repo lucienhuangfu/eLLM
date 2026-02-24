@@ -5,13 +5,13 @@ use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 
-use super::super::runtime::operator::Operator;
+use crate::runtime::operator::Operator;
 
 use crate::common::num_traits::{
     exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt,
 };
-use crate::serving::record::{Phase, SequenceState};
-use crate::serving::schedule::BatchScheduler;
+use crate::runtime::inference::state::{Phase, SequenceState};
+use crate::runtime::inference::scheduler::BatchScheduler;
 
 /// Runs the inference serving loop.
 ///
@@ -140,7 +140,7 @@ mod test {
     use std::rc::Rc;
 
     use super::*;
-    use crate::serving::record::SequenceState;
+    use crate::runtime::inference::state::SequenceState;
     use crate::mem_mgr::cache::Cache;
     use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
     use crate::runtime::tensor::{Tensor, TensorCtx};
@@ -228,3 +228,4 @@ mod test {
         ServingRunner::new(output_tensor.operator_queue.take(), batch_scheduler).start();
     }
 }
+

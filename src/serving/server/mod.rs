@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, Semaphore};
 
 use crate::common::send_sync_ptr::SharedMut;
 use crate::serving::batch_sequence::BatchSequence;
-use crate::serving::record::{Phase, SequenceState};
+use crate::runtime::inference::state::{Phase, SequenceState};
 
 pub mod handlers;
 pub mod types;
@@ -70,3 +70,4 @@ pub async fn run(
     axum::serve(listener, app).await?;
     Ok(())
 }
+

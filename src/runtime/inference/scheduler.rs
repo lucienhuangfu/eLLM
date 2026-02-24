@@ -3,7 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::common::send_sync_ptr::SharedMut;
-use crate::serving::record::{Phase, SequenceSlice, SequenceState};
+use crate::runtime::inference::state::{Phase, SequenceSlice, SequenceState};
 
 struct FairTaskAllocator {
     task_count: usize,
@@ -510,3 +510,4 @@ mod tests {
         assert_eq!(batch_list[1].phase, Phase::Prefill);
     }
 }
+

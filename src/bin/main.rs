@@ -1,14 +1,14 @@
 #![feature(f16)]
 
-use ellm::serving::record::{Phase, SequenceState};
+use ellm::runtime::inference::state::{Phase, SequenceState};
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
 use ellm::qwen3_moe::config::Config;
 use ellm::qwen3_moe::model::Model;
 use ellm::qwen3_moe::rope::precompute_freqs_cis_t;
 use ellm::serving::batch_sequence::BatchSequence;
-use ellm::serving::runner::ServingRunner;
-use ellm::serving::schedule::BatchScheduler;
+use ellm::runtime::inference::runner::ServingRunner;
+use ellm::runtime::inference::scheduler::BatchScheduler;
 use ellm::serving::server;
 use std::sync::Arc;
 
@@ -78,3 +78,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     server::run(batch_sequences, batch_list).await?;
     Ok(())
 }
+

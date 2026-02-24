@@ -9,13 +9,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 
-use crate::serving::record::Phase;
+use crate::runtime::inference::state::Phase;
 
-use super::AppState;
 use super::types::{
     ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, StreamChoice,
     StreamResponse,
 };
+use super::AppState;
 
 pub(super) async fn chat_completions(
     State(state): State<AppState>,
@@ -42,10 +42,15 @@ pub(super) async fn chat_completions(
         if is_stream { "流式" } else { "同步" }
     );
 
-    wait_for_inference(&notifier).await;
+    notifier.notified().await;
 
-    let generated_text = decode_generated_text(&state, slot_index);
-    recycle_slot(&state, slot_index).await;
+    let generated_text = {
+        let batch_list = unsafe { &*state.batch_list.get() };
+        let batch_sequences = unsafe { &*state.batch_sequences.get() };
+        let record = &batch_list[slot_index];
+        batch_sequences.decode_generated_text(slot_index, record)
+    };
+    reclaim_slot(&state, slot_index, true).await;
 
     if is_stream {
         build_stream_response(request_id, request.model, generated_text)
@@ -84,7 +89,12 @@ async fn assign_slot_with_messages(
         }
     };
 
-    let assign_result = {
+    let message_pairs = messages
+        .iter()
+        .map(|msg| (msg.role.as_str(), msg.content.as_str()))
+        .collect::<Vec<_>>();
+
+    let write_result = {
         let batch_list = unsafe { &mut *state.batch_list.get() };
         let batch_sequences = unsafe { &mut *state.batch_sequences.get() };
 
@@ -92,15 +102,11 @@ async fn assign_slot_with_messages(
         if !matches!(record.phase, Phase::Start) {
             Err("slot is not in Start phase".to_string())
         } else {
-            let message_pairs = messages
-                .iter()
-                .map(|msg| (msg.role.as_str(), msg.content.as_str()))
-                .collect::<Vec<_>>();
             batch_sequences
-                .write_messages(slot_index, &message_pairs)
+                .write_prompts(slot_index, &message_pairs)
                 .map(|write_len| {
                     record.sequence_index = write_len;
-                    record.kv_index = 0;
+                    record.kv_index = usize::MAX;
                     record.phase = Phase::Prefill;
                     record.notify.clone()
                 })
@@ -108,44 +114,31 @@ async fn assign_slot_with_messages(
         }
     };
 
-    match assign_result {
+    match write_result {
         Ok(notifier) => {
             permit.forget();
             Ok((slot_index, notifier))
         }
-        Err(e) => {
-            {
-                let batch_list = unsafe { &mut *state.batch_list.get() };
-                let record = &mut batch_list[slot_index];
-                record.sequence_index = 0;
-                record.kv_index = 0;
-                record.phase = Phase::Start;
-            }
-            let mut free_slots = state.free_slots.lock().await;
-            free_slots.push_back(slot_index);
-            drop(free_slots);
+        Err(err) => {
+            reclaim_slot(state, slot_index, false).await;
             drop(permit);
 
-            eprintln!("Error writing prompt: {}", e);
+            eprintln!("Error writing prompt: {}", err);
             Err((
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Tokenization failed: {}", e),
+                format!("Tokenization failed: {}", err),
             )
                 .into_response())
         }
     }
 }
 
-async fn wait_for_inference(notifier: &Arc<Notify>) {
-    notifier.notified().await;
-}
-
-async fn recycle_slot(state: &AppState, slot_index: usize) {
+async fn reclaim_slot(state: &AppState, slot_index: usize, release_permit: bool) {
     {
         let batch_list = unsafe { &mut *state.batch_list.get() };
         if let Some(record) = batch_list.get_mut(slot_index) {
-            record.sequence_index = 0;
-            record.kv_index = 0;
+            record.sequence_index = usize::MAX;
+            record.kv_index = usize::MAX;
             record.phase = Phase::Start;
         }
     }
@@ -153,37 +146,12 @@ async fn recycle_slot(state: &AppState, slot_index: usize) {
     let mut free_slots = state.free_slots.lock().await;
     free_slots.push_back(slot_index);
     drop(free_slots);
-    state.available_slots.add_permits(1);
-}
 
-fn decode_generated_text(state: &AppState, slot_index: usize) -> String {
-    let (start, end, capacity, sequences_ptr, tokenizer) = {
-        let batch_list = unsafe { &*state.batch_list.get() };
-        let batch_sequences_meta = unsafe { &*state.batch_sequences.get() };
-        let record = &batch_list[slot_index];
-        let base = slot_index * batch_sequences_meta.col_size;
-        (
-            base + record.sequence_index,
-            base + record.kv_index,
-            batch_sequences_meta.row_size * batch_sequences_meta.col_size,
-            batch_sequences_meta.sequences,
-            batch_sequences_meta.tokenizer.clone(),
-        )
-    };
-
-    if end <= start || end > capacity {
-        return String::new();
+    if release_permit {
+        state.available_slots.add_permits(1);
     }
-
-    let token_ids: Vec<u32> = unsafe {
-        let token_slice = std::slice::from_raw_parts(sequences_ptr.add(start), end - start);
-        token_slice.iter().map(|&id| id as u32).collect()
-    };
-
-    tokenizer
-        .decode(&token_ids, true)
-        .unwrap_or_else(|_| String::from("Decode error"))
 }
+
 
 fn build_stream_response(
     request_id: String,
@@ -248,3 +216,5 @@ fn build_non_stream_response(
 
     Json(response).into_response()
 }
+
+

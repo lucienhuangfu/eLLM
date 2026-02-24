@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tokenizers::Tokenizer;
 
 use crate::serving::chat_template::ChatTemplate;
+use crate::runtime::inference::state::SequenceState;
 
 pub struct BatchSequence {
     pub sequences: *mut usize, // 展平的二维矩阵 [row_size][col_size]
@@ -35,7 +36,7 @@ impl BatchSequence {
         })
     }
 
-    pub fn write_messages(
+    pub fn write_prompts(
         &mut self,
         slot_index: usize,
         messages: &[(&str, &str)],
@@ -67,6 +68,27 @@ impl BatchSequence {
         );
         Ok(write_len)
     }
+
+    pub fn decode_generated_text(&self, slot_index: usize, record: &SequenceState) -> String {
+        let sequence_index = record.sequence_index;
+        let kv_index = record.kv_index;
+        let start = slot_index * self.col_size + sequence_index;
+        let end = slot_index * self.col_size + kv_index;
+        let capacity = self.row_size * self.col_size;
+
+        if end <= start || end > capacity {
+            return String::new();
+        }
+
+        let token_ids: Vec<u32> = unsafe {
+            let token_slice = std::slice::from_raw_parts(self.sequences.add(start), end - start);
+            token_slice.iter().map(|&id| id as u32).collect()
+        };
+
+        self.tokenizer
+            .decode(&token_ids, true)
+            .unwrap_or_else(|_| String::from("Decode error"))
+    }
 }
 
 // Raw pointer is shared without locking; callers must ensure safe access.
@@ -81,7 +103,7 @@ mod tests {
     const QWEN3_TOKENIZER_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
 
     #[test]
-    fn test_write_messages_with_qwen3_assets() {
+    fn test_write_prompts_with_qwen3_assets() {
         let mut storage = vec![0usize; 256];
         let mut batch = match BatchSequence::new(
             storage.as_mut_ptr(),
@@ -113,7 +135,7 @@ mod tests {
             .get_ids()
             .to_vec();
 
-        let written = batch.write_messages(0, &messages).expect("write failed");
+        let written = batch.write_prompts(0, &messages).expect("write failed");
         assert!(written > 0);
         assert_eq!(written, expected_ids.len().min(storage.len()));
         assert_eq!(
@@ -126,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_messages_respects_col_size_limit() {
+    fn test_write_prompts_respects_col_size_limit() {
         let mut storage = vec![0usize; 8];
         let mut batch = match BatchSequence::new(
             storage.as_mut_ptr(),
@@ -147,8 +169,10 @@ mod tests {
             ("user", "请给出一个尽量详细且较长的回答，包含多个步骤和注意事项。"),
         ];
 
-        let written = batch.write_messages(0, &messages).expect("write failed");
+        let written = batch.write_prompts(0, &messages).expect("write failed");
         assert_eq!(written, storage.len());
         assert!(storage.iter().any(|id| *id != 0));
     }
 }
+
+
