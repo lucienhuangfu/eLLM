@@ -7,6 +7,7 @@ use ellm::qwen3_moe::config::Config;
 use ellm::qwen3_moe::model::Model;
 use ellm::qwen3_moe::rope::precompute_freqs_cis_t;
 use ellm::serving::batch_sequence::BatchSequence;
+use ellm::serving::chat_template::ChatTemplate;
 use ellm::serving::runner::ServingRunner;
 use ellm::serving::schedule::BatchScheduler;
 use ellm::serving::server;
@@ -44,11 +45,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tokenizer = Tokenizer::from_file(tokenizer_path)
         .map_err(|e| format!("无法加载分词器 {}: {}", tokenizer_path, e))?;
     let tokenizer = Arc::new(tokenizer);
+    let chat_template_path = "models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
+    let chat_template = Arc::new(
+        ChatTemplate::new(chat_template_path)
+            .map_err(|e| format!("无法加载聊天模板 {}: {}", chat_template_path, e))?,
+    );
 
     let batch_sequences = Arc::new(SharedMut::new(BatchSequence::new(
         sequences,
         batch_size,
         sequence_capacity,
+        tokenizer.clone(),
+        chat_template,
     )));
 
     let eos_id = 151643;
@@ -73,6 +81,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runner.start();
     });
 
-    server::run(batch_sequences, batch_list, tokenizer).await?;
+    server::run(batch_sequences, batch_list).await?;
     Ok(())
 }

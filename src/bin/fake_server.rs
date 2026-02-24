@@ -4,6 +4,7 @@ use ellm::serving::record::{Phase, SequenceState};
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
 use ellm::serving::batch_sequence::BatchSequence;
+use ellm::serving::chat_template::ChatTemplate;
 use ellm::serving::server;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,11 +32,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tokenizer = Tokenizer::from_file(tokenizer_path)
         .map_err(|e| format!("Unable to load tokenizer {}: {}", tokenizer_path, e))?;
     let tokenizer = Arc::new(tokenizer);
+    let chat_template_path = "models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
+    let chat_template = Arc::new(
+        ChatTemplate::new(chat_template_path)
+            .map_err(|e| format!("Unable to load chat template {}: {}", chat_template_path, e))?,
+    );
 
     let batch_sequences = Arc::new(SharedMut::new(BatchSequence::new(
         sequences,
         batch_size,
         sequence_capacity,
+        tokenizer.clone(),
+        chat_template,
     )));
 
     let mut batch_list = Vec::with_capacity(batch_size);
@@ -120,6 +128,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    server::run(batch_sequences, batch_list, tokenizer).await?;
+    server::run(batch_sequences, batch_list).await?;
     Ok(())
 }

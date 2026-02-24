@@ -1,7 +1,6 @@
 use axum::{routing::post, Json, Router};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use tokenizers::Tokenizer;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Semaphore};
 
@@ -18,7 +17,6 @@ use handlers::chat_completions;
 pub(super) struct AppState {
     pub(super) batch_sequences: Arc<SharedMut<BatchSequence>>,
     pub(super) batch_list: Arc<SharedMut<Vec<SequenceState>>>,
-    pub(super) tokenizer: Arc<Tokenizer>,
     pub(super) free_slots: Arc<Mutex<VecDeque<usize>>>,
     pub(super) available_slots: Arc<Semaphore>,
 }
@@ -26,7 +24,6 @@ pub(super) struct AppState {
 pub async fn run(
     batch_sequences: Arc<SharedMut<BatchSequence>>,
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
-    tokenizer: Arc<Tokenizer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动单线程架构的 OpenAI 兼容服务器...");
 
@@ -43,7 +40,6 @@ pub async fn run(
     let state = AppState {
         batch_sequences,
         batch_list,
-        tokenizer,
         free_slots: Arc::new(Mutex::new(initial_free_slots)),
         available_slots: Arc::new(Semaphore::new(initial_permits)),
     };

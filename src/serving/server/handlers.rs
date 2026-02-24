@@ -29,9 +29,8 @@ pub(super) async fn chat_completions(
             .as_nanos()
     );
     let is_stream = request.stream.unwrap_or(false);
-    let prompt = build_prompt(&request.messages);
 
-    let (slot_index, notifier) = match assign_slot_with_prompt(&state, &prompt).await {
+    let (slot_index, notifier) = match assign_slot_with_messages(&state, &request.messages).await {
         Ok(slot) => slot,
         Err(response) => return response,
     };
@@ -56,9 +55,9 @@ pub(super) async fn chat_completions(
     }
 }
 
-async fn assign_slot_with_prompt(
+async fn assign_slot_with_messages(
     state: &AppState,
-    prompt: &str,
+    messages: &[ChatMessage],
 ) -> Result<(usize, Arc<Notify>), axum::response::Response> {
     let permit = match state.available_slots.clone().acquire_owned().await {
         Ok(permit) => permit,
@@ -93,8 +92,12 @@ async fn assign_slot_with_prompt(
         if !matches!(record.phase, Phase::Start) {
             Err("slot is not in Start phase".to_string())
         } else {
+            let message_pairs = messages
+                .iter()
+                .map(|msg| (msg.role.as_str(), msg.content.as_str()))
+                .collect::<Vec<_>>();
             batch_sequences
-                .write_prompt(slot_index, prompt, &state.tokenizer)
+                .write_messages(slot_index, &message_pairs)
                 .map(|write_len| {
                     record.sequence_index = write_len;
                     record.kv_index = 0;
@@ -154,7 +157,7 @@ async fn recycle_slot(state: &AppState, slot_index: usize) {
 }
 
 fn decode_generated_text(state: &AppState, slot_index: usize) -> String {
-    let (start, end, capacity, sequences_ptr) = {
+    let (start, end, capacity, sequences_ptr, tokenizer) = {
         let batch_list = unsafe { &*state.batch_list.get() };
         let batch_sequences_meta = unsafe { &*state.batch_sequences.get() };
         let record = &batch_list[slot_index];
@@ -164,6 +167,7 @@ fn decode_generated_text(state: &AppState, slot_index: usize) -> String {
             base + record.kv_index,
             batch_sequences_meta.row_size * batch_sequences_meta.col_size,
             batch_sequences_meta.sequences,
+            batch_sequences_meta.tokenizer.clone(),
         )
     };
 
@@ -176,8 +180,7 @@ fn decode_generated_text(state: &AppState, slot_index: usize) -> String {
         token_slice.iter().map(|&id| id as u32).collect()
     };
 
-    state
-        .tokenizer
+    tokenizer
         .decode(&token_ids, true)
         .unwrap_or_else(|_| String::from("Decode error"))
 }
@@ -244,23 +247,4 @@ fn build_non_stream_response(
     };
 
     Json(response).into_response()
-}
-
-fn build_prompt(messages: &[ChatMessage]) -> String {
-    let estimated_len: usize = messages
-        .iter()
-        .map(|msg| msg.role.len() + msg.content.len() + 3)
-        .sum();
-    let mut prompt = String::with_capacity(estimated_len);
-
-    for (i, msg) in messages.iter().enumerate() {
-        if i > 0 {
-            prompt.push('\n');
-        }
-        prompt.push_str(&msg.role);
-        prompt.push_str(": ");
-        prompt.push_str(&msg.content);
-    }
-
-    prompt
 }

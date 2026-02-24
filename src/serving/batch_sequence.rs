@@ -1,30 +1,45 @@
+use std::sync::Arc;
 use tokenizers::Tokenizer;
 
-#[derive(Debug)]
+use crate::serving::chat_template::ChatTemplate;
+
 pub struct BatchSequence {
     pub sequences: *mut usize, // 展平的二维矩阵 [row_size][col_size]
     pub row_size: usize,
     pub col_size: usize,
+    pub tokenizer: Arc<Tokenizer>,
+    pub chat_template: Arc<ChatTemplate>,
 }
 
 impl BatchSequence {
-    pub fn new(sequences: *mut usize, row_size: usize, col_size: usize) -> Self {
+    pub fn new(
+        sequences: *mut usize,
+        row_size: usize,
+        col_size: usize,
+        tokenizer: Arc<Tokenizer>,
+        chat_template: Arc<ChatTemplate>,
+    ) -> Self {
         Self {
             sequences,
             row_size,
             col_size,
+            tokenizer,
+            chat_template,
         }
     }
 
-    pub fn write_prompt(
+    pub fn write_messages(
         &mut self,
         slot_index: usize,
-        prompt: &str,
-        tokenizer: &Tokenizer,
+        messages: &[(&str, &str)],
     ) -> Result<usize, String> {
-        // 使用真正的分词器进行编码
-        let tokens = tokenizer
-            .encode(prompt, true)
+        let prompt = self
+            .chat_template
+            .apply_chat_template(messages)
+            .map_err(|e| format!("Render chat template failed: {}", e))?;
+        let tokens = self
+            .tokenizer
+            .encode(prompt.as_str(), true)
             .map_err(|e| format!("Tokenization failed: {}", e))?;
         let ids = tokens.get_ids();
         let write_len = ids.len().min(self.col_size);
