@@ -3,7 +3,7 @@
 #![feature(specialization)]
 #![feature(sync_unsafe_cell)]
 
-// pub mod common;
+pub mod common;
 // pub mod mem_mgr;
 // pub mod kernel;
 // pub mod ops;

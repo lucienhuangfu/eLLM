@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crate::serving::record::{Phase, SequenceSlice, SequenceState};
 use crate::common::send_sync_ptr::SharedMut;
+use crate::serving::record::{Phase, SequenceSlice, SequenceState};
 
 struct FairTaskAllocator {
     task_count: usize,
@@ -191,8 +191,8 @@ impl BatchScheduler {
     // scheduler.batch_list.push(SequenceState {
     //     phase: Phase::Prefill,
     //     sequence_index: 4,
-    //     sequence_index: 4,
     //     kv_index: 0,
+    //     notify: std::sync::Arc::new(tokio::sync::Notify::new()),
     // });
     // let (prefill, decode) = scheduler.schedule_batch();
     // assert!(prefill > 0);
@@ -209,7 +209,7 @@ impl BatchScheduler {
             max_prefill_size: sequence_length * batch_size,
             batch_list: Arc::new(SharedMut::new(Vec::with_capacity(batch_size))),
             thread_num,
-            decode_scheduler: SliceScheduler::new(batch_size * thread_num),
+            decode_scheduler: SliceScheduler::new(batch_size),
             prefill_scheduler: SliceScheduler::new(batch_size * thread_num),
             prefill_list: build_list(),
             decode_list: build_list(),
@@ -251,22 +251,7 @@ impl BatchScheduler {
         }
     }
 
-    fn compute_prefill_decode_totals(&mut self) -> (usize, usize) {
-        let mut prefill_total_tokens = 0usize;
-        let mut decode_total_tokens = 0usize;
-
-        let mut batch_list = unsafe { &mut *self.batch_list.get() };
-        for record in batch_list.iter_mut() {
-            if record.phase == Phase::Prefill {
-                let remaining = record.sequence_index.saturating_sub(record.kv_index);
-                prefill_total_tokens += remaining;
-            }
-        }
-
-        (prefill_total_tokens, decode_total_tokens)
-    }
-
-    fn schedule_prefill_and_decode(&mut self, prefill_count: &mut usize, decode_count: &mut usize) {
+    fn schedule_prefill_and_switch_to_decode(&mut self, prefill_count: &mut usize) {
         for task in self.prefill_list.iter_mut() {
             task.clear();
         }
@@ -274,16 +259,23 @@ impl BatchScheduler {
             task.clear();
         }
 
-        let (prefill_total_tokens, decode_total_tokens) = self.compute_prefill_decode_totals();
+        let mut prefill_total_tokens = 0usize;
+        {
+            let batch_list = unsafe { &*self.batch_list.get() };
+            for record in batch_list.iter() {
+                if record.phase == Phase::Prefill {
+                    prefill_total_tokens += record.sequence_index.saturating_sub(record.kv_index);
+                }
+            }
+        }
 
         let total_tokens = prefill_total_tokens.min(self.max_prefill_size);
         self.prefill_scheduler.init(total_tokens);
 
         // decode_list is cleared above, so no decode tokens are used yet.
-        self.decode_scheduler
-            .init(decode_total_tokens.min(self.max_decode_size));
+        self.decode_scheduler.init(0);
 
-        let mut batch_list = unsafe { &mut *self.batch_list.get() };
+        let batch_list = unsafe { &mut *self.batch_list.get() };
         for (batch_index, record) in batch_list.iter_mut().enumerate() {
             if self.prefill_scheduler.is_done() {
                 break;
@@ -291,6 +283,7 @@ impl BatchScheduler {
 
             if record.phase == Phase::Prefill {
                 let remaining = record.sequence_index.saturating_sub(record.kv_index);
+                let scheduled_before = *prefill_count;
                 self.prefill_scheduler.schedule_for_sequence(
                     batch_index,
                     record.sequence_index,
@@ -299,6 +292,11 @@ impl BatchScheduler {
                     &mut self.prefill_list,
                     prefill_count,
                 );
+
+                let scheduled_for_record = prefill_count.saturating_sub(scheduled_before);
+                if remaining > 0 && scheduled_for_record == remaining {
+                    record.phase = Phase::Decode;
+                }
             }
         }
     }
@@ -328,11 +326,13 @@ impl BatchScheduler {
 
             let has_prefill = {
                 let batch_list = unsafe { &*self.batch_list.get() };
-                batch_list.iter().any(|record| record.phase == Phase::Prefill)
+                batch_list
+                    .iter()
+                    .any(|record| record.phase == Phase::Prefill)
             };
 
             if has_prefill {
-                self.schedule_prefill_and_decode(&mut prefill_count, &mut decode_count);
+                self.schedule_prefill_and_switch_to_decode(&mut prefill_count);
                 return (prefill_count, decode_count);
             }
 
@@ -345,6 +345,15 @@ impl BatchScheduler {
 mod tests {
     use super::*;
     use tokio::sync::Notify;
+
+    fn state(phase: Phase, sequence_index: usize, kv_index: usize) -> SequenceState {
+        SequenceState {
+            phase,
+            sequence_index,
+            kv_index,
+            notify: std::sync::Arc::new(Notify::new()),
+        }
+    }
 
     #[test]
     fn schedule_prefill_only() {
@@ -360,14 +369,9 @@ mod tests {
         let batch_size = 32;
         let mut scheduler = BatchScheduler::new(8, batch_size, 8);
         {
-            let mut batch_list = unsafe { &mut *scheduler.batch_list.get() };
+            let batch_list = unsafe { &mut *scheduler.batch_list.get() };
             for _ in 0..8 {
-                batch_list.push(SequenceState {
-                    phase: Phase::Prefill,
-                    sequence_index: 6,
-                    kv_index: 0,
-                    notify: std::sync::Arc::new(Notify::new()),
-                });
+                batch_list.push(state(Phase::Prefill, 6, 0));
             }
         }
 
@@ -378,6 +382,11 @@ mod tests {
 
         assert_eq!(scheduler.prefill_list.len(), 8);
         assert_eq!(scheduler.decode_list.len(), 8);
+
+        let batch_list = unsafe { &*scheduler.batch_list.get() };
+        for record in batch_list.iter().take(8) {
+            assert_eq!(record.phase, Phase::Decode);
+        }
 
         for task_index in 0..8 {
             assert!(scheduler.decode_list[task_index].is_empty());
@@ -391,6 +400,47 @@ mod tests {
             assert_eq!(slice.token_start_index, task_index * 6);
             assert_eq!(slice.length, 6);
         }
+    }
+
+    #[test]
+    fn schedule_decode_only_prioritizes_decode_tasks() {
+        // Input:
+        // - batch_size=2 limits decode scheduling to 2 records
+        // - Mixed phases: Decode, Prefill, Decode, Decode
+        // Output (expected):
+        // - decode == 2, prefill == 0
+        // - Only first two decode records are scheduled
+        // - decode slices are evenly assigned to two tasks
+        // - prefill_list stays empty because decode has priority
+        let mut scheduler = BatchScheduler::new(8, 2, 2);
+        {
+            let batch_list = unsafe { &mut *scheduler.batch_list.get() };
+            batch_list.push(state(Phase::Decode, 11, 10));
+            batch_list.push(state(Phase::Prefill, 6, 0));
+            batch_list.push(state(Phase::Decode, 12, 11));
+            batch_list.push(state(Phase::Decode, 13, 12));
+        }
+
+        let (prefill, decode) = scheduler.schedule_batch();
+
+        assert_eq!(prefill, 0);
+        assert_eq!(decode, 2);
+
+        for task_index in 0..2 {
+            assert!(scheduler.prefill_list[task_index].is_empty());
+            assert_eq!(scheduler.decode_list[task_index].len(), 1);
+            assert_eq!(scheduler.decode_list[task_index][0].length, 1);
+        }
+
+        let first = &scheduler.decode_list[0][0];
+        assert_eq!(first.batch_index, 0);
+        assert_eq!(first.sequence_index, 11);
+        assert_eq!(first.token_start_index, 0);
+
+        let second = &scheduler.decode_list[1][0];
+        assert_eq!(second.batch_index, 2);
+        assert_eq!(second.sequence_index, 12);
+        assert_eq!(second.token_start_index, 1);
     }
 
     #[test]
@@ -433,5 +483,30 @@ mod tests {
         assert!(allocator.is_done());
         assert_eq!(allocator.current_task_index(), None);
         assert_eq!(allocator.scheduled_tokens(), 0);
+    }
+
+    #[test]
+    fn schedule_prefill_partial_keeps_unscheduled_records_in_prefill() {
+        // Input:
+        // - sequence_length=4, batch_size=2 => max_prefill_size = 8
+        // - Two Prefill records each require 6 tokens (total 12 > 8)
+        // Output (expected):
+        // - first record fully scheduled -> switches to Decode
+        // - second record partially scheduled -> remains Prefill
+        let mut scheduler = BatchScheduler::new(4, 2, 2);
+        {
+            let batch_list = unsafe { &mut *scheduler.batch_list.get() };
+            batch_list.push(state(Phase::Prefill, 6, 0));
+            batch_list.push(state(Phase::Prefill, 6, 0));
+        }
+
+        let (prefill, decode) = scheduler.schedule_batch();
+
+        assert_eq!(prefill, 8);
+        assert_eq!(decode, 0);
+
+        let batch_list = unsafe { &*scheduler.batch_list.get() };
+        assert_eq!(batch_list[0].phase, Phase::Decode);
+        assert_eq!(batch_list[1].phase, Phase::Prefill);
     }
 }
