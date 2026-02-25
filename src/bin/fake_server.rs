@@ -1,8 +1,8 @@
 #![feature(f16)]
 
-use ellm::runtime::inference::state::{Phase, SequenceState};
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
+use ellm::runtime::inference::state::{Phase, SequenceState};
 use ellm::serving::batch_sequence::BatchSequence;
 use ellm::serving::server;
 use std::sync::Arc;
@@ -17,12 +17,94 @@ fn build_fake_tokens(tokenizer: &Tokenizer) -> Arc<Vec<usize>> {
     Arc::new(tokens)
 }
 
+fn start_fake_inference_loop(
+    batch_sequences: Arc<SharedMut<BatchSequence>>,
+    batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+    fake_tokens: Arc<Vec<usize>>,
+    batch_size: usize,
+) {
+    std::thread::spawn(move || {
+        let max_new_tokens = 24usize;
+        let mut prompt_start = vec![0usize; batch_size];
+
+        loop {
+            let mut progressed = false;
+
+            {
+                let batch_sequences_guard = unsafe { &mut *batch_sequences.get() };
+                let batch_list_guard = unsafe { &mut *batch_list.get() };
+                let row_stride = batch_sequences_guard.col_size;
+                let total_capacity = batch_sequences_guard.row_size * row_stride;
+
+                for (slot_index, record) in batch_list_guard.iter_mut().enumerate() {
+                    match record.phase {
+                        Phase::Prefill => {
+                            prompt_start[slot_index] = record.sequence_index;
+                            record.kv_index = record.sequence_index;
+                            record.phase = Phase::Decode;
+                            progressed = true;
+                        }
+                        Phase::Decode => {
+                            let generated =
+                                record.kv_index.saturating_sub(prompt_start[slot_index]);
+                            if generated >= max_new_tokens {
+                                record.phase = Phase::Eos;
+                                record.notify.notify_one();
+                                progressed = true;
+                                continue;
+                            }
+
+                            let write_pos = slot_index * row_stride + record.kv_index;
+                            if write_pos >= total_capacity {
+                                record.phase = Phase::Eos;
+                                record.notify.notify_one();
+                                progressed = true;
+                                continue;
+                            }
+
+                            let token_id = fake_tokens
+                                .get(generated % fake_tokens.len().max(1))
+                                .copied()
+                                .unwrap_or(0);
+
+                            unsafe {
+                                batch_sequences_guard
+                                    .sequences
+                                    .add(write_pos)
+                                    .write(token_id);
+                            }
+
+                            record.kv_index = record.kv_index.saturating_add(1);
+
+                            if record.kv_index.saturating_sub(prompt_start[slot_index])
+                                >= max_new_tokens
+                            {
+                                record.phase = Phase::Eos;
+                                record.notify.notify_one();
+                            }
+
+                            progressed = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if progressed {
+                std::thread::yield_now();
+            } else {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    });
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting fake inference server...");
 
-    let sequence_length = 128;
-    let batch_size = 4;
+    let sequence_length = 256usize;
+    let batch_size = 4usize;
     let sequence_capacity = sequence_length + 1;
 
     let sequences = allocate_init::<usize>(sequence_capacity * batch_size, 0);
@@ -41,93 +123,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Unable to initialize BatchSequence: {}", e))?,
     ));
 
-    let mut batch_list = Vec::with_capacity(batch_size);
-    batch_list.extend((0..batch_size).map(|_| SequenceState {
+    let mut initial_states = Vec::with_capacity(batch_size);
+    initial_states.extend((0..batch_size).map(|_| SequenceState {
         sequence_index: 0,
         kv_index: 0,
         phase: Phase::Start,
-        // prompt_length: 0,
         notify: Arc::new(tokio::sync::Notify::new()),
     }));
-    let batch_list = Arc::new(SharedMut::new(batch_list));
+    let batch_list = Arc::new(SharedMut::new(initial_states));
 
     let tokenizer = {
         let guard = unsafe { &*batch_sequences.get() };
         guard.tokenizer.clone()
     };
     let fake_tokens = build_fake_tokens(&tokenizer);
-    let fake_sequences = batch_sequences.clone();
-    let fake_batch_list = batch_list.clone();
-    std::thread::spawn(move || {
-        let max_new_tokens = 16usize;
-        let mut slot_prompt_starts = vec![0usize; batch_size];
-        let mut slot_active = vec![false; batch_size];
-        loop {
-            let mut processed = false;
-            {
-                let batch_list_guard = unsafe { &mut *fake_batch_list.get() };
-                let batch_sequences_guard = unsafe { &mut *fake_sequences.get() };
-                let capacity = batch_sequences_guard.row_size * batch_sequences_guard.col_size;
 
-                for (slot_index, record) in batch_list_guard.iter_mut().enumerate() {
-                    if record.phase != Phase::Decode {
-                        slot_active[slot_index] = false;
-                        continue;
-                    }
-
-                    if !slot_active[slot_index] {
-                        slot_prompt_starts[slot_index] = record.sequence_index;
-                        slot_active[slot_index] = true;
-                    }
-
-                    let generated =
-                        record.sequence_index.saturating_sub(slot_prompt_starts[slot_index]);
-                    if generated >= max_new_tokens {
-                        record.phase = Phase::Eos;
-                        record.notify.notify_one();
-                        slot_active[slot_index] = false;
-                        continue;
-                    }
-
-                    let token_id = fake_tokens
-                        .get(generated % fake_tokens.len().max(1))
-                        .copied()
-                        .unwrap_or(0);
-                    let out_offset =
-                        slot_index * batch_sequences_guard.col_size + record.sequence_index;
-                    if out_offset < capacity {
-                        unsafe {
-                            batch_sequences_guard
-                                .sequences
-                                .add(out_offset)
-                                .write(token_id);
-                        }
-                    }
-
-                    record.sequence_index = record.sequence_index.saturating_add(1);
-                    record.kv_index = record.sequence_index;
-
-                    if record.sequence_index.saturating_sub(slot_prompt_starts[slot_index])
-                        >= max_new_tokens
-                    {
-                        record.phase = Phase::Eos;
-                        record.notify.notify_one();
-                        slot_active[slot_index] = false;
-                    }
-
-                    processed = true;
-                }
-            }
-
-            if !processed {
-                std::thread::sleep(Duration::from_millis(5));
-            } else {
-                std::thread::yield_now();
-            }
-        }
-    });
+    start_fake_inference_loop(
+        batch_sequences.clone(),
+        batch_list.clone(),
+        fake_tokens,
+        batch_size,
+    );
 
     server::run(batch_sequences, batch_list).await?;
     Ok(())
 }
-
