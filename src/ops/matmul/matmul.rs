@@ -11,7 +11,7 @@ use crate::common::{
 };
 use crate::kernel;
 use crate::ops::assign::assign;
-use crate::ops::traits::mul_trait::MatMulTrait;
+use crate::ops::traits::MatMulTrait;
 
 #[derive(Clone)]
 pub struct MatMul<T> {

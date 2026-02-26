@@ -10,7 +10,7 @@ use crate::common::{
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use crate::ops::assign::assign;
-use crate::ops::traits::mul_trait::ExpertsSiluTrait;
+use crate::ops::traits::ExpertsSiluTrait;
 
 #[derive(Clone)]
 pub struct ExpertsMatMulSilu<T> {

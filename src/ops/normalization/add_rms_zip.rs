@@ -1,7 +1,7 @@
 use std::f16;
 // use num_traits::Float;
 
-use crate::ops::traits::zip_map_trait::ZipMapTrait;
+use crate::ops::traits::ZipMapTrait;
 use crate::ops::assign::assign;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;

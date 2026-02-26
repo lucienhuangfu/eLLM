@@ -10,7 +10,7 @@ use crate::common::{
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use crate::ops::assign::assign;
-use crate::ops::traits::mul_trait::MatMulkqvTrait;
+use crate::ops::traits::MatMulkqvTrait;
 
 // 添加 generic kernel 的引用
 use crate::kernel::scalar::complex_mul::complex_mul;

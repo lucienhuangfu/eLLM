@@ -7,7 +7,7 @@ use std::ops::{Add, Mul};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::ops::assign::assign;
-use crate::ops::traits::mul_trait::MoeMergeTrait;
+use crate::ops::traits::MoeMergeTrait;
 
 /// Merge num_experts_per_token 个 experts 的输出，并加 residual：
 ///

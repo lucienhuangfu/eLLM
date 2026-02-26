@@ -3,7 +3,7 @@ use std::f16;
 // use std::fmt::Debug;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
-use crate::ops::traits::zip_map_trait::ZipMapTrait;
+use crate::ops::traits::ZipMapTrait;
 use crate::ops::assign::assign;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;

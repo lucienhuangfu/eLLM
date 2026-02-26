@@ -7,10 +7,10 @@ use crate::common::{
 };
 use crate::kernel;
 use crate::ops::assign::assign;
-use crate::ops::traits::mul_trait::ExpertsDownTrait;
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
+use crate::ops::traits::ExpertsDownTrait;
 
 /// Experts Down Projection:
 ///   NONLIN[e, b, Hmid]   ×  W_down[e, Hmid, H]   → OUT[b, slot(b,e), H]

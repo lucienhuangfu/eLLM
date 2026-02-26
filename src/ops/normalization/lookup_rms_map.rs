@@ -2,7 +2,7 @@ use std::f16;
 use std::ptr;
 
 use crate::kernel;
-use crate::ops::traits::map_trait::MapTrait;
+use crate::ops::traits::MapTrait;
 
 // use crate::runtime::inference::state::TaskList;
 use crate::runtime::inference::state::SequenceSlice;

@@ -12,7 +12,7 @@ use crate::common::{
 };
 use crate::kernel;
 use crate::ops::assign::assign;
-use crate::ops::traits::mul_trait::MatMulAddTrait;
+use crate::ops::traits::MatMulAddTrait;
 
 #[derive(Clone)]
 pub struct MatMulAdd<T> {

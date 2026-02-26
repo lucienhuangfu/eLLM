@@ -11,27 +11,22 @@ use crate::common::tensor_utils::get_strides;
 use crate::mem_mgr::allocator::allocate_init;
 use crate::mem_mgr::cache::Cache;
 
-use crate::ops::left_vector::LiftVector;
-use crate::ops::normalization::lookup_rms_map::LookupRMSMap;
-use crate::ops::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;
+use crate::ops::movement::LiftVector;
+use crate::ops::routing::ExpertsSoftmaxNorm;
+use crate::ops::transform::LookupRMSMap;
 
+use crate::ops::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
+use crate::ops::linear::{Attention, MatMul, MatMul3, MatMulAdd};
+use crate::ops::routing::TopKSoftmax;
 use crate::runtime::inference::state::{Phase, SequenceSlice, SequenceState};
-use crate::ops::attention::attention::Attention;
-use crate::ops::experts::experts_matmul_mul::ExpertsMatMulDown;
-use crate::ops::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
-use crate::ops::experts::experts_merge_add::ExpertsMergeAdd;
-use crate::ops::matmul::matmul::MatMul;
-use crate::ops::matmul::matmul3::MatMul3;
-use crate::ops::matmul::matmul_add::MatMulAdd;
-use crate::ops::softmax::topk_softmax::TopKSoftmax;
 // use super::super::ops::mul::matmul_silu_mul_matmul::MatMulSilu;
-use crate::ops::elementwise::add_zip::AddZipMap;
-use crate::ops::matmul::matmul_topk::MatMulTopK;
-use crate::ops::normalization::add_rms_zip::AddRMSZipMap;
+use crate::ops::routing::MatMulTopK;
+use crate::ops::transform::AddRMSZipMap;
+use crate::ops::transform::AddZipMap;
 use crate::runtime::operator::Operator;
 // use super::super::ops::zip_map::complex_zip::ComplexZipMap;
 // use super::super::ops::zip_map::silu_mul_zip::SiluMulZipMap;
-use crate::ops::normalization::rms_map::RMSMap;
+use crate::ops::transform::RMSMap;
 
 #[derive(Clone)]
 pub struct Tensor<T>
@@ -2877,4 +2872,3 @@ mod tests {
 
 
 */
-

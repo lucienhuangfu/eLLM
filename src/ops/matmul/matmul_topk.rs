@@ -12,7 +12,7 @@ use crate::common::{
 use crate::kernel;
 use crate::common::heap::FixedMinHeap;
 use crate::ops::assign::assign;
-use crate::ops::traits::mul_trait::MatMulTopKTrait;
+use crate::ops::traits::MatMulTopKTrait;
 
 #[derive(Clone)]
 pub struct MatMulTopK<T>
