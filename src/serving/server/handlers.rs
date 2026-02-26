@@ -44,12 +44,12 @@ pub(super) async fn chat_completions(
 
     notifier.notified().await;
 
-    let generated_text = {
-        let batch_list = unsafe { &*state.batch_list.get() };
-        let batch_sequences = unsafe { &*state.batch_sequences.get() };
-        let record = &batch_list[slot_index];
-        batch_sequences.decode_generated_text(slot_index, record)
-    };
+    let generated_text = state.batch_list.with(|batch_list| {
+        state.batch_sequences.with(|batch_sequences| {
+            let record = &batch_list[slot_index];
+            batch_sequences.decode_generated_text(slot_index, record)
+        })
+    });
     reclaim_slot(&state, slot_index, true).await;
 
     if is_stream {
@@ -94,25 +94,24 @@ async fn assign_slot_with_messages(
         .map(|msg| (msg.role.as_str(), msg.content.as_str()))
         .collect::<Vec<_>>();
 
-    let write_result = {
-        let batch_list = unsafe { &mut *state.batch_list.get() };
-        let batch_sequences = unsafe { &mut *state.batch_sequences.get() };
-
-        let record = &mut batch_list[slot_index];
-        if !matches!(record.phase, Phase::Start) {
-            Err("slot is not in Start phase".to_string())
-        } else {
-            batch_sequences
-                .write_prompts(slot_index, &message_pairs)
-                .map(|write_len| {
-                    record.sequence_index = write_len;
-                    record.kv_index = usize::MAX;
-                    record.phase = Phase::Prefill;
-                    record.notify.clone()
-                })
-                .map_err(|e| e.to_string())
-        }
-    };
+    let write_result = state.batch_list.with_mut(|batch_list| {
+        state.batch_sequences.with_mut(|batch_sequences| {
+            let record = &mut batch_list[slot_index];
+            if !matches!(record.phase, Phase::Start) {
+                Err("slot is not in Start phase".to_string())
+            } else {
+                batch_sequences
+                    .write_prompts(slot_index, &message_pairs)
+                    .map(|write_len| {
+                        record.sequence_index = write_len;
+                        record.kv_index = usize::MAX;
+                        record.phase = Phase::Prefill;
+                        record.notify.clone()
+                    })
+                    .map_err(|e| e.to_string())
+            }
+        })
+    });
 
     match write_result {
         Ok(notifier) => {
@@ -134,14 +133,13 @@ async fn assign_slot_with_messages(
 }
 
 async fn reclaim_slot(state: &AppState, slot_index: usize, release_permit: bool) {
-    {
-        let batch_list = unsafe { &mut *state.batch_list.get() };
+    state.batch_list.with_mut(|batch_list| {
         if let Some(record) = batch_list.get_mut(slot_index) {
             record.sequence_index = usize::MAX;
             record.kv_index = usize::MAX;
             record.phase = Phase::Start;
         }
-    }
+    });
 
     let mut free_slots = state.free_slots.lock().await;
     free_slots.push_back(slot_index);
@@ -151,7 +149,6 @@ async fn reclaim_slot(state: &AppState, slot_index: usize, release_permit: bool)
         state.available_slots.add_permits(1);
     }
 }
-
 
 fn build_stream_response(
     request_id: String,
@@ -216,5 +213,3 @@ fn build_non_stream_response(
 
     Json(response).into_response()
 }
-
-

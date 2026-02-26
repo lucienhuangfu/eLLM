@@ -91,31 +91,26 @@ where
                     // Synchronization barrier: Wait for Thread 0 to finish scheduling
                     b.wait();
 
-                    let (prefill_size, decode_size, prefill_list, decode_list, batch_list_guard) = unsafe {
+                    unsafe {
                         let state = &mut *state_ptr;
                         let (prefill_size, decode_size) = state.sizes;
                         let scheduler = &mut state.scheduler;
-                        (
-                            prefill_size,
-                            decode_size,
-                            &scheduler.prefill_list,
-                            &scheduler.decode_list,
-                            &mut *scheduler.batch_list.get(),
-                        )
-                    };
-
-                    // Execute the operator queue in parallel
-                    for operator in queue.iter() {
-                        operator.run(
-                            prefill_size,
-                            decode_size,
-                            thread_num,
-                            thread_id,
-                            prefill_list,
-                            decode_list,
-                            batch_list_guard,
-                        );
-                        b.wait();
+                        let prefill_list = &scheduler.prefill_list;
+                        let decode_list = &scheduler.decode_list;
+                        scheduler.batch_list.with_mut(|batch_list_guard| {
+                            for operator in queue.iter() {
+                                operator.run(
+                                    prefill_size,
+                                    decode_size,
+                                    thread_num,
+                                    thread_id,
+                                    prefill_list,
+                                    decode_list,
+                                    batch_list_guard,
+                                );
+                                b.wait();
+                            }
+                        });
                     }
                 }
 
@@ -214,8 +209,7 @@ mod test {
 
         let thread_num = core_affinity::get_core_ids().unwrap().len();
         let mut batch_scheduler = BatchScheduler::new(position_window_size, batch_size, thread_num);
-        {
-            let mut batch_list = unsafe { &mut *batch_scheduler.batch_list.get() };
+        batch_scheduler.batch_list.with_mut(|batch_list| {
             batch_list.extend((0..batch_size).map(|_| SequenceState {
                 sequence_index: 50,
                 kv_index: 0,
@@ -223,7 +217,7 @@ mod test {
                 // prompt_length: 50,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             }));
-        }
+        });
 
         ServingRunner::new(output_tensor.operator_queue.take(), batch_scheduler).start();
     }

@@ -36,8 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         topk_size,
     );
 
-    let sequence_capacity = sequence_length + 1;
-    let sequences = allocate_init::<usize>(sequence_capacity * batch_size, 0);
+    // let sequence_capacity = sequence_length + 1;
+    let sequences = allocate_init::<usize>(sequence_length * batch_size, 0);
 
     let tokenizer_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
     let tokenizer_config_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer_config.json";
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         BatchSequence::new(
             sequences,
             batch_size,
-            sequence_capacity,
+            sequence_length,
             tokenizer_path,
             tokenizer_config_path,
             chat_template_path,

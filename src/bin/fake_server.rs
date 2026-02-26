@@ -31,9 +31,8 @@ fn start_fake_inference_loop(
         loop {
             let mut progressed = false;
 
-            {
-                let batch_sequences_guard = unsafe { &mut *batch_sequences.get() };
-                let batch_list_guard = unsafe { &mut *batch_list.get() };
+            batch_sequences.with_mut(|batch_sequences_guard| {
+                batch_list.with_mut(|batch_list_guard| {
                 let row_stride = batch_sequences_guard.col_size;
                 let total_capacity = batch_sequences_guard.row_size * row_stride;
 
@@ -89,7 +88,8 @@ fn start_fake_inference_loop(
                         _ => {}
                     }
                 }
-            }
+                })
+            });
 
             if progressed {
                 std::thread::yield_now();
@@ -135,10 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     let batch_list = Arc::new(SharedMut::new(initial_states));
 
-    let tokenizer = {
-        let guard = unsafe { &*batch_sequences.get() };
-        guard.tokenizer.clone()
-    };
+    let tokenizer = batch_sequences.with(|guard| guard.tokenizer.clone());
     let fake_tokens = build_fake_tokens(&tokenizer);
 
     start_fake_inference_loop(

@@ -68,10 +68,10 @@ pub mod traits {
     pub mod expert;
     pub mod linear;
     pub mod map;
-    pub mod routing;
+    pub mod softmax;
 
     pub use expert::{ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait};
     pub use linear::{AttentionTrait, MatMulAddTrait, MatMulTrait, MatMulkqvTrait};
     pub use map::{MapTrait, ZipMapTrait};
-    pub use routing::{MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
+    pub use softmax::{MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
 }

@@ -4,8 +4,8 @@ use std::cell::SyncUnsafeCell;
 pub struct ConstPtr<T> {
     pub ptr: *const T,
 }
-unsafe impl<T> Sync for ConstPtr<T> {}
-unsafe impl<T> Send for ConstPtr<T> {}
+unsafe impl<T: Sync> Sync for ConstPtr<T> {}
+unsafe impl<T: Sync> Send for ConstPtr<T> {}
 
 impl<T> Copy for ConstPtr<T> {}
 
@@ -18,8 +18,7 @@ impl<T> Clone for ConstPtr<T> {
 pub struct MutPtr<T> {
     pub ptr: *mut T,
 }
-unsafe impl<T> Sync for MutPtr<T> {}
-unsafe impl<T> Send for MutPtr<T> {}
+unsafe impl<T: Send> Send for MutPtr<T> {}
 
 impl<T> Copy for MutPtr<T> {}
 
@@ -43,7 +42,19 @@ impl<T> SharedMut<T> {
     pub fn get(&self) -> *mut T {
         self.cell.get()
     }
+
+    #[inline(always)]
+    pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        let ptr = self.cell.get();
+        unsafe { f(&*ptr) }
+    }
+
+    #[inline(always)]
+    pub fn with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        let ptr = self.cell.get();
+        unsafe { f(&mut *ptr) }
+    }
 }
 
-unsafe impl<T> Sync for SharedMut<T> {}
-unsafe impl<T> Send for SharedMut<T> {}
+unsafe impl<T: Send> Sync for SharedMut<T> {}
+unsafe impl<T: Send> Send for SharedMut<T> {}

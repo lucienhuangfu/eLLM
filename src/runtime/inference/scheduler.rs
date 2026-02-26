@@ -221,28 +221,26 @@ impl BatchScheduler {
             task.clear();
         }
 
-        let total_tokens = {
-            let batch_list = unsafe { &*self.batch_list.get() };
+        let max_decode_size = self.max_decode_size;
+        let decode_candidates = self.batch_list.with(|batch_list| {
             batch_list
                 .iter()
-                .filter(|record| record.phase == Phase::Decode)
-                .take(self.max_decode_size)
-                .count()
-        };
+                .enumerate()
+                .filter(|(_, record)| record.phase == Phase::Decode)
+                .take(max_decode_size)
+                .map(|(batch_index, record)| (batch_index, record.sequence_index))
+                .collect::<Vec<_>>()
+        });
 
-        self.decode_scheduler.init(total_tokens);
+        self.decode_scheduler.init(decode_candidates.len());
 
-        let batch_list = unsafe { &*self.batch_list.get() };
-        for (batch_index, record) in batch_list.iter().enumerate() {
+        for (batch_index, sequence_index) in decode_candidates {
             if self.decode_scheduler.is_done() {
                 break;
             }
-            if record.phase != Phase::Decode {
-                continue;
-            }
             self.decode_scheduler.schedule_for_sequence(
                 batch_index,
-                record.sequence_index,
+                sequence_index,
                 1,
                 0,
                 &mut self.decode_list,
@@ -260,14 +258,13 @@ impl BatchScheduler {
         }
 
         let mut prefill_total_tokens = 0usize;
-        {
-            let batch_list = unsafe { &*self.batch_list.get() };
+        self.batch_list.with(|batch_list| {
             for record in batch_list.iter() {
                 if record.phase == Phase::Prefill {
                     prefill_total_tokens += record.sequence_index.saturating_sub(record.kv_index);
                 }
             }
-        }
+        });
 
         let total_tokens = prefill_total_tokens.min(self.max_prefill_size);
         self.prefill_scheduler.init(total_tokens);
@@ -275,30 +272,33 @@ impl BatchScheduler {
         // decode_list is cleared above, so no decode tokens are used yet.
         self.decode_scheduler.init(0);
 
-        let batch_list = unsafe { &mut *self.batch_list.get() };
-        for (batch_index, record) in batch_list.iter_mut().enumerate() {
-            if self.prefill_scheduler.is_done() {
-                break;
-            }
+        let prefill_scheduler = &mut self.prefill_scheduler;
+        let prefill_list = &mut self.prefill_list;
+        self.batch_list.with_mut(|batch_list| {
+            for (batch_index, record) in batch_list.iter_mut().enumerate() {
+                if prefill_scheduler.is_done() {
+                    break;
+                }
 
-            if record.phase == Phase::Prefill {
-                let remaining = record.sequence_index.saturating_sub(record.kv_index);
-                let scheduled_before = *prefill_count;
-                self.prefill_scheduler.schedule_for_sequence(
-                    batch_index,
-                    record.sequence_index,
-                    remaining,
-                    0,
-                    &mut self.prefill_list,
-                    prefill_count,
-                );
+                if record.phase == Phase::Prefill {
+                    let remaining = record.sequence_index.saturating_sub(record.kv_index);
+                    let scheduled_before = *prefill_count;
+                    prefill_scheduler.schedule_for_sequence(
+                        batch_index,
+                        record.sequence_index,
+                        remaining,
+                        0,
+                        prefill_list,
+                        prefill_count,
+                    );
 
-                let scheduled_for_record = prefill_count.saturating_sub(scheduled_before);
-                if remaining > 0 && scheduled_for_record == remaining {
-                    record.phase = Phase::Decode;
+                    let scheduled_for_record = prefill_count.saturating_sub(scheduled_before);
+                    if remaining > 0 && scheduled_for_record == remaining {
+                        record.phase = Phase::Decode;
+                    }
                 }
             }
-        }
+        });
     }
 
     pub fn schedule_batch(&mut self) -> (usize, usize) {
@@ -313,10 +313,12 @@ impl BatchScheduler {
 
         loop {
             let has_decode = {
-                let batch_list = unsafe { &*self.batch_list.get() };
+                let batch_list = self.batch_list.with(|batch_list| {
+                    batch_list
+                        .iter()
+                        .any(|record| record.phase == Phase::Decode)
+                });
                 batch_list
-                    .iter()
-                    .any(|record| record.phase == Phase::Decode)
             };
 
             if has_decode {
@@ -325,10 +327,12 @@ impl BatchScheduler {
             }
 
             let has_prefill = {
-                let batch_list = unsafe { &*self.batch_list.get() };
+                let batch_list = self.batch_list.with(|batch_list| {
+                    batch_list
+                        .iter()
+                        .any(|record| record.phase == Phase::Prefill)
+                });
                 batch_list
-                    .iter()
-                    .any(|record| record.phase == Phase::Prefill)
             };
 
             if has_prefill {
@@ -368,12 +372,11 @@ mod tests {
         // - decode_list is empty across all tasks
         let batch_size = 32;
         let mut scheduler = BatchScheduler::new(8, batch_size, 8);
-        {
-            let batch_list = unsafe { &mut *scheduler.batch_list.get() };
+        scheduler.batch_list.with_mut(|batch_list| {
             for _ in 0..8 {
                 batch_list.push(state(Phase::Prefill, 6, 0));
             }
-        }
+        });
 
         let (prefill, decode) = scheduler.schedule_batch();
 
@@ -383,10 +386,11 @@ mod tests {
         assert_eq!(scheduler.prefill_list.len(), 8);
         assert_eq!(scheduler.decode_list.len(), 8);
 
-        let batch_list = unsafe { &*scheduler.batch_list.get() };
-        for record in batch_list.iter().take(8) {
-            assert_eq!(record.phase, Phase::Decode);
-        }
+        scheduler.batch_list.with(|batch_list| {
+            for record in batch_list.iter().take(8) {
+                assert_eq!(record.phase, Phase::Decode);
+            }
+        });
 
         for task_index in 0..8 {
             assert!(scheduler.decode_list[task_index].is_empty());
@@ -413,13 +417,12 @@ mod tests {
         // - decode slices are evenly assigned to two tasks
         // - prefill_list stays empty because decode has priority
         let mut scheduler = BatchScheduler::new(8, 2, 2);
-        {
-            let batch_list = unsafe { &mut *scheduler.batch_list.get() };
+        scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(state(Phase::Decode, 11, 10));
             batch_list.push(state(Phase::Prefill, 6, 0));
             batch_list.push(state(Phase::Decode, 12, 11));
             batch_list.push(state(Phase::Decode, 13, 12));
-        }
+        });
 
         let (prefill, decode) = scheduler.schedule_batch();
 
@@ -494,20 +497,20 @@ mod tests {
         // - first record fully scheduled -> switches to Decode
         // - second record partially scheduled -> remains Prefill
         let mut scheduler = BatchScheduler::new(4, 2, 2);
-        {
-            let batch_list = unsafe { &mut *scheduler.batch_list.get() };
+        scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(state(Phase::Prefill, 6, 0));
             batch_list.push(state(Phase::Prefill, 6, 0));
-        }
+        });
 
         let (prefill, decode) = scheduler.schedule_batch();
 
         assert_eq!(prefill, 8);
         assert_eq!(decode, 0);
 
-        let batch_list = unsafe { &*scheduler.batch_list.get() };
-        assert_eq!(batch_list[0].phase, Phase::Decode);
-        assert_eq!(batch_list[1].phase, Phase::Prefill);
+        scheduler.batch_list.with(|batch_list| {
+            assert_eq!(batch_list[0].phase, Phase::Decode);
+            assert_eq!(batch_list[1].phase, Phase::Prefill);
+        });
     }
 }
 
