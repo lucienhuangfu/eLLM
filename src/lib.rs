@@ -6,9 +6,9 @@
 pub mod common;
 pub mod mem_mgr;
 pub mod kernel;
-pub mod ops;
+// pub mod ops;
+// pub mod qwen3_moe;
 pub mod runtime;
-pub mod qwen3_moe;
 pub mod serving;
 
 

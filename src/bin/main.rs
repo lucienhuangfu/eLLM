@@ -40,6 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sequences = allocate_init::<usize>(sequence_capacity * batch_size, 0);
 
     let tokenizer_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
+    let tokenizer_config_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer_config.json";
     let chat_template_path = "models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
 
     let batch_sequences = Arc::new(SharedMut::new(
@@ -48,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             batch_size,
             sequence_capacity,
             tokenizer_path,
+            tokenizer_config_path,
             chat_template_path,
         )
         .map_err(|e| format!("初始化 BatchSequence 失败: {}", e))?,

@@ -1,14 +1,15 @@
 use std::sync::Arc;
-use tokenizers::Tokenizer;
+use tiktoken_rs::CoreBPE;
 
-use crate::serving::chat_template::ChatTemplate;
 use crate::runtime::inference::state::SequenceState;
+use crate::serving::chat_template::ChatTemplate;
+use crate::serving::tokenizer_loader::load_tiktoken;
 
 pub struct BatchSequence {
     pub sequences: *mut usize, // 展平的二维矩阵 [row_size][col_size]
     pub row_size: usize,
     pub col_size: usize,
-    pub tokenizer: Arc<Tokenizer>,
+    pub tokenizer: Arc<CoreBPE>,
     pub chat_template: Arc<ChatTemplate>,
 }
 
@@ -17,12 +18,12 @@ impl BatchSequence {
         sequences: *mut usize,
         row_size: usize,
         col_size: usize,
-        tokenizer_path: &str,
+        tokenizer_json_path: &str,
+        tokenizer_config_json_path: &str,
         chat_template_path: &str,
     ) -> Result<Self, String> {
-        let tokenizer = Tokenizer::from_file(tokenizer_path)
-            .map(Arc::new)
-            .map_err(|e| format!("Unable to load tokenizer {}: {}", tokenizer_path, e))?;
+        let tokenizer =
+            load_tiktoken(tokenizer_json_path, tokenizer_config_json_path).map(Arc::new)?;
         let chat_template = ChatTemplate::new(chat_template_path)
             .map(Arc::new)
             .map_err(|e| format!("Unable to load chat template {}: {}", chat_template_path, e))?;
@@ -45,11 +46,8 @@ impl BatchSequence {
             .chat_template
             .apply_chat_template(messages)
             .map_err(|e| format!("Render chat template failed: {}", e))?;
-        let tokens = self
-            .tokenizer
-            .encode(prompt.as_str(), true)
-            .map_err(|e| format!("Tokenization failed: {}", e))?;
-        let ids = tokens.get_ids();
+        let tokens = self.tokenizer.encode_with_special_tokens(prompt.as_str());
+        let ids = tokens;
         let write_len = ids.len().min(self.col_size);
 
         // 计算在展平矩阵中的起始偏移量
@@ -63,7 +61,7 @@ impl BatchSequence {
         }
 
         println!(
-            "Prompt 已通过 Tokenizer 写入 BatchSequence Slot {}, 长度: {}",
+            "Prompt 已通过 tiktoken 写入 BatchSequence Slot {}, 长度: {}",
             slot_index, write_len
         );
         Ok(write_len)
@@ -86,7 +84,7 @@ impl BatchSequence {
         };
 
         self.tokenizer
-            .decode(&token_ids, true)
+            .decode(token_ids)
             .unwrap_or_else(|_| String::from("Decode error"))
     }
 }
@@ -101,6 +99,8 @@ mod tests {
 
     const QWEN3_TEMPLATE_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
     const QWEN3_TOKENIZER_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
+    const QWEN3_TOKENIZER_CONFIG_PATH: &str =
+        "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer_config.json";
 
     #[test]
     fn test_write_prompts_with_qwen3_assets() {
@@ -110,11 +110,15 @@ mod tests {
             1,
             storage.len(),
             QWEN3_TOKENIZER_PATH,
+            QWEN3_TOKENIZER_CONFIG_PATH,
             QWEN3_TEMPLATE_PATH,
         ) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("Skip: qwen3 assets are not loadable in this environment: {}", e);
+                eprintln!(
+                    "Skip: qwen3 assets are not loadable in this environment: {}",
+                    e
+                );
                 return;
             }
         };
@@ -128,12 +132,7 @@ mod tests {
             .chat_template
             .apply_chat_template(&messages)
             .expect("render failed");
-        let expected_ids = batch
-            .tokenizer
-            .encode(prompt, true)
-            .expect("encode failed")
-            .get_ids()
-            .to_vec();
+        let expected_ids = batch.tokenizer.encode_with_special_tokens(prompt.as_str());
 
         let written = batch.write_prompts(0, &messages).expect("write failed");
         assert!(written > 0);
@@ -155,18 +154,25 @@ mod tests {
             1,
             storage.len(),
             QWEN3_TOKENIZER_PATH,
+            QWEN3_TOKENIZER_CONFIG_PATH,
             QWEN3_TEMPLATE_PATH,
         ) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("Skip: qwen3 assets are not loadable in this environment: {}", e);
+                eprintln!(
+                    "Skip: qwen3 assets are not loadable in this environment: {}",
+                    e
+                );
                 return;
             }
         };
 
         let messages = vec![
             ("system", "You are a helpful assistant."),
-            ("user", "请给出一个尽量详细且较长的回答，包含多个步骤和注意事项。"),
+            (
+                "user",
+                "请给出一个尽量详细且较长的回答，包含多个步骤和注意事项。",
+            ),
         ];
 
         let written = batch.write_prompts(0, &messages).expect("write failed");
@@ -174,5 +180,3 @@ mod tests {
         assert!(storage.iter().any(|id| *id != 0));
     }
 }
-
-

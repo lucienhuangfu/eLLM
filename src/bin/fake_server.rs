@@ -7,13 +7,14 @@ use ellm::serving::batch_sequence::BatchSequence;
 use ellm::serving::server;
 use std::sync::Arc;
 use std::time::Duration;
-use tokenizers::Tokenizer;
+use tiktoken_rs::CoreBPE;
 
-fn build_fake_tokens(tokenizer: &Tokenizer) -> Arc<Vec<usize>> {
+fn build_fake_tokens(tokenizer: &CoreBPE) -> Arc<Vec<usize>> {
     let tokens = tokenizer
-        .encode("Hello from fake inference.", true)
-        .map(|encoded| encoded.get_ids().iter().map(|id| *id as usize).collect())
-        .unwrap_or_else(|_| vec![0usize]);
+        .encode_with_special_tokens("Hello from fake inference.")
+        .into_iter()
+        .map(|id| id as usize)
+        .collect();
     Arc::new(tokens)
 }
 
@@ -110,6 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sequences = allocate_init::<usize>(sequence_capacity * batch_size, 0);
 
     let tokenizer_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
+    let tokenizer_config_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer_config.json";
     let chat_template_path = "models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
 
     let batch_sequences = Arc::new(SharedMut::new(
@@ -118,6 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             batch_size,
             sequence_capacity,
             tokenizer_path,
+            tokenizer_config_path,
             chat_template_path,
         )
         .map_err(|e| format!("Unable to initialize BatchSequence: {}", e))?,
