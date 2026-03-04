@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::runtime::inference::state::SequenceSlice;
+use crate::common::sequence_slice::SequenceSlice;
 use crate::common::send_sync_ptr::MutPtr;
 
 #[derive(Clone)]
@@ -48,7 +48,7 @@ impl<T> LiftVector<T> {
 #[cfg(test)]
 mod test {
 	use super::*;
-	use crate::runtime::inference::state::SequenceSlice;
+	use crate::common::sequence_slice::SequenceSlice;
 
 	#[test]
 	fn test_lift_vector() {

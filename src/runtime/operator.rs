@@ -1,21 +1,22 @@
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
-use crate::runtime::inference::state::{SequenceSlice, SequenceState};
+use crate::common::sequence_slice::SequenceSlice;
+use crate::runtime::inference::state::SequenceState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
-use crate::ops::transform::LookupRMSMap;
 use crate::ops::routing::ExpertsSoftmaxNorm;
+use crate::ops::transform::LookupRMSMap;
 
 use crate::ops::routing::TopKSoftmax;
 // Add missing imports for zip map operations
 use crate::ops::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 // use super::mul::matmul_silu_mul_matmul::MatMulSilu;
-use crate::ops::transform::AddZipMap;
 use crate::ops::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
-use crate::ops::routing::MatMulTopK;
-use crate::ops::transform::{AddRMSZipMap, RMSMap};
 use crate::ops::movement::LiftVector;
+use crate::ops::routing::MatMulTopK;
+use crate::ops::transform::AddZipMap;
+use crate::ops::transform::{AddRMSZipMap, RMSMap};
 // use super::zip_map::complex_zip::ComplexZipMap;
 // use super::zip_map::silu_mul_zip::SiluMulZipMap;
 // use crate::common::matmul_params::MatMulParams;
@@ -182,7 +183,8 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::runtime::inference::state::{Phase, SequenceSlice, SequenceState};
+    use crate::common::sequence_slice::SequenceSlice;
+    use crate::runtime::inference::state::{Phase, SequenceState};
     use approx::assert_ulps_eq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use std::sync::{Arc, Barrier};
@@ -817,25 +819,24 @@ mod test {
         }
 
         unsafe {
-            let runner =
-                crate::ops::expert::ExpertsMatMulSilu::<f16>::new(
-                    a.as_ptr(),
-                    w_gate_nt.as_ptr(), // ✅ 传 NT
-                    w_up_nt.as_ptr(),   // ✅ 传 NT
-                    experts_indicator.as_ptr(),
-                    indice.as_ptr(),
-                    out.as_mut_ptr(),
-                    B,
-                    I,
-                    H,
-                    E,
-                    mb,
-                    nb,
-                    kc,
-                    mr,
-                    nr,
-                    false,
-                );
+            let runner = crate::ops::expert::ExpertsMatMulSilu::<f16>::new(
+                a.as_ptr(),
+                w_gate_nt.as_ptr(), // ✅ 传 NT
+                w_up_nt.as_ptr(),   // ✅ 传 NT
+                experts_indicator.as_ptr(),
+                indice.as_ptr(),
+                out.as_mut_ptr(),
+                B,
+                I,
+                H,
+                E,
+                mb,
+                nb,
+                kc,
+                mr,
+                nr,
+                false,
+            );
 
             let op = Operator::ExpertsMatMulSilu(runner);
             run_operator_all_threads(&op, B, cpu_num);
@@ -928,25 +929,24 @@ mod test {
         }
 
         unsafe {
-            let runner =
-                crate::ops::expert::ExpertsMatMulSilu::<f16>::new(
-                    a.as_ptr(),
-                    w_gate_nt.as_ptr(), // ✅ NT
-                    w_up_nt.as_ptr(),   // ✅ NT
-                    experts_indicator.as_ptr(),
-                    indice.as_ptr(),
-                    out.as_mut_ptr(),
-                    B,
-                    I,
-                    H,
-                    E,
-                    mb,
-                    nb,
-                    kc,
-                    mr,
-                    nr,
-                    false,
-                );
+            let runner = crate::ops::expert::ExpertsMatMulSilu::<f16>::new(
+                a.as_ptr(),
+                w_gate_nt.as_ptr(), // ✅ NT
+                w_up_nt.as_ptr(),   // ✅ NT
+                experts_indicator.as_ptr(),
+                indice.as_ptr(),
+                out.as_mut_ptr(),
+                B,
+                I,
+                H,
+                E,
+                mb,
+                nb,
+                kc,
+                mr,
+                nr,
+                false,
+            );
 
             let op = Operator::ExpertsMatMulSilu(runner);
             run_operator_all_threads(&op, B, cpu_num);
@@ -1926,4 +1926,3 @@ mod test {
     }
 
 */
-

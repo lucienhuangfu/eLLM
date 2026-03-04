@@ -3,7 +3,8 @@ use std::thread;
 use std::time::Duration;
 
 use crate::common::send_sync_ptr::SharedMut;
-use crate::runtime::inference::state::{Phase, SequenceSlice, SequenceState};
+use crate::common::sequence_slice::SequenceSlice;
+use crate::runtime::inference::state::{Phase, SequenceState};
 
 struct FairTaskAllocator {
     task_count: usize,
@@ -513,4 +514,3 @@ mod tests {
         });
     }
 }
-

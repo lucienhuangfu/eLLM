@@ -5,7 +5,7 @@ use crate::kernel;
 use crate::ops::traits::MapTrait;
 
 // use crate::runtime::inference::state::TaskList;
-use crate::runtime::inference::state::SequenceSlice;
+use crate::common::sequence_slice::SequenceSlice;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::common::num_traits::Sqrt;
 
@@ -135,7 +135,7 @@ impl MapTrait<f32> for LookupRMSMap<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::runtime::inference::state::SequenceSlice;
+    use crate::common::sequence_slice::SequenceSlice;
     use approx::assert_ulps_eq;
 
     #[test]

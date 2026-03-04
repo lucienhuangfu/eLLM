@@ -4,7 +4,8 @@ use std::ptr;
 
 use crate::common::num_traits::Exp;
 use crate::common::num_traits::Sqrt;
-use crate::runtime::inference::state::{Phase, SequenceSlice, SequenceState};
+use crate::common::sequence_slice::SequenceSlice;
+use crate::runtime::inference::state::{Phase, SequenceState};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::ops::traits::TopKSoftmaxTrait;
@@ -192,7 +193,8 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::runtime::inference::state::{Phase, SequenceSlice, SequenceState};
+    use crate::common::sequence_slice::SequenceSlice;
+    use crate::runtime::inference::state::{Phase, SequenceState};
     use approx::assert_ulps_eq;
 
     #[test]

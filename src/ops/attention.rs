@@ -37,7 +37,9 @@ where
         + Exp,
 {
     pub fn new(
+        // [batch_size, seq_len, kv_head_num, group_num, head_dim]
         q_ptr: *const T,
+        // [batch_size, kv_head_num, seq_len, head_dim]
         k_ptr: *const T,
         v_ptr: *const T,
         output_ptr: *mut T,

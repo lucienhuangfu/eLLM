@@ -1,15 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-#[derive(Clone)]
-pub struct SequenceSlice {
-    pub batch_index: usize,
-    pub sequence_index: usize,
-    pub token_start_index: usize,
-    pub lift_index: usize,
-    pub length: usize,
-}
-
 pub struct SequenceState {
     pub sequence_index: usize,
     pub kv_index: usize,
@@ -41,4 +32,3 @@ pub enum Phase {
     Timeout,
     Eos,
 }
-
