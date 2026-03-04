@@ -137,7 +137,7 @@ mod test {
     use super::*;
     use crate::runtime::inference::state::SequenceState;
     use crate::mem_mgr::cache::Cache;
-    use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
+    use crate::moe::sparse_moe_block::SparseMoeBlock;
     use crate::runtime::tensor::{Tensor, TensorCtx};
 
     // use crate::mem_mgr::allocator::allocate_init;

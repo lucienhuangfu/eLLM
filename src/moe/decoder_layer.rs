@@ -13,7 +13,7 @@ use super::attention::Attention;
 use super::config::Config;
 use super::sparse_moe_block::SparseMoeBlock;
 // use super::moe_layer::MoeLayer;
-// use crate::qwen3_moe::mlp;
+// use crate::moe::mlp;
 // use super::feedforward::FeedForward;
 
 // #[derive(Clone)]

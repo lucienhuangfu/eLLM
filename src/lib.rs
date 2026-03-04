@@ -4,11 +4,9 @@
 #![feature(sync_unsafe_cell)]
 
 pub mod common;
-pub mod mem_mgr;
 pub mod kernel;
+pub mod mem_mgr;
+pub mod moe;
 pub mod ops;
-pub mod qwen3_moe;
 pub mod runtime;
 pub mod serving;
-
-
