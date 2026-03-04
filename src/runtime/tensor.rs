@@ -15,10 +15,10 @@ use crate::ops::movement::LiftVector;
 use crate::ops::routing::ExpertsSoftmaxNorm;
 use crate::ops::transform::LookupRMSMap;
 
+use crate::common::sequence_slice::SequenceSlice;
 use crate::ops::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
 use crate::ops::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 use crate::ops::routing::TopKSoftmax;
-use crate::common::sequence_slice::SequenceSlice;
 use crate::runtime::inference::state::{Phase, SequenceState};
 // use super::super::ops::mul::matmul_silu_mul_matmul::MatMulSilu;
 use crate::ops::routing::MatMulTopK;
