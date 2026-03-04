@@ -1,13 +1,11 @@
 use std::f16;
 use std::ops::{Add, Div, Mul, Sub};
-use std::ptr;
 
+use crate::common::sequence_slice::SequenceSlice;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::kernel;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::kernel;
 use crate::ops::traits::AttentionTrait;
-
-use crate::ops::assign::assign;
 
 #[derive(Clone)]
 pub struct Attention<T> {
@@ -68,33 +66,38 @@ where
 
     pub fn run(
         &self,
-        prefill_size: usize,
-        decode_size: usize,
-        thread_num: usize,
-        thread_id: usize,
+        _prefill_size: usize,
+        _decode_size: usize,
+        _thread_num: usize,
+        _thread_id: usize,
+        attention_list: &[SequenceSlice],
     ) {
-        if let Some((begin, end)) = assign(prefill_size, thread_num, thread_id) {
-            unsafe {
-                let q_ptr = self.q_ptr.ptr;
-                let k_ptr = self.k_ptr.ptr;
-                let v_ptr = self.v_ptr.ptr;
-                let output_ptr = self.output_ptr.ptr;
+        unsafe {
+            let q_ptr = self.q_ptr.ptr;
+            let k_ptr = self.k_ptr.ptr;
+            let v_ptr = self.v_ptr.ptr;
+            let output_ptr = self.output_ptr.ptr;
+            let q_stride = self.attention_head_num * self.head_size;
+            let kv_batch_stride = self.kv_strides[1];
 
-                for i in begin..end {
-                    let batch_index = i % self.batch_size;
-                    let position_index = i / self.batch_size;
+            for slice in attention_list {
+                let batch_index = slice.batch_index;
+                let token_start_index = slice.token_start_index;
+                let position_start_index = slice.sequence_index;
 
-                    let q_offset = i * self.attention_head_num * self.head_size;
-                    let out_offset = i * self.attention_head_num * self.head_size;
+                let k_batch_ptr = k_ptr.add(batch_index * kv_batch_stride);
+                let v_batch_ptr = v_ptr.add(batch_index * kv_batch_stride);
 
-                    let k_offset = batch_index * self.kv_strides[1];
-                    let v_offset = batch_index * self.kv_strides[1];
+                for t in 0..slice.length {
+                    let token_index = token_start_index + t;
+                    let position_index = position_start_index + t;
+                    let q_offset = token_index * q_stride;
 
                     self.compute(
                         q_ptr.add(q_offset),
-                        k_ptr.add(k_offset),
-                        v_ptr.add(v_offset),
-                        output_ptr.add(out_offset),
+                        k_batch_ptr,
+                        v_batch_ptr,
+                        output_ptr.add(q_offset),
                         position_index,
                     );
                 }

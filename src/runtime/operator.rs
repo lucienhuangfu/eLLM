@@ -96,7 +96,20 @@ where
                 run_simple!(operator);
             }
             Self::Attention(operator) => {
-                run_simple!(operator);
+                let attention_list = if prefill_size > 0 {
+                    prefill_slices
+                } else if decode_size > 0 {
+                    decode_slices
+                } else {
+                    &[]
+                };
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    cpu_num,
+                    thread_id,
+                    attention_list,
+                );
             }
 
             Self::ExpertsMatMulDown(operator) => {
