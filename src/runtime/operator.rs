@@ -106,9 +106,9 @@ where
                 operator.run(
                     prefill_size,
                     decode_size,
+                    attention_list,
                     cpu_num,
                     thread_id,
-                    attention_list,
                 );
             }
 
