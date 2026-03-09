@@ -27,16 +27,7 @@ where
         output_ptr: *mut T,
         position: usize,
     ) {
-        kernel::scalar::flash_attention::flash_attention(
-            q_ptr,
-            k_ptr,
-            v_ptr,
-            output_ptr,
-            self.inverse_sqrt_head,
-            self.head_size,
-            self.head_size,
-            position,
-        );
+        
     }
 }
 
@@ -49,29 +40,7 @@ impl AttentionTrait<f16> for Attention<f16> {
         output_ptr: *mut f16,
         position: usize,
     ) {
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-        kernel::x86_64::f16_512::flash_attention::flash_attention(
-            q_ptr,
-            k_ptr,
-            v_ptr,
-            output_ptr,
-            self.inverse_sqrt_head,
-            self.head_size,
-            self.head_size,
-            position,
-        );
 
-        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        kernel::scalar::flash_attention::flash_attention(
-            q_ptr,
-            k_ptr,
-            v_ptr,
-            output_ptr,
-            self.inverse_sqrt_head,
-            self.head_size,
-            self.head_size,
-            position,
-        );
     }
 }
 
@@ -84,15 +53,6 @@ impl AttentionTrait<f32> for Attention<f32> {
         output_ptr: *mut f32,
         position: usize,
     ) {
-        kernel::scalar::flash_attention::flash_attention(
-            q_ptr,
-            k_ptr,
-            v_ptr,
-            output_ptr,
-            self.inverse_sqrt_head,
-            self.head_size,
-            self.head_size,
-            position,
-        );
+        
     }
 }

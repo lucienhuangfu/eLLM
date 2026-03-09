@@ -222,6 +222,7 @@ where
             self.shape[1],
             k_tensor.shape[1],
             k_tensor.shape[2],
+            1,
             8,
             self.shape[2],
             inverse_sqrt_head,
