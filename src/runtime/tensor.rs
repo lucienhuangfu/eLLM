@@ -221,8 +221,9 @@ where
             self.shape[0],
             self.shape[1],
             k_tensor.shape[1],
+            k_tensor.shape[2],
+            8,
             self.shape[2],
-            k_tensor.strides.clone(),
             inverse_sqrt_head,
             decode_only_flag,
         ));
