@@ -163,30 +163,75 @@ attention 的静态并行切分分为两层：
 
 这时不再沿长度方向继续细分，而是切换到 head 维切分：
 
-* 以 `attention_head_num` 作为切分总量
-* 把连续的 head 区间尽量平均地分给各线程
-* 每个线程对自己负责的 head 段处理完整的 slice 行范围
+* 先利用 GQA 结构，优先按 `kv_head` 维度切分
+* 如果 `kv_head_num` 足以覆盖线程，就按 `kv_head` 连续公平切分
+* 如果 `kv_head_num` 不能覆盖线程，再把单个 `kv_head` 下共享 K/V 的 `group` 继续拆成更小的小组
+* 每个线程最终只处理自己负责的小组，并覆盖该小组对应的完整 slice 行范围
 
 需要注意的是，情况二里每个线程内部的遍历方式与情况一不同：
 
 * 情况一中，线程先拿到 sequence 维度上的一段连续区间，再在该区间内展开遍历
-* 情况二中，线程先拿到一段 attention head，再在对应 head 的整个下三角区域内做遍历
+* 情况二中，线程先拿到一个 `kv_head` 或某个 `kv_head` 下的一段连续 local head，再在对应 head 的整个下三角区域内做遍历
 * 在这个下三角区域内，更合适的理解是按列块推进，而不是先按行块切出线程私有区域
 
 这一模式的优先目标是：
 
 * 提高短 slice 场景下的核覆盖率
-* 避免因为 slice 太短导致大量线程空转
+* 优先保持共享同一 K/V 的 attention head 落在同一个线程或同一小组内
+* 避免因为 slice 太短或 `kv_head_num` 过少导致大量线程空转
 * 在不引入额外同步的前提下继续保持静态分配
 
 从遍历语义上看，这时更接近下面这种形式：
 
 ```text
 for slice in attention_list:
-    for attention_head in assigned_head_range(thread_id):
-        映射到对应的 kv_head
+    先根据 thread_id 映射到 assigned_kv_head_range(thread_id)
+    如果 kv_head 已足够覆盖线程:
+        处理这些 kv_head 下的全部 group
+    否则:
+        再把单个 kv_head 下的 group 切成更小的小组
     在该 head 对应的下三角区域内按列块遍历
 ```
+
+更具体地说，短 slice 下的 head split 采用两级静态分配。
+
+第一层是 `kv_head` 级切分：
+
+* 因为 `attention_head_num = kv_head_num * group`
+* 其中 `group = attention_head_num / kv_head_num`
+* 一个 `kv_head` 对应一组共享同一 K/V 的 attention head
+
+因此当 `kv_head_num >= thread_num` 时：
+
+* 直接按 `kv_head` 做连续、公平的静态切分
+* 每个线程拿若干个完整 `kv_head`
+* 每个 `kv_head` 下的全部 `group` 个 attention head 都由同一线程处理
+
+这时线程之间的差异最多只相差一个 `kv_head`，同时能最大限度保留 K/V 访问局部性。
+
+当 `kv_head_num < thread_num` 时：
+
+* 单靠 `kv_head` 已经无法覆盖所有核
+* 此时再对单个 `kv_head` 下的 `group` 做第二层切分
+* 也就是说，把一个共享同一 K/V 的 head 组继续拆成多个连续小组
+* 每个线程只负责其中一个小组
+
+因此，最终的最小线程工作单元可以写成：
+
+```text
+(kv_head, local_head_begin .. local_head_end)
+```
+
+其中：
+
+* `kv_head` 决定该线程读取哪一组 K/V
+* `local_head_begin .. local_head_end` 决定该线程处理这个 `kv_head` 下哪一段连续的 attention head
+
+这一规则的核心优先级是：
+
+* 先按 `kv_head` 分
+* `kv_head` 不够时再拆 `group`
+* 始终保持每个线程拿连续区间，不做轮转式分配
 
 ## 4.4 两种方式的关系
 
@@ -214,7 +259,7 @@ for slice in attention_list:
 
 情况二里更合适的理解是：
 
-* 线程先拿到 attention head 的连续区间
+* 线程先拿到某个 `kv_head`，或者拿到某个 `kv_head` 下的一段连续 local head 区间
 * 然后在对应 head 的完整下三角区域内按列块推进
 * `row_size` 和 `col_size` 仍然定义了局部 block 粒度，但线程私有工作不再是“先切一段行块再遍历”
 
@@ -226,7 +271,8 @@ for slice in attention_list:
 
 * 对整体批次而言，只要 slice 足够多，整体并行度通常可以做起来
 * 对单个长 slice 而言，按 sequence 维度切分时仍可能因为三角切分结果为空而出现局部空转
-* 对单个短 slice 而言，按 head 切分可以显著改善核覆盖率，但当 `attention_head_num` 本身也小于线程数时，仍可能存在空闲线程
+* 对单个短 slice 而言，先按 `kv_head`、不足时再拆 `group`，可以显著改善核覆盖率
+* 但当 `attention_head_num` 本身也小于线程数时，仍可能存在空闲线程
 * 因此单个 slice 上允许出现线程空转
 
 也就是说，这种静态策略追求的是：
@@ -257,6 +303,7 @@ for group in 0 .. num_key_value_groups
 
 * 这是一个 GQA 结构
 * 组关系由 `num_attention_heads / num_key_value_heads` 隐式表示
+* 在短 slice 的 head split 中，调度优先级也遵循这一 GQA 结构：先按 `kv_head` 切，覆盖不足时再把同一 `kv_head` 下的 group 拆成更小的小组
 
 ## 5.2 Causal 语义
 
@@ -279,7 +326,7 @@ for group in 0 .. num_key_value_groups
 * attention 路径具备 GQA 的张量组织方式。
 * 外层任务由 `SequenceSlice` 提供 slice 级输入，而不是直接按 batch 均分。
 * slice 足够长时，内部线程划分按三角工作量静态分段，而不是按行数平均分配。
-* slice 较短、无法用行块覆盖所有线程时，改按 `attention_head_num` 静态切分 head，并把 head 公平分配到各核。
+* slice 较短、无法用行块覆盖所有线程时，优先按 `kv_head` 静态切分；若 `kv_head_num` 不足以覆盖所有线程，再把同一 `kv_head` 下的 group 继续切成连续小组。
 * 内部遍历采用二维 block 结构，当前参数为 `row_size=1`、`col_size=8`。
 * 整体已经形成较完整的静态调度与遍历框架，attention 内层的完整 causal 数值计算仍待补齐。
 
@@ -287,4 +334,4 @@ for group in 0 .. num_key_value_groups
 
 # 7️⃣ 核心思想一句话
 
-> 这套方案的核心，是用 `SequenceSlice` 提供外层任务；长 slice 用三角工作量划分线程行区间，短 slice 用 `attention_head_num` 静态切分 head；并在对应 head / `kv_head` 范围内按二维 block 遍历 attention 计算。
+> 这套方案的核心，是用 `SequenceSlice` 提供外层任务；长 slice 用三角工作量划分线程行区间；短 slice 则优先按 `kv_head` 静态切分，覆盖不足时再拆分同一 `kv_head` 下的 group；并在对应 head / `kv_head` 范围内按二维 block 遍历 attention 计算。

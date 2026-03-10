@@ -1,11 +1,5 @@
 pub mod assign;
-pub mod attention {
-    mod attention;
-    mod dispatch;
-    mod split_sequence;
-
-    pub use attention::Attention;
-}
+pub mod attention;
 
 pub mod elementwise {
     pub mod add_zip;

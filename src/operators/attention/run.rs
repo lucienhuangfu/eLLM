@@ -1,8 +1,6 @@
 use std::ops::{Add, Div, Mul, Sub};
 
-use super::split_sequence::{
-    should_split_by_attention_head, split_attention_heads, split_sequence_by_triangle,
-};
+use super::split_sequence::split_sequence_by_triangle;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::common::sequence_slice::SequenceSlice;
@@ -24,6 +22,19 @@ pub struct Attention<T> {
     pub(super) decode_only_flag: bool,
 }
 
+#[derive(Copy, Clone)]
+pub(super) struct RowVisitPlan {
+    pub(super) main: Option<(usize, usize)>,
+    pub(super) tail: Option<(usize, usize)>,
+}
+
+#[derive(Copy, Clone)]
+struct KvHeadThreadAssignment {
+    kv_head: usize,
+    local_thread_id: usize,
+    threads_for_kv: usize,
+}
+
 impl<T> Attention<T>
 where
     T: Copy
@@ -37,9 +48,7 @@ where
         + Exp,
 {
     pub fn new(
-        // [batch_size, seq_len, kv_head_num, group_num, head_dim]
         q_ptr: *const T,
-        // [batch_size, kv_head_num, seq_len, head_dim]
         k_ptr: *const T,
         v_ptr: *const T,
         output_ptr: *mut T,
@@ -58,68 +67,68 @@ where
             k_ptr: ConstPtr { ptr: k_ptr },
             v_ptr: ConstPtr { ptr: v_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
-            batch_size: batch_size,
-            attention_head_num: attention_head_num,
-            kv_head_num: kv_head_num,
-            seq_len: seq_len,
+            batch_size,
+            attention_head_num,
+            kv_head_num,
+            seq_len,
             row_size: row_size.max(1),
-            col_size: col_size,
-            head_size: head_size,
-            inverse_sqrt_head: inverse_sqrt_head,
-            decode_only_flag: decode_only_flag,
+            col_size,
+            head_size,
+            inverse_sqrt_head,
+            decode_only_flag,
         }
     }
 
-    unsafe fn visit_blocks_for_head(
+    #[inline]
+    fn split_contiguous_range(
+        total: usize,
+        part_num: usize,
+        part_id: usize,
+    ) -> Option<(usize, usize)> {
+        if total == 0 || part_num == 0 || part_id >= part_num {
+            return None;
+        }
+
+        let begin = total * part_id / part_num;
+        let end = total * (part_id + 1) / part_num;
+        (begin < end).then_some((begin, end))
+    }
+
+    #[inline]
+    fn assign_thread_to_kv_head(
         &self,
-        q_head_ptr: *const T,
-        output_head_ptr: *mut T,
-        k_head_ptr: *const T,
-        v_head_ptr: *const T,
-        col_end: usize,
-        main_row_range: Option<(usize, usize)>,
-        tail_row_range: Option<(usize, usize)>,
-    ) {
-        let row_step = self.row_size;
-        let col_step = self.col_size.max(1);
-
-        if let Some((row_begin, row_end)) = main_row_range {
-            for row_chunk in (row_begin..row_end).step_by(row_step) {
-                let row_chunk_end = row_chunk + row_step;
-
-                for col_chunk in (0..col_end).step_by(col_step) {
-                    let col_chunk_end = (col_chunk + col_step).min(col_end);
-
-                    let _ = (
-                        q_head_ptr,
-                        output_head_ptr,
-                        row_chunk,
-                        row_chunk_end,
-                        col_chunk,
-                        col_chunk_end,
-                        k_head_ptr,
-                        v_head_ptr,
-                    );
-                }
-            }
+        active_thread_num: usize,
+        thread_id: usize,
+    ) -> Option<KvHeadThreadAssignment> {
+        if thread_id >= active_thread_num || self.kv_head_num == 0 {
+            return None;
         }
 
-        if let Some((tail_begin, tail_end)) = tail_row_range {
-            for col_chunk in (0..col_end).step_by(col_step) {
-                let col_chunk_end = (col_chunk + col_step).min(col_end);
+        let base_threads_per_kv = active_thread_num / self.kv_head_num;
+        let extra_threads = active_thread_num % self.kv_head_num;
+        let extra_thread_span = extra_threads * (base_threads_per_kv + 1);
 
-                let _ = (
-                    q_head_ptr,
-                    output_head_ptr,
-                    tail_begin,
-                    tail_end,
-                    col_chunk,
-                    col_chunk_end,
-                    k_head_ptr,
-                    v_head_ptr,
-                );
-            }
-        }
+        let (kv_head, local_thread_id, threads_for_kv) = if thread_id < extra_thread_span {
+            let threads_for_kv = base_threads_per_kv + 1;
+            (
+                thread_id / threads_for_kv,
+                thread_id % threads_for_kv,
+                threads_for_kv,
+            )
+        } else {
+            let compact_thread_id = thread_id - extra_thread_span;
+            (
+                extra_threads + compact_thread_id / base_threads_per_kv,
+                compact_thread_id % base_threads_per_kv,
+                base_threads_per_kv,
+            )
+        };
+
+        Some(KvHeadThreadAssignment {
+            kv_head,
+            local_thread_id,
+            threads_for_kv,
+        })
     }
 
     unsafe fn run_sequence_split(
@@ -133,37 +142,30 @@ where
         aligned_len: usize,
         thread_num: usize,
         thread_id: usize,
-        q_head_stride: usize,
         kv_head_stride: usize,
+        attention_heads_per_kv: usize,
     ) {
-        let main_row_range =
-            split_sequence_by_triangle(aligned_len, self.row_size, thread_num, thread_id);
-        let tail_row_range = if aligned_len < slice_len {
-            if thread_num != 0 && thread_id + 1 == thread_num {
+        let row_plan = RowVisitPlan {
+            main: split_sequence_by_triangle(aligned_len, self.row_size, thread_num, thread_id),
+            tail: if aligned_len < slice_len && thread_num != 0 && thread_id + 1 == thread_num {
                 Some((aligned_len, slice_len))
             } else {
                 None
-            }
-        } else {
-            None
+            },
         };
 
         for kv_head in 0..self.kv_head_num {
-            let q_head_offset = kv_head * q_head_stride;
-            let kv_head_offset = kv_head * kv_head_stride;
-            let q_head_ptr = q_slice_ptr.add(q_head_offset);
-            let output_head_ptr = output_slice_ptr.add(q_head_offset);
-            let k_head_ptr = k_batch_ptr.add(kv_head_offset);
-            let v_head_ptr = v_batch_ptr.add(kv_head_offset);
-
-            self.visit_blocks_for_head(
-                q_head_ptr,
-                output_head_ptr,
-                k_head_ptr,
-                v_head_ptr,
+            self.visit_heads_for_kv(
+                q_slice_ptr,
+                output_slice_ptr,
+                k_batch_ptr,
+                v_batch_ptr,
+                kv_head,
+                0..attention_heads_per_kv,
+                kv_head_stride,
+                attention_heads_per_kv,
                 col_end,
-                main_row_range,
-                tail_row_range,
+                row_plan,
             );
         }
     }
@@ -182,34 +184,64 @@ where
         attention_heads_per_kv: usize,
         kv_head_stride: usize,
     ) {
-        let Some((head_begin, head_end)) =
-            split_attention_heads(self.attention_head_num, thread_num, thread_id)
-        else {
+        if thread_num == 0 || thread_id >= thread_num || attention_heads_per_kv == 0 {
+            return;
+        }
+
+        let row_plan = RowVisitPlan {
+            main: (aligned_len != 0).then_some((0, aligned_len)),
+            tail: (aligned_len < slice_len).then_some((aligned_len, slice_len)),
+        };
+
+        if self.kv_head_num >= thread_num {
+            let Some((kv_head_begin, kv_head_end)) =
+                Self::split_contiguous_range(self.kv_head_num, thread_num, thread_id)
+            else {
+                return;
+            };
+
+            for kv_head in kv_head_begin..kv_head_end {
+                self.visit_heads_for_kv(
+                    q_slice_ptr,
+                    output_slice_ptr,
+                    k_batch_ptr,
+                    v_batch_ptr,
+                    kv_head,
+                    0..attention_heads_per_kv,
+                    kv_head_stride,
+                    attention_heads_per_kv,
+                    col_end,
+                    row_plan,
+                );
+            }
+            return;
+        }
+
+        let active_thread_num = thread_num.min(self.attention_head_num);
+        let Some(assignment) = self.assign_thread_to_kv_head(active_thread_num, thread_id) else {
             return;
         };
 
-        let main_row_range = (aligned_len != 0).then_some((0, aligned_len));
-        let tail_row_range = (aligned_len < slice_len).then_some((aligned_len, slice_len));
+        let Some((local_head_begin, local_head_end)) = Self::split_contiguous_range(
+            attention_heads_per_kv,
+            assignment.threads_for_kv,
+            assignment.local_thread_id,
+        ) else {
+            return;
+        };
 
-        for attention_head in head_begin..head_end {
-            let kv_head = attention_head / attention_heads_per_kv;
-            let q_head_offset = attention_head * self.head_size;
-            let kv_head_offset = kv_head * kv_head_stride;
-            let q_head_ptr = q_slice_ptr.add(q_head_offset);
-            let output_head_ptr = output_slice_ptr.add(q_head_offset);
-            let k_head_ptr = k_batch_ptr.add(kv_head_offset);
-            let v_head_ptr = v_batch_ptr.add(kv_head_offset);
-
-            self.visit_blocks_for_head(
-                q_head_ptr,
-                output_head_ptr,
-                k_head_ptr,
-                v_head_ptr,
-                col_end,
-                main_row_range,
-                tail_row_range,
-            );
-        }
+        self.visit_heads_for_kv(
+            q_slice_ptr,
+            output_slice_ptr,
+            k_batch_ptr,
+            v_batch_ptr,
+            assignment.kv_head,
+            local_head_begin..local_head_end,
+            kv_head_stride,
+            attention_heads_per_kv,
+            col_end,
+            row_plan,
+        );
     }
 
     pub fn run(
@@ -225,11 +257,9 @@ where
             let v_ptr = self.v_ptr.ptr;
             let output_ptr = self.output_ptr.ptr;
             let q_ptr = self.q_ptr.ptr;
-            let row_step = self.row_size;
             let kv_batch_stride = self.kv_head_num * self.seq_len * self.head_size;
             let q_token_stride = self.attention_head_num * self.head_size;
             let attention_heads_per_kv = self.attention_head_num / self.kv_head_num;
-            let q_head_stride = attention_heads_per_kv * self.head_size;
             let kv_head_stride = self.seq_len * self.head_size;
 
             for slice in attention_list {
@@ -242,9 +272,10 @@ where
                 let k_batch_ptr = k_ptr.add(slice.batch_index * kv_batch_stride);
                 let v_batch_ptr = v_ptr.add(slice.batch_index * kv_batch_stride);
                 let col_end = slice.sequence_index + slice.length;
-                let aligned_len = slice.length / row_step * row_step;
-                let use_head_split =
-                    should_split_by_attention_head(slice.length, row_step, thread_num);
+                let aligned_len = slice.length / self.row_size * self.row_size;
+                let use_head_split = slice.length > 0
+                    && thread_num > 0
+                    && slice.length.div_ceil(self.row_size.max(1)) < thread_num;
 
                 if use_head_split {
                     self.run_head_split(
@@ -271,8 +302,8 @@ where
                         aligned_len,
                         thread_num,
                         thread_id,
-                        q_head_stride,
                         kv_head_stride,
+                        attention_heads_per_kv,
                     );
                 }
             }
