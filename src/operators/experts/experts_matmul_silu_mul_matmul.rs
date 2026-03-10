@@ -1,4 +1,4 @@
-// === ops/mul/experts_matmul_silu_mul_matmul.rs ===
+// === operators/experts/experts_matmul_silu_mul_matmul.rs ===
 #![allow(non_snake_case)]
 
 use std::f16;
@@ -9,8 +9,8 @@ use crate::common::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
-use crate::ops::assign::assign;
-use crate::ops::traits::ExpertsSiluTrait;
+use crate::operators::assign::assign;
+use crate::operators::traits::ExpertsSiluTrait;
 
 #[derive(Clone)]
 pub struct ExpertsMatMulSilu<T> {

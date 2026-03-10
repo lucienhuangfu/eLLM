@@ -1,4 +1,4 @@
-use crate::ops::assign::assign;
+use crate::operators::assign::assign;
 
 #[inline]
 fn triangle_prefix(rows: usize) -> u128 {

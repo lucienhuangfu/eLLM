@@ -8,7 +8,7 @@ use crate::common::sequence_slice::SequenceSlice;
 use crate::runtime::inference::state::{Phase, SequenceState};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
-use crate::ops::traits::TopKSoftmaxTrait;
+use crate::operators::traits::TopKSoftmaxTrait;
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {

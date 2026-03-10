@@ -11,23 +11,23 @@ use crate::common::tensor_utils::get_strides;
 use crate::mem_mgr::allocator::allocate_init;
 use crate::mem_mgr::cache::Cache;
 
-use crate::ops::movement::LiftVector;
-use crate::ops::routing::ExpertsSoftmaxNorm;
-use crate::ops::transform::LookupRMSMap;
+use crate::operators::movement::LiftVector;
+use crate::operators::routing::ExpertsSoftmaxNorm;
+use crate::operators::transform::LookupRMSMap;
 
 use crate::common::sequence_slice::SequenceSlice;
-use crate::ops::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
-use crate::ops::linear::{Attention, MatMul, MatMul3, MatMulAdd};
-use crate::ops::routing::TopKSoftmax;
+use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
+use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
+use crate::operators::routing::TopKSoftmax;
 use crate::runtime::inference::state::{Phase, SequenceState};
-// use super::super::ops::mul::matmul_silu_mul_matmul::MatMulSilu;
-use crate::ops::routing::MatMulTopK;
-use crate::ops::transform::AddRMSZipMap;
-use crate::ops::transform::AddZipMap;
+// use super::super::operators::mul::matmul_silu_mul_matmul::MatMulSilu;
+use crate::operators::routing::MatMulTopK;
+use crate::operators::transform::AddRMSZipMap;
+use crate::operators::transform::AddZipMap;
 use crate::runtime::operator::Operator;
-// use super::super::ops::zip_map::complex_zip::ComplexZipMap;
-// use super::super::ops::zip_map::silu_mul_zip::SiluMulZipMap;
-use crate::ops::transform::RMSMap;
+// use super::super::operators::zip_map::complex_zip::ComplexZipMap;
+// use super::super::operators::zip_map::silu_mul_zip::SiluMulZipMap;
+use crate::operators::transform::RMSMap;
 
 #[derive(Clone)]
 pub struct Tensor<T>

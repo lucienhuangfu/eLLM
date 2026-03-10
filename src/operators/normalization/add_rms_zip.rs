@@ -1,8 +1,8 @@
 use std::f16;
 // use num_traits::Float;
 
-use crate::ops::traits::ZipMapTrait;
-use crate::ops::assign::assign;
+use crate::operators::traits::ZipMapTrait;
+use crate::operators::assign::assign;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::common::num_traits::Sqrt;

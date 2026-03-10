@@ -3,11 +3,11 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 
 // use axum::http::HeaderName;
 
-use crate::ops::assign::assign;
+use crate::operators::assign::assign;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::common::num_traits::Sigmoid;
-use crate::ops::traits::ZipMapTrait;
+use crate::operators::traits::ZipMapTrait;
 
 #[derive(Clone)]
 pub struct AddZipMap<T> {

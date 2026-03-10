@@ -3,7 +3,7 @@ use std::ops::{Add, Div, Mul, Sub};
 
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::kernel;
-use crate::ops::traits::AttentionTrait;
+use crate::operators::traits::AttentionTrait;
 
 use super::Attention;
 

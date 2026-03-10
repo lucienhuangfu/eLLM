@@ -1,4 +1,4 @@
-// === ops/mul/matmul_topk.rs ===
+// === operators/matmul/matmul_topk.rs ===
 #![allow(non_snake_case)]
 
 use std::f16;
@@ -11,8 +11,8 @@ use crate::common::{
 };
 use crate::kernel;
 use crate::common::heap::FixedMinHeap;
-use crate::ops::assign::assign;
-use crate::ops::traits::MatMulTopKTrait;
+use crate::operators::assign::assign;
+use crate::operators::traits::MatMulTopKTrait;
 
 #[derive(Clone)]
 pub struct MatMulTopK<T>

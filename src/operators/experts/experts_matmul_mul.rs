@@ -1,4 +1,4 @@
-// === ops/mul/experts_matmul_mul.rs ===
+// === operators/experts/experts_matmul_mul.rs ===
 #![allow(non_snake_case)]
 
 use crate::common::{
@@ -6,11 +6,11 @@ use crate::common::{
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use crate::kernel;
-use crate::ops::assign::assign;
+use crate::operators::assign::assign;
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
-use crate::ops::traits::ExpertsDownTrait;
+use crate::operators::traits::ExpertsDownTrait;
 
 /// Experts Down Projection:
 ///   NONLIN[e, b, Hmid]   ×  W_down[e, Hmid, H]   → OUT[b, slot(b,e), H]

@@ -1,4 +1,4 @@
-// === ops/mul/experts_merge_add.rs ===
+// === operators/experts/experts_merge_add.rs ===
 #![allow(non_snake_case)]
 
 use std::f16;
@@ -6,8 +6,8 @@ use std::ops::{Add, Mul};
 
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
-use crate::ops::assign::assign;
-use crate::ops::traits::MoeMergeTrait;
+use crate::operators::assign::assign;
+use crate::operators::traits::MoeMergeTrait;
 
 /// Merge num_experts_per_token 个 experts 的输出，并加 residual：
 ///

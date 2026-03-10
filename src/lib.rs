@@ -7,6 +7,6 @@ pub mod common;
 pub mod kernel;
 pub mod mem_mgr;
 pub mod moe;
-pub mod ops;
+pub mod operators;
 pub mod runtime;
 pub mod serving;

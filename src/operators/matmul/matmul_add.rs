@@ -1,4 +1,4 @@
-// === ops/mul/matmul_add.rs ===
+// === operators/matmul/matmul_add.rs ===
 #![allow(non_snake_case)]
 #![allow(unused_variables)] // run 参数里保留 position_* 但不使用
 
@@ -11,8 +11,8 @@ use crate::common::{
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use crate::kernel;
-use crate::ops::assign::assign;
-use crate::ops::traits::MatMulAddTrait;
+use crate::operators::assign::assign;
+use crate::operators::traits::MatMulAddTrait;
 
 #[derive(Clone)]
 pub struct MatMulAdd<T> {

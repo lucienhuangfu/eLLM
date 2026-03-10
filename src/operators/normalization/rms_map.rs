@@ -1,10 +1,10 @@
 use std::f16;
 
-use crate::ops::assign::assign;
+use crate::operators::assign::assign;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::common::num_traits::Sqrt;
-use crate::ops::traits::MapTrait;
+use crate::operators::traits::MapTrait;
 
 #[derive(Clone)]
 pub struct RMSMap<T> {

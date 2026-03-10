@@ -1,4 +1,4 @@
-// === ops/mul/matmul.rs ===
+// === operators/matmul/matmul.rs ===
 #![allow(non_snake_case)]
 
 use std::f16;
@@ -10,8 +10,8 @@ use crate::common::{
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use crate::kernel;
-use crate::ops::assign::assign;
-use crate::ops::traits::MatMulTrait;
+use crate::operators::assign::assign;
+use crate::operators::traits::MatMulTrait;
 
 #[derive(Clone)]
 pub struct MatMul<T> {
