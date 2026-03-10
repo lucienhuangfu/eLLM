@@ -1,3 +1,5 @@
+use crate::ops::assign::assign;
+
 #[inline]
 fn triangle_prefix(rows: usize) -> u128 {
     let r = rows as u128;
@@ -50,9 +52,38 @@ pub(super) fn split_sequence_by_triangle(
     (begin < end).then_some((begin, end))
 }
 
+#[inline]
+pub(super) fn should_split_by_attention_head(
+    len: usize,
+    row_size: usize,
+    thread_num: usize,
+) -> bool {
+    if len == 0 || thread_num == 0 {
+        return false;
+    }
+
+    let row_blocks = len.div_ceil(row_size.max(1));
+    row_blocks < thread_num
+}
+
+#[inline]
+pub(super) fn split_attention_heads(
+    attention_head_num: usize,
+    thread_num: usize,
+    thread_id: usize,
+) -> Option<(usize, usize)> {
+    if attention_head_num == 0 || thread_num == 0 || thread_id >= thread_num {
+        return None;
+    }
+
+    assign(attention_head_num, thread_num, thread_id)
+}
+
 #[cfg(test)]
 mod test {
-    use super::split_sequence_by_triangle;
+    use super::{
+        should_split_by_attention_head, split_attention_heads, split_sequence_by_triangle,
+    };
 
     #[test]
     fn split_sequence_aligns_to_row_size() {
@@ -77,5 +108,29 @@ mod test {
         assert_eq!(split_sequence_by_triangle(12, 4, 3, 0), Some((0, 8)));
         assert_eq!(split_sequence_by_triangle(12, 4, 3, 1), Some((8, 12)));
         assert_eq!(split_sequence_by_triangle(12, 4, 3, 2), None);
+    }
+
+    #[test]
+    fn short_sequence_switches_to_head_split() {
+        assert!(should_split_by_attention_head(2, 1, 4));
+        assert!(should_split_by_attention_head(5, 2, 4));
+        assert!(!should_split_by_attention_head(8, 2, 4));
+    }
+
+    #[test]
+    fn attention_heads_are_evenly_split_across_threads() {
+        assert_eq!(split_attention_heads(8, 4, 0), Some((0, 2)));
+        assert_eq!(split_attention_heads(8, 4, 1), Some((2, 4)));
+        assert_eq!(split_attention_heads(8, 4, 2), Some((4, 6)));
+        assert_eq!(split_attention_heads(8, 4, 3), Some((6, 8)));
+    }
+
+    #[test]
+    fn extra_threads_receive_no_head_work() {
+        assert_eq!(split_attention_heads(3, 5, 0), Some((0, 1)));
+        assert_eq!(split_attention_heads(3, 5, 1), Some((1, 2)));
+        assert_eq!(split_attention_heads(3, 5, 2), Some((2, 3)));
+        assert_eq!(split_attention_heads(3, 5, 3), None);
+        assert_eq!(split_attention_heads(3, 5, 4), None);
     }
 }
