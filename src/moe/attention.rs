@@ -281,12 +281,7 @@ mod test {
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
         let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
 
-        let self_attention = Attention::new(
-            &config,
-            1,
-            "model.layers.1.self_attn",
-            ctx.clone(),
-        );
+        let self_attention = Attention::new(&config, 1, "model.layers.1.self_attn", ctx.clone());
 
         let hidden_states = ctx.zeros(
             vec![sequence_chunk_size, batch_size, config.hidden_size],
@@ -321,9 +316,3 @@ mod test {
         }
     }
 }
-
-
-
-
-
-

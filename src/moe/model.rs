@@ -22,9 +22,9 @@ use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 // use super::super::operators::map::rms_map::RMSMap;
-use super::super::runtime::operator::Operator;
 use super::super::common::matmul_params::MatMulParams;
 use super::super::mem_mgr::cache::Cache;
+use super::super::runtime::operator::Operator;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
 use super::super::runtime::tensor::{Tensor, TensorCtx};
@@ -201,9 +201,9 @@ mod test {
     use super::*;
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
-    use crate::runtime::inference::state::{Phase, SequenceState};
-    use crate::moe::rope::precompute_freqs_cis_t;
     use crate::mem_mgr::allocator::allocate_init;
+    use crate::moe::rope::precompute_freqs_cis_t;
+    use crate::runtime::inference::state::{Phase, SequenceState};
     use crate::runtime::tensor::Tensor;
 
     #[test]
@@ -317,11 +317,3 @@ mod test {
         }
     }
 }
-
-
-
-
-
-
-
-
