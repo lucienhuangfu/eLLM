@@ -153,12 +153,15 @@ where
 
             let mut view_value_states2 = view_value_states.permute(vec![1, 2, 0, 3]);
 
+            let thread_num = num_cpus::get().max(1);
+
             // [position_window_size, batch_size, head_num, head_size] <- [position_window_size, batch_size, head_num, head_size] [batch_size, head_num, sequence_num, head_size] [batch_size, head_num, sequence_num, head_size]
             let attn_output = view_query_states.attention(
                 &view_key_position_tensor,
                 &view_value_states2,
                 self.scaling,
                 decode_only_flag,
+                thread_num,
                 format!("{}.attn_output", self.scope_name),
             );
 

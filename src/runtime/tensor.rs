@@ -203,6 +203,7 @@ where
         v_tensor: &Tensor<T>,
         inverse_sqrt_head: T,
         decode_only_flag: bool,
+        thread_num: usize,
         scope_name: String,
     ) -> Self {
         let output_shape = self.shape.clone();
@@ -227,6 +228,7 @@ where
             self.shape[2],
             inverse_sqrt_head,
             decode_only_flag,
+            thread_num,
         ));
 
         self.operator_queue.borrow_mut().push(operator);

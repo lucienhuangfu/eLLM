@@ -5,7 +5,15 @@ pub trait AttentionTrait<T> {
         k_ptr2: *const T,
         v_ptr3: *const T,
         output_ptr: *mut T,
-        position: usize,
+        row_begin: usize,
+        row_end: usize,
+        col_begin: usize,
+        col_end: usize,
+        total_col_end: usize,
+        sequence_index: usize,
+        running_max: &mut [T],
+        running_denom: &mut [T],
+        scores: &mut [T],
     );
 }
 
