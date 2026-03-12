@@ -1,6 +1,7 @@
+mod core;
 mod dispatch;
-mod run;
+mod schedule;
 mod split_sequence;
 mod visit;
 
-pub use run::Attention;
+pub use core::Attention;
