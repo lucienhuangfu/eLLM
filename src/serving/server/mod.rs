@@ -2,7 +2,7 @@ use axum::{routing::post, Json, Router};
 use std::sync::Arc;
 
 use crate::common::send_sync_ptr::SharedMut;
-use crate::runtime::inference::state::SequenceState;
+use crate::runtime::inference::SequenceState;
 use crate::serving::batch_sequence::BatchSequence;
 
 mod bootstrap;

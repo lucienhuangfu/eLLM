@@ -2,179 +2,15 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use super::scheduler_plan::{BatchWork, PrefillCandidate, SliceScheduler};
+use super::state::{Phase, SequenceState};
 use crate::common::send_sync_ptr::SharedMut;
 use crate::common::sequence_slice::SequenceSlice;
-use crate::runtime::inference::state::{Phase, SequenceState};
-
-struct FairTaskAllocator {
-    task_count: usize,
-    total_tokens: usize,
-    scheduled_tokens: usize,
-    task_index: usize,
-    task_remaining: usize,
-    base_quota: usize,
-    extra_quota: usize,
-    active_task_count: usize,
-}
-
-impl FairTaskAllocator {
-    fn new(task_count: usize) -> Self {
-        Self {
-            task_count: task_count.max(1),
-            total_tokens: 0,
-            scheduled_tokens: 0,
-            task_index: 0,
-            task_remaining: 0,
-            base_quota: 0,
-            extra_quota: 0,
-            active_task_count: 0,
-        }
-    }
-
-    fn set_task_count(&mut self, task_count: usize) {
-        self.task_count = task_count.max(1);
-    }
-
-    fn init(&mut self, total_tokens: usize) {
-        self.total_tokens = total_tokens;
-        self.base_quota = self.total_tokens / self.task_count;
-        self.extra_quota = self.total_tokens % self.task_count;
-        self.active_task_count = if self.base_quota == 0 {
-            self.extra_quota
-        } else {
-            self.task_count
-        };
-        self.task_index = 0;
-        self.task_remaining = if self.total_tokens > 0 {
-            self.quota_for(0)
-        } else {
-            0
-        };
-        self.scheduled_tokens = 0;
-    }
-
-    fn is_done(&self) -> bool {
-        self.scheduled_tokens >= self.total_tokens
-    }
-
-    fn scheduled_tokens(&self) -> usize {
-        self.scheduled_tokens
-    }
-
-    fn quota_for(&self, task_index: usize) -> usize {
-        if task_index < self.extra_quota {
-            self.base_quota + 1
-        } else {
-            self.base_quota
-        }
-    }
-
-    fn current_task_index(&mut self) -> Option<usize> {
-        if self.is_done() {
-            return None;
-        }
-
-        while self.task_index < self.active_task_count && self.task_remaining == 0 {
-            self.task_index += 1;
-            if self.task_index < self.active_task_count {
-                self.task_remaining = self.quota_for(self.task_index);
-            }
-        }
-
-        if self.task_index >= self.active_task_count {
-            return None;
-        }
-
-        Some(self.task_index)
-    }
-
-    fn take(&mut self, max_take: usize) -> usize {
-        if self.is_done() || max_take == 0 {
-            return 0;
-        }
-
-        let available = self.total_tokens - self.scheduled_tokens;
-        let take = max_take.min(available).min(self.task_remaining);
-        if take == 0 {
-            return 0;
-        }
-
-        self.scheduled_tokens += take;
-        self.task_remaining = self.task_remaining.saturating_sub(take);
-        take
-    }
-}
-
-struct SliceScheduler {
-    allocator: FairTaskAllocator,
-}
-
-impl SliceScheduler {
-    fn new(task_count: usize) -> Self {
-        Self {
-            allocator: FairTaskAllocator::new(task_count),
-        }
-    }
-
-    fn set_task_count(&mut self, task_count: usize) {
-        self.allocator.set_task_count(task_count);
-    }
-
-    fn init(&mut self, total_tokens: usize) {
-        self.allocator.init(total_tokens);
-    }
-
-    fn is_done(&self) -> bool {
-        self.allocator.is_done()
-    }
-
-    fn schedule_for_sequence(
-        &mut self,
-        batch_index: usize,
-        sequence_index: usize,
-        mut remaining: usize,
-        token_offset: usize,
-        slice_list: &mut Vec<Vec<SequenceSlice>>,
-        token_count: &mut usize,
-    ) -> usize {
-        if self.is_done() {
-            return 0;
-        }
-
-        // Schedule tokens contiguously for this sequence.
-        while remaining > 0 && !self.is_done() {
-            let Some(task_index) = self.allocator.current_task_index() else {
-                break;
-            };
-
-            let token_start_index = token_offset + self.allocator.scheduled_tokens();
-            let take = self.allocator.take(remaining);
-            if take == 0 {
-                break;
-            }
-
-            let task = &mut slice_list[task_index];
-            let slice = SequenceSlice {
-                batch_index,
-                sequence_index,
-                token_start_index,
-                lift_index: 0,
-                length: take,
-            };
-
-            task.push(slice);
-
-            *token_count += take;
-            remaining -= take;
-        }
-
-        self.allocator.scheduled_tokens()
-    }
-}
 
 pub struct BatchScheduler {
     pub prefill_list: Vec<Vec<SequenceSlice>>,
     pub decode_list: Vec<Vec<SequenceSlice>>,
+    pub attention_list: Vec<SequenceSlice>,
     pub batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     decode_scheduler: SliceScheduler,
     prefill_scheduler: SliceScheduler,
@@ -184,6 +20,77 @@ pub struct BatchScheduler {
 }
 
 impl BatchScheduler {
+    fn clear_decode_round(&mut self) {
+        for task in self.decode_list.iter_mut() {
+            task.clear();
+        }
+        self.attention_list.clear();
+    }
+
+    fn clear_prefill_round(&mut self) {
+        for task in self.prefill_list.iter_mut() {
+            task.clear();
+        }
+        for task in self.decode_list.iter_mut() {
+            task.clear();
+        }
+        self.attention_list.clear();
+    }
+
+    fn collect_decode_candidates(&self) -> Vec<(usize, usize)> {
+        let max_decode_size = self.max_decode_size;
+        self.batch_list.with(|batch_list| {
+            batch_list
+                .iter()
+                .enumerate()
+                .filter(|(_, record)| record.phase == Phase::Decode)
+                .take(max_decode_size)
+                .map(|(batch_index, record)| (batch_index, record.sequence_index))
+                .collect::<Vec<_>>()
+        })
+    }
+
+    fn collect_prefill_candidates(&self) -> (Vec<PrefillCandidate>, usize) {
+        self.batch_list.with(|batch_list| {
+            let mut total_tokens = 0usize;
+            let mut candidates = Vec::with_capacity(batch_list.len());
+
+            for (batch_index, record) in batch_list.iter().enumerate() {
+                if record.phase == Phase::Prefill {
+                    let remaining = record.sequence_index.saturating_sub(record.kv_index);
+                    total_tokens += remaining;
+                    candidates.push(PrefillCandidate {
+                        batch_index,
+                        sequence_index: record.sequence_index,
+                        remaining,
+                    });
+                }
+            }
+
+            (candidates, total_tokens)
+        })
+    }
+
+    fn next_batch_work(&self) -> BatchWork {
+        self.batch_list.with(|batch_list| {
+            let mut has_prefill = false;
+
+            for record in batch_list.iter() {
+                match record.phase {
+                    Phase::Decode => return BatchWork::Decode,
+                    Phase::Prefill => has_prefill = true,
+                    _ => {}
+                }
+            }
+
+            if has_prefill {
+                BatchWork::Prefill
+            } else {
+                BatchWork::Idle
+            }
+        })
+    }
+
     // Test method (simplest example):
     // 1) Build a small batch list with one Prefill record.
     // 2) Call schedule_batch and verify prefill/decode counts and slices.
@@ -214,24 +121,13 @@ impl BatchScheduler {
             prefill_scheduler: SliceScheduler::new(batch_size * thread_num),
             prefill_list: build_list(),
             decode_list: build_list(),
+            attention_list: Vec::with_capacity(batch_size),
         }
     }
 
     fn schedule_decode_only(&mut self, decode_count: &mut usize) {
-        for task in self.decode_list.iter_mut() {
-            task.clear();
-        }
-
-        let max_decode_size = self.max_decode_size;
-        let decode_candidates = self.batch_list.with(|batch_list| {
-            batch_list
-                .iter()
-                .enumerate()
-                .filter(|(_, record)| record.phase == Phase::Decode)
-                .take(max_decode_size)
-                .map(|(batch_index, record)| (batch_index, record.sequence_index))
-                .collect::<Vec<_>>()
-        });
+        self.clear_decode_round();
+        let decode_candidates = self.collect_decode_candidates();
 
         self.decode_scheduler.init(decode_candidates.len());
 
@@ -239,6 +135,21 @@ impl BatchScheduler {
             if self.decode_scheduler.is_done() {
                 break;
             }
+
+            let scheduled_before = *decode_count;
+            let attention_length = 1usize.min(self.decode_scheduler.remaining_tokens());
+            if attention_length == 0 {
+                break;
+            }
+
+            self.attention_list.push(SequenceSlice {
+                batch_index,
+                sequence_index,
+                token_start_index: scheduled_before,
+                lift_index: 0,
+                length: attention_length,
+            });
+
             self.decode_scheduler.schedule_for_sequence(
                 batch_index,
                 sequence_index,
@@ -250,22 +161,9 @@ impl BatchScheduler {
         }
     }
 
-    fn schedule_prefill_and_switch_to_decode(&mut self, prefill_count: &mut usize) {
-        for task in self.prefill_list.iter_mut() {
-            task.clear();
-        }
-        for task in self.decode_list.iter_mut() {
-            task.clear();
-        }
-
-        let mut prefill_total_tokens = 0usize;
-        self.batch_list.with(|batch_list| {
-            for record in batch_list.iter() {
-                if record.phase == Phase::Prefill {
-                    prefill_total_tokens += record.sequence_index.saturating_sub(record.kv_index);
-                }
-            }
-        });
+    fn schedule_prefill(&mut self, prefill_count: &mut usize) {
+        self.clear_prefill_round();
+        let (prefill_candidates, prefill_total_tokens) = self.collect_prefill_candidates();
 
         let total_tokens = prefill_total_tokens.min(self.max_prefill_size);
         self.prefill_scheduler.init(total_tokens);
@@ -275,26 +173,39 @@ impl BatchScheduler {
 
         let prefill_scheduler = &mut self.prefill_scheduler;
         let prefill_list = &mut self.prefill_list;
+        let attention_list = &mut self.attention_list;
         self.batch_list.with_mut(|batch_list| {
-            for (batch_index, record) in batch_list.iter_mut().enumerate() {
+            for candidate in prefill_candidates.iter().copied() {
                 if prefill_scheduler.is_done() {
                     break;
                 }
 
-                if record.phase == Phase::Prefill {
-                    let remaining = record.sequence_index.saturating_sub(record.kv_index);
-                    let scheduled_before = *prefill_count;
-                    prefill_scheduler.schedule_for_sequence(
-                        batch_index,
-                        record.sequence_index,
-                        remaining,
-                        0,
-                        prefill_list,
-                        prefill_count,
-                    );
+                let scheduled_before = *prefill_count;
+                let attention_length = candidate
+                    .remaining
+                    .min(prefill_scheduler.remaining_tokens());
+                if attention_length > 0 {
+                    attention_list.push(SequenceSlice {
+                        batch_index: candidate.batch_index,
+                        sequence_index: candidate.sequence_index,
+                        token_start_index: scheduled_before,
+                        lift_index: 0,
+                        length: attention_length,
+                    });
+                }
 
-                    let scheduled_for_record = prefill_count.saturating_sub(scheduled_before);
-                    if remaining > 0 && scheduled_for_record == remaining {
+                prefill_scheduler.schedule_for_sequence(
+                    candidate.batch_index,
+                    candidate.sequence_index,
+                    candidate.remaining,
+                    0,
+                    prefill_list,
+                    prefill_count,
+                );
+
+                let scheduled_for_record = prefill_count.saturating_sub(scheduled_before);
+                if candidate.remaining > 0 && scheduled_for_record == candidate.remaining {
+                    if let Some(record) = batch_list.get_mut(candidate.batch_index) {
                         record.phase = Phase::Decode;
                     }
                 }
@@ -313,32 +224,16 @@ impl BatchScheduler {
         let mut decode_count = 0usize;
 
         loop {
-            let has_decode = {
-                let batch_list = self.batch_list.with(|batch_list| {
-                    batch_list
-                        .iter()
-                        .any(|record| record.phase == Phase::Decode)
-                });
-                batch_list
-            };
-
-            if has_decode {
-                self.schedule_decode_only(&mut decode_count);
-                return (prefill_count, decode_count);
-            }
-
-            let has_prefill = {
-                let batch_list = self.batch_list.with(|batch_list| {
-                    batch_list
-                        .iter()
-                        .any(|record| record.phase == Phase::Prefill)
-                });
-                batch_list
-            };
-
-            if has_prefill {
-                self.schedule_prefill_and_switch_to_decode(&mut prefill_count);
-                return (prefill_count, decode_count);
+            match self.next_batch_work() {
+                BatchWork::Decode => {
+                    self.schedule_decode_only(&mut decode_count);
+                    return (prefill_count, decode_count);
+                }
+                BatchWork::Prefill => {
+                    self.schedule_prefill(&mut prefill_count);
+                    return (prefill_count, decode_count);
+                }
+                BatchWork::Idle => {}
             }
 
             thread::sleep(Duration::from_millis(1));
@@ -348,6 +243,7 @@ impl BatchScheduler {
 
 #[cfg(test)]
 mod tests {
+    use super::super::scheduler_allocator::FairTaskAllocator;
     use super::*;
     use tokio::sync::Notify;
 
@@ -386,6 +282,7 @@ mod tests {
 
         assert_eq!(scheduler.prefill_list.len(), 8);
         assert_eq!(scheduler.decode_list.len(), 8);
+        assert_eq!(scheduler.attention_list.len(), 8);
 
         scheduler.batch_list.with(|batch_list| {
             for record in batch_list.iter().take(8) {
@@ -404,6 +301,14 @@ mod tests {
             assert_eq!(slice.sequence_index, 6);
             assert_eq!(slice.token_start_index, task_index * 6);
             assert_eq!(slice.length, 6);
+        }
+
+        for sequence_offset in 0..8 {
+            let attention_slice = &scheduler.attention_list[sequence_offset];
+            assert_eq!(attention_slice.batch_index, sequence_offset);
+            assert_eq!(attention_slice.sequence_index, 6);
+            assert_eq!(attention_slice.token_start_index, sequence_offset * 6);
+            assert_eq!(attention_slice.length, 6);
         }
     }
 
@@ -435,6 +340,7 @@ mod tests {
             assert_eq!(scheduler.decode_list[task_index].len(), 1);
             assert_eq!(scheduler.decode_list[task_index][0].length, 1);
         }
+        assert_eq!(scheduler.attention_list.len(), 2);
 
         let first = &scheduler.decode_list[0][0];
         assert_eq!(first.batch_index, 0);
@@ -445,6 +351,18 @@ mod tests {
         assert_eq!(second.batch_index, 2);
         assert_eq!(second.sequence_index, 12);
         assert_eq!(second.token_start_index, 1);
+
+        let first_attention = &scheduler.attention_list[0];
+        assert_eq!(first_attention.batch_index, first.batch_index);
+        assert_eq!(first_attention.sequence_index, first.sequence_index);
+        assert_eq!(first_attention.token_start_index, first.token_start_index);
+        assert_eq!(first_attention.length, 1);
+
+        let second_attention = &scheduler.attention_list[1];
+        assert_eq!(second_attention.batch_index, second.batch_index);
+        assert_eq!(second_attention.sequence_index, second.sequence_index);
+        assert_eq!(second_attention.token_start_index, second.token_start_index);
+        assert_eq!(second_attention.length, 1);
     }
 
     #[test]
@@ -512,5 +430,19 @@ mod tests {
             assert_eq!(batch_list[0].phase, Phase::Decode);
             assert_eq!(batch_list[1].phase, Phase::Prefill);
         });
+
+        assert_eq!(scheduler.attention_list.len(), 2);
+
+        let first_attention = &scheduler.attention_list[0];
+        assert_eq!(first_attention.batch_index, 0);
+        assert_eq!(first_attention.sequence_index, 6);
+        assert_eq!(first_attention.token_start_index, 0);
+        assert_eq!(first_attention.length, 6);
+
+        let second_attention = &scheduler.attention_list[1];
+        assert_eq!(second_attention.batch_index, 1);
+        assert_eq!(second_attention.sequence_index, 6);
+        assert_eq!(second_attention.token_start_index, 6);
+        assert_eq!(second_attention.length, 2);
     }
 }

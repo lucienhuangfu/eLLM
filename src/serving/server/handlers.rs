@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 
-use crate::runtime::inference::state::Phase;
+use crate::runtime::inference::Phase;
 
 use super::types::{
     ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, StreamChoice,

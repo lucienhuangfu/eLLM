@@ -1,17 +1,16 @@
 use core_affinity;
 use std::cell::SyncUnsafeCell;
-use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::ops::{AddAssign, Neg, Sub};
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 
 use crate::runtime::operator::Operator;
 
+use super::BatchScheduler;
 use crate::common::num_traits::{
     exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt,
 };
-use crate::runtime::inference::state::{Phase, SequenceState};
-use crate::runtime::inference::scheduler::BatchScheduler;
 
 /// Runs the inference serving loop.
 ///
@@ -97,6 +96,7 @@ where
                         let scheduler = &mut state.scheduler;
                         let prefill_list = &scheduler.prefill_list;
                         let decode_list = &scheduler.decode_list;
+                        let attention_list = &scheduler.attention_list;
                         scheduler.batch_list.with_mut(|batch_list_guard| {
                             for operator in queue.iter() {
                                 operator.run(
@@ -106,6 +106,7 @@ where
                                     thread_id,
                                     prefill_list,
                                     decode_list,
+                                    attention_list,
                                     batch_list_guard,
                                 );
                                 b.wait();
@@ -130,15 +131,14 @@ where
 
 #[cfg(test)]
 mod test {
-    use approx::assert_relative_eq;
     use std::cell::RefCell;
     use std::rc::Rc;
 
     use super::*;
-    use crate::runtime::inference::state::SequenceState;
     use crate::mem_mgr::cache::Cache;
     use crate::moe::sparse_moe_block::SparseMoeBlock;
-    use crate::runtime::tensor::{Tensor, TensorCtx};
+    use crate::runtime::inference::{Phase, SequenceState};
+    use crate::runtime::tensor::TensorCtx;
 
     // use crate::mem_mgr::allocator::allocate_init;
 
@@ -208,7 +208,7 @@ mod test {
         }*/
 
         let thread_num = core_affinity::get_core_ids().unwrap().len();
-        let mut batch_scheduler = BatchScheduler::new(position_window_size, batch_size, thread_num);
+        let batch_scheduler = BatchScheduler::new(position_window_size, batch_size, thread_num);
         batch_scheduler.batch_list.with_mut(|batch_list| {
             batch_list.extend((0..batch_size).map(|_| SequenceState {
                 sequence_index: 50,
@@ -222,4 +222,3 @@ mod test {
         ServingRunner::new(output_tensor.operator_queue.take(), batch_scheduler).start();
     }
 }
-

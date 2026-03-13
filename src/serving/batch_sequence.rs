@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tiktoken_rs::CoreBPE;
 
-use crate::runtime::inference::state::SequenceState;
+use crate::runtime::inference::SequenceState;
 use crate::serving::chat_template::ChatTemplate;
 use crate::serving::tokenizer_loader::load_tiktoken;
 

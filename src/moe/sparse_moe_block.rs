@@ -234,7 +234,7 @@ mod test {
         for op in output.operator_queue.borrow().iter() {
             for tid in 0..thread_num {
                 // 本次不考虑 position，按你现有约定固定 (0,1)
-                op.run(batch_size, 0, thread_num, tid, &[], &[], &mut Vec::new());
+                op.run(batch_size, 0, thread_num, tid, &[], &[], &[], &mut Vec::new());
             }
         }
     }

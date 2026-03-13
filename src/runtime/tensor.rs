@@ -19,7 +19,7 @@ use crate::common::sequence_slice::SequenceSlice;
 use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 use crate::operators::routing::TopKSoftmax;
-use crate::runtime::inference::state::{Phase, SequenceState};
+use crate::runtime::inference::{Phase, SequenceState};
 // use super::super::operators::mul::matmul_silu_mul_matmul::MatMulSilu;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddRMSZipMap;
@@ -905,6 +905,7 @@ mod test {
                 tid,
                 &[],
                 &[],
+                &[],
                 &mut Vec::new(),
             );
         }
@@ -1027,7 +1028,7 @@ mod test {
                         &mut batch_list,
                     );
                 } else {
-                    op.run(batch_size, 1, thread_num, i, &[], &[], &mut Vec::new());
+                    op.run(batch_size, 1, thread_num, i, &[], &[], &[], &mut Vec::new());
                 }
             }
         }
@@ -1181,7 +1182,7 @@ mod test {
                         &mut batch_list,
                     );
                 } else {
-                    op.run(batch_size, 1, thread_num, i, &[], &[], &mut Vec::new());
+                    op.run(batch_size, 1, thread_num, i, &[], &[], &[], &mut Vec::new());
                 }
             }
         }
@@ -1365,7 +1366,7 @@ mod test {
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(batch_size, 1, 1, 0, &[], &[], &mut Vec::new());
+            op.run(batch_size, 1, 1, 0, &[], &[], &[], &mut Vec::new());
         }
 
         let verify_matmul_nt =
@@ -1526,7 +1527,7 @@ mod test {
         assert!(matches!(&operator_queue.borrow()[0], Operator::MatMul3(_)));
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(batch_size, 1, 1, 0, &[], &[], &mut Vec::new());
+            op.run(batch_size, 1, 1, 0, &[], &[], &[], &mut Vec::new());
         }
 
         let q_len = m * q_dim;
@@ -1645,7 +1646,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for i in 0..thread_num {
-                op.run(m, 1, thread_num, i, &[], &[], &mut Vec::new());
+                op.run(m, 1, thread_num, i, &[], &[], &[], &mut Vec::new());
             }
         }
 
@@ -1770,7 +1771,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(m, 1, thread_num, tid, &[], &[], &mut Vec::new());
+                op.run(m, 1, thread_num, tid, &[], &[], &[], &mut Vec::new());
             }
         }
 
@@ -1898,7 +1899,7 @@ mod test {
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(m, 1, 1, 0, &[], &[], &mut Vec::new());
+            op.run(m, 1, 1, 0, &[], &[], &[], &mut Vec::new());
         }
 
         let out_len = m * n;
@@ -2019,7 +2020,7 @@ mod test {
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(m, 1, 1, 0, &[], &[], &mut Vec::new());
+            op.run(m, 1, 1, 0, &[], &[], &[], &mut Vec::new());
         }
 
         let out_len = m * n;
@@ -2256,7 +2257,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(b, 1, thread_num, tid, &[], &[], &mut Vec::new());
+                op.run(b, 1, thread_num, tid, &[], &[], &[], &mut Vec::new());
             }
         }
 
@@ -2444,7 +2445,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(b, 1, thread_num, tid, &[], &[], &mut Vec::new());
+                op.run(b, 1, thread_num, tid, &[], &[], &[], &mut Vec::new());
             }
         }
 
@@ -2575,7 +2576,7 @@ mod test {
             .unwrap_or(1);
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(num_tokens, 1, thread_num, tid, &[], &[], &mut Vec::new());
+                op.run(num_tokens, 1, thread_num, tid, &[], &[], &[], &mut Vec::new());
             }
         }
 
