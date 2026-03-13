@@ -45,7 +45,7 @@ impl BatchScheduler {
                 .enumerate()
                 .filter(|(_, record)| record.phase == Phase::Decode)
                 .take(max_decode_size)
-                .map(|(batch_index, record)| (batch_index, record.sequence_index))
+                .map(|(batch_index, record)| (batch_index, record.kv_index))
                 .collect::<Vec<_>>()
         })
     }
@@ -57,7 +57,7 @@ impl BatchScheduler {
 
             for (batch_index, record) in batch_list.iter().enumerate() {
                 if record.phase == Phase::Prefill {
-                    let remaining = record.sequence_index.saturating_sub(record.kv_index);
+                    let remaining = record.kv_index.saturating_sub(record.sequence_index);
                     total_tokens += remaining;
                     candidates.push(PrefillCandidate {
                         batch_index,
@@ -204,7 +204,16 @@ impl BatchScheduler {
                 );
 
                 let scheduled_for_record = prefill_count.saturating_sub(scheduled_before);
-                if candidate.remaining > 0 && scheduled_for_record == candidate.remaining {
+                if scheduled_for_record > 0 {
+                    if let Some(record) = batch_list.get_mut(candidate.batch_index) {
+                        record.sequence_index =
+                            record.sequence_index.saturating_add(scheduled_for_record);
+
+                        if candidate.remaining > 0 && scheduled_for_record == candidate.remaining {
+                            record.phase = Phase::Decode;
+                        }
+                    }
+                } else if candidate.remaining > 0 && scheduled_for_record == candidate.remaining {
                     if let Some(record) = batch_list.get_mut(candidate.batch_index) {
                         record.phase = Phase::Decode;
                     }
@@ -214,8 +223,8 @@ impl BatchScheduler {
     }
 
     pub fn schedule_batch(&mut self) -> (usize, usize) {
-        let decode_task_count = self.thread_num.max(1).min(self.decode_list.len().max(1));
-        let prefill_task_count = self.thread_num.max(1).min(self.prefill_list.len().max(1));
+        let decode_task_count = self.thread_num.min(self.decode_list.len());
+        let prefill_task_count = self.thread_num.min(self.prefill_list.len());
 
         self.decode_scheduler.set_task_count(decode_task_count);
         self.prefill_scheduler.set_task_count(prefill_task_count);
@@ -233,10 +242,10 @@ impl BatchScheduler {
                     self.schedule_prefill(&mut prefill_count);
                     return (prefill_count, decode_count);
                 }
-                BatchWork::Idle => {}
+                BatchWork::Idle => {
+                    thread::sleep(Duration::from_millis(1));
+                }
             }
-
-            thread::sleep(Duration::from_millis(1));
         }
     }
 }
@@ -260,18 +269,18 @@ mod tests {
     fn schedule_prefill_only() {
         // Input:
         // - Eight SequenceState in Phase::Prefill
-        // - sequence_index=6, kv_index=0 => 6 tokens remaining per record
+        // - sequence_index=0, kv_index=6 => 6 tokens remaining per record
         // - sequence_length=8, batch_size=32, thread_num=8
         // Output (expected):
         // - prefill == 48 (all 8 * 6 tokens scheduled)
         // - decode == 0 (no decode tokens scheduled in prefill-only case)
-        // - prefill_list[0..8] each has one slice of length 6 with token_start_index 0,6,12..42
+        // - prefill_list[0..8] each has one slice starting at sequence position 0
         // - decode_list is empty across all tasks
         let batch_size = 32;
         let mut scheduler = BatchScheduler::new(8, batch_size, 8);
         scheduler.batch_list.with_mut(|batch_list| {
             for _ in 0..8 {
-                batch_list.push(state(Phase::Prefill, 6, 0));
+                batch_list.push(state(Phase::Prefill, 0, 6));
             }
         });
 
@@ -287,6 +296,8 @@ mod tests {
         scheduler.batch_list.with(|batch_list| {
             for record in batch_list.iter().take(8) {
                 assert_eq!(record.phase, Phase::Decode);
+                assert_eq!(record.sequence_index, 6);
+                assert_eq!(record.kv_index, 6);
             }
         });
 
@@ -298,7 +309,7 @@ mod tests {
             assert_eq!(scheduler.prefill_list[task_index].len(), 1);
             let slice = &scheduler.prefill_list[task_index][0];
             assert_eq!(slice.batch_index, task_index);
-            assert_eq!(slice.sequence_index, 6);
+            assert_eq!(slice.sequence_index, 0);
             assert_eq!(slice.token_start_index, task_index * 6);
             assert_eq!(slice.length, 6);
         }
@@ -306,7 +317,7 @@ mod tests {
         for sequence_offset in 0..8 {
             let attention_slice = &scheduler.attention_list[sequence_offset];
             assert_eq!(attention_slice.batch_index, sequence_offset);
-            assert_eq!(attention_slice.sequence_index, 6);
+            assert_eq!(attention_slice.sequence_index, 0);
             assert_eq!(attention_slice.token_start_index, sequence_offset * 6);
             assert_eq!(attention_slice.length, 6);
         }
@@ -324,10 +335,10 @@ mod tests {
         // - prefill_list stays empty because decode has priority
         let mut scheduler = BatchScheduler::new(8, 2, 2);
         scheduler.batch_list.with_mut(|batch_list| {
-            batch_list.push(state(Phase::Decode, 11, 10));
-            batch_list.push(state(Phase::Prefill, 6, 0));
-            batch_list.push(state(Phase::Decode, 12, 11));
-            batch_list.push(state(Phase::Decode, 13, 12));
+            batch_list.push(state(Phase::Decode, 10, 11));
+            batch_list.push(state(Phase::Prefill, 0, 6));
+            batch_list.push(state(Phase::Decode, 11, 12));
+            batch_list.push(state(Phase::Decode, 12, 13));
         });
 
         let (prefill, decode) = scheduler.schedule_batch();
@@ -414,11 +425,11 @@ mod tests {
         // - Two Prefill records each require 6 tokens (total 12 > 8)
         // Output (expected):
         // - first record fully scheduled -> switches to Decode
-        // - second record partially scheduled -> remains Prefill
+        // - second record partially scheduled -> remains Prefill with advanced sequence_index
         let mut scheduler = BatchScheduler::new(4, 2, 2);
         scheduler.batch_list.with_mut(|batch_list| {
-            batch_list.push(state(Phase::Prefill, 6, 0));
-            batch_list.push(state(Phase::Prefill, 6, 0));
+            batch_list.push(state(Phase::Prefill, 0, 6));
+            batch_list.push(state(Phase::Prefill, 0, 6));
         });
 
         let (prefill, decode) = scheduler.schedule_batch();
@@ -428,21 +439,82 @@ mod tests {
 
         scheduler.batch_list.with(|batch_list| {
             assert_eq!(batch_list[0].phase, Phase::Decode);
+            assert_eq!(batch_list[0].sequence_index, 6);
+            assert_eq!(batch_list[0].kv_index, 6);
             assert_eq!(batch_list[1].phase, Phase::Prefill);
+            assert_eq!(batch_list[1].sequence_index, 2);
+            assert_eq!(batch_list[1].kv_index, 6);
         });
 
         assert_eq!(scheduler.attention_list.len(), 2);
 
         let first_attention = &scheduler.attention_list[0];
         assert_eq!(first_attention.batch_index, 0);
-        assert_eq!(first_attention.sequence_index, 6);
+        assert_eq!(first_attention.sequence_index, 0);
         assert_eq!(first_attention.token_start_index, 0);
         assert_eq!(first_attention.length, 6);
 
         let second_attention = &scheduler.attention_list[1];
         assert_eq!(second_attention.batch_index, 1);
-        assert_eq!(second_attention.sequence_index, 6);
+        assert_eq!(second_attention.sequence_index, 0);
         assert_eq!(second_attention.token_start_index, 6);
         assert_eq!(second_attention.length, 2);
+    }
+
+    #[test]
+    fn schedule_prefill_partial_resumes_from_updated_sequence_index() {
+        let mut scheduler = BatchScheduler::new(4, 2, 2);
+        scheduler.batch_list.with_mut(|batch_list| {
+            batch_list.push(state(Phase::Prefill, 0, 6));
+            batch_list.push(state(Phase::Prefill, 0, 6));
+        });
+
+        let (prefill, decode) = scheduler.schedule_batch();
+
+        assert_eq!(prefill, 8);
+        assert_eq!(decode, 0);
+
+        scheduler.batch_list.with(|batch_list| {
+            assert_eq!(batch_list[1].phase, Phase::Prefill);
+            assert_eq!(batch_list[1].sequence_index, 2);
+            assert_eq!(batch_list[1].kv_index, 6);
+        });
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            batch_list[0].phase = Phase::Eos;
+        });
+
+        let (prefill, decode) = scheduler.schedule_batch();
+
+        assert_eq!(prefill, 4);
+        assert_eq!(decode, 0);
+
+        scheduler.batch_list.with(|batch_list| {
+            assert_eq!(batch_list[0].phase, Phase::Eos);
+            assert_eq!(batch_list[0].sequence_index, 6);
+            assert_eq!(batch_list[1].phase, Phase::Decode);
+            assert_eq!(batch_list[1].sequence_index, 6);
+        });
+
+        assert_eq!(scheduler.attention_list.len(), 1);
+        let resumed_attention = &scheduler.attention_list[0];
+        assert_eq!(resumed_attention.batch_index, 1);
+        assert_eq!(resumed_attention.sequence_index, 2);
+        assert_eq!(resumed_attention.token_start_index, 0);
+        assert_eq!(resumed_attention.length, 4);
+
+        assert_eq!(scheduler.prefill_list[0].len(), 1);
+        let resumed_slice = &scheduler.prefill_list[0][0];
+        assert_eq!(resumed_slice.batch_index, 1);
+        assert_eq!(resumed_slice.sequence_index, 2);
+        assert_eq!(resumed_slice.token_start_index, 0);
+        assert_eq!(resumed_slice.length, 2);
+
+        assert_eq!(scheduler.prefill_list[1].len(), 1);
+        let resumed_slice = &scheduler.prefill_list[1][0];
+        assert_eq!(resumed_slice.batch_index, 1);
+        assert_eq!(resumed_slice.sequence_index, 4);
+        assert_eq!(resumed_slice.token_start_index, 2);
+        assert_eq!(resumed_slice.length, 2);
     }
 }

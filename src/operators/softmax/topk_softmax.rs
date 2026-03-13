@@ -4,11 +4,11 @@ use std::ptr;
 
 use crate::common::num_traits::Exp;
 use crate::common::num_traits::Sqrt;
-use crate::common::sequence_slice::SequenceSlice;
-use crate::runtime::inference::{Phase, SequenceState};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::common::sequence_slice::SequenceSlice;
 use crate::kernel;
 use crate::operators::traits::TopKSoftmaxTrait;
+use crate::runtime::inference::{Phase, SequenceState};
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {
@@ -92,12 +92,10 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
                 let predict_token = *output_indices_ptr.add(output_stride);
                 let out_offset = sequence_index * self.batch_size + batch_index;
                 ptr::write(output_sequences_ptr.add(out_offset), predict_token);
-                
 
                 if batch_index < batch_list.len() {
                     let record = &mut batch_list[batch_index];
-                    record.kv_index = record.sequence_index;
-                    record.sequence_index += 1;
+                    record.kv_index = record.kv_index.saturating_add(1);
                     if predict_token == self.eos_id {
                         record.phase = Phase::Eos;
                         record.notify.notify_one();
@@ -215,7 +213,7 @@ mod test {
         for i in 0..batch_size {
             user_records_vec.push(SequenceState {
                 sequence_index: 1,
-                kv_index: 0,
+                kv_index: 1,
                 phase: Phase::Decode,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
@@ -312,6 +310,8 @@ mod test {
                 output_sequences[(batch_size) + i_usize],
                 expected_indices[0]
             );
+            assert_eq!(batch_list[i_usize].sequence_index, 1);
+            assert_eq!(batch_list[i_usize].kv_index, 2);
         }
     }
 
@@ -338,7 +338,7 @@ mod test {
         for i in 0..batch_size {
             user_records_vec.push(SequenceState {
                 sequence_index: 1,
-                kv_index: 0,
+                kv_index: 1,
                 phase: Phase::Decode,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             });
@@ -450,7 +450,8 @@ mod test {
                 output_sequences[(batch_size) + i_usize],
                 expected_indices[0]
             );
+            assert_eq!(batch_list[i_usize].sequence_index, 1);
+            assert_eq!(batch_list[i_usize].kv_index, 2);
         }
     }
 }
-

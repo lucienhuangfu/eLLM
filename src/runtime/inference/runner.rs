@@ -211,8 +211,8 @@ mod test {
         let batch_scheduler = BatchScheduler::new(position_window_size, batch_size, thread_num);
         batch_scheduler.batch_list.with_mut(|batch_list| {
             batch_list.extend((0..batch_size).map(|_| SequenceState {
-                sequence_index: 50,
-                kv_index: 0,
+                sequence_index: 0,
+                kv_index: 50,
                 phase: Phase::Prefill,
                 // prompt_length: 50,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),

@@ -103,8 +103,8 @@ async fn assign_slot_with_messages(
                 batch_sequences
                     .write_prompts(slot_index, &message_pairs)
                     .map(|write_len| {
-                        record.sequence_index = write_len;
-                        record.kv_index = usize::MAX;
+                        record.sequence_index = 0;
+                        record.kv_index = write_len;
                         record.phase = Phase::Prefill;
                         record.notify.clone()
                     })

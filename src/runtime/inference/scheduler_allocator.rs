@@ -12,7 +12,7 @@ pub(super) struct FairTaskAllocator {
 impl FairTaskAllocator {
     pub(super) fn new(task_count: usize) -> Self {
         Self {
-            task_count: task_count.max(1),
+            task_count,
             total_tokens: 0,
             scheduled_tokens: 0,
             task_index: 0,
@@ -24,7 +24,7 @@ impl FairTaskAllocator {
     }
 
     pub(super) fn set_task_count(&mut self, task_count: usize) {
-        self.task_count = task_count.max(1);
+        self.task_count = task_count;
     }
 
     pub(super) fn init(&mut self, total_tokens: usize) {

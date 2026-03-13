@@ -42,6 +42,8 @@ impl SliceScheduler {
             return 0;
         }
 
+        let mut sequence_cursor = sequence_index;
+
         while remaining > 0 && !self.is_done() {
             let Some(task_index) = self.allocator.current_task_index() else {
                 break;
@@ -55,7 +57,7 @@ impl SliceScheduler {
 
             slice_list[task_index].push(SequenceSlice {
                 batch_index,
-                sequence_index,
+                sequence_index: sequence_cursor,
                 token_start_index,
                 lift_index: 0,
                 length: take,
@@ -63,6 +65,7 @@ impl SliceScheduler {
 
             *token_count += take;
             remaining -= take;
+            sequence_cursor += take;
         }
 
         self.allocator.scheduled_tokens()
