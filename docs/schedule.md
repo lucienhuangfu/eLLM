@@ -58,7 +58,7 @@ $$
 | `batch_index` | 它属于哪个 batch 槽位 |
 | `sequence_index` | 这段切片起始的序列位置 |
 | `length` | 这段连续 token 区间的长度 |
-| `lift_index` | 目标提升位置；在 prefill 轮里通常标记该序列最后一个 token 需要被提升到的 batch 槽位索引 |
+| `lift_index` | 额外的提升目标下标；当前实现里普通切片固定为 `0`，只有 prefill 轮额外写入 `decode_list` 的提升切片会把它设为目标 batch 槽位索引 |
 
 因此最小调度单元可以理解为：
 
@@ -79,11 +79,13 @@ $$
 
 ### `decode_list`
 
-类型同样是 `Vec<Vec<SequenceSlice>>`。
+类型是 `Vec<SequenceSlice>`。
 
-* 外层下标同样对应 `thread_id`
+* 它不是按线程拆开的，而是本轮全部 decode 或 lift slice 的扁平列表
 * decode 场景下每条序列本轮只会贡献 1 个 token
-* prefill 场景下，这个列表还会额外承载“最后一个 token 的提升任务”，供 `LiftVector` 使用
+* decode 场景下每个切片的 `lift_index` 固定为 `0`
+* prefill 场景下，这个列表还会额外承载每条序列本轮最后一个 token 的提升切片，供 `LiftVector` 使用
+* 真正的线程内分配不再由调度器预先落桶，而是在执行阶段通过 `assign` 按 slice 数公平切分
 
 ### `attention_list`
 
@@ -103,7 +105,7 @@ $$
 `schedule_batch()` 每次只负责生成一轮切片结果。整体结构可以概括为：
 
 ```text
-1. 根据线程数设置 prefill/decode 调度器的 task_count
+1. 根据线程数设置本轮 prefill 调度器的 task_count
 2. 扫描 batch_list，判断这一轮应该做什么工作
 3. 如果存在 Decode，则直接进入 decode 调度
 4. 否则如果存在 Prefill，则进入 prefill 调度
@@ -172,36 +174,37 @@ decode 候选由 `collect_decode_candidates()` 收集。
 
 ## 4.2 切片生成
 
-decode 轮首先执行：
-
-```text
-decode_scheduler.init(decode_candidates.len())
-```
-
-这意味着 decode 总 token 数就等于候选条数，因为每条 decode 序列本轮固定只处理 1 个 token。
+decode 轮里，每个候选都会被直接追加成一个长度为 1 的切片。
 
 随后调度器会对每个候选做两件事：
 
 * 先向 `attention_list` 写入一个长度为 1 的切片
-* 再调用 `schedule_for_sequence(..., remaining = 1, ...)`，把这个 token 分配到某个线程的 `decode_list` 中
+* 再向 `decode_list` 追加一个长度为 1 的切片
+
+这里 `schedule_for_sequence()` 写入的 decode 切片具有两个当前实现上的固定特征：
+
+* `sequence_index = kv_index`
+* `lift_index = 0`
 
 因此 decode 路径的特征非常清晰：
 
 * 每条序列本轮只贡献 1 个 token
 * `attention_list` 中的 decode 切片长度恒为 1
-* `decode_list` 只是把这些单 token 请求静态分配给不同线程
+* `decode_list` 只是把这些单 token 请求按出现顺序串成一段扁平列表
+* decode 调度本身不会回写 `SequenceState`，也不会推进 `sequence_index / kv_index / filling_length`
 
 ## 4.3 Decode 的均衡特性
 
 因为每个 decode 候选的工作量完全一致，decode 轮的负载均衡就退化成一个非常简单的问题：
 
 ```text
-把 N 个单 token 请求尽量平均分给 task_count 个线程
+把 N 个单 token 请求尽量平均分给 `thread_num` 个线程
 ```
 
 因此：
 
-* 如果 token 数与线程数接近，通常每个线程拿到的任务数也接近
+* 调度阶段只负责产出扁平切片列表
+* 执行阶段再通过 `assign` 把这段列表切成各线程的连续子区间
 * 如果线程数多于 decode 数，多余线程自然不会分到切片
 
 ---
@@ -286,9 +289,10 @@ scheduled_for_record = 本条序列本轮实际分配到的 token 数
 同时，调度器还会为该序列本轮实际调度到的最后一个 token 生成一个长度为 1 的提升切片：
 
 * `token_start_index` 指向这个最后 token 在本轮扁平 token 视图中的当前位置
-* `lift_index` 指向它需要被提升到的目标 batch 槽位位置
+* `sequence_index` 指向这个最后 token 的序列位置
+* `lift_index` 直接等于该记录的 `batch_index`
 
-这个提升动作由后续 `LiftVector` 算子消费，用来把最后一个 token 的结果搬运到后续 decode 更容易访问的位置。
+这个提升动作由后续 `LiftVector` 算子消费，用来把最后一个 token 的结果搬运到后续 decode 更容易访问的位置。当前实现只把这类提升任务追加到扁平 `decode_list` 中，具体由哪个线程执行同样在运行时通过 `assign` 决定。
 
 这意味着当前实现中：
 
@@ -395,7 +399,8 @@ while 当前序列还有 token 且 allocator 还有全局配额:
 如果本轮是 Decode:
 	每条候选拿 1 个 token
 	写入 attention_list
-	再按线程配额写入 decode_list
+	再顺序追加到 decode_list
+	不修改 SequenceState
 
 如果本轮是 Prefill:
 	先统计全部剩余 token
@@ -403,7 +408,7 @@ while 当前序列还有 token 且 allocator 还有全局配额:
 	依次处理每条序列
 		写入 attention_list 中本轮实际连续区间
 		再按线程配额拆到 prefill_list
-		再为最后一个已调度 token 生成一条 lift slice 到 decode_list
+		再为最后一个已调度 token 生成一条 lift slice 到 decode_list，其中 lift_index = batch_index
 		立即推进 sequence_index 并扣减 filling_length
 		若 filling_length 归零则切到 Decode，否则保持 Prefill
 ```
@@ -437,7 +442,7 @@ while 当前序列还有 token 且 allocator 还有全局配额:
 * `prefill_count = 48`
 * `decode_count = 0`
 * `attention_list` 中有 8 个长度为 6 的切片
-* `decode_list` 中有 8 个长度为 1 的提升切片，分别指向每条序列本轮最后一个 token
+* `decode_list` 中有 8 个长度为 1 的提升切片；每条切片的 `sequence_index` 指向该序列本轮最后一个 token，`lift_index` 等于对应 `batch_index`
 * 各线程拿到的 prefill 工作量是均匀的
 * 所有序列在本轮后切到 `Decode`，且对应 `filling_length` 变为 0
 
@@ -499,14 +504,14 @@ while 当前序列还有 token 且 allocator 还有全局配额:
 
 * 外层以 `SequenceState` 维护每条序列的阶段、游标和剩余 prefill 长度
 * 单轮先用 Decode 优先规则决定本轮工作模式
-* Decode 场景下每条序列只分配 1 个 token
+* Decode 场景下每条序列只分配 1 个 token，并只产出切片不回写状态
 * Prefill 场景下按 `SequenceState.filling_length` 汇总剩余 token，并结合窗口上限决定本轮可处理范围
 * 线程间负载由 `FairTaskAllocator` 和 `SliceScheduler` 以静态 token 配额方式完成均分
-* Prefill 场景下还会额外记录每条序列本轮最后一个 token 的提升位置到 `decode_list`
+* Prefill 场景下还会额外记录每条序列本轮最后一个 token 的提升位置到 `decode_list`，这类切片的 `lift_index` 等于 `batch_index`
 * 调度阶段会直接推进 `sequence_index`、扣减 `filling_length`，并在补齐后切换 `phase`
 
 ---
 
 # 1️⃣1️⃣ 核心思想一句话
 
-> 这套方案的核心，是先用 Decode 优先策略决定单轮工作类型，再把本轮允许进入执行的 token 数静态切成 `SequenceSlice` 并公平分发给各线程，同时为 prefill 轮的最后 token 记录提升位置，并在调度阶段直接推进每条序列的游标、扣减剩余 `filling_length` 并更新阶段状态。
+> 这套方案的核心，是先用 Decode 优先策略决定单轮工作类型；Prefill 轮把 token 静态切成 `SequenceSlice` 分配到各线程，Decode 和 lift 任务则统一保存在扁平 `decode_list` 中并在执行阶段再按 `assign` 公平切分。与此同时，Prefill 轮会在调度阶段直接推进序列游标、扣减剩余 `filling_length` 并更新阶段状态。

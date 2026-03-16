@@ -37,9 +37,9 @@ impl SliceScheduler {
         token_offset: usize,
         slice_list: &mut Vec<Vec<SequenceSlice>>,
         token_count: &mut usize,
-    ) -> usize {
+    ) {
         if self.is_done() {
-            return 0;
+            return;
         }
 
         let mut sequence_cursor = sequence_index;
@@ -67,8 +67,6 @@ impl SliceScheduler {
             remaining -= take;
             sequence_cursor += take;
         }
-
-        self.allocator.scheduled_tokens()
     }
 }
 

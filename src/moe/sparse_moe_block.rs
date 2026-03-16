@@ -234,7 +234,16 @@ mod test {
         for op in output.operator_queue.borrow().iter() {
             for tid in 0..thread_num {
                 // 本次不考虑 position，按你现有约定固定 (0,1)
-                op.run(batch_size, 0, thread_num, tid, &[], &[], &[], &mut Vec::new());
+                op.run(
+                    batch_size,
+                    0,
+                    thread_num,
+                    tid,
+                    &[],
+                    &[],
+                    &[],
+                    &mut Vec::new(),
+                );
             }
         }
     }
@@ -265,15 +274,9 @@ mod test {
 
         let shape = vec![sequence_chunk_size, batch_size, hidden_size];
 
-        let input = ctx.tensor(
-            shape.clone(),
-            "model.layers.0.input_tensor".to_string(),
-        );
+        let input = ctx.tensor(shape.clone(), "model.layers.0.input_tensor".to_string());
 
-        let residual = ctx.tensor(
-            shape.clone(),
-            "model.layers.0.residual_tensor".to_string(),
-        );
+        let residual = ctx.tensor(shape.clone(), "model.layers.0.residual_tensor".to_string());
 
         (moe, input, residual)
     }
@@ -370,9 +373,3 @@ mod test {
         );
     }
 }
-
-
-
-
-
-

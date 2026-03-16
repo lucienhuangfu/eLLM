@@ -2,6 +2,7 @@ use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::common::sequence_slice::SequenceSlice;
+use crate::operators::assign::assign;
 use crate::runtime::inference::SequenceState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
@@ -27,6 +28,17 @@ use crate::operators::transform::{AddRMSZipMap, RMSMap};
 #[inline]
 fn thread_slices<'a>(list: &'a [Vec<SequenceSlice>], thread_id: usize) -> &'a [SequenceSlice] {
     list.get(thread_id).map(Vec::as_slice).unwrap_or(&[])
+}
+
+#[inline]
+fn assigned_decode_slices<'a>(
+    list: &'a [SequenceSlice],
+    thread_num: usize,
+    thread_id: usize,
+) -> &'a [SequenceSlice] {
+    assign(list.len(), thread_num, thread_id)
+        .map(|(begin, end)| &list[begin..end])
+        .unwrap_or(&[])
 }
 
 #[derive(Clone)]
@@ -76,12 +88,12 @@ where
         cpu_num: usize,
         thread_id: usize,
         prefill_list: &[Vec<SequenceSlice>],
-        decode_list: &[Vec<SequenceSlice>],
+        decode_list: &[SequenceSlice],
         attention_list: &[SequenceSlice],
         batch_list: &mut Vec<SequenceState>,
     ) {
         let prefill_slices = thread_slices(prefill_list, thread_id);
-        let decode_slices = thread_slices(decode_list, thread_id);
+        let decode_slices = assigned_decode_slices(decode_list, cpu_num, thread_id);
 
         macro_rules! run_simple {
             ($op:expr) => {
@@ -120,7 +132,7 @@ where
                 run_simple!(operator);
             }
             Self::LiftVector(operator) => {
-                operator.run(prefill_size, decode_size, decode_slices, cpu_num, thread_id);
+                operator.run(prefill_size, decode_size, decode_list, cpu_num, thread_id);
             }
             Self::LookupRMSMap(operator) => {
                 operator.run(
@@ -1784,6 +1796,7 @@ mod test {
                 decode_size,
                 cpu_num,
                 i,
+                &[],
                 &[],
                 &[],
                 &mut Vec::new(),

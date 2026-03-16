@@ -2,36 +2,39 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use super::scheduler_plan::{BatchWork, PrefillCandidate, SliceScheduler};
+use super::scheduler_plan::{PrefillCandidate, SliceScheduler};
 use super::state::{Phase, SequenceState};
 use crate::common::send_sync_ptr::SharedMut;
 use crate::common::sequence_slice::SequenceSlice;
 
 pub struct BatchScheduler {
     pub prefill_list: Vec<Vec<SequenceSlice>>,
-    pub decode_list: Vec<Vec<SequenceSlice>>,
+    pub decode_list: Vec<SequenceSlice>,
     pub attention_list: Vec<SequenceSlice>,
     pub batch_list: Arc<SharedMut<Vec<SequenceState>>>,
-    decode_scheduler: SliceScheduler,
     prefill_scheduler: SliceScheduler,
     max_prefill_size: usize,
     max_decode_size: usize,
     thread_num: usize,
 }
 
+enum BatchPlan {
+    Decode(Vec<(usize, usize)>),
+    Prefill {
+        candidates: Vec<PrefillCandidate>,
+        total_tokens: usize,
+    },
+    Idle,
+}
+
 impl BatchScheduler {
-    fn push_prefill_lift_slice(
-        decode_list: &mut [Vec<SequenceSlice>],
+    fn push_lift_slice(
+        decode_list: &mut Vec<SequenceSlice>,
         batch_index: usize,
         sequence_index: usize,
         token_start_index: usize,
     ) {
-        if decode_list.is_empty() {
-            return;
-        }
-
-        let task_index = batch_index % decode_list.len();
-        decode_list[task_index].push(SequenceSlice {
+        decode_list.push(SequenceSlice {
             batch_index,
             sequence_index,
             token_start_index,
@@ -40,73 +43,52 @@ impl BatchScheduler {
         });
     }
 
-    fn clear_decode_round(&mut self) {
-        for task in self.decode_list.iter_mut() {
-            task.clear();
-        }
-        self.attention_list.clear();
-    }
-
-    fn clear_prefill_round(&mut self) {
+    fn clear_round_outputs(&mut self) {
         for task in self.prefill_list.iter_mut() {
             task.clear();
         }
-        for task in self.decode_list.iter_mut() {
-            task.clear();
-        }
+        self.decode_list.clear();
         self.attention_list.clear();
     }
 
-    fn collect_decode_candidates(&self) -> Vec<(usize, usize)> {
+    fn plan_next_round(&self) -> BatchPlan {
         let max_decode_size = self.max_decode_size;
         self.batch_list.with(|batch_list| {
-            batch_list
-                .iter()
-                .enumerate()
-                .filter(|(_, record)| record.phase == Phase::Decode)
-                .take(max_decode_size)
-                .map(|(batch_index, record)| (batch_index, record.kv_index))
-                .collect::<Vec<_>>()
-        })
-    }
-
-    fn collect_prefill_candidates(&self) -> (Vec<PrefillCandidate>, usize) {
-        self.batch_list.with(|batch_list| {
+            let mut decode_candidates = Vec::with_capacity(max_decode_size);
             let mut total_tokens = 0usize;
             let mut candidates = Vec::with_capacity(batch_list.len());
+            let mut has_decode = false;
 
             for (batch_index, record) in batch_list.iter().enumerate() {
-                if record.phase == Phase::Prefill {
-                    let remaining = record.filling_length;
-                    total_tokens += remaining;
-                    candidates.push(PrefillCandidate {
-                        batch_index,
-                        sequence_index: record.sequence_index,
-                        remaining,
-                    });
-                }
-            }
-
-            (candidates, total_tokens)
-        })
-    }
-
-    fn next_batch_work(&self) -> BatchWork {
-        self.batch_list.with(|batch_list| {
-            let mut has_prefill = false;
-
-            for record in batch_list.iter() {
                 match record.phase {
-                    Phase::Decode => return BatchWork::Decode,
-                    Phase::Prefill => has_prefill = true,
+                    Phase::Decode => {
+                        has_decode = true;
+                        if decode_candidates.len() < max_decode_size {
+                            decode_candidates.push((batch_index, record.kv_index));
+                        }
+                    }
+                    Phase::Prefill => {
+                        let remaining = record.filling_length;
+                        total_tokens += remaining;
+                        candidates.push(PrefillCandidate {
+                            batch_index,
+                            sequence_index: record.sequence_index,
+                            remaining,
+                        });
+                    }
                     _ => {}
                 }
             }
 
-            if has_prefill {
-                BatchWork::Prefill
+            if has_decode {
+                BatchPlan::Decode(decode_candidates)
+            } else if candidates.is_empty() {
+                BatchPlan::Idle
             } else {
-                BatchWork::Idle
+                BatchPlan::Prefill {
+                    candidates,
+                    total_tokens: total_tokens.min(self.max_prefill_size),
+                }
             }
         })
     }
@@ -126,7 +108,7 @@ impl BatchScheduler {
     // assert!(prefill > 0);
     // assert_eq!(decode, 0);
     pub fn new(sequence_length: usize, batch_size: usize, thread_num: usize) -> Self {
-        let build_list = || {
+        let build_prefill_list = || {
             (0..thread_num)
                 .map(|_| Vec::with_capacity(batch_size))
                 .collect::<Vec<_>>()
@@ -137,62 +119,52 @@ impl BatchScheduler {
             max_prefill_size: sequence_length * batch_size,
             batch_list: Arc::new(SharedMut::new(Vec::with_capacity(batch_size))),
             thread_num,
-            decode_scheduler: SliceScheduler::new(batch_size),
             prefill_scheduler: SliceScheduler::new(batch_size * thread_num),
-            prefill_list: build_list(),
-            decode_list: build_list(),
+            prefill_list: build_prefill_list(),
+            decode_list: Vec::with_capacity(batch_size),
             attention_list: Vec::with_capacity(batch_size),
         }
     }
 
-    fn schedule_decode_only(&mut self, decode_count: &mut usize) {
-        self.clear_decode_round();
-        let decode_candidates = self.collect_decode_candidates();
-
-        self.decode_scheduler.init(decode_candidates.len());
-
+    fn schedule_decode_round(&mut self, decode_candidates: Vec<(usize, usize)>) -> usize {
+        self.clear_round_outputs();
+        let mut decode_count = 0usize;
         for (batch_index, sequence_index) in decode_candidates {
-            if self.decode_scheduler.is_done() {
-                break;
-            }
-
-            let scheduled_before = *decode_count;
-            let attention_length = 1usize.min(self.decode_scheduler.remaining_tokens());
-            if attention_length == 0 {
-                break;
-            }
+            let token_start_index = decode_count;
 
             self.attention_list.push(SequenceSlice {
                 batch_index,
                 sequence_index,
-                token_start_index: scheduled_before,
+                token_start_index,
                 lift_index: 0,
-                length: attention_length,
+                length: 1,
             });
 
-            self.decode_scheduler.schedule_for_sequence(
+            self.decode_list.push(SequenceSlice {
                 batch_index,
                 sequence_index,
-                1,
-                0,
-                &mut self.decode_list,
-                decode_count,
-            );
+                token_start_index,
+                lift_index: 0,
+                length: 1,
+            });
+            decode_count += 1;
         }
+
+        decode_count
     }
 
-    fn schedule_prefill(&mut self, prefill_count: &mut usize) {
-        self.clear_prefill_round();
-        let (prefill_candidates, prefill_total_tokens) = self.collect_prefill_candidates();
-
-        let total_tokens = prefill_total_tokens.min(self.max_prefill_size);
+    fn schedule_prefill_round(
+        &mut self,
+        prefill_candidates: Vec<PrefillCandidate>,
+        total_tokens: usize,
+    ) -> usize {
+        self.clear_round_outputs();
+        let mut prefill_count = 0usize;
         self.prefill_scheduler.init(total_tokens);
-
-        // decode_list is cleared above, so no decode tokens are used yet.
-        self.decode_scheduler.init(0);
 
         let prefill_scheduler = &mut self.prefill_scheduler;
         let prefill_list = &mut self.prefill_list;
+        let decode_list = &mut self.decode_list;
         let attention_list = &mut self.attention_list;
         self.batch_list.with_mut(|batch_list| {
             for candidate in prefill_candidates.iter().copied() {
@@ -200,7 +172,7 @@ impl BatchScheduler {
                     break;
                 }
 
-                let scheduled_before = *prefill_count;
+                let scheduled_before = prefill_count;
                 let attention_length = candidate
                     .remaining
                     .min(prefill_scheduler.remaining_tokens());
@@ -220,7 +192,7 @@ impl BatchScheduler {
                     candidate.remaining,
                     0,
                     prefill_list,
-                    prefill_count,
+                    &mut prefill_count,
                 );
 
                 let scheduled_for_record = prefill_count.saturating_sub(scheduled_before);
@@ -229,8 +201,8 @@ impl BatchScheduler {
                         let last_token_index = scheduled_before + scheduled_for_record - 1;
                         let last_sequence_index =
                             candidate.sequence_index + scheduled_for_record - 1;
-                        Self::push_prefill_lift_slice(
-                            self.decode_list.as_mut_slice(),
+                        Self::push_lift_slice(
+                            decode_list,
                             candidate.batch_index,
                             last_sequence_index,
                             last_token_index,
@@ -248,29 +220,29 @@ impl BatchScheduler {
                 }
             }
         });
+
+        prefill_count
     }
 
     pub fn schedule_batch(&mut self) -> (usize, usize) {
-        let decode_task_count = self.thread_num.min(self.decode_list.len());
         let prefill_task_count = self.thread_num.min(self.prefill_list.len());
 
-        self.decode_scheduler.set_task_count(decode_task_count);
         self.prefill_scheduler.set_task_count(prefill_task_count);
 
-        let mut prefill_count = 0usize;
-        let mut decode_count = 0usize;
-
         loop {
-            match self.next_batch_work() {
-                BatchWork::Decode => {
-                    self.schedule_decode_only(&mut decode_count);
-                    return (prefill_count, decode_count);
+            match self.plan_next_round() {
+                BatchPlan::Decode(decode_candidates) => {
+                    let decode_count = self.schedule_decode_round(decode_candidates);
+                    return (0, decode_count);
                 }
-                BatchWork::Prefill => {
-                    self.schedule_prefill(&mut prefill_count);
-                    return (prefill_count, decode_count);
+                BatchPlan::Prefill {
+                    candidates,
+                    total_tokens,
+                } => {
+                    let prefill_count = self.schedule_prefill_round(candidates, total_tokens);
+                    return (prefill_count, 0);
                 }
-                BatchWork::Idle => {
+                BatchPlan::Idle => {
                     thread::sleep(Duration::from_millis(1));
                 }
             }
@@ -304,7 +276,7 @@ mod tests {
         // - prefill == 48 (all 8 * 6 tokens scheduled)
         // - decode == 0 (no decode tokens scheduled in prefill-only case)
         // - prefill_list[0..8] each has one slice starting at sequence position 0
-        // - decode_list is empty across all tasks
+        // - decode_list records one last-token lift slice per record
         let batch_size = 32;
         let mut scheduler = BatchScheduler::new(8, batch_size, 8);
         scheduler.batch_list.with_mut(|batch_list| {
@@ -332,8 +304,7 @@ mod tests {
         });
 
         for task_index in 0..8 {
-            assert_eq!(scheduler.decode_list[task_index].len(), 1);
-            let lift_slice = &scheduler.decode_list[task_index][0];
+            let lift_slice = &scheduler.decode_list[task_index];
             assert_eq!(lift_slice.batch_index, task_index);
             assert_eq!(lift_slice.sequence_index, 5);
             assert_eq!(lift_slice.token_start_index, task_index * 6 + 5);
@@ -384,17 +355,18 @@ mod tests {
 
         for task_index in 0..2 {
             assert!(scheduler.prefill_list[task_index].is_empty());
-            assert_eq!(scheduler.decode_list[task_index].len(), 1);
-            assert_eq!(scheduler.decode_list[task_index][0].length, 1);
         }
+        assert_eq!(scheduler.decode_list.len(), 2);
+        assert_eq!(scheduler.decode_list[0].length, 1);
+        assert_eq!(scheduler.decode_list[1].length, 1);
         assert_eq!(scheduler.attention_list.len(), 2);
 
-        let first = &scheduler.decode_list[0][0];
+        let first = &scheduler.decode_list[0];
         assert_eq!(first.batch_index, 0);
         assert_eq!(first.sequence_index, 11);
         assert_eq!(first.token_start_index, 0);
 
-        let second = &scheduler.decode_list[1][0];
+        let second = &scheduler.decode_list[1];
         assert_eq!(second.batch_index, 2);
         assert_eq!(second.sequence_index, 12);
         assert_eq!(second.token_start_index, 1);
@@ -410,6 +382,31 @@ mod tests {
         assert_eq!(second_attention.sequence_index, second.sequence_index);
         assert_eq!(second_attention.token_start_index, second.token_start_index);
         assert_eq!(second_attention.length, 1);
+    }
+
+    #[test]
+    fn schedule_decode_round_clears_stale_prefill_slices() {
+        let mut scheduler = BatchScheduler::new(8, 2, 2);
+        scheduler.batch_list.with_mut(|batch_list| {
+            batch_list.push(state(Phase::Prefill, 0, 4));
+        });
+
+        let (prefill, decode) = scheduler.schedule_batch();
+        assert_eq!(prefill, 4);
+        assert_eq!(decode, 0);
+        assert!(scheduler.prefill_list.iter().any(|task| !task.is_empty()));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            batch_list.clear();
+            batch_list.push(state(Phase::Decode, 8, 9));
+        });
+
+        let (prefill, decode) = scheduler.schedule_batch();
+        assert_eq!(prefill, 0);
+        assert_eq!(decode, 1);
+        assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
+        assert_eq!(scheduler.decode_list.len(), 1);
+        assert_eq!(scheduler.decode_list[0].batch_index, 0);
     }
 
     #[test]
@@ -498,16 +495,16 @@ mod tests {
         assert_eq!(second_attention.token_start_index, 6);
         assert_eq!(second_attention.length, 2);
 
-        assert_eq!(scheduler.decode_list[0].len(), 1);
-        let first_lift = &scheduler.decode_list[0][0];
+        assert_eq!(scheduler.decode_list.len(), 2);
+
+        let first_lift = &scheduler.decode_list[0];
         assert_eq!(first_lift.batch_index, 0);
         assert_eq!(first_lift.sequence_index, 5);
         assert_eq!(first_lift.token_start_index, 5);
         assert_eq!(first_lift.lift_index, 0);
         assert_eq!(first_lift.length, 1);
 
-        assert_eq!(scheduler.decode_list[1].len(), 1);
-        let second_lift = &scheduler.decode_list[1][0];
+        let second_lift = &scheduler.decode_list[1];
         assert_eq!(second_lift.batch_index, 1);
         assert_eq!(second_lift.sequence_index, 1);
         assert_eq!(second_lift.token_start_index, 7);
@@ -559,9 +556,8 @@ mod tests {
         assert_eq!(resumed_attention.token_start_index, 0);
         assert_eq!(resumed_attention.length, 4);
 
-        assert_eq!(scheduler.decode_list[0].len(), 0);
-        assert_eq!(scheduler.decode_list[1].len(), 1);
-        let resumed_lift = &scheduler.decode_list[1][0];
+        assert_eq!(scheduler.decode_list.len(), 1);
+        let resumed_lift = &scheduler.decode_list[0];
         assert_eq!(resumed_lift.batch_index, 1);
         assert_eq!(resumed_lift.sequence_index, 5);
         assert_eq!(resumed_lift.token_start_index, 3);
@@ -602,9 +598,9 @@ mod tests {
         assert_eq!(decode, 0);
         assert_eq!(scheduler.attention_list.len(), 1);
         assert_eq!(scheduler.attention_list[0].length, 6);
-        assert_eq!(scheduler.decode_list[0].len(), 1);
-        assert_eq!(scheduler.decode_list[0][0].token_start_index, 5);
-        assert_eq!(scheduler.decode_list[0][0].lift_index, 0);
+        assert_eq!(scheduler.decode_list.len(), 1);
+        assert_eq!(scheduler.decode_list[0].token_start_index, 5);
+        assert_eq!(scheduler.decode_list[0].lift_index, 0);
 
         scheduler.batch_list.with(|batch_list| {
             assert_eq!(batch_list[0].sequence_index, 6);
