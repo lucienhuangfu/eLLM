@@ -4,6 +4,7 @@ use tokio::sync::Notify;
 pub struct SequenceState {
     pub sequence_index: usize,
     pub kv_index: usize,
+    pub length: usize,
     pub phase: Phase,
     pub notify: Arc<Notify>,
 }

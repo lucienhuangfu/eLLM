@@ -61,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut batch_scheduler = BatchScheduler::new(sequence_length, batch_size, thread_num);
     let mut batch_list = Vec::with_capacity(batch_size);
     batch_list.extend((0..batch_size).map(|_| SequenceState {
+        length: 0,
         sequence_index: 0,
         kv_index: 0,
         phase: Phase::Start,

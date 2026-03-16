@@ -241,6 +241,7 @@ mod test {
 
         let batch_records: Vec<SequenceState> = (0..batch_size)
             .map(|i| SequenceState {
+                length: 0,
                 sequence_index: i,
                 kv_index: i,
                 phase: Phase::Decode,
@@ -294,6 +295,7 @@ mod test {
             allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
         let batch_records: Vec<SequenceState> = (0..batch_size)
             .map(|i| SequenceState {
+                length: 0,
                 sequence_index: i,
                 kv_index: i,
                 phase: Phase::Decode,

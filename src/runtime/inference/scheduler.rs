@@ -258,6 +258,7 @@ mod tests {
 
     fn state(phase: Phase, sequence_index: usize, kv_index: usize) -> SequenceState {
         SequenceState {
+            length: 0,
             phase,
             sequence_index,
             kv_index,

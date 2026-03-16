@@ -33,61 +33,61 @@ fn start_fake_inference_loop(
 
             batch_sequences.with_mut(|batch_sequences_guard| {
                 batch_list.with_mut(|batch_list_guard| {
-                let row_stride = batch_sequences_guard.col_size;
-                let total_capacity = batch_sequences_guard.row_size * row_stride;
+                    let row_stride = batch_sequences_guard.col_size;
+                    let total_capacity = batch_sequences_guard.row_size * row_stride;
 
-                for (slot_index, record) in batch_list_guard.iter_mut().enumerate() {
-                    match record.phase {
-                        Phase::Prefill => {
-                            prompt_start[slot_index] = record.sequence_index;
-                            record.kv_index = record.sequence_index;
-                            record.phase = Phase::Decode;
-                            progressed = true;
-                        }
-                        Phase::Decode => {
-                            let generated =
-                                record.kv_index.saturating_sub(prompt_start[slot_index]);
-                            if generated >= max_new_tokens {
-                                record.phase = Phase::Eos;
-                                record.notify.notify_one();
+                    for (slot_index, record) in batch_list_guard.iter_mut().enumerate() {
+                        match record.phase {
+                            Phase::Prefill => {
+                                prompt_start[slot_index] = record.sequence_index;
+                                record.kv_index = record.sequence_index;
+                                record.phase = Phase::Decode;
                                 progressed = true;
-                                continue;
                             }
+                            Phase::Decode => {
+                                let generated =
+                                    record.kv_index.saturating_sub(prompt_start[slot_index]);
+                                if generated >= max_new_tokens {
+                                    record.phase = Phase::Eos;
+                                    record.notify.notify_one();
+                                    progressed = true;
+                                    continue;
+                                }
 
-                            let write_pos = slot_index * row_stride + record.kv_index;
-                            if write_pos >= total_capacity {
-                                record.phase = Phase::Eos;
-                                record.notify.notify_one();
+                                let write_pos = slot_index * row_stride + record.kv_index;
+                                if write_pos >= total_capacity {
+                                    record.phase = Phase::Eos;
+                                    record.notify.notify_one();
+                                    progressed = true;
+                                    continue;
+                                }
+
+                                let token_id = fake_tokens
+                                    .get(generated % fake_tokens.len().max(1))
+                                    .copied()
+                                    .unwrap_or(0);
+
+                                unsafe {
+                                    batch_sequences_guard
+                                        .sequences
+                                        .add(write_pos)
+                                        .write(token_id);
+                                }
+
+                                record.kv_index = record.kv_index.saturating_add(1);
+
+                                if record.kv_index.saturating_sub(prompt_start[slot_index])
+                                    >= max_new_tokens
+                                {
+                                    record.phase = Phase::Eos;
+                                    record.notify.notify_one();
+                                }
+
                                 progressed = true;
-                                continue;
                             }
-
-                            let token_id = fake_tokens
-                                .get(generated % fake_tokens.len().max(1))
-                                .copied()
-                                .unwrap_or(0);
-
-                            unsafe {
-                                batch_sequences_guard
-                                    .sequences
-                                    .add(write_pos)
-                                    .write(token_id);
-                            }
-
-                            record.kv_index = record.kv_index.saturating_add(1);
-
-                            if record.kv_index.saturating_sub(prompt_start[slot_index])
-                                >= max_new_tokens
-                            {
-                                record.phase = Phase::Eos;
-                                record.notify.notify_one();
-                            }
-
-                            progressed = true;
+                            _ => {}
                         }
-                        _ => {}
                     }
-                }
                 })
             });
 
@@ -128,6 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut initial_states = Vec::with_capacity(batch_size);
     initial_states.extend((0..batch_size).map(|_| SequenceState {
+        length: 0,
         sequence_index: 0,
         kv_index: 0,
         phase: Phase::Start,
