@@ -20,6 +20,26 @@ pub struct BatchScheduler {
 }
 
 impl BatchScheduler {
+    fn push_prefill_lift_slice(
+        decode_list: &mut [Vec<SequenceSlice>],
+        batch_index: usize,
+        sequence_index: usize,
+        token_start_index: usize,
+    ) {
+        if decode_list.is_empty() {
+            return;
+        }
+
+        let task_index = batch_index % decode_list.len();
+        decode_list[task_index].push(SequenceSlice {
+            batch_index,
+            sequence_index,
+            token_start_index,
+            lift_index: batch_index,
+            length: 1,
+        });
+    }
+
     fn clear_decode_round(&mut self) {
         for task in self.decode_list.iter_mut() {
             task.clear();
@@ -57,7 +77,7 @@ impl BatchScheduler {
 
             for (batch_index, record) in batch_list.iter().enumerate() {
                 if record.phase == Phase::Prefill {
-                    let remaining = record.length;
+                    let remaining = record.filling_length;
                     total_tokens += remaining;
                     candidates.push(PrefillCandidate {
                         batch_index,
@@ -206,12 +226,23 @@ impl BatchScheduler {
                 let scheduled_for_record = prefill_count.saturating_sub(scheduled_before);
                 if let Some(record) = batch_list.get_mut(candidate.batch_index) {
                     if scheduled_for_record > 0 {
+                        let last_token_index = scheduled_before + scheduled_for_record - 1;
+                        let last_sequence_index =
+                            candidate.sequence_index + scheduled_for_record - 1;
+                        Self::push_prefill_lift_slice(
+                            self.decode_list.as_mut_slice(),
+                            candidate.batch_index,
+                            last_sequence_index,
+                            last_token_index,
+                        );
+
                         record.sequence_index =
                             record.sequence_index.saturating_add(scheduled_for_record);
-                        record.length = record.length.saturating_sub(scheduled_for_record);
+                        record.filling_length =
+                            record.filling_length.saturating_sub(scheduled_for_record);
                     }
 
-                    if record.length == 0 {
+                    if record.filling_length == 0 {
                         record.phase = Phase::Decode;
                     }
                 }
@@ -255,7 +286,7 @@ mod tests {
 
     fn state(phase: Phase, sequence_index: usize, kv_index: usize) -> SequenceState {
         SequenceState {
-            length: kv_index.saturating_sub(sequence_index),
+            filling_length: kv_index.saturating_sub(sequence_index),
             phase,
             sequence_index,
             kv_index,
@@ -296,12 +327,18 @@ mod tests {
                 assert_eq!(record.phase, Phase::Decode);
                 assert_eq!(record.sequence_index, 6);
                 assert_eq!(record.kv_index, 6);
-                assert_eq!(record.length, 0);
+                assert_eq!(record.filling_length, 0);
             }
         });
 
         for task_index in 0..8 {
-            assert!(scheduler.decode_list[task_index].is_empty());
+            assert_eq!(scheduler.decode_list[task_index].len(), 1);
+            let lift_slice = &scheduler.decode_list[task_index][0];
+            assert_eq!(lift_slice.batch_index, task_index);
+            assert_eq!(lift_slice.sequence_index, 5);
+            assert_eq!(lift_slice.token_start_index, task_index * 6 + 5);
+            assert_eq!(lift_slice.lift_index, task_index);
+            assert_eq!(lift_slice.length, 1);
         }
 
         for task_index in 0..8 {
@@ -440,11 +477,11 @@ mod tests {
             assert_eq!(batch_list[0].phase, Phase::Decode);
             assert_eq!(batch_list[0].sequence_index, 6);
             assert_eq!(batch_list[0].kv_index, 6);
-            assert_eq!(batch_list[0].length, 0);
+            assert_eq!(batch_list[0].filling_length, 0);
             assert_eq!(batch_list[1].phase, Phase::Prefill);
             assert_eq!(batch_list[1].sequence_index, 2);
             assert_eq!(batch_list[1].kv_index, 6);
-            assert_eq!(batch_list[1].length, 4);
+            assert_eq!(batch_list[1].filling_length, 4);
         });
 
         assert_eq!(scheduler.attention_list.len(), 2);
@@ -460,6 +497,22 @@ mod tests {
         assert_eq!(second_attention.sequence_index, 0);
         assert_eq!(second_attention.token_start_index, 6);
         assert_eq!(second_attention.length, 2);
+
+        assert_eq!(scheduler.decode_list[0].len(), 1);
+        let first_lift = &scheduler.decode_list[0][0];
+        assert_eq!(first_lift.batch_index, 0);
+        assert_eq!(first_lift.sequence_index, 5);
+        assert_eq!(first_lift.token_start_index, 5);
+        assert_eq!(first_lift.lift_index, 0);
+        assert_eq!(first_lift.length, 1);
+
+        assert_eq!(scheduler.decode_list[1].len(), 1);
+        let second_lift = &scheduler.decode_list[1][0];
+        assert_eq!(second_lift.batch_index, 1);
+        assert_eq!(second_lift.sequence_index, 1);
+        assert_eq!(second_lift.token_start_index, 7);
+        assert_eq!(second_lift.lift_index, 1);
+        assert_eq!(second_lift.length, 1);
     }
 
     #[test]
@@ -479,7 +532,7 @@ mod tests {
             assert_eq!(batch_list[1].phase, Phase::Prefill);
             assert_eq!(batch_list[1].sequence_index, 2);
             assert_eq!(batch_list[1].kv_index, 6);
-            assert_eq!(batch_list[1].length, 4);
+            assert_eq!(batch_list[1].filling_length, 4);
         });
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -496,7 +549,7 @@ mod tests {
             assert_eq!(batch_list[0].sequence_index, 6);
             assert_eq!(batch_list[1].phase, Phase::Decode);
             assert_eq!(batch_list[1].sequence_index, 6);
-            assert_eq!(batch_list[1].length, 0);
+            assert_eq!(batch_list[1].filling_length, 0);
         });
 
         assert_eq!(scheduler.attention_list.len(), 1);
@@ -505,6 +558,15 @@ mod tests {
         assert_eq!(resumed_attention.sequence_index, 2);
         assert_eq!(resumed_attention.token_start_index, 0);
         assert_eq!(resumed_attention.length, 4);
+
+        assert_eq!(scheduler.decode_list[0].len(), 0);
+        assert_eq!(scheduler.decode_list[1].len(), 1);
+        let resumed_lift = &scheduler.decode_list[1][0];
+        assert_eq!(resumed_lift.batch_index, 1);
+        assert_eq!(resumed_lift.sequence_index, 5);
+        assert_eq!(resumed_lift.token_start_index, 3);
+        assert_eq!(resumed_lift.lift_index, 1);
+        assert_eq!(resumed_lift.length, 1);
 
         assert_eq!(scheduler.prefill_list[0].len(), 1);
         let resumed_slice = &scheduler.prefill_list[0][0];
@@ -528,7 +590,7 @@ mod tests {
             batch_list.push(SequenceState {
                 sequence_index: 0,
                 kv_index: 32,
-                length: 6,
+                filling_length: 6,
                 phase: Phase::Prefill,
                 notify: std::sync::Arc::new(Notify::new()),
             });
@@ -540,11 +602,14 @@ mod tests {
         assert_eq!(decode, 0);
         assert_eq!(scheduler.attention_list.len(), 1);
         assert_eq!(scheduler.attention_list[0].length, 6);
+        assert_eq!(scheduler.decode_list[0].len(), 1);
+        assert_eq!(scheduler.decode_list[0][0].token_start_index, 5);
+        assert_eq!(scheduler.decode_list[0][0].lift_index, 0);
 
         scheduler.batch_list.with(|batch_list| {
             assert_eq!(batch_list[0].sequence_index, 6);
             assert_eq!(batch_list[0].kv_index, 32);
-            assert_eq!(batch_list[0].length, 0);
+            assert_eq!(batch_list[0].filling_length, 0);
             assert_eq!(batch_list[0].phase, Phase::Decode);
         });
     }

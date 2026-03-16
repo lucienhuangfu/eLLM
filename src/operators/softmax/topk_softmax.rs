@@ -212,7 +212,7 @@ mod test {
 
         for i in 0..batch_size {
             user_records_vec.push(SequenceState {
-                length: 0,
+                filling_length: 0,
                 sequence_index: 1,
                 kv_index: 1,
                 phase: Phase::Decode,
@@ -338,7 +338,7 @@ mod test {
 
         for i in 0..batch_size {
             user_records_vec.push(SequenceState {
-                length: 0,
+                filling_length: 0,
                 sequence_index: 1,
                 kv_index: 1,
                 phase: Phase::Decode,

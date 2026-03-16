@@ -41,11 +41,11 @@ fn start_fake_inference_loop(
                             Phase::Prefill => {
                                 let prompt_end = record
                                     .kv_index
-                                    .max(record.sequence_index.saturating_add(record.length));
+                                    .max(record.sequence_index.saturating_add(record.filling_length));
                                 prompt_start[slot_index] = prompt_end;
                                 record.sequence_index = prompt_end;
                                 record.kv_index = prompt_end;
-                                record.length = 0;
+                                record.filling_length = 0;
                                 record.phase = Phase::Decode;
                                 progressed = true;
                             }
@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut initial_states = Vec::with_capacity(batch_size);
     initial_states.extend((0..batch_size).map(|_| SequenceState {
-        length: 0,
+        filling_length: 0,
         sequence_index: 0,
         kv_index: 0,
         phase: Phase::Start,

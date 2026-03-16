@@ -30,19 +30,21 @@
 | --- | --- |
 | `phase` | 当前所处阶段，可能为 `Start / Prefill / Decode / Timeout / Eos` |
 | `sequence_index` | 当前已经推进到的序列游标，也可以理解为“下一段待处理 token 的起点” |
-| `kv_index` | 当前可用 KV 的终点；对 prefill 而言等价于本轮最多可以补到哪里 |
+| `kv_index` | 当前 KV 或已写入 token 的尾部位置；decode 时会以它作为下一个 token 的序列位置 |
+| `filling_length` | 当前还剩多少个 prefill token 需要切分和调度 |
 
-对 prefill 来说，剩余待处理 token 数由下面的公式给出：
+对 prefill 来说，剩余待处理 token 数直接由状态对象保存：
 
 $$
-remaining = kv\_index - sequence\_index
+remaining = filling\_length
 $$
 
 因此：
 
 * `sequence_index` 更像是当前游标
-* `kv_index` 更像是当前轮次的可见上界
-* `remaining == 0` 表示这条序列当前没有待补齐的 prefill token
+* `kv_index` 更像是当前序列尾部位置，decode 时会从这里继续追加 token
+* `filling_length` 表示当前还未完成的 prefill token 数
+* `filling_length == 0` 表示这条序列当前没有待补齐的 prefill token
 
 ## 2.2 切片对象 `SequenceSlice`
 
@@ -56,7 +58,7 @@ $$
 | `batch_index` | 它属于哪个 batch 槽位 |
 | `sequence_index` | 这段切片起始的序列位置 |
 | `length` | 这段连续 token 区间的长度 |
-| `lift_index` | 当前调度器统一写 0，现阶段不参与决策 |
+| `lift_index` | 目标提升位置；在 prefill 轮里通常标记该序列最后一个 token 需要被提升到的 batch 槽位索引 |
 
 因此最小调度单元可以理解为：
 
@@ -81,6 +83,7 @@ $$
 
 * 外层下标同样对应 `thread_id`
 * decode 场景下每条序列本轮只会贡献 1 个 token
+* prefill 场景下，这个列表还会额外承载“最后一个 token 的提升任务”，供 `LiftVector` 使用
 
 ### `attention_list`
 
@@ -215,7 +218,7 @@ prefill 候选由 `collect_prefill_candidates()` 收集。
 | --- | --- |
 | `batch_index` | 属于哪个 batch 槽位 |
 | `sequence_index` | 当前从哪里继续 prefill |
-| `remaining` | 当前还剩多少 token 待补齐 |
+| `remaining` | 当前还剩多少 token 待补齐，来源于 `SequenceState.filling_length` |
 
 同时还会累计总剩余 token 数：
 
@@ -248,6 +251,7 @@ $$
 
 * 面向 attention 的连续区间视图，也就是写入 `attention_list`
 * 面向线程执行的静态切片视图，也就是写入 `prefill_list`
+* 面向 `LiftVector` 的最后 token 提升视图，也就是写入 `decode_list`
 
 这里有一个关键细节。对于单条序列，本轮真正能写入 `attention_list` 的长度不是固定等于 `remaining`，而是：
 
@@ -259,6 +263,7 @@ min(candidate.remaining, prefill_scheduler.remaining_tokens())
 
 * 在 `attention_list` 中写入一个长度为 2 的切片
 * 在 `prefill_list` 中只分配这 2 个 token
+* 在 `decode_list` 中额外记录这 2 个 token 里的最后一个 token，供后续提升到对应 batch 槽位
 * 把剩余 4 个 token 留到后续轮次
 
 这说明 prefill 本身就是支持截断与续跑的。
@@ -274,12 +279,21 @@ scheduled_for_record = 本条序列本轮实际分配到的 token 数
 然后立即回写状态：
 
 * `record.sequence_index += scheduled_for_record`
-* 如果 `scheduled_for_record == candidate.remaining`，说明这条序列本轮已经补齐，状态切到 `Phase::Decode`
-* 如果只分到一部分，则保持 `Phase::Prefill`
+* `record.filling_length -= scheduled_for_record`
+* 如果 `record.filling_length == 0`，说明这条序列本轮已经补齐，状态切到 `Phase::Decode`
+* 如果 `record.filling_length > 0`，则保持 `Phase::Prefill`
+
+同时，调度器还会为该序列本轮实际调度到的最后一个 token 生成一个长度为 1 的提升切片：
+
+* `token_start_index` 指向这个最后 token 在本轮扁平 token 视图中的当前位置
+* `lift_index` 指向它需要被提升到的目标 batch 槽位位置
+
+这个提升动作由后续 `LiftVector` 算子消费，用来把最后一个 token 的结果搬运到后续 decode 更容易访问的位置。
 
 这意味着当前实现中：
 
 * `sequence_index` 在调度阶段就会前移
+* `filling_length` 也会在调度阶段同步扣减
 * 下一轮若继续 prefill，会直接从更新后的游标继续切分
 * 状态推进与切片生成是同一步骤的一部分，而不是执行完成后的补充动作
 
@@ -389,8 +403,9 @@ while 当前序列还有 token 且 allocator 还有全局配额:
 	依次处理每条序列
 		写入 attention_list 中本轮实际连续区间
 		再按线程配额拆到 prefill_list
-		立即推进 sequence_index
-		若补齐则切到 Decode，否则保持 Prefill
+		再为最后一个已调度 token 生成一条 lift slice 到 decode_list
+		立即推进 sequence_index 并扣减 filling_length
+		若 filling_length 归零则切到 Decode，否则保持 Prefill
 ```
 
 这说明 `BatchScheduler` 更像一层批次编排器，而不是算子本身的一部分。
@@ -405,6 +420,7 @@ while 当前序列还有 token 且 allocator 还有全局配额:
 
 * 8 条序列都处于 `Prefill`
 * 每条序列都从 `sequence_index = 0` 开始
+* 每条 `filling_length = 6`
 * 每条 `kv_index = 6`
 * `sequence_length = 8`
 * `batch_size = 32`
@@ -421,8 +437,9 @@ while 当前序列还有 token 且 allocator 还有全局配额:
 * `prefill_count = 48`
 * `decode_count = 0`
 * `attention_list` 中有 8 个长度为 6 的切片
+* `decode_list` 中有 8 个长度为 1 的提升切片，分别指向每条序列本轮最后一个 token
 * 各线程拿到的 prefill 工作量是均匀的
-* 所有序列在本轮后切到 `Decode`
+* 所有序列在本轮后切到 `Decode`，且对应 `filling_length` 变为 0
 
 ## 8.2 Decode 抢占 Prefill 轮次
 
@@ -440,7 +457,7 @@ while 当前序列还有 token 且 allocator 还有全局配额:
 * `sequence_length = 4`
 * `batch_size = 2`
 * 所以 `max_prefill_size = 8`
-* 有两条 prefill 序列，每条都还剩 6 个 token
+* 有两条 prefill 序列，每条 `filling_length = 6`
 
 那么：
 
@@ -450,7 +467,8 @@ while 当前序列还有 token 且 allocator 还有全局配额:
 因此可能出现：
 
 * 第一条序列在本轮内被完整补齐并切到 `Decode`
-* 第二条序列只前进 2 个 token，仍保持 `Prefill`
+* 第二条序列只前进 2 个 token，`filling_length` 从 6 变成 4，仍保持 `Prefill`
+* 两条序列各自本轮最后一个已调度 token 都会在 `decode_list` 中生成一条提升切片
 * 下一轮再从新的 `sequence_index` 继续补齐
 
 ---
@@ -479,15 +497,16 @@ while 当前序列还有 token 且 allocator 还有全局配额:
 
 这套推理调度方案可以概括为：
 
-* 外层以 `SequenceState` 维护每条序列的阶段和游标
+* 外层以 `SequenceState` 维护每条序列的阶段、游标和剩余 prefill 长度
 * 单轮先用 Decode 优先规则决定本轮工作模式
 * Decode 场景下每条序列只分配 1 个 token
-* Prefill 场景下按剩余 token 总量和窗口上限决定本轮可处理范围
+* Prefill 场景下按 `SequenceState.filling_length` 汇总剩余 token，并结合窗口上限决定本轮可处理范围
 * 线程间负载由 `FairTaskAllocator` 和 `SliceScheduler` 以静态 token 配额方式完成均分
-* 调度阶段会直接推进 `sequence_index` 和 `phase`
+* Prefill 场景下还会额外记录每条序列本轮最后一个 token 的提升位置到 `decode_list`
+* 调度阶段会直接推进 `sequence_index`、扣减 `filling_length`，并在补齐后切换 `phase`
 
 ---
 
 # 1️⃣1️⃣ 核心思想一句话
 
-> 这套方案的核心，是先用 Decode 优先策略决定单轮工作类型，再把本轮允许进入执行的 token 数静态切成 `SequenceSlice` 并公平分发给各线程，同时在调度阶段直接推进每条序列的游标与阶段状态。
+> 这套方案的核心，是先用 Decode 优先策略决定单轮工作类型，再把本轮允许进入执行的 token 数静态切成 `SequenceSlice` 并公平分发给各线程，同时为 prefill 轮的最后 token 记录提升位置，并在调度阶段直接推进每条序列的游标、扣减剩余 `filling_length` 并更新阶段状态。

@@ -976,7 +976,7 @@ mod test {
         let mut batch_list = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
             batch_list.push(SequenceState {
-                length: 0,
+                filling_length: 0,
                 sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,
@@ -1131,7 +1131,7 @@ mod test {
         let mut batch_list = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
             batch_list.push(SequenceState {
-                length: 0,
+                filling_length: 0,
                 sequence_index: 0,
                 kv_index: 0,
                 phase: Phase::Decode,

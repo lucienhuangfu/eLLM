@@ -105,7 +105,7 @@ async fn assign_slot_with_messages(
                     .map(|write_len| {
                         record.sequence_index = 0;
                         record.kv_index = write_len;
-                        record.length = write_len;
+                        record.filling_length = write_len;
                         record.phase = Phase::Prefill;
                         record.notify.clone()
                     })
@@ -138,7 +138,7 @@ async fn reclaim_slot(state: &AppState, slot_index: usize, release_permit: bool)
         if let Some(record) = batch_list.get_mut(slot_index) {
             record.sequence_index = usize::MAX;
             record.kv_index = usize::MAX;
-            record.length = 0;
+            record.filling_length = 0;
             record.phase = Phase::Start;
         }
     });

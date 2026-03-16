@@ -211,7 +211,7 @@ mod test {
         let batch_scheduler = BatchScheduler::new(position_window_size, batch_size, thread_num);
         batch_scheduler.batch_list.with_mut(|batch_list| {
             batch_list.extend((0..batch_size).map(|_| SequenceState {
-                length: 50,
+                filling_length: 50,
                 sequence_index: 0,
                 kv_index: 50,
                 phase: Phase::Prefill,
