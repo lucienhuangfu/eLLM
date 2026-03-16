@@ -57,12 +57,12 @@ impl<T: Sqrt> LookupRMSMap<T> {
         _thread_num: usize,
         _thread_id: usize,
         prefill_list: &[SequenceSlice],
-        decode_list: &[SequenceSlice],
+        round_token_slices: &[SequenceSlice],
     ) {
         if prefill_size > 0 {
             self.run_task_list(prefill_list);
         } else if decode_size > 0 {
-            self.run_task_list(decode_list);
+            self.run_task_list(round_token_slices);
         }
     }
 

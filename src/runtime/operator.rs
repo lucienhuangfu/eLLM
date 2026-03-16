@@ -88,11 +88,11 @@ where
         cpu_num: usize,
         thread_id: usize,
         prefill_list: &[Vec<SequenceSlice>],
-        decode_list: &[SequenceSlice],
+        round_token_slices: &[SequenceSlice],
         batch_list: &mut Vec<SequenceState>,
     ) {
         let prefill_slices = thread_slices(prefill_list, thread_id);
-        let decode_slices = assigned_decode_slices(decode_list, cpu_num, thread_id);
+        let decode_slices = assigned_decode_slices(round_token_slices, cpu_num, thread_id);
 
         macro_rules! run_simple {
             ($op:expr) => {
@@ -108,7 +108,13 @@ where
                 run_simple!(operator);
             }
             Self::Attention(operator) => {
-                operator.run(prefill_size, decode_size, decode_list, cpu_num, thread_id);
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    round_token_slices,
+                    cpu_num,
+                    thread_id,
+                );
             }
 
             Self::ExpertsMatMulDown(operator) => {
@@ -125,7 +131,13 @@ where
                 run_simple!(operator);
             }
             Self::LiftVector(operator) => {
-                operator.run(prefill_size, decode_size, decode_list, cpu_num, thread_id);
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    round_token_slices,
+                    cpu_num,
+                    thread_id,
+                );
             }
             Self::LookupRMSMap(operator) => {
                 operator.run(
@@ -466,15 +478,7 @@ mod test {
         let batch_size = M;
         let decode_size = 1;
 
-        op1.run(
-            batch_size,
-            decode_size,
-            1,
-            0,
-            &[],
-            &[],
-            &mut Vec::new(),
-        );
+        op1.run(batch_size, decode_size, 1, 0, &[], &[], &mut Vec::new());
 
         // cpu_num = thread_num
         let mut c2 = vec![0.0f16; M * N];
@@ -1663,15 +1667,7 @@ mod test {
         let batch_size = M;
         let decode_size = 1;
 
-        op1.run(
-            batch_size,
-            decode_size,
-            1,
-            0,
-            &[],
-            &[],
-            &mut Vec::new(),
-        );
+        op1.run(batch_size, decode_size, 1, 0, &[], &[], &mut Vec::new());
 
         // ===== cpu_num = thread_num =====
         let mut c2 = vec![0.0f16; M * N];

@@ -1,4 +1,4 @@
-# 基于 `decode_list` 的全局索引反查方案
+# 基于 `round_token_slices` 的全局索引反查方案
 
 ## 目标
 
@@ -18,9 +18,9 @@ pub struct SequenceSlice {
 }
 ```
 
-其中 `decode_list: Vec<SequenceSlice>` 满足两个关键性质：
+其中 `round_token_slices: Vec<SequenceSlice>` 满足两个关键性质：
 
-1. `decode_list` 按 sequence 的调度顺序依次 push。
+1. `round_token_slices` 按 sequence 的调度顺序依次 push。
 2. 每个 slice 对应一个连续的全局区间：
 
 $$
@@ -84,7 +84,7 @@ $$
 
 原因：
 
-* `decode_list` 本身已经是按全局 token 顺序排好的区间表。
+* `round_token_slices` 本身已经是按全局 token 顺序排好的区间表。
 * `token_start_index` 单调递增。
 * 单个 slice 覆盖的是连续区间，适合二分定位。
 * 多线程场景下，每个线程拿到的通常是一个连续的全局区间，首点定位后继续顺推更便宜。
@@ -101,14 +101,14 @@ pub struct DecodeLookupResult {
 }
 
 pub fn lookup_decode_index(
-	decode_list: &[SequenceSlice],
+	round_token_slices: &[SequenceSlice],
 	global_index: usize,
 ) -> Option<DecodeLookupResult>
 ```
 
 其中：
 
-* `slice_index` 表示命中了 `decode_list` 的第几个 slice
+* `slice_index` 表示命中了 `round_token_slices` 的第几个 slice
 * `batch_index` 用来标识是哪条 sequence
 * `sequence_index` 是反查后的 sequence 内位置
 * `offset_in_slice` 方便后续算子继续用
@@ -135,7 +135,7 @@ $$
 
 ### 2. 首个 index 二分定位 slice
 
-在 `decode_list` 上找满足下面条件的 slice：
+在 `round_token_slices` 上找满足下面条件的 slice：
 
 $$
 slice.token\_start\_index \le global\_index < slice.token\_start\_index + slice.length
@@ -145,20 +145,20 @@ $$
 
 ```rust
 pub fn lookup_decode_index(
-	decode_list: &[SequenceSlice],
+	round_token_slices: &[SequenceSlice],
 	global_index: usize,
 ) -> Option<DecodeLookupResult> {
-	let last = decode_list.last()?;
+	let last = round_token_slices.last()?;
 	if global_index >= last.token_start_index + last.length {
 		return None;
 	}
 
 	let mut left = 0usize;
-	let mut right = decode_list.len();
+	let mut right = round_token_slices.len();
 
 	while left < right {
 		let mid = (left + right) / 2;
-		let slice = &decode_list[mid];
+		let slice = &round_token_slices[mid];
 
 		if global_index < slice.token_start_index {
 			right = mid;
@@ -215,20 +215,20 @@ $$
 
 ```rust
 pub fn walk_decode_range(
-	decode_list: &[SequenceSlice],
+	round_token_slices: &[SequenceSlice],
 	global_begin: usize,
 	global_end: usize,
 	mut visit: impl FnMut(usize, usize, usize),
 ) {
-	let Some(mut found) = lookup_decode_index(decode_list, global_begin) else {
+	let Some(mut found) = lookup_decode_index(round_token_slices, global_begin) else {
 		return;
 	};
 
 	let mut slice_index = found.slice_index;
 
 	for global_index in global_begin..global_end {
-		while slice_index < decode_list.len() {
-			let slice = &decode_list[slice_index];
+		while slice_index < round_token_slices.len() {
+			let slice = &round_token_slices[slice_index];
 			let slice_end = slice.token_start_index + slice.length;
 			if global_index < slice_end {
 				let offset = global_index - slice.token_start_index;
@@ -257,21 +257,21 @@ pub fn walk_decode_range(
 
 ```text
 length = 1
-token_start_index = decode_list 中的顺序下标
+token_start_index = round_token_slices 中的顺序下标
 sequence_index = kv_index
 ```
 
 所以此时反查会退化成：
 
 ```text
-global_index == decode_list[global_index] 对应的那条 sequence
+global_index == round_token_slices[global_index] 对应的那条 sequence
 ```
 
 也就是说 decode 轮几乎不需要真正二分，直接按下标访问都可以。
 
 ### Prefill 场景
 
-在 prefill 轮里，`decode_list` 中每个 slice 代表该 sequence 本轮的一段连续 token 区间，此时：
+在 prefill 轮里，`round_token_slices` 中每个 slice 代表该 sequence 本轮的一段连续 token 区间，此时：
 
 ```text
 length = 该 sequence 本轮被调度进去的真实 token 数
@@ -282,8 +282,8 @@ length = 该 sequence 本轮被调度进去的真实 token 数
 例如：
 
 ```text
-decode_list[0] = { batch=0, sequence_index=0, token_start_index=0, length=6 }
-decode_list[1] = { batch=1, sequence_index=0, token_start_index=6, length=2 }
+round_token_slices[0] = { batch=0, sequence_index=0, token_start_index=0, length=6 }
+round_token_slices[1] = { batch=1, sequence_index=0, token_start_index=6, length=2 }
 ```
 
 那么：
@@ -312,18 +312,18 @@ sequence_index = 1
 
 ## 如果查的是“第几个 sequence”
 
-如果业务里说的不是 `batch_index`，而是“它是本轮第几个排进 `decode_list` 的 sequence”，那么直接返回：
+如果业务里说的不是 `batch_index`，而是“它是本轮第几个排进 `round_token_slices` 的 sequence”，那么直接返回：
 
 ```text
 sequence_order = slice_index
 ```
 
-前提是当前 `decode_list` 仍保持“一条 sequence 在该列表里只出现一次”。
+前提是当前 `round_token_slices` 仍保持“一条 sequence 在该列表里只出现一次”。
 
 按当前调度器实现，这个前提成立：
 
 * decode 轮，每条 sequence 只 push 一个 `length=1` 的 slice
-* prefill 轮，每个 candidate 只 push 一个汇总 slice 到 `decode_list`
+* prefill 轮，每个 candidate 只 push 一个汇总 slice 到 `round_token_slices`
 
 因此：
 
@@ -342,7 +342,7 @@ sequence_order = slice_index
 * 时间复杂度：$O(\log N)$
 * 空间复杂度：$O(1)$
 
-其中 $N = decode\_list.len()$。
+其中 $N = round\_token\_slices.len()$。
 
 ---
 
@@ -355,7 +355,7 @@ sequence_order = slice_index
 * 时间复杂度：$O(\log N)$
 * 空间复杂度：$O(1)$
 
-其中 $N = decode\_list.len()$。
+其中 $N = round\_token\_slices.len()$。
 
 ### 多线程连续区间查询
 
@@ -378,7 +378,7 @@ $$
 
 ```text
 每线程第一次查找用二分；
-之后沿 decode_list 顺序推进。
+之后沿 round_token_slices 顺序推进。
 ```
 
 ---
@@ -388,7 +388,7 @@ $$
 当前版本先不要新增额外索引结构，直接采用下面这条规则：
 
 ```text
-用 decode_list 作为全局 token 区间表；
+用 round_token_slices 作为全局 token 区间表；
 每个线程对自己负责区间的第一个 global_index 做一次二分；
 后续 index 沿当前 slice 顺推；
 必要时切到下一个 slice；

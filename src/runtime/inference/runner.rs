@@ -95,7 +95,7 @@ where
                         let (prefill_size, decode_size) = state.sizes;
                         let scheduler = &mut state.scheduler;
                         let prefill_list = &scheduler.prefill_list;
-                        let decode_list = &scheduler.decode_list;
+                        let round_token_slices = &scheduler.round_token_slices;
                         scheduler.batch_list.with_mut(|batch_list_guard| {
                             for operator in queue.iter() {
                                 operator.run(
@@ -104,7 +104,7 @@ where
                                     thread_num,
                                     thread_id,
                                     prefill_list,
-                                    decode_list,
+                                    round_token_slices,
                                     batch_list_guard,
                                 );
                                 b.wait();
