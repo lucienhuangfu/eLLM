@@ -292,7 +292,6 @@ mod tests {
             batch_index: 0,
             sequence_index: 0,
             length: 3,
-            lift_index: 0,
         }];
 
         attention.run(0, 0, &slices, 1, 0);

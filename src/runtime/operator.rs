@@ -89,7 +89,6 @@ where
         thread_id: usize,
         prefill_list: &[Vec<SequenceSlice>],
         decode_list: &[SequenceSlice],
-        attention_list: &[SequenceSlice],
         batch_list: &mut Vec<SequenceState>,
     ) {
         let prefill_slices = thread_slices(prefill_list, thread_id);
@@ -109,13 +108,7 @@ where
                 run_simple!(operator);
             }
             Self::Attention(operator) => {
-                operator.run(
-                    prefill_size,
-                    decode_size,
-                    attention_list,
-                    cpu_num,
-                    thread_id,
-                );
+                operator.run(prefill_size, decode_size, decode_list, cpu_num, thread_id);
             }
 
             Self::ExpertsMatMulDown(operator) => {
@@ -261,7 +254,6 @@ mod test {
             thread_id,
             &[],
             &[],
-            &[],
             &mut Vec::new(),
         );
 
@@ -351,7 +343,6 @@ mod test {
                     batch_index,
                     sequence_index: 0,
                     token_start_index: batch_index,
-                    lift_index: 0,
                     length: 1,
                 });
             }
@@ -482,7 +473,6 @@ mod test {
             0,
             &[],
             &[],
-            &[],
             &mut Vec::new(),
         );
 
@@ -512,7 +502,6 @@ mod test {
                 decode_size,
                 thread_num,
                 tid,
-                &[],
                 &[],
                 &[],
                 &mut Vec::new(),
@@ -613,7 +602,7 @@ mod test {
             let op = Operator::MatMulTopK(runner);
 
             for tid in 0..used_cpu {
-                op.run(M, 1, used_cpu, tid, &[], &[], &[], &mut Vec::new());
+                op.run(M, 1, used_cpu, tid, &[], &[], &mut Vec::new());
             }
 
             for row in 0..M {
@@ -709,7 +698,7 @@ mod test {
             let op = Operator::MatMulTopK(runner);
 
             for tid in 0..used_cpu {
-                op.run(M, 1, used_cpu, tid, &[], &[], &[], &mut Vec::new());
+                op.run(M, 1, used_cpu, tid, &[], &[], &mut Vec::new());
             }
 
             for row in 0..M {
@@ -797,7 +786,7 @@ mod test {
 
     fn run_operator_all_threads(op: &Operator<f16>, batch: usize, cpu_num: usize) {
         for tid in 0..cpu_num {
-            op.run(batch, 1, cpu_num, tid, &[], &[], &[], &mut Vec::new());
+            op.run(batch, 1, cpu_num, tid, &[], &[], &mut Vec::new());
         }
     }
 
@@ -1681,7 +1670,6 @@ mod test {
             0,
             &[],
             &[],
-            &[],
             &mut Vec::new(),
         );
 
@@ -1711,7 +1699,6 @@ mod test {
                 decode_size,
                 thread_num,
                 tid,
-                &[],
                 &[],
                 &[],
                 &mut Vec::new(),
@@ -1837,7 +1824,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &[], &mut Vec::new());
+            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &mut Vec::new());
         }
 
         assert_ulps_eq!(output_data[0..180], results[0..180], max_ulps = 4);
@@ -1891,7 +1878,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &[], &mut Vec::new());
+            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &mut Vec::new());
         }
 
         assert_eq!(output_data[0..34], expected);
@@ -1949,7 +1936,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &[], &mut Vec::new());
+            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &mut Vec::new());
         }
         let result = vec![
             1.9444659948349,

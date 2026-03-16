@@ -38,11 +38,15 @@ impl<T> LiftVector<T> {
         unsafe {
             let ptr = self.ptr.ptr;
 
-            for slice in &decode_list[begin..end] {
-                debug_assert_eq!(slice.length, 1);
+            for (offset, slice) in decode_list[begin..end].iter().enumerate() {
+                if slice.length == 0 {
+                    continue;
+                }
 
-                let source_ptr = ptr.add(slice.token_start_index * self.length);
-                let destination_ptr = ptr.add(slice.lift_index * self.length);
+                let source_token_index = slice.token_start_index + slice.length - 1;
+                let destination_index = begin + offset;
+                let source_ptr = ptr.add(source_token_index * self.length);
+                let destination_ptr = ptr.add(destination_index * self.length);
 
                 ptr::copy_nonoverlapping(source_ptr, destination_ptr, self.length);
             }
@@ -68,22 +72,19 @@ mod test {
                 batch_index: 0,
                 sequence_index: 0,
                 token_start_index: 2,
-                lift_index: 0,
                 length: 1,
             },
             SequenceSlice {
                 batch_index: 0,
                 sequence_index: 0,
-                token_start_index: 3,
-                lift_index: 1,
-                length: 1,
+                token_start_index: 2,
+                length: 2,
             },
             SequenceSlice {
                 batch_index: 0,
                 sequence_index: 0,
-                token_start_index: 4,
-                lift_index: 2,
-                length: 1,
+                token_start_index: 2,
+                length: 3,
             },
         ];
 

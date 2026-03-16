@@ -59,7 +59,6 @@ impl SliceScheduler {
                 batch_index,
                 sequence_index: sequence_cursor,
                 token_start_index,
-                lift_index: 0,
                 length: take,
             });
 

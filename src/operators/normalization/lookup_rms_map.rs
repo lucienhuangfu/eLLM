@@ -160,7 +160,6 @@ mod test {
                     batch_index: i,
                     sequence_index: 0,
                     token_start_index: i,
-                    lift_index: 0,
                     length: 1,
                 });
             }

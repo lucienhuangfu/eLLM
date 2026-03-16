@@ -96,7 +96,6 @@ where
                         let scheduler = &mut state.scheduler;
                         let prefill_list = &scheduler.prefill_list;
                         let decode_list = &scheduler.decode_list;
-                        let attention_list = &scheduler.attention_list;
                         scheduler.batch_list.with_mut(|batch_list_guard| {
                             for operator in queue.iter() {
                                 operator.run(
@@ -106,7 +105,6 @@ where
                                     thread_id,
                                     prefill_list,
                                     decode_list,
-                                    attention_list,
                                     batch_list_guard,
                                 );
                                 b.wait();

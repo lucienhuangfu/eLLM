@@ -241,7 +241,6 @@ mod test {
                     tid,
                     &[],
                     &[],
-                    &[],
                     &mut Vec::new(),
                 );
             }
