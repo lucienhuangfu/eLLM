@@ -57,7 +57,7 @@ impl BatchScheduler {
 
             for (batch_index, record) in batch_list.iter().enumerate() {
                 if record.phase == Phase::Prefill {
-                    let remaining = record.kv_index.saturating_sub(record.sequence_index);
+                    let remaining = record.length;
                     total_tokens += remaining;
                     candidates.push(PrefillCandidate {
                         batch_index,
@@ -204,17 +204,14 @@ impl BatchScheduler {
                 );
 
                 let scheduled_for_record = prefill_count.saturating_sub(scheduled_before);
-                if scheduled_for_record > 0 {
-                    if let Some(record) = batch_list.get_mut(candidate.batch_index) {
+                if let Some(record) = batch_list.get_mut(candidate.batch_index) {
+                    if scheduled_for_record > 0 {
                         record.sequence_index =
                             record.sequence_index.saturating_add(scheduled_for_record);
-
-                        if candidate.remaining > 0 && scheduled_for_record == candidate.remaining {
-                            record.phase = Phase::Decode;
-                        }
+                        record.length = record.length.saturating_sub(scheduled_for_record);
                     }
-                } else if candidate.remaining > 0 && scheduled_for_record == candidate.remaining {
-                    if let Some(record) = batch_list.get_mut(candidate.batch_index) {
+
+                    if record.length == 0 {
                         record.phase = Phase::Decode;
                     }
                 }
@@ -258,7 +255,7 @@ mod tests {
 
     fn state(phase: Phase, sequence_index: usize, kv_index: usize) -> SequenceState {
         SequenceState {
-            length: 0,
+            length: kv_index.saturating_sub(sequence_index),
             phase,
             sequence_index,
             kv_index,
@@ -270,7 +267,7 @@ mod tests {
     fn schedule_prefill_only() {
         // Input:
         // - Eight SequenceState in Phase::Prefill
-        // - sequence_index=0, kv_index=6 => 6 tokens remaining per record
+        // - sequence_index=0, length=6 => 6 tokens remaining per record
         // - sequence_length=8, batch_size=32, thread_num=8
         // Output (expected):
         // - prefill == 48 (all 8 * 6 tokens scheduled)
@@ -299,6 +296,7 @@ mod tests {
                 assert_eq!(record.phase, Phase::Decode);
                 assert_eq!(record.sequence_index, 6);
                 assert_eq!(record.kv_index, 6);
+                assert_eq!(record.length, 0);
             }
         });
 
@@ -442,9 +440,11 @@ mod tests {
             assert_eq!(batch_list[0].phase, Phase::Decode);
             assert_eq!(batch_list[0].sequence_index, 6);
             assert_eq!(batch_list[0].kv_index, 6);
+            assert_eq!(batch_list[0].length, 0);
             assert_eq!(batch_list[1].phase, Phase::Prefill);
             assert_eq!(batch_list[1].sequence_index, 2);
             assert_eq!(batch_list[1].kv_index, 6);
+            assert_eq!(batch_list[1].length, 4);
         });
 
         assert_eq!(scheduler.attention_list.len(), 2);
@@ -479,6 +479,7 @@ mod tests {
             assert_eq!(batch_list[1].phase, Phase::Prefill);
             assert_eq!(batch_list[1].sequence_index, 2);
             assert_eq!(batch_list[1].kv_index, 6);
+            assert_eq!(batch_list[1].length, 4);
         });
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -495,6 +496,7 @@ mod tests {
             assert_eq!(batch_list[0].sequence_index, 6);
             assert_eq!(batch_list[1].phase, Phase::Decode);
             assert_eq!(batch_list[1].sequence_index, 6);
+            assert_eq!(batch_list[1].length, 0);
         });
 
         assert_eq!(scheduler.attention_list.len(), 1);
@@ -517,5 +519,33 @@ mod tests {
         assert_eq!(resumed_slice.sequence_index, 4);
         assert_eq!(resumed_slice.token_start_index, 2);
         assert_eq!(resumed_slice.length, 2);
+    }
+
+    #[test]
+    fn schedule_prefill_splits_by_record_length() {
+        let mut scheduler = BatchScheduler::new(16, 1, 2);
+        scheduler.batch_list.with_mut(|batch_list| {
+            batch_list.push(SequenceState {
+                sequence_index: 0,
+                kv_index: 32,
+                length: 6,
+                phase: Phase::Prefill,
+                notify: std::sync::Arc::new(Notify::new()),
+            });
+        });
+
+        let (prefill, decode) = scheduler.schedule_batch();
+
+        assert_eq!(prefill, 6);
+        assert_eq!(decode, 0);
+        assert_eq!(scheduler.attention_list.len(), 1);
+        assert_eq!(scheduler.attention_list[0].length, 6);
+
+        scheduler.batch_list.with(|batch_list| {
+            assert_eq!(batch_list[0].sequence_index, 6);
+            assert_eq!(batch_list[0].kv_index, 32);
+            assert_eq!(batch_list[0].length, 0);
+            assert_eq!(batch_list[0].phase, Phase::Decode);
+        });
     }
 }
