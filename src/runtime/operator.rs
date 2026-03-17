@@ -146,7 +146,7 @@ where
                     cpu_num,
                     thread_id,
                     prefill_slices,
-                    decode_slices,
+                    round_token_slices,
                 );
             }
             Self::MatMul(operator) => {

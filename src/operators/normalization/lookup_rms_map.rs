@@ -2,12 +2,13 @@ use std::f16;
 use std::ptr;
 
 use crate::kernel;
+use crate::operators::assign::assign;
 use crate::operators::traits::MapTrait;
 
 // use crate::runtime::inference::state::TaskList;
-use crate::common::sequence_slice::SequenceSlice;
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::common::num_traits::Sqrt;
+use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::common::sequence_slice::SequenceSlice;
 
 // Fuse embedding lookup with RMS normalization
 #[derive(Clone)]
@@ -54,48 +55,82 @@ impl<T: Sqrt> LookupRMSMap<T> {
         &self,
         prefill_size: usize,
         decode_size: usize,
-        _thread_num: usize,
-        _thread_id: usize,
+        thread_num: usize,
+        thread_id: usize,
         prefill_list: &[SequenceSlice],
         round_token_slices: &[SequenceSlice],
     ) {
         if prefill_size > 0 {
-            self.run_task_list(prefill_list);
+            unsafe {
+                let sequences_ptr = self.sequences_ptr.ptr;
+                let output_normal_ptr = self.output_normal_ptr.ptr;
+                let output_hidden_ptr = self.output_hidden_ptr.ptr;
+
+                for slice in prefill_list {
+                    let batch_index = slice.batch_index;
+                    let position_start = slice.sequence_index;
+                    let token_start = slice.token_start_index;
+
+                    for t in 0..slice.length {
+                        self.process_token(
+                            sequences_ptr,
+                            output_hidden_ptr,
+                            output_normal_ptr,
+                            batch_index,
+                            position_start + t,
+                            token_start + t,
+                        );
+                    }
+                }
+            }
         } else if decode_size > 0 {
-            self.run_task_list(round_token_slices);
-        }
-    }
+            let Some((begin, end)) = assign(round_token_slices.len(), thread_num, thread_id) else {
+                return;
+            };
 
-    fn run_task_list(&self, slices: &[SequenceSlice]) {
-        unsafe {
-            let sequences_ptr = self.sequences_ptr.ptr;
-            let output_normal_ptr = self.output_normal_ptr.ptr;
-            let output_hidden_ptr = self.output_hidden_ptr.ptr;
+            unsafe {
+                let sequences_ptr = self.sequences_ptr.ptr;
+                let output_normal_ptr = self.output_normal_ptr.ptr;
+                let output_hidden_ptr = self.output_hidden_ptr.ptr;
 
-            for slice in slices {
-                let batch_index = slice.batch_index;
-                let position_start = slice.sequence_index;
-                let token_start = slice.token_start_index;
+                for slice in &round_token_slices[begin..end] {
+                    if slice.length == 0 {
+                        continue;
+                    }
 
-                for t in 0..slice.length {
-                    let position_index = position_start + t;
-                    let token_index = token_start + t;
-                    let token_id =
-                        *sequences_ptr.add((position_index * self.batch_size + batch_index));
-                    let embedding_ptr = self.word_embedding.ptr.add(token_id * self.hidden_size);
-                    let offset = token_index * self.hidden_size;
-
-                    let hidden_ptr = output_hidden_ptr.add(offset);
-                    // Copy embedding to output hidden
-                    ptr::copy_nonoverlapping(embedding_ptr, hidden_ptr, self.hidden_size);
-                    self.compute(
-                        embedding_ptr,
-                        output_normal_ptr.add(offset),
-                        self.hidden_size,
+                    self.process_token(
+                        sequences_ptr,
+                        output_hidden_ptr,
+                        output_normal_ptr,
+                        slice.batch_index,
+                        slice.sequence_index,
+                        slice.token_start_index,
                     );
                 }
             }
         }
+    }
+
+    unsafe fn process_token(
+        &self,
+        sequences_ptr: *const usize,
+        output_hidden_ptr: *mut T,
+        output_normal_ptr: *mut T,
+        batch_index: usize,
+        position_index: usize,
+        token_index: usize,
+    ) {
+        let token_id = *sequences_ptr.add(position_index * self.batch_size + batch_index);
+        let embedding_ptr = self.word_embedding.ptr.add(token_id * self.hidden_size);
+        let offset = token_index * self.hidden_size;
+
+        let hidden_ptr = output_hidden_ptr.add(offset);
+        ptr::copy_nonoverlapping(embedding_ptr, hidden_ptr, self.hidden_size);
+        self.compute(
+            embedding_ptr,
+            output_normal_ptr.add(offset),
+            self.hidden_size,
+        );
     }
 }
 
@@ -168,14 +203,14 @@ mod test {
 
         let decode_lists = (0..thread_num).map(|_| Vec::new()).collect::<Vec<_>>();
 
-        let mut sequences = vec![0; (batch_size * batch_size)];
+        let mut sequences = vec![0; batch_size * batch_size];
         for i in 0..batch_size {
             sequences[i] = 1;
         }
 
         let word_embedding: Vec<f32> = (1..=hidden_size)
             .cycle()
-            .take((vocab_size * hidden_size))
+            .take(vocab_size * hidden_size)
             .map(|x| x as f32)
             .collect();
         // let weight = vec![1.0f32; hidden_size];
@@ -233,12 +268,76 @@ mod test {
         // Verify output_hidden_data (should contain copied embeddings)
         assert_ulps_eq!(output_hidden_data[18..36], expected_hidden, max_ulps = 1);
     }
+
+    #[test]
+    fn test_lookup_decode_f32_uses_assigned_round_token_slices() {
+        let batch_size = 4;
+        let hidden_size = 4;
+        let vocab_size = 4;
+        let thread_num = 2;
+        let eps = 1e-6f32;
+
+        let sequences = vec![0, 1, 2, 3];
+        let word_embedding: Vec<f32> = vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+        ];
+        let mut output_hidden_data: Vec<f32> = vec![0.0; batch_size * hidden_size];
+        let mut output_normal_data: Vec<f32> = vec![0.0; batch_size * hidden_size];
+
+        let round_token_slices = vec![
+            SequenceSlice {
+                batch_index: 0,
+                sequence_index: 0,
+                token_start_index: 0,
+                length: 1,
+            },
+            SequenceSlice {
+                batch_index: 1,
+                sequence_index: 0,
+                token_start_index: 1,
+                length: 1,
+            },
+            SequenceSlice {
+                batch_index: 2,
+                sequence_index: 0,
+                token_start_index: 2,
+                length: 1,
+            },
+            SequenceSlice {
+                batch_index: 3,
+                sequence_index: 0,
+                token_start_index: 3,
+                length: 1,
+            },
+        ];
+
+        let operator = LookupRMSMap::new(
+            sequences.as_ptr(),
+            word_embedding.as_ptr(),
+            output_hidden_data.as_mut_ptr(),
+            output_normal_data.as_mut_ptr(),
+            batch_size,
+            hidden_size,
+            eps,
+        );
+
+        for thread_id in 0..thread_num {
+            operator.run(
+                0,
+                round_token_slices.len(),
+                thread_num,
+                thread_id,
+                &[],
+                &round_token_slices,
+            );
+        }
+
+        let expected_hidden = word_embedding[..vocab_size * hidden_size].to_vec();
+        assert_ulps_eq!(
+            output_hidden_data.as_slice(),
+            expected_hidden.as_slice(),
+            max_ulps = 1
+        );
+        assert!(output_normal_data.iter().all(|value| *value > 0.0));
+    }
 }
-
-
-
-
-
-
-
-
