@@ -5,11 +5,11 @@ use std::time::Duration;
 use super::scheduler_plan::{PrefillCandidate, SliceScheduler};
 use super::state::{Phase, SequenceState};
 use crate::common::send_sync_ptr::SharedMut;
-use crate::common::sequence_slice::SequenceSlice;
+use crate::common::sequence_slice::{RoundTokenSlices, SequenceSlice};
 
 pub struct BatchScheduler {
     pub prefill_list: Vec<Vec<SequenceSlice>>,
-    pub round_token_slices: Vec<SequenceSlice>,
+    pub round_token_slices: RoundTokenSlices,
     pub batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     prefill_scheduler: SliceScheduler,
     max_prefill_size: usize,
@@ -104,7 +104,7 @@ impl BatchScheduler {
             thread_num,
             prefill_scheduler: SliceScheduler::new(batch_size * thread_num),
             prefill_list: build_prefill_list(),
-            round_token_slices: Vec::with_capacity(batch_size),
+            round_token_slices: RoundTokenSlices::with_capacity(batch_size),
         }
     }
 

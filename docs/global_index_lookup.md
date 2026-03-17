@@ -7,9 +7,13 @@
 * 这个 token 属于哪条 sequence
 * 它在该 sequence 内的序列位置 `sequence_index`
 
-当前可直接利用的数据结构就是：
+当前可直接利用的数据结构是 `RoundTokenSlices` 内部维护的 `SequenceSlice` 区间表：
 
 ```rust
+pub struct RoundTokenSlices {
+	slices: Vec<SequenceSlice>,
+}
+
 pub struct SequenceSlice {
 	pub token_start_index: usize,
 	pub batch_index: usize,
@@ -18,7 +22,7 @@ pub struct SequenceSlice {
 }
 ```
 
-其中 `round_token_slices: Vec<SequenceSlice>` 满足两个关键性质：
+其中 `RoundTokenSlices` 里的 `slices` 满足两个关键性质：
 
 1. `round_token_slices` 按 sequence 的调度顺序依次 push。
 2. 每个 slice 对应一个连续的全局区间：
@@ -65,11 +69,13 @@ $$
 local\_sequence\_index = slice.sequence\_index + offset
 $$
 
-最终返回：
+最终对外返回：
 
 * `batch_index`: 属于哪条 sequence
 * `local_sequence_index`: 该 token 在该 sequence 中的真实位置
-* `offset`: 它在当前 slice 内的偏移
+
+如果后续实现仍需要“命中了第几个 slice”，可以在内部继续保留 `slice_index` 作为游标；
+但它不一定要作为完整反查结果的一部分暴露出去。
 
 ---
 
@@ -94,24 +100,24 @@ $$
 
 ```rust
 pub struct DecodeLookupResult {
-	pub slice_index: usize,
 	pub batch_index: usize,
 	pub sequence_index: usize,
-	pub offset_in_slice: usize,
+	pub slice_index: usize,
 }
 
-pub fn lookup_decode_index(
-	round_token_slices: &[SequenceSlice],
-	global_index: usize,
-) -> Option<DecodeLookupResult>
+impl RoundTokenSlices {
+	pub fn lookup_global_index(
+		&self,
+		global_index: usize,
+	) -> Option<DecodeLookupResult>
+}
 ```
 
 其中：
 
-* `slice_index` 表示命中了 `round_token_slices` 的第几个 slice
 * `batch_index` 用来标识是哪条 sequence
 * `sequence_index` 是反查后的 sequence 内位置
-* `offset_in_slice` 方便后续算子继续用
+* `slice_index` 表示命中了 `round_token_slices` 的第几个 slice，便于连续区间顺推
 
 ---
 
@@ -144,43 +150,20 @@ $$
 单点查询时，可以直接写成标准二分：
 
 ```rust
-pub fn lookup_decode_index(
-	round_token_slices: &[SequenceSlice],
-	global_index: usize,
-) -> Option<DecodeLookupResult> {
-	let last = round_token_slices.last()?;
-	if global_index >= last.token_start_index + last.length {
+pub fn lookup_global_index(&self, global_index: usize) -> Option<DecodeLookupResult> {
+	let slice_index = self
+		.slices
+		.partition_point(|slice| slice.token_start_index + slice.length <= global_index);
+	let slice = self.slices.get(slice_index)?;
+	if global_index < slice.token_start_index {
 		return None;
 	}
 
-	let mut left = 0usize;
-	let mut right = round_token_slices.len();
-
-	while left < right {
-		let mid = (left + right) / 2;
-		let slice = &round_token_slices[mid];
-
-		if global_index < slice.token_start_index {
-			right = mid;
-			continue;
-		}
-
-		let slice_end = slice.token_start_index + slice.length;
-		if global_index >= slice_end {
-			left = mid + 1;
-			continue;
-		}
-
-		let offset_in_slice = global_index - slice.token_start_index;
-		return Some(DecodeLookupResult {
-			slice_index: mid,
-			batch_index: slice.batch_index,
-			sequence_index: slice.sequence_index + offset_in_slice,
-			offset_in_slice,
-		});
-	}
-
-	None
+	Some(DecodeLookupResult {
+		batch_index: slice.batch_index,
+		sequence_index: slice.sequence_index + (global_index - slice.token_start_index),
+		slice_index,
+	})
 }
 ```
 
@@ -214,29 +197,36 @@ $$
 伪代码如下：
 
 ```rust
-pub fn walk_decode_range(
-	round_token_slices: &[SequenceSlice],
+pub fn walk_global_range(
+	&self,
 	global_begin: usize,
 	global_end: usize,
 	mut visit: impl FnMut(usize, usize, usize),
 ) {
-	let Some(mut found) = lookup_decode_index(round_token_slices, global_begin) else {
+	let Some(found) = self.lookup_global_index(global_begin) else {
 		return;
 	};
 
 	let mut slice_index = found.slice_index;
+	let mut global_index = global_begin;
 
-	for global_index in global_begin..global_end {
-		while slice_index < round_token_slices.len() {
-			let slice = &round_token_slices[slice_index];
-			let slice_end = slice.token_start_index + slice.length;
-			if global_index < slice_end {
-				let offset = global_index - slice.token_start_index;
-				visit(global_index, slice.batch_index, slice.sequence_index + offset);
-				break;
-			}
-			slice_index += 1;
+	while global_index < global_end {
+		let Some(slice) = self.slices.get(slice_index) else {
+			break;
+		};
+
+		let slice_end = slice.token_start_index + slice.length;
+		let visit_end = global_end.min(slice_end);
+		while global_index < visit_end {
+			visit(
+				global_index,
+				slice.batch_index,
+				slice.sequence_index + (global_index - slice.token_start_index),
+			);
+			global_index += 1;
 		}
+
+		slice_index += 1;
 	}
 }
 ```
@@ -337,7 +327,7 @@ sequence_order = slice_index
 
 ## 复杂度
 
-直接二分方案：
+当前单点查询方案：
 
 * 时间复杂度：$O(\log N)$
 * 空间复杂度：$O(1)$
@@ -350,7 +340,7 @@ sequence_order = slice_index
 
 ### 单点随机查询
 
-直接二分：
+当前 `partition_point` 实现：
 
 * 时间复杂度：$O(\log N)$
 * 空间复杂度：$O(1)$
@@ -388,8 +378,8 @@ $$
 当前版本先不要新增额外索引结构，直接采用下面这条规则：
 
 ```text
-用 round_token_slices 作为全局 token 区间表；
-每个线程对自己负责区间的第一个 global_index 做一次二分；
+用 RoundTokenSlices 作为全局 token 区间表；
+每个线程对自己负责区间的第一个 global_index 做一次定位；
 后续 index 沿当前 slice 顺推；
 必要时切到下一个 slice；
 再用 sequence_index + (global_index - token_start_index)
