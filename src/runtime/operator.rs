@@ -356,6 +356,7 @@ mod test {
                     sequence_index: 0,
                     token_start_index: batch_index,
                     length: 1,
+                    last_token_flag: true,
                 });
             }
             decode_lists.push(slices);

@@ -60,6 +60,7 @@ impl SliceScheduler {
                 sequence_index: sequence_cursor,
                 token_start_index,
                 length: take,
+                last_token_flag: false,
             });
 
             *token_count += take;

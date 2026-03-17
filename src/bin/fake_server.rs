@@ -39,9 +39,9 @@ fn start_fake_inference_loop(
                     for (slot_index, record) in batch_list_guard.iter_mut().enumerate() {
                         match record.phase {
                             Phase::Prefill => {
-                                let prompt_end = record
-                                    .kv_index
-                                    .max(record.sequence_index.saturating_add(record.filling_length));
+                                let prompt_end = record.kv_index.max(
+                                    record.sequence_index.saturating_add(record.filling_length),
+                                );
                                 prompt_start[slot_index] = prompt_end;
                                 record.sequence_index = prompt_end;
                                 record.kv_index = prompt_end;

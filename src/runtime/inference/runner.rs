@@ -211,7 +211,7 @@ mod test {
             batch_list.extend((0..batch_size).map(|_| SequenceState {
                 filling_length: 50,
                 sequence_index: 0,
-                kv_index: 50,
+                kv_index: 0,
                 phase: Phase::Prefill,
                 // prompt_length: 50,
                 notify: std::sync::Arc::new(tokio::sync::Notify::new()),

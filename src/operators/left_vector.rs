@@ -26,10 +26,6 @@ impl<T> LiftVector<T> {
         thread_num: usize,
         thread_id: usize,
     ) {
-        if prefill_size == 0 {
-            return;
-        }
-
         let total_tokens = round_token_slices.len();
         let Some((begin, end)) = assign(total_tokens, thread_num, thread_id) else {
             return;
@@ -39,7 +35,7 @@ impl<T> LiftVector<T> {
             let ptr = self.ptr.ptr;
 
             for (offset, slice) in round_token_slices[begin..end].iter().enumerate() {
-                if slice.length == 0 {
+                if !slice.last_token_flag {
                     continue;
                 }
 
@@ -73,18 +69,21 @@ mod test {
                 sequence_index: 0,
                 token_start_index: 2,
                 length: 1,
+                last_token_flag: true,
             },
             SequenceSlice {
                 batch_index: 0,
                 sequence_index: 0,
                 token_start_index: 2,
                 length: 2,
+                last_token_flag: true,
             },
             SequenceSlice {
                 batch_index: 0,
                 sequence_index: 0,
                 token_start_index: 2,
                 length: 3,
+                last_token_flag: true,
             },
         ];
 

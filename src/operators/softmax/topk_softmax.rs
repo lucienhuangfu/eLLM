@@ -57,14 +57,14 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
 
     pub fn run(
         &self,
-        _prefill_size: usize,
+        prefill_size: usize,
         decode_size: usize,
         thread_num: usize,
         _thread_id: usize,
         round_token_slices: &[SequenceSlice],
         batch_list: &mut Vec<SequenceState>,
     ) {
-        if decode_size == 0 {
+        if prefill_size == 0 && decode_size == 0 {
             return;
         }
 
@@ -77,20 +77,32 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
 
             for slice in round_token_slices {
                 let batch_index = slice.batch_index;
-                if slice.length == 0 {
-                    continue;
-                }
-                if batch_index >= batch_list.len() {
-                    continue;
-                }
-                if !matches!(batch_list[batch_index].phase, Phase::Decode) {
+                let slice_length = slice.length;
+                if slice_length == 0 || batch_index >= batch_list.len() {
                     continue;
                 }
 
-                let sequence_index = slice.sequence_index + slice.length - 1;
-                let token_start_index = slice.token_start_index + slice.length - 1;
+                let record = &mut batch_list[batch_index];
+                let was_prefill = matches!(record.phase, Phase::Prefill);
+                if was_prefill {
+                    record.sequence_index = record.sequence_index.saturating_add(slice_length);
+                    record.kv_index = record.kv_index.saturating_add(slice_length);
+                    record.filling_length = record.filling_length.saturating_sub(slice_length);
 
-                let token_index = token_start_index;
+                    if record.filling_length == 0 {
+                        record.phase = Phase::Decode;
+                    }
+                }
+
+                let should_emit_token =
+                    slice.last_token_flag && matches!(record.phase, Phase::Decode);
+                if !should_emit_token {
+                    continue;
+                }
+
+                let last_token_offset = slice_length - 1;
+                let sequence_index = slice.sequence_index + last_token_offset;
+                let token_index = slice.token_start_index + last_token_offset;
                 let input_stride = token_index * self.topk_size * thread_num;
                 let output_stride = token_index * self.topk_size;
 
@@ -107,7 +119,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
                 let out_offset = sequence_index * self.batch_size + batch_index;
                 ptr::write(output_sequences_ptr.add(out_offset), predict_token);
 
-                let record = &mut batch_list[batch_index];
                 record.kv_index = record.kv_index.saturating_add(1);
                 if predict_token == self.eos_id {
                     record.phase = Phase::Eos;
@@ -251,6 +262,7 @@ mod test {
                     sequence_index: 1,
                     token_start_index: batch_index,
                     length: 1,
+                    last_token_flag: true,
                 });
             }
             decode_lists.push(slices);
@@ -340,7 +352,7 @@ mod test {
         let mut batch_list = vec![SequenceState {
             filling_length: 0,
             sequence_index: 3,
-            kv_index: 7,
+            kv_index: 3,
             phase: Phase::Prefill,
             notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         }];
@@ -350,6 +362,7 @@ mod test {
             sequence_index: 0,
             token_start_index: 0,
             length: 3,
+            last_token_flag: false,
         }];
 
         let mut output_values = vec![f32::NAN; batch_size * topk_size];
@@ -369,7 +382,63 @@ mod test {
 
         operator.run(3, 1, thread_num, 0, &round_token_slices, &mut batch_list);
 
-        assert_eq!(batch_list[0].phase, Phase::Prefill);
+        assert_eq!(batch_list[0].phase, Phase::Decode);
+        assert_eq!(batch_list[0].sequence_index, 6);
+        assert_eq!(batch_list[0].filling_length, 0);
+        assert_eq!(batch_list[0].kv_index, 6);
+        assert_eq!(output_indices, vec![usize::MAX; batch_size * topk_size]);
+        assert!(output_values.iter().all(|value| value.is_nan()));
+        assert_eq!(
+            output_sequences,
+            vec![usize::MAX; batch_size * sequence_length]
+        );
+    }
+
+    #[test]
+    fn test_topk_softmax_skips_non_last_token_slice() {
+        let sequence_length = 4;
+        let batch_size = 1;
+        let topk_size = 2;
+        let thread_num = 1;
+        let eos_id = 100;
+
+        let input_indices = vec![10usize, 11];
+        let input_values = vec![1.0f32, 0.5];
+        let mut batch_list = vec![SequenceState {
+            filling_length: 0,
+            sequence_index: 3,
+            kv_index: 7,
+            phase: Phase::Decode,
+            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }];
+
+        let round_token_slices = [SequenceSlice {
+            batch_index: 0,
+            sequence_index: 0,
+            token_start_index: 0,
+            length: 1,
+            last_token_flag: false,
+        }];
+
+        let mut output_values = vec![f32::NAN; batch_size * topk_size];
+        let mut output_indices = vec![usize::MAX; batch_size * topk_size];
+        let mut output_sequences = vec![usize::MAX; batch_size * sequence_length];
+
+        let operator = TopKSoftmax::<f32>::new(
+            input_indices.as_ptr(),
+            input_values.as_ptr(),
+            output_indices.as_mut_ptr(),
+            output_values.as_mut_ptr(),
+            output_sequences.as_mut_ptr(),
+            batch_size,
+            topk_size,
+            eos_id,
+        );
+
+        operator.run(0, 1, thread_num, 0, &round_token_slices, &mut batch_list);
+
+        assert_eq!(batch_list[0].phase, Phase::Decode);
+        assert_eq!(batch_list[0].sequence_index, 3);
         assert_eq!(batch_list[0].kv_index, 7);
         assert_eq!(output_indices, vec![usize::MAX; batch_size * topk_size]);
         assert!(output_values.iter().all(|value| value.is_nan()));
@@ -398,10 +467,10 @@ mod test {
             input_values[token_offset + index] = 5.0f32 - index as f32 * 0.1;
         }
         let mut batch_list = vec![SequenceState {
-            filling_length: 0,
+            filling_length: 3,
             sequence_index: 3,
-            kv_index: 7,
-            phase: Phase::Decode,
+            kv_index: 3,
+            phase: Phase::Prefill,
             notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         }];
 
@@ -410,6 +479,7 @@ mod test {
             sequence_index: 0,
             token_start_index: 0,
             length: 3,
+            last_token_flag: true,
         }];
 
         let mut output_values = vec![0.0f32; sequence_length * topk_size];
@@ -430,9 +500,66 @@ mod test {
         operator.run(3, 1, thread_num, 0, &round_token_slices, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
-        assert_eq!(batch_list[0].kv_index, 8);
+        assert_eq!(batch_list[0].sequence_index, 6);
+        assert_eq!(batch_list[0].filling_length, 0);
+        assert_eq!(batch_list[0].kv_index, 7);
         assert_eq!(output_indices[token_index * topk_size], 10);
         assert_eq!(output_sequences[2], 10);
+    }
+
+    #[test]
+    fn test_topk_softmax_advances_partial_prefill_without_output() {
+        let sequence_length = 4;
+        let batch_size = 1;
+        let topk_size = 2;
+        let thread_num = 1;
+        let eos_id = 100;
+
+        let input_indices = vec![10usize, 11, 12, 13];
+        let input_values = vec![1.0f32, 0.5, 0.25, 0.125];
+        let mut batch_list = vec![SequenceState {
+            filling_length: 4,
+            sequence_index: 2,
+            kv_index: 2,
+            phase: Phase::Prefill,
+            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }];
+
+        let round_token_slices = [SequenceSlice {
+            batch_index: 0,
+            sequence_index: 2,
+            token_start_index: 0,
+            length: 2,
+            last_token_flag: false,
+        }];
+
+        let mut output_values = vec![f32::NAN; batch_size * topk_size];
+        let mut output_indices = vec![usize::MAX; batch_size * topk_size];
+        let mut output_sequences = vec![usize::MAX; batch_size * sequence_length];
+
+        let operator = TopKSoftmax::<f32>::new(
+            input_indices.as_ptr(),
+            input_values.as_ptr(),
+            output_indices.as_mut_ptr(),
+            output_values.as_mut_ptr(),
+            output_sequences.as_mut_ptr(),
+            batch_size,
+            topk_size,
+            eos_id,
+        );
+
+        operator.run(2, 0, thread_num, 0, &round_token_slices, &mut batch_list);
+
+        assert_eq!(batch_list[0].phase, Phase::Prefill);
+        assert_eq!(batch_list[0].sequence_index, 4);
+        assert_eq!(batch_list[0].filling_length, 2);
+        assert_eq!(batch_list[0].kv_index, 4);
+        assert_eq!(output_indices, vec![usize::MAX; batch_size * topk_size]);
+        assert!(output_values.iter().all(|value| value.is_nan()));
+        assert_eq!(
+            output_sequences,
+            vec![usize::MAX; batch_size * sequence_length]
+        );
     }
 
     #[test]
@@ -485,6 +612,7 @@ mod test {
                     sequence_index: 1,
                     token_start_index: batch_index,
                     length: 1,
+                    last_token_flag: true,
                 });
             }
             decode_lists.push(slices);

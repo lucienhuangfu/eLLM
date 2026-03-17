@@ -119,6 +119,7 @@ impl BatchScheduler {
                 sequence_index,
                 token_start_index,
                 length: 1,
+                last_token_flag: true,
             });
             decode_count += 1;
         }
@@ -154,6 +155,7 @@ impl BatchScheduler {
                         sequence_index: candidate.sequence_index,
                         token_start_index: scheduled_before,
                         length: attention_length,
+                        last_token_flag: attention_length == candidate.remaining,
                     });
                 }
 
@@ -165,20 +167,6 @@ impl BatchScheduler {
                     prefill_list,
                     &mut prefill_count,
                 );
-
-                let scheduled_for_record = prefill_count.saturating_sub(scheduled_before);
-                if let Some(record) = batch_list.get_mut(candidate.batch_index) {
-                    if scheduled_for_record > 0 {
-                        record.sequence_index =
-                            record.sequence_index.saturating_add(scheduled_for_record);
-                        record.filling_length =
-                            record.filling_length.saturating_sub(scheduled_for_record);
-                    }
-
-                    if record.filling_length == 0 {
-                        record.phase = Phase::Decode;
-                    }
-                }
             }
         });
 
@@ -278,6 +266,7 @@ mod tests {
             assert_eq!(attention_slice.sequence_index, 0);
             assert_eq!(attention_slice.token_start_index, sequence_offset * 6);
             assert_eq!(attention_slice.length, 6);
+            assert!(attention_slice.last_token_flag);
         }
     }
 
@@ -310,6 +299,8 @@ mod tests {
         assert_eq!(scheduler.round_token_slices.len(), 2);
         assert_eq!(scheduler.round_token_slices[0].length, 1);
         assert_eq!(scheduler.round_token_slices[1].length, 1);
+        assert!(scheduler.round_token_slices[0].last_token_flag);
+        assert!(scheduler.round_token_slices[1].last_token_flag);
 
         let first = &scheduler.round_token_slices[0];
         assert_eq!(first.batch_index, 0);
@@ -426,12 +417,14 @@ mod tests {
         assert_eq!(first_attention.sequence_index, 0);
         assert_eq!(first_attention.token_start_index, 0);
         assert_eq!(first_attention.length, 6);
+        assert!(first_attention.last_token_flag);
 
         let second_attention = &scheduler.round_token_slices[1];
         assert_eq!(second_attention.batch_index, 1);
         assert_eq!(second_attention.sequence_index, 0);
         assert_eq!(second_attention.token_start_index, 6);
         assert_eq!(second_attention.length, 2);
+        assert!(!second_attention.last_token_flag);
 
         let first_lift = &scheduler.round_token_slices[0];
         assert_eq!(first_lift.batch_index, 0);
@@ -489,6 +482,7 @@ mod tests {
         assert_eq!(resumed_attention.sequence_index, 2);
         assert_eq!(resumed_attention.token_start_index, 0);
         assert_eq!(resumed_attention.length, 4);
+        assert!(resumed_attention.last_token_flag);
 
         let resumed_lift = &scheduler.round_token_slices[0];
         assert_eq!(resumed_lift.batch_index, 1);
@@ -531,6 +525,7 @@ mod tests {
         assert_eq!(scheduler.round_token_slices.len(), 1);
         assert_eq!(scheduler.round_token_slices[0].length, 6);
         assert_eq!(scheduler.round_token_slices[0].token_start_index, 0);
+        assert!(scheduler.round_token_slices[0].last_token_flag);
 
         scheduler.batch_list.with(|batch_list| {
             assert_eq!(batch_list[0].sequence_index, 6);

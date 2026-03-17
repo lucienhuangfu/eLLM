@@ -6,6 +6,7 @@ pub struct SequenceSlice {
     pub batch_index: usize,
     pub sequence_index: usize,
     pub length: usize,
+    pub last_token_flag: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,9 +37,7 @@ impl RoundTokenSlices {
     }
 
     pub fn total_token_count(&self) -> usize {
-        self.slices
-            .last()
-            .map_or(0, |slice| slice.token_start_index + slice.length)
+        self.slices.iter().map(|slice| slice.length).sum()
     }
 
     pub fn lookup_global_index(&self, global_index: usize) -> Option<DecodeLookupResult> {
@@ -118,12 +117,14 @@ mod tests {
             sequence_index: 0,
             token_start_index: 0,
             length: 6,
+            last_token_flag: false,
         });
         slices.push(SequenceSlice {
             batch_index: 1,
             sequence_index: 0,
             token_start_index: 6,
             length: 2,
+            last_token_flag: false,
         });
         slices
     }
@@ -156,9 +157,37 @@ mod tests {
     }
 
     #[test]
-    fn total_token_count_uses_last_slice_end() {
-        let slices = sample_slices();
+    fn total_token_count_sums_slice_lengths() {
+        let mut slices = RoundTokenSlices::with_capacity(2);
+        slices.push(SequenceSlice {
+            batch_index: 0,
+            sequence_index: 0,
+            token_start_index: 10,
+            length: 6,
+            last_token_flag: false,
+        });
+        slices.push(SequenceSlice {
+            batch_index: 1,
+            sequence_index: 0,
+            token_start_index: 20,
+            length: 2,
+            last_token_flag: false,
+        });
 
         assert_eq!(slices.total_token_count(), 8);
+    }
+
+    #[test]
+    fn round_token_slices_push_preserves_last_token_flag() {
+        let mut slices = RoundTokenSlices::with_capacity(1);
+        slices.push(SequenceSlice {
+            batch_index: 0,
+            sequence_index: 0,
+            token_start_index: 0,
+            length: 1,
+            last_token_flag: false,
+        });
+
+        assert!(!slices[0].last_token_flag);
     }
 }

@@ -995,6 +995,7 @@ mod test {
                     sequence_index: 0,
                     token_start_index: batch_index,
                     length: 1,
+                    last_token_flag: true,
                 });
             }
             decode_lists.push(slices);
@@ -1149,6 +1150,7 @@ mod test {
                     sequence_index: 0,
                     token_start_index: batch_index,
                     length: 1,
+                    last_token_flag: true,
                 });
             }
             decode_lists.push(slices);
@@ -2575,15 +2577,7 @@ mod test {
             .unwrap_or(1);
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(
-                    num_tokens,
-                    1,
-                    thread_num,
-                    tid,
-                    &[],
-                    &[],
-                    &mut Vec::new(),
-                );
+                op.run(num_tokens, 1, thread_num, tid, &[], &[], &mut Vec::new());
             }
         }
 
