@@ -1,4 +1,4 @@
-# 基于 `round_token_slices` 的全局索引反查方案
+# 基于 `decode_list` 的全局索引反查方案
 
 ## 目标
 
@@ -7,383 +7,263 @@
 * 这个 token 属于哪条 sequence
 * 它在该 sequence 内的序列位置 `sequence_index`
 
-当前可直接利用的数据结构是 `RoundTokenSlices` 内部维护的 `SequenceSlice` 区间表：
+当前可利用的数据结构是 `DecodeList`。它可以理解成一张“本轮全局 token 视图的区间表”。
 
-```rust
-pub struct RoundTokenSlices {
-	slices: Vec<SequenceSlice>,
-}
+这张表里的每一项 `SequenceSlice` 都描述了一段连续区间：
 
-pub struct SequenceSlice {
-	pub token_start_index: usize,
-	pub batch_index: usize,
-	pub sequence_index: usize,
-	pub length: usize,
-}
-```
+* 这段区间从哪个全局位置开始
+* 这段区间属于哪个 batch 槽位
+* 这段区间对应 sequence 的哪个起始位置
+* 这段区间有多长
 
-其中 `RoundTokenSlices` 里的 `slices` 满足两个关键性质：
+其中 `last_token_flag` 只是后续输出逻辑要用的标记，不参与全局索引反查。
 
-1. `round_token_slices` 按 sequence 的调度顺序依次 push。
-2. 每个 slice 对应一个连续的全局区间：
+---
 
-$$
-[token\_start\_index,\ token\_start\_index + length)
-$$
+## 核心思想
 
-另外，`length` 的语义和当前调度阶段直接相关：
-
-* prefill 时，`length` 是这条 sequence 本轮实际进入全局 token 视图的连续长度，可能大于 `1`
-* decode 时，每条 sequence 本轮只生成一个 token，因此 `length` 固定为 `1`
-
-因此，反查问题本质上就是：
+问题本质上只有一句话：
 
 ```text
-给定 global_index，找到覆盖它的 SequenceSlice。
+给定 global_index，找到覆盖它的那一段 slice。
 ```
+
+一旦找到了命中的 slice，剩下就只是算偏移。
+
+如果某个 slice 表示：
+
+* 这段区间从全局位置 `token_start_index` 开始
+* 它对应 sequence 内位置 `sequence_index` 开始
+
+那么对于这个区间中的任意一个全局位置：
+
+$$
+offset = global\_index - token\_start\_index
+$$
+
+于是它在 sequence 内的位置就是：
+
+$$
+sequence\_index + offset
+$$
+
+也就是说，反查分两步：
+
+1. 先找到 `global_index` 落在哪个 slice 里
+2. 再用相对偏移推回真实的 sequence 位置
 
 ---
 
-## 核心结论
+## 可以把它想成什么
 
-如果命中的 slice 为：
+可以把 `decode_list` 想成把多条 sequence 在“本轮计算视图”里拼接起来之后形成的一张目录表。
+
+简单示意：
 
 ```text
-slice = {
-	token_start_index,
-	batch_index,
-	sequence_index,
-	length,
-}
+全局位置:     0 1 2 3 4 5 6 7
+归属 slice:   A A A A A A B B
 ```
 
-则局部偏移量是：
+这等价于两段区间：
 
-$$
-offset = global\_index - slice.token\_start\_index
-$$
+```text
+slice A: [0, 6)
+slice B: [6, 8)
+```
 
-对应的 sequence 内位置就是：
+如果：
 
-$$
-local\_sequence\_index = slice.sequence\_index + offset
-$$
+* slice A 对应 batch 0，sequence 起点是 0
+* slice B 对应 batch 1，sequence 起点是 0
 
-最终对外返回：
+那么：
 
-* `batch_index`: 属于哪条 sequence
-* `local_sequence_index`: 该 token 在该 sequence 中的真实位置
+* 全局位置 `4` 落在 A 中，对应 batch 0、sequence 位置 4
+* 全局位置 `7` 落在 B 中，对应 batch 1、sequence 位置 1
 
-如果后续实现仍需要“命中了第几个 slice”，可以在内部继续保留 `slice_index` 作为游标；
-但它不一定要作为完整反查结果的一部分暴露出去。
+这里的关键不是“它在第几个 token”，而是“它落在哪一段区间里”。
 
 ---
 
-## 推荐方案
+## 为什么 `decode_list` 能做这件事
 
-推荐使用混合方案：
+`decode_list` 成立的前提，是它本身已经按全局 token 顺序组织好了。
 
-* 每个线程处理自己的 `global_index` 连续区间时，首个 index 用二分定位
-* 后续 index 用当前 `slice_index` 顺序推进
+也就是说：
 
-而不是对区间里的每个 `global_index` 都单独做一次二分。
+* slice 的顺序就是全局 token 的顺序
+* 每个 slice 覆盖一段连续区间
+* 后一个 slice 的位置总在前一个 slice 后面
 
-原因：
+所以它天然适合做“区间反查”。
 
-* `round_token_slices` 本身已经是按全局 token 顺序排好的区间表。
-* `token_start_index` 单调递增。
-* 单个 slice 覆盖的是连续区间，适合二分定位。
-* 多线程场景下，每个线程拿到的通常是一个连续的全局区间，首点定位后继续顺推更便宜。
-* 不需要额外维护 `global_index -> sequence` 的大数组。
-
-### 接口建议
-
-```rust
-pub struct DecodeLookupResult {
-	pub batch_index: usize,
-	pub sequence_index: usize,
-	pub slice_index: usize,
-}
-
-impl RoundTokenSlices {
-	pub fn lookup_global_index(
-		&self,
-		global_index: usize,
-	) -> Option<DecodeLookupResult>
-}
-```
-
-其中：
-
-* `batch_index` 用来标识是哪条 sequence
-* `sequence_index` 是反查后的 sequence 内位置
-* `slice_index` 表示命中了 `round_token_slices` 的第几个 slice，便于连续区间顺推
+不需要额外建一张很大的数组，把每个 `global_index` 都显式映射回 sequence。
 
 ---
 
-## 查找逻辑
+## 单点查询的原理
 
-### 1. 边界检查
+单点查询适合这种场景：
 
-先用最后一个 slice 判断 `global_index` 是否越界：
+* 随机给一个 `global_index`
+* 只查一次，或者次数不多
 
-$$
-max\_token = last.token\_start\_index + last.length
-$$
+这时最自然的思路是：
 
-若：
+* 在所有 slice 里，找到第一个“右边界大于 `global_index`”的区间
+* 再确认 `global_index` 没有落在这个区间左边
 
-$$
-global\_index \ge max\_token
-$$
+如果命中，就能算出：
 
-则直接返回 `None`。
+* 它属于哪个 `batch_index`
+* 它在 sequence 内的真实位置
+* 它命中了第几个 slice
 
-### 2. 首个 index 二分定位 slice
+如果没命中，说明：
 
-在 `round_token_slices` 上找满足下面条件的 slice：
+* `global_index` 越界了
+* 或者区间之间存在空洞，而这个位置正好落在空洞里
 
-$$
-slice.token\_start\_index \le global\_index < slice.token\_start\_index + slice.length
-$$
+因此单点查询的本质是：
 
-单点查询时，可以直接写成标准二分：
-
-```rust
-pub fn lookup_global_index(&self, global_index: usize) -> Option<DecodeLookupResult> {
-	let slice_index = self
-		.slices
-		.partition_point(|slice| slice.token_start_index + slice.length <= global_index);
-	let slice = self.slices.get(slice_index)?;
-	if global_index < slice.token_start_index {
-		return None;
-	}
-
-	Some(DecodeLookupResult {
-		batch_index: slice.batch_index,
-		sequence_index: slice.sequence_index + (global_index - slice.token_start_index),
-		slice_index,
-	})
-}
+```text
+先定位区间，再计算区间内偏移。
 ```
 
-这适合：
+---
 
-* 随机查询一个 `global_index`
-* 每个线程处理区间时，先定位自己的起始 `global_index`
+## 连续区间查询的原理
 
-### 3. 后续 index 用游标顺推
+多线程执行时，更常见的情况不是“随机查一个点”，而是“一个线程负责一段连续全局区间”。
 
-如果一个线程拿到的是连续区间：
+例如某个线程负责：
 
 $$
 [global\_begin,\ global\_end)
 $$
 
-则没必要对这个区间里的每个下标反复二分。
+这时如果对区间里的每个位置都重新查一次，会有很多重复工作。
 
-更合适的流程是：
+更合理的做法是：
 
-1. 对 `global_begin` 做一次二分，找到起始 `slice_index`
-2. 维护当前 slice 的结束位置：
+1. 先对起点 `global_begin` 做一次定位
+2. 得到当前命中的 `slice_index`
+3. 在当前 slice 内顺着往前走
+4. 走到这个 slice 的末尾后，再切到下一个 slice
 
-$$
-slice\_end = slice.token\_start\_index + slice.length
-$$
-
-3. 当 `global_index < slice_end` 时，继续使用当前 slice
-4. 当 `global_index >= slice_end` 时，`slice_index += 1`，切到下一个 slice
-
-伪代码如下：
-
-```rust
-pub fn walk_global_range(
-	&self,
-	global_begin: usize,
-	global_end: usize,
-	mut visit: impl FnMut(usize, usize, usize),
-) {
-	let Some(found) = self.lookup_global_index(global_begin) else {
-		return;
-	};
-
-	let mut slice_index = found.slice_index;
-	let mut global_index = global_begin;
-
-	while global_index < global_end {
-		let Some(slice) = self.slices.get(slice_index) else {
-			break;
-		};
-
-		let slice_end = slice.token_start_index + slice.length;
-		let visit_end = global_end.min(slice_end);
-		while global_index < visit_end {
-			visit(
-				global_index,
-				slice.batch_index,
-				slice.sequence_index + (global_index - slice.token_start_index),
-			);
-			global_index += 1;
-		}
-
-		slice_index += 1;
-	}
-}
-```
-
-这里 `visit(global_index, batch_index, sequence_index)` 表示：
-
-* 当前访问到的全局位置
-* 它对应的 batch 槽位
-* 它对应的 sequence 内位置
-
----
-
-## 为什么这个方案成立
-
-### Decode 场景
-
-在 decode 轮里，当前调度器写入的是：
+简单示意：
 
 ```text
-length = 1
-token_start_index = round_token_slices 中的顺序下标
-sequence_index = kv_index
+线程负责区间: [4, 8)
+
+全局位置:     0 1 2 3 4 5 6 7
+归属 slice:   A A A A A A B B
+线程访问:             ^ ^ ^ ^
 ```
 
-所以此时反查会退化成：
+这个线程只需要：
+
+* 先确定位置 `4` 在 A 中
+* 然后顺着访问 `5`
+* 再切到 B，访问 `6`、`7`
+
+也就是说，连续区间查询的核心不是“反复定位”，而是：
 
 ```text
-global_index == round_token_slices[global_index] 对应的那条 sequence
-```
-
-也就是说 decode 轮几乎不需要真正二分，直接按下标访问都可以。
-
-### Prefill 场景
-
-在 prefill 轮里，`round_token_slices` 中每个 slice 代表该 sequence 本轮的一段连续 token 区间，此时：
-
-```text
-length = 该 sequence 本轮被调度进去的真实 token 数
-```
-
-也就是说，prefill 时 `length` 不是 `1`，而是具体长度；只有 decode 时 `length` 才固定为 `1`。
-
-例如：
-
-```text
-round_token_slices[0] = { batch=0, sequence_index=0, token_start_index=0, length=6 }
-round_token_slices[1] = { batch=1, sequence_index=0, token_start_index=6, length=2 }
-```
-
-那么：
-
-* `global_index = 0..5` 属于 batch 0
-* `global_index = 6..7` 属于 batch 1
-
-若 `global_index = 7`，则：
-
-$$
-offset = 7 - 6 = 1
-$$
-
-$$
-sequence\_index = 0 + 1 = 1
-$$
-
-因此可反推出它对应的是：
-
-```text
-batch_index = 1
-sequence_index = 1
+第一次定位，后面顺推。
 ```
 
 ---
 
-## 如果查的是“第几个 sequence”
+## Decode 场景为什么更简单
 
-如果业务里说的不是 `batch_index`，而是“它是本轮第几个排进 `round_token_slices` 的 sequence”，那么直接返回：
+在 decode 轮里，每条 sequence 本轮只贡献一个 token。
+
+因此每个 slice 的长度固定为 `1`，于是整张表几乎退化成：
 
 ```text
-sequence_order = slice_index
+第 0 个全局位置 -> 第 0 个 slice
+第 1 个全局位置 -> 第 1 个 slice
+第 2 个全局位置 -> 第 2 个 slice
+...
 ```
 
-前提是当前 `round_token_slices` 仍保持“一条 sequence 在该列表里只出现一次”。
-
-按当前调度器实现，这个前提成立：
-
-* decode 轮，每条 sequence 只 push 一个 `length=1` 的 slice
-* prefill 轮，每个 candidate 只 push 一个汇总 slice 到 `round_token_slices`
-
-因此：
-
-* `slice_index` = 本轮 sequence 顺序编号
-* `batch_index` = batch 槽位编号
-* `sequence_index` = sequence 内 token 位置
-
-这三者需要区分清楚，不要混用。
+换句话说，decode 场景下区间表虽然还存在，但每段区间只有一个点，所以查找非常直接。
 
 ---
 
-## 复杂度
+## Prefill 场景为什么需要区间思维
 
-当前单点查询方案：
+在 prefill 轮里，一条 sequence 本轮可能一次进入多个连续 token。
 
-* 时间复杂度：$O(\log N)$
-* 空间复杂度：$O(1)$
+所以一个 slice 的长度可能大于 `1`。
 
-其中 $N = round\_token\_slices.len()$。
+这时 `decode_list` 更像下面这样：
+
+```text
+slice A 覆盖 [0, 6)
+slice B 覆盖 [6, 8)
+slice C 覆盖 [8, 12)
+```
+
+于是全局位置和 sequence 位置不再是一一对应，而必须通过“落在哪个区间里”来判断。
+
+这正是 `lookup_global_index` 和 `walk_global_range` 要解决的问题。
 
 ---
 
-## 复杂度分析
+## `slice_index` 的意义
 
-### 单点随机查询
+反查结果里除了 `batch_index` 和 `sequence_index`，还会保留 `slice_index`。
 
-当前 `partition_point` 实现：
-
-* 时间复杂度：$O(\log N)$
-* 空间复杂度：$O(1)$
-
-其中 $N = round\_token\_slices.len()$。
-
-### 多线程连续区间查询
-
-假设一个线程负责：
-
-$$
-K = global\_end - global\_begin
-$$
-
-则更合理的成本是：
-
-* 首次定位：$O(\log N)$
-* 区间内顺推：$O(K + S)$
-
-其中 $S$ 是这个线程处理区间内实际跨过的 slice 数。
-
-因为 `slice_index` 只会单调递增，不会回退，所以这是比“每个下标都二分一次”更符合线程分段场景的做法。
-
-当每个线程都拿到连续区间时，总体策略可以概括为：
+它的作用不是表示 token 在 sequence 内的位置，而是表示：
 
 ```text
-每线程第一次查找用二分；
-之后沿 round_token_slices 顺序推进。
+当前命中了 decode_list 里的第几个 slice
 ```
+
+这个信息对连续区间顺推很有用，因为下一次不必重新从头找，只需要从当前 slice 往后继续走。
+
+如果业务上问的是“这是本轮排进来的第几条 sequence”，那么在当前实现前提下，`slice_index` 也可以直接作为顺序编号理解。
+
+---
+
+## 复杂度为什么合理
+
+单点查询时：
+
+* 需要在区间表里定位一次
+* 成本是 $O(\log N)$
+
+连续区间查询时：
+
+* 只在起点做一次定位
+* 后面主要是在区间内顺着走
+
+因此成本可以理解为：
+
+* 起点定位：$O(\log N)$
+* 区间遍历：$O(K + S)$
+
+其中：
+
+* $N$ 是 `decode_list` 的长度
+* $K$ 是线程实际要处理的全局位置数
+* $S$ 是这段区间里跨过的 slice 数
+
+这比“每个位置都重新查一次”更适合当前按连续区间分工的线程模型。
 
 ---
 
 ## 最终建议
 
-当前版本先不要新增额外索引结构，直接采用下面这条规则：
+当前最合适的理解方式是：
 
 ```text
-用 RoundTokenSlices 作为全局 token 区间表；
-每个线程对自己负责区间的第一个 global_index 做一次定位；
-后续 index 沿当前 slice 顺推；
-必要时切到下一个 slice；
-再用 sequence_index + (global_index - token_start_index)
-反推出该 token 的 sequence 内位置。
+把 DecodeList 当成一张全局 token 区间表。
+单点查询时，先找命中的区间，再算区间内偏移。
+连续区间查询时，起点先定位，之后沿 slice 顺推。
 ```
 
-这是和现有 `BatchScheduler` 以及多线程分段执行方式最一致、改动最小、可直接落地的方案。
+这样既符合当前 `BatchScheduler` 的数据组织方式，也符合多线程按连续区间处理 token 的执行方式。
