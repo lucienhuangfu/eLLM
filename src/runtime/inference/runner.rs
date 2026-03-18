@@ -134,9 +134,10 @@ mod test {
 
     use super::*;
     use crate::mem_mgr::cache::Cache;
-    use crate::transformer::sparse_moe_block::SparseMoeBlock;
     use crate::runtime::inference::{Phase, SequenceState};
     use crate::runtime::tensor::TensorCtx;
+    use crate::transformer::names::SparseMoeTensorNames;
+    use crate::transformer::sparse_moe::SparseMoe;
 
     // use crate::mem_mgr::allocator::allocate_init;
 
@@ -158,14 +159,20 @@ mod test {
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
         let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
 
-        let sparse_moe = SparseMoeBlock::<f32>::new(
+        let sparse_moe = SparseMoe::<f32>::new(
             // position_window_size,
             hidden_size,
             intermediate_size,
             num_experts,
             top_k,
             norm_topk_prob,
-            "model.layers.0",
+            SparseMoeTensorNames {
+                scope: String::from("model.layers.0.mlp"),
+                router_gate: String::from("model.layers.0.mlp.gate.weight"),
+                experts_gate_proj: String::from("model.layers.0.mlp.experts.gate_proj.weight"),
+                experts_up_proj: String::from("model.layers.0.mlp.experts.up_proj.weight"),
+                experts_down_proj: String::from("model.layers.0.mlp.experts.down_proj.weight"),
+            },
             ctx.clone(),
         );
 

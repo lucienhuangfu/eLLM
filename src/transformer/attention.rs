@@ -17,22 +17,15 @@ pub struct Attention<T>
 where
     T: Copy + PartialOrd,
 {
-    // sequence_length: usize,
-    // batch_size: usize,
     num_attention_heads: usize,
     num_key_value_heads: usize,
-    num_key_value_groups: usize,
     head_dim: usize,
     scaling: T,
-    attention_dropout: T,
-    is_causal: bool,
-    layer_idx: usize,
     q_weight: Tensor<T>,
     k_weight: Tensor<T>,
     v_weight: Tensor<T>,
     o_weight: Tensor<T>,
     scope_name: String,
-    ctx: Rc<TensorCtx<T>>,
 }
 
 impl<T> Attention<T>
@@ -55,18 +48,13 @@ where
         ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         let head_dim: usize = config.head_dim;
-        let num_key_value_groups = config.num_attention_heads / config.num_key_value_heads;
         let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
 
         Self {
             num_attention_heads: config.num_attention_heads,
             num_key_value_heads: config.num_key_value_heads,
-            num_key_value_groups: num_key_value_groups,
             head_dim: head_dim,
             scaling: scaling,
-            attention_dropout: T::default(),
-            is_causal: false,
-            layer_idx: 0,
             q_weight: ctx.zeros(
                 vec![config.num_attention_heads * head_dim, config.hidden_size],
                 names.q_proj,
@@ -84,7 +72,6 @@ where
                 vec![config.hidden_size, config.num_attention_heads * head_dim],
                 names.o_proj,
             ),
-            ctx: ctx,
             scope_name: names.scope,
         }
     }

@@ -9,9 +9,9 @@ use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use super::super::runtime::tensor::{Tensor, TensorCtx};
 use super::attention::Attention;
 use super::config::{AttentionKind, Config, FfnKind};
-use super::mlp::MLP;
+use super::dense_mlp::DenseMlp;
 use super::names::{layer_tensor_names, FfnTensorNames};
-use super::sparse_moe_block::SparseMoeBlock;
+use super::sparse_moe::SparseMoe;
 
 pub enum AttentionBlock<T>
 where
@@ -25,8 +25,8 @@ pub enum FfnBlock<T>
 where
     T: Copy + PartialOrd,
 {
-    Dense(MLP<T>),
-    SparseMoe(SparseMoeBlock<T>),
+    Dense(DenseMlp<T>),
+    SparseMoe(SparseMoe<T>),
 }
 
 // #[derive(Clone)]
@@ -34,11 +34,7 @@ pub struct DecoderLayer<T>
 where
     T: Copy + PartialOrd,
 {
-    sequence_length: usize,
-    // sequence_chunk_size: usize,
     batch_size: usize,
-    hidden_size: usize,
-    head_dim: usize,
     rms_norm_eps: T,
     layer_idx: usize,
     word_embedding: Rc<Tensor<T>>,
@@ -91,7 +87,7 @@ where
 
         let ffn_block = match (&config.layers[layer_idx].ffn, names.ffn) {
             (FfnKind::Dense { intermediate_size }, FfnTensorNames::Dense(ffn_names)) => {
-                FfnBlock::Dense(MLP::new(
+                FfnBlock::Dense(DenseMlp::new(
                     config.hidden_size,
                     *intermediate_size,
                     ffn_names,
@@ -106,7 +102,7 @@ where
                     norm_topk_prob,
                 },
                 FfnTensorNames::SparseMoe(ffn_names),
-            ) => FfnBlock::SparseMoe(SparseMoeBlock::new(
+            ) => FfnBlock::SparseMoe(SparseMoe::new(
                 config.hidden_size,
                 *intermediate_size,
                 *num_experts,
@@ -119,10 +115,7 @@ where
         };
 
         Self {
-            sequence_length: config.max_position_embeddings,
             batch_size: batch_size,
-            hidden_size: config.hidden_size,
-            head_dim: config.head_dim,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             layer_idx: layer_idx,
             self_attention,
@@ -179,12 +172,12 @@ where
         );
 
         let output_hidden_states = match &self.ffn_block {
-            FfnBlock::Dense(mlp) => mlp.forward(
+            FfnBlock::Dense(dense_mlp) => dense_mlp.forward(
                 &norm_hidden_states,
                 &attention_hidden_states,
                 format!("{}.attention_hidden3", self.scope_name),
             ),
-            FfnBlock::SparseMoe(sparse_moe_block) => sparse_moe_block.forward(
+            FfnBlock::SparseMoe(sparse_moe) => sparse_moe.forward(
                 &norm_hidden_states,
                 &attention_hidden_states,
                 decode_only_flag,

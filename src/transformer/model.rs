@@ -31,10 +31,6 @@ pub struct Model<T>
 where
     T: Copy + PartialOrd,
 {
-    // config: Config,
-    // sequences: Vec<usize>,
-    word_embedding: Rc<Tensor<T>>,
-    position_embedding: Rc<Tensor<T>>,
     lm_head_weight: Tensor<T>,
     pub layers: Vec<DecoderLayer<T>>,
     rms_norm_eps: T,
@@ -107,8 +103,6 @@ where
         }
 
         Self {
-            word_embedding: word_embedding.clone(),
-            position_embedding: position_embedding.clone(),
             lm_head_weight: ctx.zeros(
                 vec![config.vocab_size, config.hidden_size],
                 model_names.lm_head.clone(),
