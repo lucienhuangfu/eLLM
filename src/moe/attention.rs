@@ -1,21 +1,16 @@
-use std::cell::RefCell;
 use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
-
-use serde::de;
 
 use crate::common::num_traits::FromNumber;
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
-use super::super::mem_mgr::cache::Cache;
-// use crate::operators::mul::attention_add::AttentionAdd;
 use super::super::common::matmul_params::MatMulParams;
-// use super::super::ptensor::linear::Linear;
 use super::super::runtime::tensor::{Tensor, TensorCtx};
 
 use super::config::Config;
+use super::names::AttentionTensorNames;
 
 // #[derive(Clone)]
 pub struct Attention<T>
@@ -56,16 +51,13 @@ where
 {
     pub fn new(
         config: &Config,
-        layer_idx: usize,
-        parent_scope_name: &str,
+        names: AttentionTensorNames,
         ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         let head_dim: usize = config.head_dim;
         let num_key_value_groups = config.num_attention_heads / config.num_key_value_heads;
-        // T::sqrt(T::from_usize(config.attention_head_size )),
         let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
 
-        let scope_name = format!("{}.self_attn", parent_scope_name);
         Self {
             num_attention_heads: config.num_attention_heads,
             num_key_value_heads: config.num_key_value_heads,
@@ -74,26 +66,26 @@ where
             scaling: scaling,
             attention_dropout: T::default(),
             is_causal: false,
-            layer_idx: layer_idx,
+            layer_idx: 0,
             q_weight: ctx.zeros(
                 vec![config.num_attention_heads * head_dim, config.hidden_size],
-                format!("{}.q_proj.weight", scope_name),
+                names.q_proj,
             ),
             k_weight: ctx.zeros(
                 vec![config.num_key_value_heads * head_dim, config.hidden_size],
-                format!("{}.k_proj.weight", scope_name),
+                names.k_proj,
             ),
             v_weight: ctx.zeros(
                 vec![config.num_key_value_heads * head_dim, config.hidden_size],
-                format!("{}.v_proj.weight", scope_name),
+                names.v_proj,
             ),
 
             o_weight: ctx.zeros(
                 vec![config.hidden_size, config.num_attention_heads * head_dim],
-                format!("{}.o_proj.weight", scope_name),
+                names.o_proj,
             ),
             ctx: ctx,
-            scope_name: scope_name,
+            scope_name: names.scope,
         }
     }
 
@@ -105,7 +97,7 @@ where
         decode_only_flag: bool,
         // tensor_name: String,
     ) -> Tensor<T> {
-        unsafe {
+        {
             //println!("hidden_states shape: {:?}", hidden_states.shape);
 
             // mul_rms_complex 合并operators
@@ -127,10 +119,6 @@ where
                 self.scope_name.clone(),
             );
 
-            if decode_only_flag {
-                query_states.lift_vector();
-            }
-
             let view_query_states = query_states.view(vec![
                 query_states.shape[0],
                 query_states.shape[1],
@@ -146,16 +134,16 @@ where
             ]);
 
             //[batch_size, head_num, sequence_num,  head_size] < - [sequence_num, batch_size, head_num, head_size]
-            let mut view_key_position_tensor = view_key_states.permute(vec![1, 2, 0, 3]);
+            let view_key_position_tensor = view_key_states.permute(vec![1, 2, 0, 3]);
 
-            let mut view_value_states = value_states.view(vec![
+            let view_value_states = value_states.view(vec![
                 value_states.shape[0],
                 value_states.shape[1],
                 self.num_key_value_heads,
                 self.head_dim,
             ]);
 
-            let mut view_value_states2 = view_value_states.permute(vec![1, 2, 0, 3]);
+            let view_value_states2 = view_value_states.permute(vec![1, 2, 0, 3]);
 
             let thread_num = num_cpus::get().max(1);
 
@@ -170,7 +158,7 @@ where
             );
 
             println!("attn_output shape: {:?}", attn_output.shape);
-            let mut view_context_tensor = attn_output.view(vec![
+            let view_context_tensor = attn_output.view(vec![
                 attn_output.shape[0],
                 attn_output.shape[1],
                 attn_output.shape[2] * attn_output.shape[3],
@@ -198,6 +186,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::mem_mgr::cache::Cache;
+    use std::cell::RefCell;
 
     #[test]
     fn test_self_attention() {
@@ -223,16 +213,14 @@ mod test {
         let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
 
         let self_attention = Attention::new(
-            // hidden_size,
-            // num_attention_heads,
-            // num_kv_heads,
-            // sequence_length,
-            // batch_size,
-            // inverse_sqrt_head,
-            // num_cpus::get(),
             &config,
-            1,
-            "model.layers.1.self_attn",
+            crate::moe::names::AttentionTensorNames {
+                scope: String::from("model.layers.1.self_attn"),
+                q_proj: String::from("model.layers.1.self_attn.q_proj.weight"),
+                k_proj: String::from("model.layers.1.self_attn.k_proj.weight"),
+                v_proj: String::from("model.layers.1.self_attn.v_proj.weight"),
+                o_proj: String::from("model.layers.1.self_attn.o_proj.weight"),
+            },
             ctx.clone(),
         );
 
@@ -288,7 +276,17 @@ mod test {
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
         let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
 
-        let self_attention = Attention::new(&config, 1, "model.layers.1.self_attn", ctx.clone());
+        let self_attention = Attention::new(
+            &config,
+            AttentionTensorNames {
+                scope: String::from("model.layers.1.self_attn"),
+                q_proj: String::from("model.layers.1.self_attn.q_proj.weight"),
+                k_proj: String::from("model.layers.1.self_attn.k_proj.weight"),
+                v_proj: String::from("model.layers.1.self_attn.v_proj.weight"),
+                o_proj: String::from("model.layers.1.self_attn.o_proj.weight"),
+            },
+            ctx.clone(),
+        );
 
         let hidden_states = ctx.zeros(
             vec![sequence_chunk_size, batch_size, config.hidden_size],

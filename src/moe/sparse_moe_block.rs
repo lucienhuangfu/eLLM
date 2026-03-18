@@ -1,17 +1,13 @@
-use std::cell::RefCell;
-use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
-
-use serde::de;
 
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 use super::super::common::matmul_params::MatMulParams;
-use super::super::mem_mgr::cache::Cache;
 use super::super::runtime::tensor::{Tensor, TensorCtx};
-use crate::runtime::operator::Operator;
+use super::names::SparseMoeTensorNames;
 
 // use super::mlp::MLP;
 // use super::super::ptensor::linear::Linear;
@@ -52,34 +48,32 @@ where
         num_experts: usize,
         num_topk: usize,
         norm_topk_prob: bool,
-        parent_scope_name: &str,
+        names: SparseMoeTensorNames,
         ctx: Rc<TensorCtx<T>>,
     ) -> Self {
-        let scope_name = format!("{}.mlp", parent_scope_name);
         Self {
-            // sequence_chunk_size,
             hidden_size,
             num_experts,
             num_topk,
             norm_topk_prob,
             gate_weight: ctx.zeros(
                 vec![num_experts, hidden_size],
-                format!("{}.gate.weight", scope_name),
+                names.router_gate,
             ),
             experts_gate_weight: ctx.zeros(
                 vec![num_experts, moe_intermediate_size, hidden_size],
-                format!("{}.experts.gate_proj.weight", scope_name),
+                names.experts_gate_proj,
             ),
             experts_up_weight: ctx.zeros(
                 vec![num_experts, moe_intermediate_size, hidden_size],
-                format!("{}.experts.up_proj.weight", scope_name),
+                names.experts_up_proj,
             ),
 
             experts_down_weight: ctx.zeros(
                 vec![num_experts, hidden_size, moe_intermediate_size],
-                format!("{}.experts.down_proj.weight", scope_name),
+                names.experts_down_proj,
             ),
-            scope_name: scope_name,
+            scope_name: names.scope,
             ctx: ctx,
         }
     }
@@ -184,6 +178,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::mem_mgr::cache::Cache;
+    use crate::moe::names::SparseMoeTensorNames;
     use crate::runtime::operator::Operator;
     use std::cell::RefCell;
     use std::mem;
@@ -267,7 +263,13 @@ mod test {
             num_experts,
             top_k,
             true,
-            "model.layers.0",
+            SparseMoeTensorNames {
+                scope: String::from("model.layers.0.mlp"),
+                router_gate: String::from("model.layers.0.mlp.gate.weight"),
+                experts_gate_proj: String::from("model.layers.0.mlp.experts.gate_proj.weight"),
+                experts_up_proj: String::from("model.layers.0.mlp.experts.up_proj.weight"),
+                experts_down_proj: String::from("model.layers.0.mlp.experts.down_proj.weight"),
+            },
             ctx.clone(),
         );
 

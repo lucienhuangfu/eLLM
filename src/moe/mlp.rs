@@ -1,14 +1,13 @@
-use std::cell::RefCell;
-use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
 
-use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
+use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
-// use super::super::ptensor::linear::Linear;
 use super::super::common::matmul_params::MatMulParams;
 use super::super::runtime::tensor::{Tensor, TensorCtx};
+use super::names::DenseMlpTensorNames;
 
 #[derive(Clone)]
 pub struct MLP<T>
@@ -38,31 +37,26 @@ where
         + AddAssign,
 {
     pub fn new(
-        // sequence_chunk_size: usize,
-        // head_size: usize,
         hidden_size: usize,
         intermediate_size: usize,
-        parent_scope_name: &str,
+        names: DenseMlpTensorNames,
         ctx: Rc<TensorCtx<T>>,
     ) -> Self {
-        let scope_name = format!("{}.mlp", parent_scope_name);
         Self {
-            // sequence_chunk_size: sequence_chunk_size,
-            // head_size: head_size,
             gate_weight: ctx.zeros(
                 vec![hidden_size, intermediate_size],
-                format!("{}.gate_proj.weight", scope_name),
+                names.gate_proj,
             ),
             up_weight: ctx.zeros(
                 vec![hidden_size, intermediate_size],
-                format!("{}.up_proj.weight", scope_name),
+                names.up_proj,
             ),
 
             down_weight: ctx.zeros(
                 vec![intermediate_size, hidden_size],
-                format!("{}.down_proj.weight", scope_name),
+                names.down_proj,
             ),
-            scope_name: scope_name,
+            scope_name: names.scope,
             ctx: ctx,
         }
     }
@@ -71,10 +65,23 @@ where
         &self,
         hidden_states: &Tensor<T>,
         residual: &Tensor<T>,
-        tensor_name: String,
+        _tensor_name: String,
     ) -> Tensor<T> {
-        let nonlinear_product = hidden_states.matmul_silu_mul_matmul(
+        let gate_product = hidden_states.matmul(
             &self.gate_weight,
+            MatMulParams {
+                a_row_step_macro: 16,
+                b_row_step_macro: 16,
+                column_step_macro: 16,
+                a_row_step_micro: 8,
+                b_row_step_micro: 8,
+            },
+            hidden_states.shape[0],
+            false,
+            format!("{}.gate", self.scope_name),
+        );
+
+        let up_product = hidden_states.matmul(
             &self.up_weight,
             MatMulParams {
                 a_row_step_macro: 16,
@@ -83,6 +90,13 @@ where
                 a_row_step_micro: 8,
                 b_row_step_micro: 8,
             },
+            hidden_states.shape[0],
+            false,
+            format!("{}.up", self.scope_name),
+        );
+
+        let nonlinear_product = gate_product.add(
+            &up_product,
             format!("{}.nonlinear_part1", self.scope_name),
         );
 

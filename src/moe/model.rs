@@ -1,14 +1,6 @@
-use core_affinity;
 use std::cell::RefCell;
-// use std::cell::SyncUnsafeCell;
-use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
-use std::ptr::null;
+use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
-
-use std::sync::Barrier;
-use std::sync::{Arc, RwLock};
-use std::thread;
-use std::time::Instant;
 
 // use serde::{Deserialize, Serialize};
 // use hurdles::Barrier;
@@ -16,6 +8,7 @@ use std::time::Instant;
 // use serde::{Deserialize, Serialize};
 
 use super::config::Config;
+use super::names::model_tensor_names;
 use crate::common::num_traits::FromNumber;
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
@@ -75,7 +68,8 @@ where
         batch_size: usize,
         topk_size: usize,
     ) -> Self {
-        let scope_name = String::from("model");
+        let model_names = model_tensor_names(config);
+        let scope_name = model_names.scope.clone();
 
         // let torch_file = String::from("D:/llama-3-chinese-8b-instruct-v3");
         // let loader = SafeTensorsLoader::new(&torch_file).unwrap();
@@ -88,17 +82,17 @@ where
         // Create default tensors
         let word_embedding = Rc::new(ctx.zeros(
             vec![config.vocab_size, config.hidden_size],
-            String::from("model.embed_tokens.weight"),
+            model_names.token_embedding.clone(),
         ));
 
         let position_embedding = Rc::new(ctx.tensor_from_vec(
             vec![config.max_position_embeddings, 1, 1, config.head_dim],
             position_vec,
-            String::from("model.position_embedding.weight"),
+            model_names.position_embedding.clone(),
         ));
 
         let mut layers: Vec<DecoderLayer<T>> = Vec::new();
-        for i in 0..config.num_hidden_layers {
+        for i in 0..config.layers.len() {
             layers.push(DecoderLayer::<T>::new(
                 &config,
                 i,
@@ -113,12 +107,11 @@ where
         }
 
         Self {
-            // sequences: vec![0; (config.max_position_embeddings + 1) * batch_size],
             word_embedding: word_embedding.clone(),
             position_embedding: position_embedding.clone(),
             lm_head_weight: ctx.zeros(
                 vec![config.vocab_size, config.hidden_size],
-                String::from("lm_head.weight"),
+                model_names.lm_head.clone(),
             ),
             layers: layers,
             batch_size: batch_size,
@@ -204,13 +197,12 @@ mod test {
     use crate::mem_mgr::allocator::allocate_init;
     use crate::moe::rope::precompute_freqs_cis_t;
     use crate::runtime::inference::{Phase, SequenceState};
-    use crate::runtime::tensor::Tensor;
 
     #[test]
     fn test_model_forward() {
         // let cpu_num =  thread::available_parallelism().unwrap().get();
         let sequence_length = 128;
-        let sequence_chunk_size = 1;
+        let _sequence_chunk_size = 1;
         let batch_size = 3;
         let topk_size = 8;
 
@@ -236,7 +228,7 @@ mod test {
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-        let mut sequences =
+        let sequences =
             allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
 
         let batch_records: Vec<SequenceState> = (0..batch_size)
@@ -250,10 +242,10 @@ mod test {
             })
             .collect();
 
-        let mut batch_list = batch_records;
+        let _batch_list = batch_records;
         let eos_id = 151643;
 
-        let (output_indices, output_tensor) = unsafe { model.forward(sequences, eos_id) };
+        let (_output_indices, _output_tensor) = model.forward(sequences, eos_id);
 
         let thread_num: usize = num_cpus::get();
         for operator in model.ctx.operator_queue.borrow().iter() {
@@ -270,7 +262,7 @@ mod test {
     #[test]
     fn test_model_forward_f16() {
         let sequence_length = 128;
-        let sequence_chunk_size = 1;
+        let _sequence_chunk_size = 1;
         let batch_size = 3;
         let topk_size = 8;
 
@@ -291,7 +283,7 @@ mod test {
             topk_size,
         );
 
-        let mut sequences =
+        let sequences =
             allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
         let batch_records: Vec<SequenceState> = (0..batch_size)
             .map(|i| SequenceState {
@@ -304,10 +296,10 @@ mod test {
             })
             .collect();
 
-        let mut batch_list = batch_records;
+        let _batch_list = batch_records;
         let eos_id = 151643;
 
-        let (output_indices, output_tensor) = unsafe { model.forward(sequences, eos_id) };
+        let (_output_indices, _output_tensor) = model.forward(sequences, eos_id);
 
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
