@@ -3,9 +3,9 @@ use std::thread;
 use std::time::Duration;
 
 use super::scheduler_plan::{PrefillCandidate, SliceScheduler};
-use super::state::{Phase, SequenceState};
 use crate::common::send_sync_ptr::SharedMut;
 use crate::common::sequence_slice::{DecodeList, SequenceSlice};
+use crate::common::state::{Phase, SequenceState};
 
 pub struct BatchScheduler {
     pub prefill_list: Vec<Vec<SequenceSlice>>,
