@@ -2,7 +2,7 @@
 
 ## 背景
 
-当前 `src/moe` 目录里同时承担了几类职责：
+当前 `src/transformer` 目录里同时承担了几类职责：
 
 1. 通用的 decoder-only 模型骨架：`model.rs`、`decoder_layer.rs`、`attention.rs`、`rope.rs`
 2. Qwen3-MoE 特定的 FFN 结构：`sparse_moe_block.rs`
@@ -25,7 +25,7 @@
 
 ### 1. 模块命名和职责不一致
 
-`src/moe` 里包含 attention、rope、decoder layer、整个 model，这些都不是 MoE 专属能力。目录名会持续误导后续扩展，导致 dense 模型也不得不塞进 `moe`。
+`src/transformer` 里包含 attention、rope、decoder layer、整个 model，这些都不是 MoE 专属能力。目录名会持续误导后续扩展，导致 dense 模型也不得不塞进 `moe`。
 
 ### 2. `DecoderLayer` 被写死为一种 block 组合
 
@@ -96,7 +96,7 @@
 
 ## 建议目录结构
 
-建议把 `src/moe` 逐步迁移为 `src/model`，并保留一段时间兼容导出。
+建议把 `src/transformer` 逐步迁移为 `src/model`，并保留一段时间兼容导出。
 
 ```text
 src/
@@ -138,7 +138,7 @@ src/
         names.rs
 ```
 
-如果短期内不想改公开模块名，也可以先保留 `src/moe`，但按上面的层次在内部重组，再在第二阶段改名。
+如果短期内不想改公开模块名，也可以先保留 `src/transformer`，但按上面的层次在内部重组，再在第二阶段改名。
 
 ## 核心抽象
 
@@ -356,7 +356,7 @@ pub enum FfnTensorNames {
 
 建议操作：
 
-1. 把 `src/moe` 改名为 `src/model`
+1. 把 `src/transformer` 改名为 `src/model`
 2. 在 `lib.rs` 中以兼容方式 re-export 一段时间
 3. 更新 `bin/`、测试、文档中的引用
 

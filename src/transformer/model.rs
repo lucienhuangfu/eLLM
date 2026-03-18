@@ -195,7 +195,7 @@ mod test {
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::mem_mgr::allocator::allocate_init;
-    use crate::moe::rope::precompute_freqs_cis_t;
+    use crate::transformer::rope::precompute_freqs_cis_t;
     use crate::runtime::inference::{Phase, SequenceState};
 
     #[test]

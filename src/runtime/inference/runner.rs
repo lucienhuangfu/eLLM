@@ -134,7 +134,7 @@ mod test {
 
     use super::*;
     use crate::mem_mgr::cache::Cache;
-    use crate::moe::sparse_moe_block::SparseMoeBlock;
+    use crate::transformer::sparse_moe_block::SparseMoeBlock;
     use crate::runtime::inference::{Phase, SequenceState};
     use crate::runtime::tensor::TensorCtx;
 

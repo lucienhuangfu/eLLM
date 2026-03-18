@@ -179,7 +179,7 @@ where
 mod test {
     use super::*;
     use crate::mem_mgr::cache::Cache;
-    use crate::moe::names::SparseMoeTensorNames;
+    use crate::transformer::names::SparseMoeTensorNames;
     use crate::runtime::operator::Operator;
     use std::cell::RefCell;
     use std::mem;

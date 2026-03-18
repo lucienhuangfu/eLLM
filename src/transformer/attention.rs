@@ -214,7 +214,7 @@ mod test {
 
         let self_attention = Attention::new(
             &config,
-            crate::moe::names::AttentionTensorNames {
+            crate::transformer::names::AttentionTensorNames {
                 scope: String::from("model.layers.1.self_attn"),
                 q_proj: String::from("model.layers.1.self_attn.q_proj.weight"),
                 k_proj: String::from("model.layers.1.self_attn.k_proj.weight"),
