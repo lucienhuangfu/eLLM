@@ -61,7 +61,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
         decode_size: usize,
         thread_num: usize,
         _thread_id: usize,
-        round_token_slices: &[SequenceSlice],
+        decode_list: &[SequenceSlice],
         batch_list: &mut Vec<SequenceState>,
     ) {
         if prefill_size == 0 && decode_size == 0 {
@@ -75,7 +75,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> TopKSoftmax<T
             let output_values_ptr = self.output_values_ptr.ptr;
             let output_sequences_ptr = self.output_sequences.ptr;
 
-            for slice in round_token_slices {
+            for slice in decode_list {
                 let batch_index = slice.batch_index;
                 let slice_length = slice.length;
                 if slice_length == 0 || batch_index >= batch_list.len() {
@@ -340,7 +340,7 @@ mod test {
     }
 
     #[test]
-    fn test_topk_softmax_skips_prefill_dummy_round_token_slices() {
+    fn test_topk_softmax_skips_prefill_dummy_decode_list() {
         let sequence_length = 4;
         let batch_size = 1;
         let topk_size = 2;
@@ -357,7 +357,7 @@ mod test {
             notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         }];
 
-        let round_token_slices = [SequenceSlice {
+        let decode_list = [SequenceSlice {
             batch_index: 0,
             sequence_index: 0,
             token_start_index: 0,
@@ -380,7 +380,7 @@ mod test {
             eos_id,
         );
 
-        operator.run(3, 1, thread_num, 0, &round_token_slices, &mut batch_list);
+        operator.run(3, 1, thread_num, 0, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[0].sequence_index, 6);
@@ -412,7 +412,7 @@ mod test {
             notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         }];
 
-        let round_token_slices = [SequenceSlice {
+        let decode_list = [SequenceSlice {
             batch_index: 0,
             sequence_index: 0,
             token_start_index: 0,
@@ -435,7 +435,7 @@ mod test {
             eos_id,
         );
 
-        operator.run(0, 1, thread_num, 0, &round_token_slices, &mut batch_list);
+        operator.run(0, 1, thread_num, 0, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[0].sequence_index, 3);
@@ -474,7 +474,7 @@ mod test {
             notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         }];
 
-        let round_token_slices = [SequenceSlice {
+        let decode_list = [SequenceSlice {
             batch_index: 0,
             sequence_index: 0,
             token_start_index: 0,
@@ -497,7 +497,7 @@ mod test {
             eos_id,
         );
 
-        operator.run(3, 1, thread_num, 0, &round_token_slices, &mut batch_list);
+        operator.run(3, 1, thread_num, 0, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[0].sequence_index, 6);
@@ -525,7 +525,7 @@ mod test {
             notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         }];
 
-        let round_token_slices = [SequenceSlice {
+        let decode_list = [SequenceSlice {
             batch_index: 0,
             sequence_index: 2,
             token_start_index: 0,
@@ -548,7 +548,7 @@ mod test {
             eos_id,
         );
 
-        operator.run(2, 0, thread_num, 0, &round_token_slices, &mut batch_list);
+        operator.run(2, 0, thread_num, 0, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Prefill);
         assert_eq!(batch_list[0].sequence_index, 4);

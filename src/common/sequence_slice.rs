@@ -17,11 +17,11 @@ pub struct DecodeLookupResult {
 }
 
 #[derive(Clone, Default)]
-pub struct RoundTokenSlices {
+pub struct DecodeList {
     slices: Vec<SequenceSlice>,
 }
 
-impl RoundTokenSlices {
+impl DecodeList {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             slices: Vec::with_capacity(capacity),
@@ -98,7 +98,7 @@ impl RoundTokenSlices {
     }
 }
 
-impl Deref for RoundTokenSlices {
+impl Deref for DecodeList {
     type Target = [SequenceSlice];
 
     fn deref(&self) -> &Self::Target {
@@ -108,10 +108,10 @@ impl Deref for RoundTokenSlices {
 
 #[cfg(test)]
 mod tests {
-    use super::{DecodeLookupResult, RoundTokenSlices, SequenceSlice};
+    use super::{DecodeList, DecodeLookupResult, SequenceSlice};
 
-    fn sample_slices() -> RoundTokenSlices {
-        let mut slices = RoundTokenSlices::with_capacity(2);
+    fn sample_slices() -> DecodeList {
+        let mut slices = DecodeList::with_capacity(2);
         slices.push(SequenceSlice {
             batch_index: 0,
             sequence_index: 0,
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn total_token_count_sums_slice_lengths() {
-        let mut slices = RoundTokenSlices::with_capacity(2);
+        let mut slices = DecodeList::with_capacity(2);
         slices.push(SequenceSlice {
             batch_index: 0,
             sequence_index: 0,
@@ -178,8 +178,8 @@ mod tests {
     }
 
     #[test]
-    fn round_token_slices_push_preserves_last_token_flag() {
-        let mut slices = RoundTokenSlices::with_capacity(1);
+    fn decode_list_push_preserves_last_token_flag() {
+        let mut slices = DecodeList::with_capacity(1);
         slices.push(SequenceSlice {
             batch_index: 0,
             sequence_index: 0,

@@ -20,13 +20,13 @@ impl<T> LiftVector<T> {
 
     pub fn run(
         &self,
-        prefill_size: usize,
+        _prefill_size: usize,
         _decode_size: usize,
-        round_token_slices: &[SequenceSlice],
+        decode_list: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
     ) {
-        let total_tokens = round_token_slices.len();
+        let total_tokens = decode_list.len();
         let Some((begin, end)) = assign(total_tokens, thread_num, thread_id) else {
             return;
         };
@@ -34,7 +34,7 @@ impl<T> LiftVector<T> {
         unsafe {
             let ptr = self.ptr.ptr;
 
-            for (offset, slice) in round_token_slices[begin..end].iter().enumerate() {
+            for (offset, slice) in decode_list[begin..end].iter().enumerate() {
                 if !slice.last_token_flag {
                     continue;
                 }
@@ -63,7 +63,7 @@ mod test {
             10.0, 11.0, 12.0,
         ];
 
-        let round_token_slices = vec![
+        let decode_list = vec![
             SequenceSlice {
                 batch_index: 0,
                 sequence_index: 0,
@@ -88,8 +88,8 @@ mod test {
         ];
 
         let lift_vector = LiftVector::new(data.as_mut_ptr(), length);
-        lift_vector.run(1, 0, &round_token_slices, 2, 0);
-        lift_vector.run(1, 0, &round_token_slices, 2, 1);
+    lift_vector.run(1, 0, &decode_list, 2, 0);
+    lift_vector.run(1, 0, &decode_list, 2, 1);
 
         assert_eq!(data[0..4], [1.0, 2.0, 3.0, 4.0]);
         assert_eq!(data[4..8], [5.0, 6.0, 7.0, 8.0]);

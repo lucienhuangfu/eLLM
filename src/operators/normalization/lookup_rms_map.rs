@@ -58,7 +58,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
         thread_num: usize,
         thread_id: usize,
         prefill_list: &[SequenceSlice],
-        round_token_slices: &[SequenceSlice],
+        decode_list: &[SequenceSlice],
     ) {
         if prefill_size > 0 {
             unsafe {
@@ -84,7 +84,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
                 }
             }
         } else if decode_size > 0 {
-            let Some((begin, end)) = assign(round_token_slices.len(), thread_num, thread_id) else {
+            let Some((begin, end)) = assign(decode_list.len(), thread_num, thread_id) else {
                 return;
             };
 
@@ -93,7 +93,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
                 let output_normal_ptr = self.output_normal_ptr.ptr;
                 let output_hidden_ptr = self.output_hidden_ptr.ptr;
 
-                for slice in &round_token_slices[begin..end] {
+                for slice in &decode_list[begin..end] {
                     if slice.length == 0 {
                         continue;
                     }
@@ -271,7 +271,7 @@ mod test {
     }
 
     #[test]
-    fn test_lookup_decode_f32_uses_assigned_round_token_slices() {
+    fn test_lookup_decode_f32_uses_assigned_decode_list() {
         let batch_size = 4;
         let hidden_size = 4;
         let vocab_size = 4;
@@ -285,7 +285,7 @@ mod test {
         let mut output_hidden_data: Vec<f32> = vec![0.0; batch_size * hidden_size];
         let mut output_normal_data: Vec<f32> = vec![0.0; batch_size * hidden_size];
 
-        let round_token_slices = vec![
+        let decode_list = vec![
             SequenceSlice {
                 batch_index: 0,
                 sequence_index: 0,
@@ -329,11 +329,11 @@ mod test {
         for thread_id in 0..thread_num {
             operator.run(
                 0,
-                round_token_slices.len(),
+                decode_list.len(),
                 thread_num,
                 thread_id,
                 &[],
-                &round_token_slices,
+                &decode_list,
             );
         }
 

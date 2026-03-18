@@ -88,11 +88,11 @@ where
         cpu_num: usize,
         thread_id: usize,
         prefill_list: &[Vec<SequenceSlice>],
-        round_token_slices: &[SequenceSlice],
+        decode_list: &[SequenceSlice],
         batch_list: &mut Vec<SequenceState>,
     ) {
         let prefill_slices = thread_slices(prefill_list, thread_id);
-        let decode_slices = assigned_decode_slices(round_token_slices, cpu_num, thread_id);
+        let decode_slices = assigned_decode_slices(decode_list, cpu_num, thread_id);
 
         macro_rules! run_simple {
             ($op:expr) => {
@@ -111,7 +111,7 @@ where
                 operator.run(
                     prefill_size,
                     decode_size,
-                    round_token_slices,
+                    decode_list,
                     cpu_num,
                     thread_id,
                 );
@@ -134,7 +134,7 @@ where
                 operator.run(
                     prefill_size,
                     decode_size,
-                    round_token_slices,
+                    decode_list,
                     cpu_num,
                     thread_id,
                 );
@@ -146,7 +146,7 @@ where
                     cpu_num,
                     thread_id,
                     prefill_slices,
-                    round_token_slices,
+                    decode_list,
                 );
             }
             Self::MatMul(operator) => {

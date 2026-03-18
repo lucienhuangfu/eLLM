@@ -5,11 +5,11 @@ use std::time::Duration;
 use super::scheduler_plan::{PrefillCandidate, SliceScheduler};
 use super::state::{Phase, SequenceState};
 use crate::common::send_sync_ptr::SharedMut;
-use crate::common::sequence_slice::{RoundTokenSlices, SequenceSlice};
+use crate::common::sequence_slice::{DecodeList, SequenceSlice};
 
 pub struct BatchScheduler {
     pub prefill_list: Vec<Vec<SequenceSlice>>,
-    pub round_token_slices: RoundTokenSlices,
+    pub decode_list: DecodeList,
     pub batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     prefill_scheduler: SliceScheduler,
     max_prefill_size: usize,
@@ -31,7 +31,7 @@ impl BatchScheduler {
         for task in self.prefill_list.iter_mut() {
             task.clear();
         }
-        self.round_token_slices.clear();
+        self.decode_list.clear();
     }
 
     fn plan_next_round(&self) -> BatchPlan {
@@ -104,7 +104,7 @@ impl BatchScheduler {
             thread_num,
             prefill_scheduler: SliceScheduler::new(batch_size * thread_num),
             prefill_list: build_prefill_list(),
-            round_token_slices: RoundTokenSlices::with_capacity(batch_size),
+            decode_list: DecodeList::with_capacity(batch_size),
         }
     }
 
@@ -114,7 +114,7 @@ impl BatchScheduler {
         for (batch_index, sequence_index) in decode_candidates {
             let token_start_index = decode_count;
 
-            self.round_token_slices.push(SequenceSlice {
+            self.decode_list.push(SequenceSlice {
                 batch_index,
                 sequence_index,
                 token_start_index,
@@ -138,8 +138,8 @@ impl BatchScheduler {
 
         let prefill_scheduler = &mut self.prefill_scheduler;
         let prefill_list = &mut self.prefill_list;
-        let round_token_slices = &mut self.round_token_slices;
-        self.batch_list.with_mut(|batch_list| {
+        let decode_list = &mut self.decode_list;
+        self.batch_list.with_mut(|_| {
             for candidate in prefill_candidates.iter().copied() {
                 if prefill_scheduler.is_done() {
                     break;
@@ -150,7 +150,7 @@ impl BatchScheduler {
                     .remaining
                     .min(prefill_scheduler.remaining_tokens());
                 if attention_length > 0 {
-                    round_token_slices.push(SequenceSlice {
+                    decode_list.push(SequenceSlice {
                         batch_index: candidate.batch_index,
                         sequence_index: candidate.sequence_index,
                         token_start_index: scheduled_before,
@@ -189,7 +189,7 @@ impl BatchScheduler {
                     total_tokens,
                 } => {
                     let prefill_count = self.schedule_prefill_round(candidates, total_tokens);
-                    return (prefill_count, self.round_token_slices.len());
+                    return (prefill_count, self.decode_list.len());
                 }
                 BatchPlan::Idle => {
                     thread::sleep(Duration::from_millis(1));
@@ -225,7 +225,7 @@ mod tests {
         // - prefill == 48 (all 8 * 6 tokens scheduled)
         // - decode == 0 (no decode tokens scheduled in prefill-only case)
         // - prefill_list[0..8] each has one slice starting at sequence position 0
-        // - round_token_slices records one full attention slice per record
+        // - decode_list records one full attention slice per record
         let batch_size = 32;
         let mut scheduler = BatchScheduler::new(8, batch_size, 8);
         scheduler.batch_list.with_mut(|batch_list| {
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(decode, 8);
 
         assert_eq!(scheduler.prefill_list.len(), 8);
-        assert_eq!(scheduler.round_token_slices.len(), 8);
+        assert_eq!(scheduler.decode_list.len(), 8);
 
         scheduler.batch_list.with(|batch_list| {
             for record in batch_list.iter().take(8) {
@@ -261,7 +261,7 @@ mod tests {
         }
 
         for sequence_offset in 0..8 {
-            let attention_slice = &scheduler.round_token_slices[sequence_offset];
+            let attention_slice = &scheduler.decode_list[sequence_offset];
             assert_eq!(attention_slice.batch_index, sequence_offset);
             assert_eq!(attention_slice.sequence_index, 0);
             assert_eq!(attention_slice.token_start_index, sequence_offset * 6);
@@ -296,18 +296,18 @@ mod tests {
         for task_index in 0..2 {
             assert!(scheduler.prefill_list[task_index].is_empty());
         }
-        assert_eq!(scheduler.round_token_slices.len(), 2);
-        assert_eq!(scheduler.round_token_slices[0].length, 1);
-        assert_eq!(scheduler.round_token_slices[1].length, 1);
-        assert!(scheduler.round_token_slices[0].last_token_flag);
-        assert!(scheduler.round_token_slices[1].last_token_flag);
+        assert_eq!(scheduler.decode_list.len(), 2);
+        assert_eq!(scheduler.decode_list[0].length, 1);
+        assert_eq!(scheduler.decode_list[1].length, 1);
+        assert!(scheduler.decode_list[0].last_token_flag);
+        assert!(scheduler.decode_list[1].last_token_flag);
 
-        let first = &scheduler.round_token_slices[0];
+        let first = &scheduler.decode_list[0];
         assert_eq!(first.batch_index, 0);
         assert_eq!(first.sequence_index, 11);
         assert_eq!(first.token_start_index, 0);
 
-        let second = &scheduler.round_token_slices[1];
+        let second = &scheduler.decode_list[1];
         assert_eq!(second.batch_index, 2);
         assert_eq!(second.sequence_index, 12);
         assert_eq!(second.token_start_index, 1);
@@ -334,8 +334,8 @@ mod tests {
         assert_eq!(prefill, 0);
         assert_eq!(decode, 1);
         assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
-        assert_eq!(scheduler.round_token_slices.len(), 1);
-        assert_eq!(scheduler.round_token_slices[0].batch_index, 0);
+        assert_eq!(scheduler.decode_list.len(), 1);
+        assert_eq!(scheduler.decode_list[0].batch_index, 0);
     }
 
     #[test]
@@ -410,29 +410,29 @@ mod tests {
             assert_eq!(batch_list[1].filling_length, 4);
         });
 
-        assert_eq!(scheduler.round_token_slices.len(), 2);
+        assert_eq!(scheduler.decode_list.len(), 2);
 
-        let first_attention = &scheduler.round_token_slices[0];
+        let first_attention = &scheduler.decode_list[0];
         assert_eq!(first_attention.batch_index, 0);
         assert_eq!(first_attention.sequence_index, 0);
         assert_eq!(first_attention.token_start_index, 0);
         assert_eq!(first_attention.length, 6);
         assert!(first_attention.last_token_flag);
 
-        let second_attention = &scheduler.round_token_slices[1];
+        let second_attention = &scheduler.decode_list[1];
         assert_eq!(second_attention.batch_index, 1);
         assert_eq!(second_attention.sequence_index, 0);
         assert_eq!(second_attention.token_start_index, 6);
         assert_eq!(second_attention.length, 2);
         assert!(!second_attention.last_token_flag);
 
-        let first_lift = &scheduler.round_token_slices[0];
+        let first_lift = &scheduler.decode_list[0];
         assert_eq!(first_lift.batch_index, 0);
         assert_eq!(first_lift.sequence_index, 0);
         assert_eq!(first_lift.token_start_index, 0);
         assert_eq!(first_lift.length, 6);
 
-        let second_lift = &scheduler.round_token_slices[1];
+        let second_lift = &scheduler.decode_list[1];
         assert_eq!(second_lift.batch_index, 1);
         assert_eq!(second_lift.sequence_index, 0);
         assert_eq!(second_lift.token_start_index, 6);
@@ -476,15 +476,15 @@ mod tests {
             assert_eq!(batch_list[1].filling_length, 0);
         });
 
-        assert_eq!(scheduler.round_token_slices.len(), 1);
-        let resumed_attention = &scheduler.round_token_slices[0];
+        assert_eq!(scheduler.decode_list.len(), 1);
+        let resumed_attention = &scheduler.decode_list[0];
         assert_eq!(resumed_attention.batch_index, 1);
         assert_eq!(resumed_attention.sequence_index, 2);
         assert_eq!(resumed_attention.token_start_index, 0);
         assert_eq!(resumed_attention.length, 4);
         assert!(resumed_attention.last_token_flag);
 
-        let resumed_lift = &scheduler.round_token_slices[0];
+        let resumed_lift = &scheduler.decode_list[0];
         assert_eq!(resumed_lift.batch_index, 1);
         assert_eq!(resumed_lift.sequence_index, 2);
         assert_eq!(resumed_lift.token_start_index, 0);
@@ -522,10 +522,10 @@ mod tests {
 
         assert_eq!(prefill, 6);
         assert_eq!(decode, 1);
-        assert_eq!(scheduler.round_token_slices.len(), 1);
-        assert_eq!(scheduler.round_token_slices[0].length, 6);
-        assert_eq!(scheduler.round_token_slices[0].token_start_index, 0);
-        assert!(scheduler.round_token_slices[0].last_token_flag);
+        assert_eq!(scheduler.decode_list.len(), 1);
+        assert_eq!(scheduler.decode_list[0].length, 6);
+        assert_eq!(scheduler.decode_list[0].token_start_index, 0);
+        assert!(scheduler.decode_list[0].last_token_flag);
 
         scheduler.batch_list.with(|batch_list| {
             assert_eq!(batch_list[0].sequence_index, 6);
