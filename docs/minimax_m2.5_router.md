@@ -1,10 +1,20 @@
 # MiniMax M2.5 Router 方案
 
-## 1. 目标
+## 1. 文档目的
 
-这份文档只讨论 `MiniMax-M2.5` 的 router 版本设计，不包含代码实现。
+这份文档说明 `MiniMax-M2.5` 的 router 设计，并对齐当前实现的结构。
 
-目标是把当前 `SparseMoeRouter` 从“通用 MoE 路由器”收敛成一条明确的 `MiniMax M2.5 Router` 方案，便于后续接入：
+重点不是贴代码，而是回答三个问题：
+
+1. 这个 router 为什么不能按普通 softmax MoE 理解
+2. 现在的实现把哪些 `operators` 合并在一起了
+3. 这些合并后的算子如何串成完整的数据流
+
+---
+
+## 2. Router 目标
+
+`MiniMax-M2.5` 的 router 需要满足这些约束：
 
 1. `num_local_experts = 256`
 2. `num_experts_per_tok = 8`
@@ -12,67 +22,172 @@
 4. `use_routing_bias = true`
 5. `gate` 不参与 fp8 转换
 
-从当前仓库里的 `models/MiniMax-M2.5/config.json` 看，这个模型族的 router 不是简单的 softmax top-k 变体，而是带有 sigmoid 打分和 routing bias 的门控版本。
+这说明它不是一个普通的 `softmax top-k` router，而是带有独立打分语义和 routing bias 的门控路由。
+
+因此，文档里把它定义为：
+
+> `MiniMaxM2RouterV1 = gate linear + sigmoid scoring + routing bias + top-k dispatch`
 
 ---
 
-## 2. 版本定义
+## 3. 总体结构
 
-建议把 `MiniMax-M2.5` 的 router 版本定义为：
+当前实现不是一个 operator 从头做到底，而是拆成两段：
 
-**Router V1: Gate Linear + Sigmoid Scoring + TopK Dispatch**
+1. `ExpertsSigmoidGate` 负责生成 expert 分数
+2. `ExpertsTopkNorm` 负责把分数转换成最终路由结果
 
-含义如下：
+也就是说，router 的处理链路可以概括为：
 
-1. `hidden_states` 先经过 gate 投影
-2. gate 输出不直接按普通 softmax 解释
-3. router 分数使用 sigmoid 风格的打分语义
-4. 取 top-k expert 做稀疏分发
-5. 如配置启用，则加入 routing bias
+`hidden_states -> gate scoring -> top-k norm -> dispatch buffers`
 
-这个版本适合当前仓库里“先做可运行骨架，再按模型族细化”的路线。
+这就是当前结构最重要的边界。
 
 ---
 
-## 3. 与当前 `router.rs` 的关系
+## 4. operator 合并方式
 
-当前 `src/transformer/sparse_moe/router.rs` 的行为可以概括为：
+这次代码改动的核心，是把原来分散的 gate 逻辑收拢到一个独立 operator 里。
 
-1. `hidden_states.matmul(gate_weight)`
-2. 调用 `experts_softmax_norm`
-3. 输出路由相关的四元组指针
+### 4.1 合并了什么
 
-它的语义更偏向“通用 softmax router”。
+`ExpertsSigmoidGate` 现在承担的不是单一的矩阵乘法，而是三件事的组合：
 
-而 `MiniMax M2.5` 需要的 router 版本应该额外具备：
+1. 线性投影
+2. routing bias 注入
+3. sigmoid 激活
 
-1. sigmoid scoring 语义
-2. routing bias
-3. 明确的 expert budget 约束
-4. 对 `num_local_experts = 256` 的本地专家组织方式
+这意味着 `gate` 这一步已经从“调用 matmul 后再补逻辑”，变成了一个完整的门控算子。
 
-所以这不是简单复用现有 router 的参数，而是应当把它视为一个独立 router 版本。
+### 4.2 没有合并什么
+
+有些能力仍然保持分离：
+
+1. `MatMul` 仍然是底层块乘能力的提供者
+2. `ExpertsTopkNorm` 仍然负责 top-k 选择和归一化
+3. dispatch buffer 的组织仍然由 router 上层维护
+
+所以这里的“合并”不是把所有逻辑揉成一个大函数，而是把最紧密的一段逻辑做成了一个语义完整的 operator。
+
+### 4.3 合并的价值
+
+这样拆分以后有三个直接好处：
+
+1. `gate` 的语义更清楚，不再依赖通用 `MatMul` 容器
+2. `routing bias` 不再是后处理补丁，而是计算链路的一部分
+3. kernel 只需要面向 gate 的语义，不需要知道上层 router 的完整形态
 
 ---
 
-## 4. 已知配置约束
+## 5. 计算流程
 
-基于本地配置文件，可稳定确认的约束有：
+### 5.1 Gate 投影
+
+`hidden_states` 先进入 gate 投影，得到每个 token 对全部 local experts 的原始分数。
+
+这里的分数不是普通分类头的输出，而是 router 的入口分数。
+
+### 5.2 Sigmoid scoring
+
+当前设计把 `sigmoid` 当成 router 的主语义。
+
+它表达的是每个 expert 的独立激活倾向，而不是 softmax 那种全局竞争式概率。
+
+### 5.3 Routing bias
+
+`use_routing_bias = true` 表示 bias 必须参与打分阶段，而不是在 top-k 之后补上。
+
+这样 bias 才会真正影响 expert 的排序和选择。
+
+### 5.4 Top-k 选择
+
+`num_experts_per_tok = 8` 决定了每个 token 需要保留 8 个 expert。
+
+因此后续的 `ExpertsTopkNorm` 负责：
+
+1. 选出 top-8 expert
+2. 生成对应权重
+3. 生成索引和指示信息
+
+---
+
+## 6. 代码层职责
+
+### 6.1 `ExpertsSigmoidGate`
+
+这个 operator 负责 gate 计算本身，内部已经包含：
+
+1. 输入和权重指针
+2. 输出缓冲区
+3. tile 调度参数
+4. 线程私有的 panel 池
+
+它的职责是把 gate 这一步算完整，而不是只调用一次普通 matmul。
+
+### 6.2 `MatMulTrait`
+
+`MatMulTrait` 保留为底层乘法接口。
+
+它的角色不是承载 router 语义，而是给 gate 提供复用的块乘能力和统一的计算入口。
+
+### 6.3 `ExpertsSigmoidGateTrait`
+
+这个 trait 把 gate 的语义挂到乘法路径上。
+
+它的作用是说明：这里不是普通矩阵乘法，而是带 sigmoid router 语义的 gate 计算。
+
+### 6.4 `ExpertsTopkNorm`
+
+这个 operator 负责 gate 输出之后的整理工作：
+
+1. top-k 选择
+2. 权重归一化
+3. expert 指示位和索引输出
+
+它和 `ExpertsSigmoidGate` 是串联关系，不是替代关系。
+
+---
+
+## 7. 数据流契约
+
+### 输入
+
+router 的输入主要有两类：
+
+1. `hidden_states`
+2. gate 权重和路由配置
+
+其中 `hidden_states` 是 token 级别表示，router 会据此计算每个 token 对 expert 的偏好。
+
+### 输出
+
+router 最终要提供给 MoE dispatch 的信息包括：
+
+1. token 到 expert 的选择结果
+2. token 到 expert 的路由权重
+3. token 分发和回收需要的索引
+4. top-k 对应的归一化信息
+
+当前实现中，这些信息是由 `ExpertsSigmoidGate` 和 `ExpertsTopkNorm` 分两步完成的。
+
+---
+
+## 8. 配置约束
+
+下面这些配置是当前 router 版本的关键边界：
 
 | 参数 | 值 | 含义 |
 | --- | --- | --- |
 | `hidden_size` | 3072 | router 输入维度 |
-| `num_attention_heads` | 48 | 不是 router 本体参数，但说明模型规模 |
-| `num_key_value_heads` | 8 | 不是 router 本体参数，但说明模型结构 |
 | `num_hidden_layers` | 62 | router 会在所有层中重复出现 |
 | `num_local_experts` | 256 | 本地 expert 总数 |
 | `num_experts_per_tok` | 8 | 每个 token 选择的 expert 数 |
 | `scoring_func` | `sigmoid` | router 的打分语义 |
-| `use_routing_bias` | `true` | 需要 bias 参与路由 |
+| `use_routing_bias` | `true` | bias 参与路由 |
 | `tie_word_embeddings` | `false` | 与 router 无直接关系 |
-| `qk_norm_type` | `per_layer` | 与 attention 相关，不是 router 核心参数 |
+| `qk_norm_type` | `per_layer` | attention 相关，不是 router 核心参数 |
 
-其中最关键的是前三个：
+这里最关键的是：
 
 1. `num_local_experts = 256`
 2. `num_experts_per_tok = 8`
@@ -82,168 +197,47 @@
 
 ---
 
-## 5. Router 输入输出契约
+## 9. 量化约束
 
-### 输入
-
-router 只接受两类输入语义：
-
-1. `hidden_states`
-2. router 相关的配置和命名信息
-
-其中 `hidden_states` 是 token 级别的表示，router 通过它计算每个 token 对各 expert 的偏好。
-
-### 输出
-
-router 输出应服务于后续 MoE dispatch，语义上需要包含：
-
-1. token 到 expert 的选择结果
-2. token 到 expert 的路由权重
-3. token 分发/回收所需的索引信息
-4. 与 top-k 选择一致的归一化信息
-
-如果沿用当前仓库的指针式返回方式，那么输出仍然可以是路由相关的低层数组；但从方案层面看，核心是这四类信息必须完整。
-
----
-
-## 6. Router 计算流程
-
-### 6.1 Gate 投影
-
-第一步是把 `hidden_states` 投影到 expert 维度。
-
-对 `MiniMax M2.5` 来说，这一步的含义不是“普通分类头”，而是“token 对全部 local experts 的打分入口”。
-
-### 6.2 Sigmoid scoring
-
-gate 输出不能只按普通 softmax 去理解。
-
-这里建议把 sigmoid 视为 router 的主语义：
-
-1. gate 输出先变成每个 expert 的独立激活倾向
-2. 再基于 expert budget 做 top-k 选择
-3. 选择结果再进入 dispatch
-
-这样可以保留 `sigmoid` 在多专家门控里的“独立打分”风格。
-
-### 6.3 TopK 选择
-
-模型给出的 `num_experts_per_tok = 8` 表明，每个 token 需要选择 8 个 expert。
-
-因此 router 的版本必须明确：
-
-1. 先排序或筛选 expert 分数
-2. 取前 8 个
-3. 输出对应权重和索引
-
-这一步不是可选项，而是 `MiniMax M2.5` router 的核心契约。
-
-### 6.4 Routing bias
-
-`use_routing_bias = true` 表示 routing bias 是 router 版本的一部分，不是外围修饰。
-
-文档层面的建议是：
-
-1. bias 应在 expert 打分阶段介入
-2. bias 应影响 top-k 的最终选择
-3. bias 不能只做输出后处理
-
-否则会破坏 router 的选择语义。
-
----
-
-## 7. Expert 组织方式
-
-`num_local_experts = 256` 表示 router 面对的是本地专家池，而不是概念上的单个专家列表。
-
-因此 router 版本需要显式支持：
-
-1. expert index 在本地池内闭包
-2. token 的 top-k 结果落在 `[0, 255]`
-3. dispatch 逻辑按本地 expert 池做分发
-
-这意味着 router 的编号体系应尽量稳定，不要把本地 expert 编号和全局模型编号混在一起。
-
----
-
-## 8. 与 fp8/量化的关系
-
-本地配置里有一条很重要的约束：
+配置里还有一条重要信息：
 
 `modules_to_not_convert = ["gate", "e_score_correction_bias", "lm_head"]`
 
-这意味着 router 相关模块在量化路径里应被保护，不应被当作普通可转换模块处理。
+这说明 router 相关模块不应该走普通量化转换路径。
 
-方案上建议把它解释为：
+文档上可以把它理解为：
 
 1. gate 保持高精度
 2. routing bias 保持高精度
 3. router 的数值稳定性优先于压缩率
 
-这也是 `MiniMax M2.5` router 版本需要单独定义的原因之一。
-
 ---
 
-## 9. 推荐的文档级版本命名
+## 10. 推荐命名
 
-为了后续在代码和文档里保持一致，建议采用下面的版本命名：
+为了保持代码和文档一致，建议使用下面的命名方式：
 
 1. `RouterV1`：`sigmoid + topk + routing bias`
 2. `MiniMaxM2RouterV1`：MiniMax M2.5 专用版本
-3. `SparseMoeRouterV1`：当前通用版本，保留给不带 sigmoid/bias 特性的模型
+3. `SparseMoeRouterV1`：通用 softmax router 版本
 
-如果后面再遇到其他 MiniMax 变体，可以继续往后演进：
+如果后面继续演进，可以再增加：
 
 1. `MiniMaxM2RouterV2`
 2. `MiniMaxM25RouterV1`
 
-这样文档和实现都能保持版本边界清楚。
-
 ---
 
-## 10. 接入建议
+## 11. 结论
 
-如果目标是让当前仓库尽快支持 `MiniMax M2.5`，建议按下面顺序接入：
+`MiniMax-M2.5` 的 router 更适合被视为一个独立版本，而不是 `SparseMoeRouter` 的简单参数化。
 
-1. 先把 router 版本分出来，不和现有通用 router 混用
-2. 再把 `sigmoid scoring` 和 `routing bias` 作为独立配置项描述
-3. 然后补上 `num_local_experts = 256` 和 `num_experts_per_tok = 8`
-4. 最后再决定是否需要和现有 `SparseMoeRouter` 共享底层 dispatch 逻辑
+当前实现的关键点可以总结为：
 
-这里的原则是：
+1. `gate` 已经合并了 `matmul + routing bias + sigmoid`
+2. `router` 上层仍然保留 `gate -> topk` 的两段式结构
+3. `ExpertsTopkNorm` 负责把分数翻译成 dispatch 需要的最终结果
 
-1. 版本先清晰
-2. 语义先明确
-3. 复用后置
-
-这样做的好处是不会把“通用 MoE router”和“MiniMax M2.5 router”混成一类。
-
----
-
-## 11. 不建议的做法
-
-1. 不建议直接把现有 `softmax router` 当成 `MiniMax M2.5` 的完整实现
-2. 不建议把 routing bias 只做成后处理补丁
-3. 不建议把 gate 量化路径和普通线性层完全等同
-4. 不建议把 `num_local_experts` 和 `num_experts_per_tok` 藏到散落的常量里
-
-这些做法会让后续调试很难定位 router 行为。
-
----
-
-## 12. 结论
-
-`MiniMax M2.5` 的 router 更适合被定义为一个独立版本，而不是当前 `SparseMoeRouter` 的简单参数化。
-
-推荐的文档结论是：
+如果只保留一句话：
 
 > `MiniMaxM2RouterV1 = gate linear + sigmoid scoring + routing bias + top-k dispatch`
-
-它对应的关键配置是：
-
-1. `num_local_experts = 256`
-2. `num_experts_per_tok = 8`
-3. `scoring_func = sigmoid`
-4. `use_routing_bias = true`
-
-如果你要，我下一步可以继续给你补一份同风格的 `docs/minimax_m2.5_moe_block.md`，把 router 和 expert dispatch 的配套方案也写完整。

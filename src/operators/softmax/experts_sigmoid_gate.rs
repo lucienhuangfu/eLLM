@@ -1,17 +1,26 @@
 use std::f16;
+use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use crate::common::matmul_params::MatMulParams;
 use crate::common::num_traits::Sigmoid;
-use crate::common::send_sync_ptr::ConstPtr;
+use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::assign::assign;
-use crate::operators::linear::MatMul;
 use crate::kernel;
-use crate::operators::traits::ExpertsSigmoidGateTrait;
+use crate::operators::traits::{ExpertsSigmoidGateTrait, MatMulTrait};
 
 #[derive(Clone)]
 pub struct ExpertsSigmoidGate<T> {
-    matmul: MatMul<T>,
+    pub ptr1: ConstPtr<T>,
+    pub ptr2: ConstPtr<T>,
+    pub output_ptr: MutPtr<T>,
+    pub params: MatMulParams,
+    pub _marker: PhantomData<T>,
+    pub m_max: usize,
+    pub n_max: usize,
+    pub k_max: usize,
+    b_panel_pool: Box<[T]>,
+    b_panel_stride_elems: usize,
     bias_ptr: Option<ConstPtr<T>>,
     use_routing_bias: bool,
     num_experts: usize,
@@ -30,23 +39,32 @@ where
         batch_size: usize,
         num_experts: usize,
         hidden_size: usize,
-        decode_only_flag: bool,
+        _decode_only_flag: bool,
         use_routing_bias: bool,
     ) -> Self {
-        let matmul = MatMul::new(
-            input_ptr,
-            gate_weight_ptr,
-            output_ptr,
-            false,
-            params,
-            batch_size,
-            num_experts,
-            hidden_size,
-            decode_only_flag,
-        );
+        let kc = params.column_step_macro.max(1);
+        let nr = params.b_row_step_micro.max(1);
+        let b_panel_stride_elems = kc * nr;
+
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let pool_len = threads * b_panel_stride_elems;
+        let b_panel_pool: Vec<T> = vec![T::default(); pool_len];
 
         Self {
-            matmul,
+            ptr1: ConstPtr { ptr: input_ptr },
+            ptr2: ConstPtr {
+                ptr: gate_weight_ptr,
+            },
+            output_ptr: MutPtr { ptr: output_ptr },
+            params,
+            _marker: PhantomData,
+            m_max: batch_size,
+            n_max: num_experts,
+            k_max: hidden_size,
+            b_panel_pool: b_panel_pool.into_boxed_slice(),
+            b_panel_stride_elems,
             bias_ptr: bias_ptr.map(|ptr| ConstPtr { ptr }),
             use_routing_bias,
             num_experts,
@@ -58,25 +76,43 @@ impl<T> ExpertsSigmoidGate<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default + Sigmoid,
 {
+    #[inline(always)]
+    pub fn panel_threads(&self) -> usize {
+        if self.b_panel_stride_elems == 0 {
+            0
+        } else {
+            self.b_panel_pool.len() / self.b_panel_stride_elems
+        }
+    }
+
+    #[inline(always)]
+    pub fn thread_b_panel_ptr(&self, thread_id: usize) -> *mut T {
+        unsafe {
+            self.b_panel_pool
+                .as_ptr()
+                .add(thread_id * self.b_panel_stride_elems) as *mut T
+        }
+    }
+
     pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize) {
         unsafe {
             let m_run = prefill_size;
-            let n = self.matmul.n_max;
-            let k = self.matmul.k_max;
+            let n = self.n_max;
+            let k = self.k_max;
 
-            let mb = self.matmul.params.a_row_step_macro.max(1);
-            let nb = self.matmul.params.b_row_step_macro.max(1);
-            let kc = self.matmul.params.column_step_macro.max(1);
-            let mr = self.matmul.params.a_row_step_micro.max(1);
-            let nr = self.matmul.params.b_row_step_micro.max(1);
+            let mb = self.params.a_row_step_macro.max(1);
+            let nb = self.params.b_row_step_macro.max(1);
+            let kc = self.params.column_step_macro.max(1);
+            let mr = self.params.a_row_step_micro.max(1);
+            let nr = self.params.b_row_step_micro.max(1);
 
             let m_pad = ((m_run + mr - 1) / mr) * mr;
-            debug_assert!(m_pad <= self.matmul.m_max);
+            debug_assert!(m_pad <= self.m_max);
             debug_assert!(mb % mr == 0);
             debug_assert!(n % nr == 0);
             debug_assert!(k % kc == 0);
 
-            let max_threads = self.matmul.panel_threads();
+            let max_threads = self.panel_threads();
             debug_assert!(thread_num >= 1);
             debug_assert!(thread_id < thread_num);
             debug_assert!(thread_num <= max_threads);
@@ -97,7 +133,7 @@ where
 
                     debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
 
-                    self.compute(m0, n0, m_blk, n_blk, thread_id);
+                    <Self as ExpertsSigmoidGateTrait<T>>::compute(self, m0, n0, m_blk, n_blk, thread_id);
                 }
             }
         }
@@ -109,8 +145,8 @@ where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default + Sigmoid,
 {
     default fn compute(&self, m0: usize, n0: usize, m_blk: usize, n_blk: usize, thread_id: usize) {
-        kernel::scalar::experts_sigmoid_gate::experts_sigmoid_gate(
-            &self.matmul,
+        kernel::scalar::block_experts_sigmoid_gate::experts_sigmoid_gate(
+            self,
             self.bias_ptr.map(|ptr| ptr.ptr),
             self.use_routing_bias,
             self.num_experts,
@@ -125,8 +161,8 @@ where
 
 impl ExpertsSigmoidGateTrait<f16> for ExpertsSigmoidGate<f16> {
     fn compute(&self, m0: usize, n0: usize, m_blk: usize, n_blk: usize, thread_id: usize) {
-        kernel::scalar::experts_sigmoid_gate::experts_sigmoid_gate(
-            &self.matmul,
+        kernel::scalar::block_experts_sigmoid_gate::experts_sigmoid_gate(
+            self,
             self.bias_ptr.map(|ptr| ptr.ptr),
             self.use_routing_bias,
             self.num_experts,
@@ -141,8 +177,8 @@ impl ExpertsSigmoidGateTrait<f16> for ExpertsSigmoidGate<f16> {
 
 impl ExpertsSigmoidGateTrait<f32> for ExpertsSigmoidGate<f32> {
     fn compute(&self, m0: usize, n0: usize, m_blk: usize, n_blk: usize, thread_id: usize) {
-        kernel::scalar::experts_sigmoid_gate::experts_sigmoid_gate(
-            &self.matmul,
+        kernel::scalar::block_experts_sigmoid_gate::experts_sigmoid_gate(
+            self,
             self.bias_ptr.map(|ptr| ptr.ptr),
             self.use_routing_bias,
             self.num_experts,
@@ -152,5 +188,66 @@ impl ExpertsSigmoidGateTrait<f32> for ExpertsSigmoidGate<f32> {
             n_blk,
             thread_id,
         );
+    }
+}
+
+impl<T> MatMulTrait<T> for ExpertsSigmoidGate<T>
+where
+    T: Copy + Add<Output = T> + Mul<Output = T>,
+{
+    default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T) {
+        let call_param = MatMulParams {
+            a_row_step_macro: self.k_max,
+            b_row_step_macro: self.n_max,
+            column_step_macro: self.params.column_step_macro,
+            a_row_step_micro: self.params.a_row_step_micro,
+            b_row_step_micro: self.params.b_row_step_micro,
+        };
+
+        kernel::scalar::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
+    }
+
+    default fn compute2(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T, length: usize) {
+        kernel::scalar::dot_product::dot_product(input_ptr1, input_ptr2, output_ptr, length);
+    }
+}
+
+impl MatMulTrait<f16> for ExpertsSigmoidGate<f16> {
+    fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
+        let call_param = MatMulParams {
+            a_row_step_macro: self.k_max,
+            b_row_step_macro: self.n_max,
+            column_step_macro: self.params.column_step_macro,
+            a_row_step_micro: self.params.a_row_step_micro,
+            b_row_step_micro: self.params.b_row_step_micro,
+        };
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            kernel::x86_64::f16_512::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        kernel::scalar::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
+    }
+
+    fn compute2(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16, length: usize) {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            kernel::x86_64::f16_512::dot_product::dot_product(input_ptr1, input_ptr2, output_ptr, length);
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        kernel::scalar::dot_product::dot_product(input_ptr1, input_ptr2, output_ptr, length);
+    }
+}
+
+impl MatMulTrait<f32> for ExpertsSigmoidGate<f32> {
+    fn compute(&self, _input_ptr1: *const f32, _input_ptr2: *const f32, _output_ptr: *mut f32) {
+        /* TODO */
+    }
+
+    fn compute2(&self, _input_ptr1: *const f32, _input_ptr2: *const f32, _output_ptr: *mut f32, _length: usize) {
+        /* TODO */
     }
 }

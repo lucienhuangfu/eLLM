@@ -38,7 +38,7 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
                 == Ordering::Less
             {
                 self.set(0, value, index);
-                self.sift_down(0);
+                self.sift_down(0, self.len);
             }
         }
     }
@@ -47,23 +47,12 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
     }
 
     pub fn sort_desc(&mut self) {
+        let mut heap_len = self.len;
         unsafe {
-            for i in 0..self.len {
-                let mut max = i;
-                for j in (i + 1)..self.len {
-                    if Self::cmp_pair(
-                        self.value_at(j),
-                        self.index_at(j),
-                        self.value_at(max),
-                        self.index_at(max),
-                    ) == Ordering::Greater
-                    {
-                        max = j;
-                    }
-                }
-                if max != i {
-                    self.swap(i, max);
-                }
+            while heap_len > 1 {
+                heap_len -= 1;
+                self.swap(0, heap_len);
+                self.sift_down(0, heap_len);
             }
         }
     }
@@ -120,16 +109,16 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
         }
     }
 
-    fn sift_down(&mut self, mut idx: usize) {
+    fn sift_down(&mut self, mut idx: usize, heap_len: usize) {
         unsafe {
             loop {
                 let left = (idx << 1) + 1;
-                if left >= self.len {
+                if left >= heap_len {
                     break;
                 }
                 let right = left + 1;
                 let mut smallest = left;
-                if right < self.len && self.cmp_at(right, left) == Ordering::Less {
+                if right < heap_len && self.cmp_at(right, left) == Ordering::Less {
                     smallest = right;
                 }
                 if self.cmp_at(smallest, idx) == Ordering::Less {

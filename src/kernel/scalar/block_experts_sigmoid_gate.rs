@@ -1,11 +1,12 @@
+use std::f16;
 use std::ops::{Add, Mul};
 
 use crate::common::num_traits::Sigmoid;
-use crate::operators::linear::MatMul;
+use crate::operators::softmax::experts_sigmoid_gate::ExpertsSigmoidGate;
 use crate::operators::traits::MatMulTrait;
 
 pub fn experts_sigmoid_gate<T>(
-    matmul: &MatMul<T>,
+    gate: &ExpertsSigmoidGate<T>,
     bias_ptr: Option<*const T>,
     use_routing_bias: bool,
     num_experts: usize,
@@ -18,28 +19,28 @@ pub fn experts_sigmoid_gate<T>(
     T: Copy + Add<Output = T> + Mul<Output = T> + Default + Sigmoid,
 {
     unsafe {
-        let n = matmul.n_max;
-        let k = matmul.k_max;
+        let n = gate.n_max;
+        let k = gate.k_max;
 
-        let kc = matmul.params.column_step_macro.max(1);
-        let mr = matmul.params.a_row_step_micro.max(1);
-        let nr = matmul.params.b_row_step_micro.max(1);
+        let kc = gate.params.column_step_macro.max(1);
+        let mr = gate.params.a_row_step_micro.max(1);
+        let nr = gate.params.b_row_step_micro.max(1);
 
         debug_assert!(m_blk % mr == 0);
         debug_assert!(n_blk % nr == 0);
         debug_assert!(k % kc == 0);
 
-        debug_assert!(m0 + m_blk <= matmul.m_max);
+        debug_assert!(m0 + m_blk <= gate.m_max);
         debug_assert!(n0 + n_blk <= n);
 
-        let a_base = matmul.ptr1.ptr;
-        let c_base = matmul.output_ptr.ptr;
+        let a_base = gate.ptr1.ptr;
+        let c_base = gate.output_ptr.ptr;
         let lda = k;
         let ldc = n;
 
-        let b_nt_ptr = matmul.ptr2.ptr;
+        let b_nt_ptr = gate.ptr2.ptr;
         let ldb_row = k;
-        let b_panel_ptr = matmul.thread_b_panel_ptr(thread_id);
+        let b_panel_ptr = gate.thread_b_panel_ptr(thread_id);
 
         let bias_slice = if use_routing_bias {
             bias_ptr.map(|ptr| std::slice::from_raw_parts(ptr, num_experts))
@@ -79,7 +80,7 @@ pub fn experts_sigmoid_gate<T>(
                     let a_tile = a_base.add((m0 + mi) * lda + k0);
                     let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
 
-                    matmul.compute(a_tile, b_panel_ptr as *const T, c_tile);
+                    MatMulTrait::compute(gate, a_tile, b_panel_ptr as *const T, c_tile);
                     apply_sigmoid_bias_tile(c_tile, bias_slice, nt, mr, nr, ldc);
                     mi += mr;
                 }

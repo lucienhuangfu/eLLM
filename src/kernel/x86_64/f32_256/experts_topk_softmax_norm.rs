@@ -93,7 +93,7 @@ pub unsafe fn get_topk(
         }
     }
     debug_assert_eq!(heap.len(), topk);
-    // heap.sort_desc();
+    heap.sort_desc();
 }
 
 #[inline(always)]
