@@ -7,8 +7,72 @@ use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::runtime::tensor::{Tensor, TensorCtx};
 
-use super::router::SparseMoeRouter;
+use crate::transformer::config::RouterScoringKind;
+use super::router_sigmoid::SparseMoeSigmoidRouter;
+use super::router_softmax::SparseMoeSoftmaxRouter;
 use super::super::names::SparseMoeTensorNames;
+
+#[derive(Clone)]
+enum SparseMoeRouter<T>
+where
+    T: Copy + PartialOrd,
+{
+    Softmax(SparseMoeSoftmaxRouter<T>),
+    Sigmoid(SparseMoeSigmoidRouter<T>),
+}
+
+impl<T> SparseMoeRouter<T>
+where
+    T: Copy
+        + PartialOrd
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid
+        + Sqrt
+        + AddAssign,
+{
+    fn new(
+        hidden_size: usize,
+        num_experts: usize,
+        num_topk: usize,
+        gate_weight: Tensor<T>,
+        gate_bias: Option<Tensor<T>>,
+        router_scoring: RouterScoringKind,
+        scope_name: String,
+    ) -> Self {
+        match router_scoring {
+            RouterScoringKind::Softmax => Self::Softmax(SparseMoeSoftmaxRouter::new(
+                hidden_size,
+                num_experts,
+                num_topk,
+                gate_weight,
+                scope_name,
+            )),
+            RouterScoringKind::Sigmoid => Self::Sigmoid(SparseMoeSigmoidRouter::new(
+                hidden_size,
+                num_experts,
+                num_topk,
+                gate_weight,
+                gate_bias,
+                scope_name,
+            )),
+        }
+    }
+
+    fn route_tokens(
+        &self,
+        hidden_states: &Tensor<T>,
+        decode_only_flag: bool,
+    ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
+        match self {
+            Self::Softmax(router) => router.route_tokens(hidden_states, decode_only_flag),
+            Self::Sigmoid(router) => router.route_tokens(hidden_states, decode_only_flag),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct SparseMoe<T>
@@ -43,11 +107,24 @@ where
         num_experts: usize,
         num_topk: usize,
         _norm_topk_prob: bool,
+        router_scoring: RouterScoringKind,
+        use_routing_bias: bool,
         names: SparseMoeTensorNames,
         ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         let scope_name = names.scope.clone();
         let gate_weight = ctx.zeros(vec![num_experts, hidden_size], names.router_gate);
+        let router_bias = if use_routing_bias {
+            Some(ctx.zeros(
+                vec![num_experts],
+                names
+                    .router_bias
+                    .clone()
+                    .unwrap_or_else(|| format!("{}.e_score_correction_bias", scope_name)),
+            ))
+        } else {
+            None
+        };
 
         Self {
             num_experts,
@@ -57,6 +134,8 @@ where
                 num_experts,
                 num_topk,
                 gate_weight,
+                router_bias.clone(),
+                router_scoring,
                 scope_name.clone(),
             ),
             experts_gate_weight: ctx.zeros(

@@ -166,9 +166,12 @@ mod test {
             num_experts,
             top_k,
             norm_topk_prob,
+            crate::transformer::config::RouterScoringKind::Softmax,
+            false,
             SparseMoeTensorNames {
                 scope: String::from("model.layers.0.mlp"),
                 router_gate: String::from("model.layers.0.mlp.gate.weight"),
+                router_bias: None,
                 experts_gate_proj: String::from("model.layers.0.mlp.experts.gate_proj.weight"),
                 experts_up_proj: String::from("model.layers.0.mlp.experts.up_proj.weight"),
                 experts_down_proj: String::from("model.layers.0.mlp.experts.down_proj.weight"),

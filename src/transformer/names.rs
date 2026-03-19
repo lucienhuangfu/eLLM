@@ -29,6 +29,7 @@ pub struct DenseMlpTensorNames {
 pub struct SparseMoeTensorNames {
     pub scope: String,
     pub router_gate: String,
+    pub router_bias: Option<String>,
     pub experts_gate_proj: String,
     pub experts_up_proj: String,
     pub experts_down_proj: String,
@@ -91,6 +92,7 @@ pub fn layer_tensor_names(config: &Config, layer_idx: usize) -> LayerTensorNames
             FfnTensorNames::SparseMoe(SparseMoeTensorNames {
                 scope: ffn_scope.clone(),
                 router_gate: format!("{}.gate.weight", ffn_scope),
+                router_bias: Some(format!("{}.e_score_correction_bias", ffn_scope)),
                 experts_gate_proj: format!("{}.experts.gate_proj.weight", ffn_scope),
                 experts_up_proj: format!("{}.experts.up_proj.weight", ffn_scope),
                 experts_down_proj: format!("{}.experts.down_proj.weight", ffn_scope),

@@ -7,6 +7,8 @@ use crate::runtime::inference::SequenceState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::operators::routing::ExpertsSoftmaxNorm;
+use crate::operators::routing::ExpertsSigmoidGate;
+use crate::operators::routing::ExpertsTopkNorm;
 use crate::operators::transform::LookupRMSMap;
 
 use crate::operators::routing::TopKSoftmax;
@@ -17,6 +19,7 @@ use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMerg
 use crate::operators::movement::LiftVector;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddZipMap;
+use crate::operators::transform::SigmoidMap;
 use crate::operators::transform::{AddRMSZipMap, RMSMap};
 // use super::zip_map::complex_zip::ComplexZipMap;
 // use super::zip_map::silu_mul_zip::SiluMulZipMap;
@@ -53,7 +56,9 @@ pub enum Operator<T>
     ExpertsMatMulDown(ExpertsMatMulDown<T>),
     ExpertsMatMulSilu(ExpertsMatMulSilu<T>),
     ExpertsMergeAdd(ExpertsMergeAdd<T>),
+    ExpertsSigmoidGate(ExpertsSigmoidGate<T>),
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
+    ExpertsTopkNorm(ExpertsTopkNorm<T>),
     LiftVector(LiftVector<T>),
     LookupRMSMap(LookupRMSMap<T>),
     MatMul(MatMul<T>),
@@ -62,6 +67,7 @@ pub enum Operator<T>
     // MatMulSiluMulMatMul(MatMulSilu<T>),
     MatMulTopK(MatMulTopK<T>),
     RMSMap(RMSMap<T>),
+    SigmoidMap(SigmoidMap<T>),
     // SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
     TopKSoftmax(TopKSoftmax<T>),
@@ -127,7 +133,13 @@ where
             Self::ExpertsMergeAdd(operator) => {
                 run_simple!(operator);
             }
+            Self::ExpertsSigmoidGate(operator) => {
+                run_simple!(operator);
+            }
             Self::ExpertsSoftmaxNorm(operator) => {
+                run_simple!(operator);
+            }
+            Self::ExpertsTopkNorm(operator) => {
                 run_simple!(operator);
             }
             Self::LiftVector(operator) => {
@@ -192,6 +204,9 @@ where
               Self::ComplexZipMap(operator) => {
                   operator.run(prefill_size, cpu_num, thread_id);
               }*/
+            Self::SigmoidMap(operator) => {
+                run_simple!(operator);
+            }
         }
     }
 }

@@ -13,7 +13,10 @@ use crate::mem_mgr::cache::Cache;
 
 use crate::operators::movement::LiftVector;
 use crate::operators::routing::ExpertsSoftmaxNorm;
+use crate::operators::routing::ExpertsSigmoidGate;
+use crate::operators::routing::ExpertsTopkNorm;
 use crate::operators::transform::LookupRMSMap;
+use crate::operators::transform::SigmoidMap;
 
 use crate::common::sequence_slice::SequenceSlice;
 use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
@@ -77,6 +80,7 @@ where
     T: Copy
         + PartialOrd
         + Default
+        + Add<Output = T>
         + Sub<Output = T>
         + Neg<Output = T>
         + Exp
@@ -192,6 +196,22 @@ where
             self.shape[1],
             // weight,
             eps,
+        ));
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+    pub fn sigmoid(&self, tensor_name: String) -> Self {
+        let output_tensor = <Tensor<T>>::from_cache(
+            self.shape.clone(),
+            tensor_name,
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+        let operator = Operator::SigmoidMap(SigmoidMap::new(
+            self.data,
+            output_tensor.data,
+            self.shape.iter().product(),
         ));
         self.operator_queue.borrow_mut().push(operator);
         output_tensor
@@ -400,6 +420,99 @@ where
         ));
         self.operator_queue.borrow_mut().push(operator);
         (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr)
+    }
+
+    pub fn experts_sigmoid_gate(
+        &self,
+        gate_weight: &Tensor<T>,
+        bias_tensor: Option<&Tensor<T>>,
+        decode_only_flag: bool,
+        scope_name: String,
+    ) -> Self {
+        if let Some(bias_tensor) = bias_tensor {
+            assert_eq!(
+                bias_tensor.shape,
+                vec![gate_weight.shape[0]],
+                "experts_sigmoid_gate bias shape mismatch"
+            );
+        }
+
+        let output_shape = vec![self.shape[0], gate_weight.shape[0]];
+        let output_tensor = Tensor::from_cache(
+            output_shape.clone(),
+            format!("{}.output", scope_name),
+            self.cache.clone(),
+            self.operator_queue.clone(),
+        );
+
+        let params = MatMulParams {
+            a_row_step_macro: 3,
+            b_row_step_macro: 128,
+            column_step_macro: 16,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+
+        let operator = Operator::ExpertsSigmoidGate(unsafe {
+            ExpertsSigmoidGate::new(
+                self.data,
+                gate_weight.data,
+                bias_tensor.map(|tensor| tensor.data as *const T),
+                output_tensor.data,
+                params,
+                self.shape[0],
+                gate_weight.shape[0],
+                self.shape[1],
+                decode_only_flag,
+                bias_tensor.is_some(),
+            )
+        });
+        self.operator_queue.borrow_mut().push(operator);
+        output_tensor
+    }
+
+    fn experts_topk_norm_impl(
+        &self,
+        num_experts: usize,
+        num_experts_per_tok: usize,
+        decode_only_flag: bool,
+        _scope_name: String,
+    ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
+        let experts_indicator = unsafe { allocate_init(num_experts, false) };
+        let length = num_experts * self.shape[0];
+        let indice_ptr = unsafe { allocate_init(length, false) };
+        let weight_ptr = unsafe { allocate_init(length, T::default()) };
+        let topk_indices_ptr = unsafe { allocate_init(num_experts_per_tok * self.shape[0], 0usize) };
+
+        let operator = Operator::ExpertsTopkNorm(ExpertsTopkNorm::new(
+            self.data,
+            experts_indicator,
+            indice_ptr,
+            weight_ptr,
+            topk_indices_ptr,
+            self.shape[0],
+            num_experts,
+            num_experts_per_tok,
+            decode_only_flag,
+        ));
+        self.operator_queue.borrow_mut().push(operator);
+        (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr)
+    }
+
+    pub fn experts_topk_norm(
+        &self,
+        num_experts: usize,
+        num_experts_per_tok: usize,
+        _bias_tensor: Option<&Tensor<T>>,
+        decode_only_flag: bool,
+        scope_name: String,
+    ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
+        self.experts_topk_norm_impl(
+            num_experts,
+            num_experts_per_tok,
+            decode_only_flag,
+            scope_name,
+        )
     }
 
     pub fn from_cache(

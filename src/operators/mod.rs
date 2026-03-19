@@ -4,6 +4,7 @@ pub mod attention;
 pub mod elementwise {
     pub mod add_zip;
     pub mod complex_zip;
+    pub mod sigmoid_map;
     pub mod silu_mul_zip;
 }
 
@@ -48,17 +49,22 @@ pub mod normalization {
 pub mod routing {
     pub use super::matmul::matmul_topk::MatMulTopK;
     pub use super::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;
+    pub use super::softmax::experts_sigmoid_gate::ExpertsSigmoidGate;
+    pub use super::softmax::experts_topk_norm::ExpertsTopkNorm;
     pub use super::softmax::topk_softmax::TopKSoftmax;
 }
 
 pub mod softmax {
+    pub mod experts_sigmoid_gate;
     pub mod experts_softmax_norm;
+    pub mod experts_topk_norm;
     pub mod topk_softmax;
 }
 
 pub mod transform {
     pub use super::elementwise::add_zip::AddZipMap;
     pub use super::elementwise::complex_zip::ComplexZipMap;
+    pub use super::elementwise::sigmoid_map::SigmoidMap;
     pub use super::elementwise::silu_mul_zip::SiluMulZipMap;
     pub use super::normalization::add_rms_zip::AddRMSZipMap;
     pub use super::normalization::lookup_rms_map::LookupRMSMap;
@@ -73,5 +79,8 @@ pub mod traits {
     pub use expert::{ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait};
     pub use linear::{AttentionTrait, MatMulAddTrait, MatMulTrait, MatMulkqvTrait};
     pub use map::{MapTrait, ZipMapTrait};
-    pub use softmax::{MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
+    pub use softmax::{
+        ExpertsSigmoidGateTrait, ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait,
+        TopKSoftmaxTrait,
+    };
 }

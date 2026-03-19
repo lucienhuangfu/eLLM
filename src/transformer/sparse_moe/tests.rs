@@ -4,6 +4,7 @@ use std::rc::Rc;
 use crate::mem_mgr::cache::Cache;
 use crate::runtime::operator::Operator;
 use crate::runtime::tensor::{Tensor, TensorCtx};
+use crate::transformer::config::RouterScoringKind;
 use crate::transformer::names::SparseMoeTensorNames;
 
 use super::SparseMoe;
@@ -55,6 +56,8 @@ fn build_case(
     intermediate_size: usize,
     num_experts: usize,
     top_k: usize,
+    router_scoring: RouterScoringKind,
+    use_routing_bias: bool,
 ) -> (SparseMoe<f16>, Tensor<f16>, Tensor<f16>) {
     let cache = Rc::new(RefCell::new(Cache::<f16>::new(
         std::collections::HashMap::new(),
@@ -68,9 +71,12 @@ fn build_case(
         num_experts,
         top_k,
         true,
+        router_scoring,
+        use_routing_bias,
         SparseMoeTensorNames {
             scope: String::from("model.layers.0.mlp"),
             router_gate: String::from("model.layers.0.mlp.gate.weight"),
+            router_bias: None,
             experts_gate_proj: String::from("model.layers.0.mlp.experts.gate_proj.weight"),
             experts_up_proj: String::from("model.layers.0.mlp.experts.up_proj.weight"),
             experts_down_proj: String::from("model.layers.0.mlp.experts.down_proj.weight"),
@@ -87,7 +93,16 @@ fn build_case(
 
 #[test]
 fn test_sparse_moe_queue_structure() {
-    let (moe, input, residual) = build_case(1, 24, 256, 1024, 128, 8);
+    let (moe, input, residual) = build_case(
+        1,
+        24,
+        256,
+        1024,
+        128,
+        8,
+        RouterScoringKind::Softmax,
+        false,
+    );
 
     let out = moe.forward(
         &input,
@@ -122,8 +137,62 @@ fn test_sparse_moe_queue_structure() {
 }
 
 #[test]
+fn test_sparse_moe_sigmoid_queue_structure() {
+    let (moe, input, residual) = build_case(
+        1,
+        24,
+        256,
+        1024,
+        128,
+        8,
+        RouterScoringKind::Sigmoid,
+        true,
+    );
+
+    let out = moe.forward(
+        &input,
+        &residual,
+        false,
+        "model.layers.0.output".to_string(),
+    );
+    let q = out.operator_queue.borrow();
+
+    assert!(q.len() >= 5, "Expected >=5 operators, got {}", q.len());
+
+    match &q[0] {
+        Operator::ExpertsSigmoidGate(_) => {}
+        _ => panic!("op[0] should be ExpertsSigmoidGate"),
+    }
+    match &q[1] {
+        Operator::ExpertsTopkNorm(_) => {}
+        _ => panic!("op[1] should be ExpertsTopkNorm"),
+    }
+    match &q[2] {
+        Operator::ExpertsMatMulSilu(_) => {}
+        _ => panic!("op[2] should be ExpertsMatMulSilu"),
+    }
+    match &q[3] {
+        Operator::ExpertsMatMulDown(_) => {}
+        _ => panic!("op[3] should be ExpertsMatMulDown"),
+    }
+    match &q[4] {
+        Operator::ExpertsMergeAdd(_) => {}
+        _ => panic!("op[4] should be ExpertsMergeAdd"),
+    }
+}
+
+#[test]
 fn test_sparse_moe_zero_weights_output_equals_residual_bits() {
-    let (moe, input, residual) = build_case(1, 24, 256, 1024, 128, 8);
+    let (moe, input, residual) = build_case(
+        1,
+        24,
+        256,
+        1024,
+        128,
+        8,
+        RouterScoringKind::Softmax,
+        false,
+    );
 
     fill_tensor_f16(&input, f16_one());
     fill_tensor_f16(&residual, f16_one());
@@ -144,7 +213,16 @@ fn test_sparse_moe_zero_weights_output_equals_residual_bits() {
 
 #[test]
 fn test_sparse_moe_single_thread_equals_multi_thread_bits() {
-    let (moe, input, residual) = build_case(1, 24, 256, 1024, 128, 8);
+    let (moe, input, residual) = build_case(
+        1,
+        24,
+        256,
+        1024,
+        128,
+        8,
+        RouterScoringKind::Softmax,
+        false,
+    );
 
     fill_tensor_f16(&input, f16_one());
     fill_tensor_f16(&residual, f16_one());

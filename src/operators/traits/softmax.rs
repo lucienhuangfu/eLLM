@@ -28,3 +28,23 @@ pub trait SoftmaxTrait<T> {
         output_length: usize,
     );
 }
+
+pub trait ExpertsSigmoidGateTrait<T> {
+    fn compute(&self, m0: usize, n0: usize, m_blk: usize, n_blk: usize, thread_id: usize);
+}
+
+pub trait ExpertsTopkNormTrait<T> {
+    fn compute(
+        &self,
+        ptr1: *const T,
+        topk_values_ptr: *mut T,
+        experts_indicator: *mut bool,
+        indice_ptr: *mut bool,
+        value_ptr: *mut T,
+        topk_indices_ptr: *mut usize,
+        token_index: usize,
+        batch_size: usize,
+        input_length: usize,
+        output_length: usize,
+    );
+}

@@ -108,6 +108,8 @@ where
                 *num_experts,
                 *num_experts_per_tok,
                 *norm_topk_prob,
+                config.router_scoring.clone(),
+                config.use_routing_bias,
                 ffn_names,
                 ctx.clone(),
             )),

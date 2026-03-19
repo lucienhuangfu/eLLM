@@ -32,6 +32,12 @@ pub enum FfnKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RouterScoringKind {
+    Softmax,
+    Sigmoid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerPlan {
     pub attention: AttentionKind,
     pub ffn: FfnKind,
@@ -66,9 +72,11 @@ pub struct Config {
     pub rms_norm_eps: f32,
     pub rope_scaling: Option<HashMap<String, String>>,
     pub rope_theta: usize,
+    pub router_scoring: RouterScoringKind,
     pub router_aux_loss_coef: f32,
     pub shared_experts_intermediate_size: usize,
     pub sliding_window: Option<usize>,
+    pub use_routing_bias: bool,
     pub tie_word_embeddings: bool,
     pub torch_dtype: String,
     pub transformers_version: String,
@@ -121,10 +129,12 @@ struct HfConfig {
     rms_norm_eps: f32,
     rope_scaling: Option<HashMap<String, String>>,
     rope_theta: Option<usize>,
+    scoring_func: Option<String>,
     #[serde(default)]
     router_aux_loss_coef: f32,
     shared_experts_intermediate_size: Option<usize>,
     sliding_window: Option<usize>,
+    use_routing_bias: Option<bool>,
     #[serde(default)]
     tie_word_embeddings: bool,
     #[serde(default)]
@@ -169,6 +179,13 @@ impl Config {
         let num_experts = raw.num_experts.unwrap_or(0);
         let num_experts_per_tok = raw.num_experts_per_tok.unwrap_or(0);
         let max_window_layers = raw.max_window_layers.unwrap_or(raw.num_hidden_layers);
+        let router_scoring = resolve_router_scoring(
+            raw.scoring_func.as_deref(),
+            resolve_family(&raw.model_type),
+        );
+        let use_routing_bias = raw
+            .use_routing_bias
+            .unwrap_or(matches!(family, ModelFamily::MiniMaxM2));
 
         let mut config = Self {
             family,
@@ -198,9 +215,11 @@ impl Config {
             rms_norm_eps: raw.rms_norm_eps,
             rope_scaling: raw.rope_scaling,
             rope_theta: raw.rope_theta.unwrap_or(10000),
+            router_scoring,
             router_aux_loss_coef: raw.router_aux_loss_coef,
             shared_experts_intermediate_size: raw.shared_experts_intermediate_size.unwrap_or(0),
             sliding_window: raw.sliding_window,
+            use_routing_bias,
             tie_word_embeddings: raw.tie_word_embeddings,
             torch_dtype: raw.torch_dtype,
             transformers_version: raw.transformers_version,
@@ -230,6 +249,20 @@ fn resolve_family(model_type: &str) -> ModelFamily {
         "minimax" => ModelFamily::MiniMax,
         "minimax_m2" | "minimax-m2" | "minimax_m2.5" | "minimax-m2.5" => ModelFamily::MiniMaxM2,
         _ => ModelFamily::Unknown(model_type),
+    }
+}
+
+fn resolve_router_scoring(
+    scoring_func: Option<&str>,
+    family: ModelFamily,
+) -> RouterScoringKind {
+    match scoring_func.map(|s| s.to_ascii_lowercase()) {
+        Some(scoring) if scoring == "sigmoid" => RouterScoringKind::Sigmoid,
+        Some(scoring) if scoring == "softmax" => RouterScoringKind::Softmax,
+        _ => match family {
+            ModelFamily::MiniMaxM2 => RouterScoringKind::Sigmoid,
+            _ => RouterScoringKind::Softmax,
+        },
     }
 }
 
