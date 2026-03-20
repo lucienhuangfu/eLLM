@@ -95,6 +95,7 @@ where
         thread_id: usize,
         prefill_list: &[Vec<SequenceSlice>],
         decode_list: &[SequenceSlice],
+        temperature: &[T],
         batch_list: &mut Vec<SequenceState>,
     ) {
         let prefill_slices = thread_slices(prefill_list, thread_id);
@@ -192,6 +193,7 @@ where
                     cpu_num,
                     thread_id,
                     decode_slices,
+                    temperature,
                     batch_list,
                 );
             }
@@ -281,6 +283,7 @@ mod test {
             thread_id,
             &[],
             &[],
+            &[],
             &mut Vec::new(),
         );
 
@@ -345,6 +348,7 @@ mod test {
         let mut output_values = vec![0.0f32; batch_size * topk_size];
         let mut output_indices = vec![0usize; batch_size * topk_size];
         let mut output_sequences = vec![0usize; batch_size];
+        let temperatures = vec![1.0f32; batch_size];
         let eos_id = 0usize;
 
         let batch_records: Vec<SequenceState> = (0..batch_size)
@@ -397,6 +401,7 @@ mod test {
                     thread_num,
                     i,
                     &decode_lists[i],
+                    &temperatures,
                     &mut batch_list,
                 );
             }
@@ -494,7 +499,7 @@ mod test {
         let batch_size = M;
         let decode_size = 1;
 
-        op1.run(batch_size, decode_size, 1, 0, &[], &[], &mut Vec::new());
+        op1.run(batch_size, decode_size, 1, 0, &[], &[], &[], &mut Vec::new());
 
         // cpu_num = thread_num
         let mut c2 = vec![0.0f16; M * N];
@@ -522,6 +527,7 @@ mod test {
                 decode_size,
                 thread_num,
                 tid,
+                &[],
                 &[],
                 &[],
                 &mut Vec::new(),
@@ -622,7 +628,7 @@ mod test {
             let op = Operator::MatMulTopK(runner);
 
             for tid in 0..used_cpu {
-                op.run(M, 1, used_cpu, tid, &[], &[], &mut Vec::new());
+                op.run(M, 1, used_cpu, tid, &[], &[], &[], &mut Vec::new());
             }
 
             for row in 0..M {
@@ -718,7 +724,7 @@ mod test {
             let op = Operator::MatMulTopK(runner);
 
             for tid in 0..used_cpu {
-                op.run(M, 1, used_cpu, tid, &[], &[], &mut Vec::new());
+                op.run(M, 1, used_cpu, tid, &[], &[], &[], &mut Vec::new());
             }
 
             for row in 0..M {
@@ -806,7 +812,7 @@ mod test {
 
     fn run_operator_all_threads(op: &Operator<f16>, batch: usize, cpu_num: usize) {
         for tid in 0..cpu_num {
-            op.run(batch, 1, cpu_num, tid, &[], &[], &mut Vec::new());
+            op.run(batch, 1, cpu_num, tid, &[], &[], &[], &mut Vec::new());
         }
     }
 
@@ -1683,7 +1689,7 @@ mod test {
         let batch_size = M;
         let decode_size = 1;
 
-        op1.run(batch_size, decode_size, 1, 0, &[], &[], &mut Vec::new());
+        op1.run(batch_size, decode_size, 1, 0, &[], &[], &[], &mut Vec::new());
 
         // ===== cpu_num = thread_num =====
         let mut c2 = vec![0.0f16; M * N];
@@ -1711,6 +1717,7 @@ mod test {
                 decode_size,
                 thread_num,
                 tid,
+                &[],
                 &[],
                 &[],
                 &mut Vec::new(),
@@ -1836,7 +1843,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &mut Vec::new());
+            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &[], &mut Vec::new());
         }
 
         assert_ulps_eq!(output_data[0..180], results[0..180], max_ulps = 4);
@@ -1890,7 +1897,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &mut Vec::new());
+            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &[], &mut Vec::new());
         }
 
         assert_eq!(output_data[0..34], expected);
@@ -1948,7 +1955,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &mut Vec::new());
+            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &[], &mut Vec::new());
         }
         let result = vec![
             1.9444659948349,

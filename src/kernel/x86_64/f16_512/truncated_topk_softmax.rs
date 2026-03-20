@@ -11,6 +11,7 @@ pub fn truncated_topk_softmax(
     input_values_ptr: *const f16,
     // [thread_num, topk_size]
     input_indices_ptr: *const usize,
+    temperature: f16,
     // [topk_size]
     output_values_ptr: *mut f16,
     // [topk_size]
@@ -38,8 +39,9 @@ pub fn truncated_topk_softmax(
         ptr::copy_nonoverlapping(output_values_ptr, buffer.as_mut_ptr(), len);
 
         let max_broadcast = _mm512_set1_ph(max_val);
+        let inv_temperature = _mm512_set1_ph(temperature.recip());
         let chunk = _mm512_loadu_ph(buffer.as_ptr());
-        let shifted = _mm512_sub_ph(chunk, max_broadcast);
+        let shifted = _mm512_mul_ph(_mm512_sub_ph(chunk, max_broadcast), inv_temperature);
         let exp_chunk = exp512(shifted);
 
         let total_sum = _mm512_reduce_add_ph(exp_chunk);
@@ -89,6 +91,7 @@ mod tests {
             truncated_topk_softmax(
                 values.as_ptr(),
                 indices.as_ptr(),
+                1.0 as f16,
                 out_vals.as_mut_ptr(),
                 out_idx.as_mut_ptr(),
                 // &mut out_token,

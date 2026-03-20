@@ -44,7 +44,7 @@ fn tensor_to_bits_vec(t: &Tensor<f16>) -> Vec<u16> {
 fn run_queue(output: &Tensor<f16>, batch_size: usize, thread_num: usize) {
     for op in output.operator_queue.borrow().iter() {
         for tid in 0..thread_num {
-            op.run(batch_size, 0, thread_num, tid, &[], &[], &mut Vec::new());
+            op.run(batch_size, 0, thread_num, tid, &[], &[], &[], &mut Vec::new());
         }
     }
 }

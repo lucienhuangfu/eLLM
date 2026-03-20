@@ -17,6 +17,7 @@ pub fn truncated_topk_softmax<
     input_values_ptr: *const T,
     // [thread_num, topk_size]
     input_indices_ptr: *const usize,
+    temperature: T,
     // [thread_num]
     // sums_ptr: *const T,
     // [topk_size]
@@ -47,7 +48,7 @@ pub fn truncated_topk_softmax<
         let mut total_sum = T::default();
 
         for i in 0..len {
-            let val = (*output_values_ptr.add(i) - max_val).exp();
+            let val = ((*output_values_ptr.add(i) - max_val) / temperature).exp();
             ptr::write(output_values_ptr.add(i), val);
             total_sum += val;
         }
@@ -84,6 +85,7 @@ mod tests {
             truncated_topk_softmax(
                 values.as_ptr(),
                 indices.as_ptr(),
+                1.0f32,
                 out_vals.as_mut_ptr(),
                 out_idx.as_mut_ptr(),
                 // &mut out_token,

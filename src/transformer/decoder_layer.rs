@@ -281,7 +281,7 @@ mod test {
         for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
             println!("operator {} in queue", index);
             for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+                operator.run(batch_size, 0, thread_num, i, &[], &[], &[], &mut Vec::new());
             }
         }
 
@@ -365,6 +365,7 @@ mod test {
                     sequence_chunk_size,
                     thread_num,
                     i,
+                    &[],
                     &[],
                     &[],
                     &mut Vec::new(),

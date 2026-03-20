@@ -1018,6 +1018,7 @@ mod test {
                 tid,
                 &[],
                 &[],
+                &[],
                 &mut Vec::new(),
             );
         }
@@ -1068,6 +1069,7 @@ mod test {
         );
 
         let mut output_sequences = vec![0usize; batch_size * 2];
+        let temperature = vec![1.0f32; batch_size];
 
         let values0: Vec<f32> = (0..num_candidates).map(|i| 5.0 - i as f32 * 0.1).collect();
         let indices0: Vec<usize> = (0..num_candidates).collect();
@@ -1138,10 +1140,11 @@ mod test {
                         thread_num,
                         i,
                         &decode_lists[i],
+                        &temperature,
                         &mut batch_list,
                     );
                 } else {
-                    op.run(batch_size, 1, thread_num, i, &[], &[], &mut Vec::new());
+                    op.run(batch_size, 1, thread_num, i, &[], &[], &[], &mut Vec::new());
                 }
             }
         }
@@ -1222,6 +1225,7 @@ mod test {
         );
 
         let mut output_sequences = vec![0usize; batch_size];
+        let temperature = vec![1.0 as f16; batch_size];
 
         let values0: Vec<f32> = (0..num_candidates).map(|i| 5.0 - i as f32 * 0.1).collect();
         let indices0: Vec<usize> = (0..num_candidates).collect();
@@ -1293,10 +1297,11 @@ mod test {
                         thread_num,
                         i,
                         &decode_lists[i],
+                        &temperature,
                         &mut batch_list,
                     );
                 } else {
-                    op.run(batch_size, 1, thread_num, i, &[], &[], &mut Vec::new());
+                    op.run(batch_size, 1, thread_num, i, &[], &[], &[], &mut Vec::new());
                 }
             }
         }
@@ -1480,7 +1485,7 @@ mod test {
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(batch_size, 1, 1, 0, &[], &[], &mut Vec::new());
+            op.run(batch_size, 1, 1, 0, &[], &[], &[], &mut Vec::new());
         }
 
         let verify_matmul_nt =
@@ -1641,7 +1646,7 @@ mod test {
         assert!(matches!(&operator_queue.borrow()[0], Operator::MatMul3(_)));
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(batch_size, 1, 1, 0, &[], &[], &mut Vec::new());
+            op.run(batch_size, 1, 1, 0, &[], &[], &[], &mut Vec::new());
         }
 
         let q_len = m * q_dim;
@@ -1760,7 +1765,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for i in 0..thread_num {
-                op.run(m, 1, thread_num, i, &[], &[], &mut Vec::new());
+                op.run(m, 1, thread_num, i, &[], &[], &[], &mut Vec::new());
             }
         }
 
@@ -1885,7 +1890,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(m, 1, thread_num, tid, &[], &[], &mut Vec::new());
+                op.run(m, 1, thread_num, tid, &[], &[], &[], &mut Vec::new());
             }
         }
 
@@ -2013,7 +2018,7 @@ mod test {
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(m, 1, 1, 0, &[], &[], &mut Vec::new());
+            op.run(m, 1, 1, 0, &[], &[], &[], &mut Vec::new());
         }
 
         let out_len = m * n;
@@ -2134,7 +2139,7 @@ mod test {
         );
 
         for op in operator_queue.borrow_mut().iter() {
-            op.run(m, 1, 1, 0, &[], &[], &mut Vec::new());
+            op.run(m, 1, 1, 0, &[], &[], &[], &mut Vec::new());
         }
 
         let out_len = m * n;
@@ -2371,7 +2376,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(b, 1, thread_num, tid, &[], &[], &mut Vec::new());
+                op.run(b, 1, thread_num, tid, &[], &[], &[], &mut Vec::new());
             }
         }
 
@@ -2559,7 +2564,7 @@ mod test {
 
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(b, 1, thread_num, tid, &[], &[], &mut Vec::new());
+                op.run(b, 1, thread_num, tid, &[], &[], &[], &mut Vec::new());
             }
         }
 
@@ -2690,7 +2695,7 @@ mod test {
             .unwrap_or(1);
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(num_tokens, 1, thread_num, tid, &[], &[], &mut Vec::new());
+                op.run(num_tokens, 1, thread_num, tid, &[], &[], &[], &mut Vec::new());
             }
         }
 
