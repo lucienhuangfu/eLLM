@@ -24,7 +24,7 @@ use super::super::runtime::tensor::{Tensor, TensorCtx};
 use super::decoder_layer::DecoderLayer;
 // use crate::runtime::inference::state::TokenRecord;
 
-// use super::rope::precompute_freqs_cis;
+use super::rope::RotaryEmbedding;
 
 // #[derive(Clone)]
 pub struct Model<T>
@@ -189,7 +189,6 @@ mod test {
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::mem_mgr::allocator::allocate_init;
-    use crate::transformer::rope::precompute_freqs_cis_t;
     use crate::runtime::inference::{Phase, SequenceState};
 
     #[test]
@@ -203,11 +202,13 @@ mod test {
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-        let position_vec = precompute_freqs_cis_t::<f32>(
+        let position_vec = RotaryEmbedding::new(
             config.head_dim,
+            config.rotary_dim,
             config.max_position_embeddings,
             config.rope_theta as f32,
-        );
+        )
+        .forward::<f32>();
         let mut model = Model::<f32>::new(
             &config,
             position_vec,
@@ -255,6 +256,11 @@ mod test {
 
     #[test]
     fn test_model_forward_f16() {
+        if !std::arch::is_x86_feature_detected!("avx512fp16") {
+            eprintln!("skip test_model_forward_f16: avx512fp16 not detected");
+            return;
+        }
+
         let sequence_length = 128;
         let _sequence_chunk_size = 1;
         let batch_size = 3;
@@ -263,11 +269,13 @@ mod test {
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-        let position_vec = precompute_freqs_cis_t::<f16>(
+        let position_vec = RotaryEmbedding::new(
             config.head_dim,
+            config.rotary_dim,
             config.max_position_embeddings,
             config.rope_theta as f32,
-        );
+        )
+        .forward::<f16>();
         let mut model = Model::<f16>::new(
             &config,
             position_vec,

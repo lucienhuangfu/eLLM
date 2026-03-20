@@ -7,7 +7,7 @@ use ellm::serving::batch_sequence::BatchSequence;
 use ellm::serving::server;
 use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
-use ellm::transformer::rope::precompute_freqs_cis_t;
+use ellm::transformer::rope::RotaryEmbedding;
 use std::sync::Arc;
 
 #[tokio::main(flavor = "current_thread")]
@@ -21,11 +21,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config =
         Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-    let position_vec = precompute_freqs_cis_t::<f16>(
+    let position_vec = RotaryEmbedding::new(
         config.head_dim,
+        config.rotary_dim,
         config.max_position_embeddings,
         config.rope_theta as f32,
-    );
+    )
+    .forward::<f16>();
     let mut model = Model::<f16>::new(
         &config,
         position_vec,

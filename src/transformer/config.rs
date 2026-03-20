@@ -72,6 +72,7 @@ pub struct Config {
     pub rms_norm_eps: f32,
     pub rope_scaling: Option<HashMap<String, String>>,
     pub rope_theta: usize,
+    pub rotary_dim: usize,
     pub router_scoring: RouterScoringKind,
     pub router_aux_loss_coef: f32,
     pub shared_experts_intermediate_size: usize,
@@ -129,6 +130,7 @@ struct HfConfig {
     rms_norm_eps: f32,
     rope_scaling: Option<HashMap<String, String>>,
     rope_theta: Option<usize>,
+    rotary_dim: Option<usize>,
     scoring_func: Option<String>,
     #[serde(default)]
     router_aux_loss_coef: f32,
@@ -215,6 +217,7 @@ impl Config {
             rms_norm_eps: raw.rms_norm_eps,
             rope_scaling: raw.rope_scaling,
             rope_theta: raw.rope_theta.unwrap_or(10000),
+            rotary_dim: raw.rotary_dim.unwrap_or(head_dim),
             router_scoring,
             router_aux_loss_coef: raw.router_aux_loss_coef,
             shared_experts_intermediate_size: raw.shared_experts_intermediate_size.unwrap_or(0),
