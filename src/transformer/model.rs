@@ -24,6 +24,7 @@ use super::super::runtime::tensor::{Tensor, TensorCtx};
 use super::decoder_layer::DecoderLayer;
 // use crate::runtime::inference::state::TokenRecord;
 
+#[cfg(test)]
 use super::rope::RotaryEmbedding;
 
 // #[derive(Clone)]
@@ -188,8 +189,47 @@ mod test {
     use super::*;
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
+    use crate::common::sequence_slice::SequenceSlice;
     use crate::mem_mgr::allocator::allocate_init;
     use crate::runtime::inference::{Phase, SequenceState};
+
+    fn build_batch_list(batch_size: usize) -> Vec<SequenceState> {
+        (0..batch_size)
+            .map(|i| SequenceState {
+                filling_length: 0,
+                sequence_index: i,
+                kv_index: i,
+                phase: Phase::Decode,
+                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            })
+            .collect()
+    }
+
+    fn build_decode_list(batch_size: usize) -> Vec<SequenceSlice> {
+        (0..batch_size)
+            .map(|batch_index| SequenceSlice {
+                batch_index,
+                sequence_index: batch_index,
+                token_start_index: batch_index,
+                length: 1,
+                last_token_flag: true,
+            })
+            .collect()
+    }
+
+    fn build_prefill_list(batch_size: usize) -> Vec<Vec<SequenceSlice>> {
+        vec![{
+            (0..batch_size)
+                .map(|batch_index| SequenceSlice {
+                    batch_index,
+                    sequence_index: batch_index,
+                    token_start_index: batch_index,
+                    length: 1,
+                    last_token_flag: false,
+                })
+                .collect()
+        }]
+    }
 
     #[test]
     fn test_model_forward() {
@@ -198,6 +238,9 @@ mod test {
         let _sequence_chunk_size = 1;
         let batch_size = 3;
         let topk_size = 8;
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
 
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
@@ -223,31 +266,35 @@ mod test {
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-        let sequences =
-            allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
+        let sequences = allocate_init::<usize>((config.max_position_embeddings) * batch_size, 0);
 
-        let batch_records: Vec<SequenceState> = (0..batch_size)
-            .map(|i| SequenceState {
-                filling_length: 0,
-                sequence_index: i,
-                kv_index: i,
-                phase: Phase::Decode,
-                // prompt_length: i,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-            })
-            .collect();
-
-        let _batch_list = batch_records;
+        let mut batch_list = build_batch_list(batch_size);
+        let prefill_list = build_prefill_list(batch_size);
+        let decode_list = build_decode_list(batch_size);
+        let temperature = vec![1.0f32; batch_size];
         let eos_id = 151643;
 
         let (_output_indices, _output_tensor) = model.forward(sequences, eos_id);
 
-        let thread_num: usize = num_cpus::get();
-        for operator in model.ctx.operator_queue.borrow().iter() {
-            for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i, &[], &[], &[], &mut Vec::new());
+        for thread_id in 0..thread_num {
+            for operator in model.ctx.operator_queue.borrow().iter() {
+                operator.run(
+                    batch_size,
+                    1,
+                    thread_num,
+                    thread_id,
+                    &prefill_list,
+                    &decode_list,
+                    &temperature,
+                    &mut batch_list,
+                );
             }
         }
+
+        assert_eq!(batch_list.len(), batch_size);
+        assert!(batch_list
+            .iter()
+            .all(|record| matches!(record.phase, Phase::Decode)));
 
         // Add assertions to verify the output_tensor
         // For example:
@@ -265,6 +312,9 @@ mod test {
         let _sequence_chunk_size = 1;
         let batch_size = 3;
         let topk_size = 8;
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
 
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
@@ -285,31 +335,33 @@ mod test {
             topk_size,
         );
 
-        let sequences =
-            allocate_init::<usize>((config.max_position_embeddings + 1) * batch_size, 0);
-        let batch_records: Vec<SequenceState> = (0..batch_size)
-            .map(|i| SequenceState {
-                filling_length: 0,
-                sequence_index: i,
-                kv_index: i,
-                phase: Phase::Decode,
-                // prompt_length: i,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-            })
-            .collect();
-
-        let _batch_list = batch_records;
+        let sequences = allocate_init::<usize>((config.max_position_embeddings) * batch_size, 0);
+        let mut batch_list = build_batch_list(batch_size);
+        let prefill_list = build_prefill_list(batch_size);
+        let decode_list = build_decode_list(batch_size);
+        let temperature = vec![1.0 as f16; batch_size];
         let eos_id = 151643;
 
         let (_output_indices, _output_tensor) = model.forward(sequences, eos_id);
 
-        let thread_num = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-        for operator in model.ctx.operator_queue.borrow().iter() {
-            for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i, &[], &[], &[], &mut Vec::new());
+        for thread_id in 0..thread_num {
+            for operator in model.ctx.operator_queue.borrow().iter() {
+                operator.run(
+                    batch_size,
+                    1,
+                    thread_num,
+                    thread_id,
+                    &prefill_list,
+                    &decode_list,
+                    &temperature,
+                    &mut batch_list,
+                );
             }
         }
+
+        assert_eq!(batch_list.len(), batch_size);
+        assert!(batch_list
+            .iter()
+            .all(|record| matches!(record.phase, Phase::Decode)));
     }
 }

@@ -20,6 +20,12 @@ use crate::common::num_traits::{
 pub struct ServingRunner<T> {
     operator_queue: Vec<Operator<T>>,
     batch_scheduler: BatchScheduler,
+    temperature_list: Arc<[T]>,
+}
+
+struct SharedState {
+    sizes: (usize, usize),
+    scheduler: BatchScheduler,
 }
 
 impl<T> ServingRunner<T>
@@ -34,12 +40,27 @@ where
         + NegInfinity
         + Sigmoid
         + PartialOrd
+        + Send
+        + Sync
         + 'static,
 {
     pub fn new(operator_queue: Vec<Operator<T>>, batch_scheduler: BatchScheduler) -> Self {
         Self {
             operator_queue,
             batch_scheduler,
+            temperature_list: Vec::<T>::new().into(),
+        }
+    }
+
+    pub fn with_temperature_list(
+        operator_queue: Vec<Operator<T>>,
+        batch_scheduler: BatchScheduler,
+        temperature_list: Vec<T>,
+    ) -> Self {
+        Self {
+            operator_queue,
+            batch_scheduler,
+            temperature_list: temperature_list.into(),
         }
     }
 
@@ -49,18 +70,19 @@ where
         let core_ids = core_affinity::get_core_ids().unwrap();
         let thread_num = core_ids.len();
 
-        // Optimization: Convert Vec to Arc<[T]> to reduce one level of indirection compared to Arc<Vec<T>>
-        let sync_operator_queue: Arc<[Operator<T>]> = self.operator_queue.into();
+        let ServingRunner {
+            operator_queue,
+            batch_scheduler,
+            temperature_list,
+        } = self;
 
-        struct SharedState {
-            sizes: (usize, usize),
-            scheduler: BatchScheduler,
-        }
+        // Optimization: Convert Vec to Arc<[T]> to reduce one level of indirection compared to Arc<Vec<T>>
+        let sync_operator_queue: Arc<[Operator<T>]> = operator_queue.into();
 
         let barrier = Arc::new(Barrier::new(thread_num));
         let shared_state = Arc::new(SyncUnsafeCell::new(SharedState {
             sizes: (0, 0),
-            scheduler: self.batch_scheduler,
+            scheduler: batch_scheduler,
         }));
         let mut handles = Vec::with_capacity(thread_num);
         // let core_ids = core_affinity::get_core_ids().unwrap();
@@ -69,6 +91,7 @@ where
             // println!("thread id {}", i);
             let b = Arc::clone(&barrier);
             let queue = Arc::clone(&sync_operator_queue);
+            let temperature_list = Arc::clone(&temperature_list);
             let shared_state: Arc<SyncUnsafeCell<SharedState>> = Arc::clone(&shared_state);
 
             let handle = thread::spawn(move || {
@@ -94,6 +117,7 @@ where
                         let state = &mut *state_ptr;
                         let (prefill_size, decode_size) = state.sizes;
                         let scheduler = &mut state.scheduler;
+                        let temperature = temperature_list.as_ref();
                         let prefill_list = &scheduler.prefill_list;
                         let decode_list = &scheduler.decode_list;
                         scheduler.batch_list.with_mut(|batch_list_guard| {
@@ -105,7 +129,7 @@ where
                                     thread_id,
                                     prefill_list,
                                     decode_list,
-                                    &[],
+                                    temperature,
                                     batch_list_guard,
                                 );
                                 b.wait();

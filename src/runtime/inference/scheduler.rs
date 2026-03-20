@@ -27,6 +27,24 @@ enum BatchPlan {
 }
 
 impl BatchScheduler {
+    fn build(sequence_length: usize, batch_size: usize, thread_num: usize) -> Self {
+        let build_prefill_list = || {
+            (0..thread_num)
+                .map(|_| Vec::with_capacity(batch_size))
+                .collect::<Vec<_>>()
+        };
+
+        Self {
+            max_decode_size: batch_size,
+            max_prefill_size: sequence_length * batch_size,
+            batch_list: Arc::new(SharedMut::new(Vec::with_capacity(batch_size))),
+            thread_num,
+            prefill_scheduler: SliceScheduler::new(batch_size * thread_num),
+            prefill_list: build_prefill_list(),
+            decode_list: DecodeList::with_capacity(batch_size),
+        }
+    }
+
     fn clear_round_outputs(&mut self) {
         for task in self.prefill_list.iter_mut() {
             task.clear();
@@ -91,21 +109,7 @@ impl BatchScheduler {
     // assert!(prefill > 0);
     // assert_eq!(decode, 0);
     pub fn new(sequence_length: usize, batch_size: usize, thread_num: usize) -> Self {
-        let build_prefill_list = || {
-            (0..thread_num)
-                .map(|_| Vec::with_capacity(batch_size))
-                .collect::<Vec<_>>()
-        };
-
-        Self {
-            max_decode_size: batch_size,
-            max_prefill_size: sequence_length * batch_size,
-            batch_list: Arc::new(SharedMut::new(Vec::with_capacity(batch_size))),
-            thread_num,
-            prefill_scheduler: SliceScheduler::new(batch_size * thread_num),
-            prefill_list: build_prefill_list(),
-            decode_list: DecodeList::with_capacity(batch_size),
-        }
+        Self::build(sequence_length, batch_size, thread_num)
     }
 
     fn schedule_decode_round(&mut self, decode_candidates: Vec<(usize, usize)>) -> usize {

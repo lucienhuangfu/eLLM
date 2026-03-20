@@ -42,11 +42,7 @@ where
         + FromNumber
         + AddAssign,
 {
-    pub fn new(
-        config: &Config,
-        names: AttentionTensorNames,
-        ctx: Rc<TensorCtx<T>>,
-    ) -> Self {
+    pub fn new(config: &Config, names: AttentionTensorNames, ctx: Rc<TensorCtx<T>>) -> Self {
         let head_dim: usize = config.head_dim;
         let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
 
@@ -105,6 +101,10 @@ where
                 },
                 self.scope_name.clone(),
             );
+
+            if decode_only_flag {
+                hidden_states.lift_vector();
+            }
 
             let view_query_states = query_states.view(vec![
                 query_states.shape[0],
