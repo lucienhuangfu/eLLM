@@ -166,7 +166,7 @@ where
         let (indices_ptr, values_tensor) = norm_state.matmul_local_topk(
             &self.lm_head_weight,
            MatMulParams {
-                    a_row_step_macro: 6,
+                    a_row_step_macro: 3,
                     b_row_step_macro: 64,
                     column_step_macro: 64,
                     a_row_step_micro: 3,
@@ -210,7 +210,7 @@ mod test {
         // let cpu_num =  thread::available_parallelism().unwrap().get();
         let sequence_length = 128;
         let sequence_chunk_size = 1;
-        let batch_size = 6;
+        let batch_size = 3;
         let topk_size = 8;
 
         let config =
@@ -252,7 +252,7 @@ mod test {
     fn test_model_forward_f16() {
         let sequence_length = 128;
         let sequence_chunk_size = 1;
-        let batch_size = 6;
+        let batch_size = 3;
         let topk_size = 8;
 
         let config =

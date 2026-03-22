@@ -114,7 +114,6 @@ pub unsafe fn sigmoid512(x: __m512h) -> __m512h {
     let den = _mm512_add_ph(one, exp_neg_x);
     _mm512_div_ph(one, den)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +129,7 @@ mod tests {
         // Test range from -10 to 10
         let input_vals: Vec<f16> = (0..length).map(|i| ((i as f16 - 16.0) * 0.5)).collect();
         let mut v = allocate_init::<f16>(length, 0.0);
+
         unsafe {
             std::ptr::copy_nonoverlapping(input_vals.as_ptr(), v, length);
 
@@ -143,8 +143,9 @@ mod tests {
             for j in 0..length {
                 let expected = input_vals[j].exp();
                 let actual = res_slice[j];
+
                 println!(
-                    "Exp: x={}, actual={}, expected={}",
+                    "Exp: x={:?}, actual={:?}, expected={:?}",
                     input_vals[j], actual, expected
                 );
 
@@ -153,7 +154,7 @@ mod tests {
                 } else {
                     assert!(
                         (actual - expected).abs() < TOLERANCE * expected.abs().max(1.0f16),
-                        "Mismatch at index {}: got {}, expected {}",
+                        "Mismatch at index {}: got {:?}, expected {:?}",
                         j,
                         actual,
                         expected
@@ -181,13 +182,15 @@ mod tests {
             for j in 0..length {
                 let expected = input_vals[j].tanh();
                 let actual = res_slice[j];
+
                 println!(
-                    "Tanh: x={}, actual={}, expected={}",
+                    "Tanh: x={:?}, actual={:?}, expected={:?}",
                     input_vals[j], actual, expected
                 );
+
                 assert!(
                     (actual - expected).abs() < TOLERANCE,
-                    "Mismatch at index {}: got {}, expected {}",
+                    "Mismatch at index {}: got {:?}, expected {:?}",
                     j,
                     actual,
                     expected
@@ -215,10 +218,15 @@ mod tests {
                 let x = input_vals[j];
                 let expected = 1.0 / (1.0 + (-x).exp());
                 let actual = res_slice[j];
-                println!("Sigmoid: x={}, actual={}, expected={}", x, actual, expected);
+
+                println!(
+                    "Sigmoid: x={:?}, actual={:?}, expected={:?}",
+                    x, actual, expected
+                );
+
                 assert!(
                     (actual - expected).abs() < TOLERANCE,
-                    "Mismatch at index {}: got {}, expected {}",
+                    "Mismatch at index {}: got {:?}, expected {:?}",
                     j,
                     actual,
                     expected
