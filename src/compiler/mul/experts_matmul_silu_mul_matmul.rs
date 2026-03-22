@@ -1209,6 +1209,117 @@ fn test_experts_matmul_silu_qwen_moe_config() {
         samples
     );
 }
+    
+#[test]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+fn test_silu_stride_capacity_batch_run_must_not_touch_rows_7_8() {
+    use std::arch::is_x86_feature_detected;
+    if !is_x86_feature_detected!("avx512fp16") {
+        eprintln!("skip: avx512fp16 not detected");
+        return;
+    }
+
+    const B_CAP: usize = 9;
+    const B_RUN: usize = 7;
+    const H: usize = 64;
+    const I: usize = 64;
+    const E: usize = 1;
+
+    let mb = 3;
+    let nb = 32;
+    let kc = 64;
+    let mr = 3;
+    let nr = 32;
+
+    // A[B_CAP,H]：前 7 行是 1，后 2 行是 50（如果被算到，会输出明显非零）
+    let mut a = vec![0.0f16; B_CAP * H];
+    for b in 0..B_RUN {
+        for kk in 0..H {
+            a[b * H + kk] = 1.0f32 as f16;
+        }
+    }
+    for b in B_RUN..B_CAP {
+        for kk in 0..H {
+            a[b * H + kk] = 50.0f32 as f16;
+        }
+    }
+
+    // gate/up 权重 K×N（参考用）=> 转 NT 给算子
+    let mut w_gate_kxn = vec![0.0f16; E * H * I];
+    let mut w_up_kxn = vec![0.0f16; E * H * I];
+
+    // 让输出稳定非零：gate=0.01, up=0.02
+    for kk in 0..H {
+        for ii in 0..I {
+            w_gate_kxn[kk * I + ii] = 0.01f32 as f16;
+            w_up_kxn[kk * I + ii] = 0.02f32 as f16;
+        }
+    }
+
+    // 你文件里已有这个 helper
+    let w_gate_nt = transpose_expert_kxn_to_nt(&w_gate_kxn, E, H, I);
+    let w_up_nt = transpose_expert_kxn_to_nt(&w_up_kxn, E, H, I);
+
+    // routing：capacity 0..8 都 true（故意）
+    // 正确行为：run(batch=7) 只能处理 0..6，7/8 绝不能写 output
+    let experts_indicator = vec![true; E];
+    let mut indice = vec![false; E * B_CAP];
+    for b in 0..B_CAP {
+        indice[b] = true;
+    }
+
+    // output[E,B_CAP,I]：先清零
+    let mut out = vec![0.0f16; E * B_CAP * I];
+
+    let op = unsafe {
+        ExpertsMatMulSilu::<f16>::new(
+            a.as_ptr(),
+            w_gate_nt.as_ptr(),
+            w_up_nt.as_ptr(),
+            experts_indicator.as_ptr(),
+            indice.as_ptr(),
+            out.as_mut_ptr(),
+            B_CAP, // capacity
+            I,
+            H,
+            E,
+            mb,
+            nb,
+            kc,
+            mr,
+            nr,
+        )
+    };
+
+    // 单线程即可复现
+    op.run(0, 0, B_RUN, 1, 0);
+
+    // row 7/8 必须仍为 0（没被触碰）
+    for b in B_RUN..B_CAP {
+        for ii in 0..I {
+            let v = out[b * I + ii] as f32;
+            assert!(
+                v.abs() <= 1e-3,
+                "row {} should remain 0, got {}",
+                b,
+                v
+            );
+        }
+    }
+
+    // 前 7 行至少应有非零（避免“全没算”的假通过）
+    let mut any_nonzero = false;
+    'outer: for b in 0..B_RUN {
+        for ii in 0..I {
+            if (out[b * I + ii] as f32).abs() > 1e-3 {
+                any_nonzero = true;
+                break 'outer;
+            }
+        }
+    }
+    assert!(any_nonzero, "expected some non-zero outputs for rows 0..6");
+}
+
     #[test]
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
 fn test_experts_silu_batch7_capacity9_must_not_touch_rows_7_8() {
@@ -1447,113 +1558,5 @@ fn test_experts_matmul_silu_moe_smoke_fast_sampled() {
 
     assert!(checked >= samples / 2, "too few routed samples checked: {}/{}", checked, samples);
 }
-#[test]
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-fn test_silu_stride_capacity_batch_run_must_not_touch_rows_7_8() {
-    use std::arch::is_x86_feature_detected;
-    if !is_x86_feature_detected!("avx512fp16") {
-        eprintln!("skip: avx512fp16 not detected");
-        return;
-    }
 
-    const B_CAP: usize = 9;
-    const B_RUN: usize = 7;
-    const H: usize = 64;
-    const I: usize = 64;
-    const E: usize = 1;
-
-    let mb = 3;
-    let nb = 32;
-    let kc = 64;
-    let mr = 3;
-    let nr = 32;
-
-    // A[B_CAP,H]：前 7 行是 1，后 2 行是 50（如果被算到，会输出明显非零）
-    let mut a = vec![0.0f16; B_CAP * H];
-    for b in 0..B_RUN {
-        for kk in 0..H {
-            a[b * H + kk] = 1.0f32 as f16;
-        }
-    }
-    for b in B_RUN..B_CAP {
-        for kk in 0..H {
-            a[b * H + kk] = 50.0f32 as f16;
-        }
-    }
-
-    // gate/up 权重 K×N（参考用）=> 转 NT 给算子
-    let mut w_gate_kxn = vec![0.0f16; E * H * I];
-    let mut w_up_kxn = vec![0.0f16; E * H * I];
-
-    // 让输出稳定非零：gate=0.01, up=0.02
-    for kk in 0..H {
-        for ii in 0..I {
-            w_gate_kxn[kk * I + ii] = 0.01f32 as f16;
-            w_up_kxn[kk * I + ii] = 0.02f32 as f16;
-        }
-    }
-
-    // 你文件里已有这个 helper
-    let w_gate_nt = transpose_expert_kxn_to_nt(&w_gate_kxn, E, H, I);
-    let w_up_nt = transpose_expert_kxn_to_nt(&w_up_kxn, E, H, I);
-
-    // routing：capacity 0..8 都 true（故意）
-    // 正确行为：run(batch=7) 只能处理 0..6，7/8 绝不能写 output
-    let experts_indicator = vec![true; E];
-    let mut indice = vec![false; E * B_CAP];
-    for b in 0..B_CAP {
-        indice[b] = true;
-    }
-
-    // output[E,B_CAP,I]：先清零
-    let mut out = vec![0.0f16; E * B_CAP * I];
-
-    let op = unsafe {
-        ExpertsMatMulSilu::<f16>::new(
-            a.as_ptr(),
-            w_gate_nt.as_ptr(),
-            w_up_nt.as_ptr(),
-            experts_indicator.as_ptr(),
-            indice.as_ptr(),
-            out.as_mut_ptr(),
-            B_CAP, // capacity
-            I,
-            H,
-            E,
-            mb,
-            nb,
-            kc,
-            mr,
-            nr,
-        )
-    };
-
-    // 单线程即可复现
-    op.run(0, 0, B_RUN, 1, 0);
-
-    // row 7/8 必须仍为 0（没被触碰）
-    for b in B_RUN..B_CAP {
-        for ii in 0..I {
-            let v = out[b * I + ii] as f32;
-            assert!(
-                v.abs() <= 1e-3,
-                "row {} should remain 0, got {}",
-                b,
-                v
-            );
-        }
-    }
-
-    // 前 7 行至少应有非零（避免“全没算”的假通过）
-    let mut any_nonzero = false;
-    'outer: for b in 0..B_RUN {
-        for ii in 0..I {
-            if (out[b * I + ii] as f32).abs() > 1e-3 {
-                any_nonzero = true;
-                break 'outer;
-            }
-        }
-    }
-    assert!(any_nonzero, "expected some non-zero outputs for rows 0..6");
-}
 }

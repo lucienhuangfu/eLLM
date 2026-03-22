@@ -324,6 +324,8 @@ where
         thread_id: usize,
     ) {
         unsafe {
+            let bcap = self.num_token;// bmax
+
             let m = batch_size; // token 数
             let n = self.h; // 输出列 H
             let k = self.hmid; // 输入维 Hmid
