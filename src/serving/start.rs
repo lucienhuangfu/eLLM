@@ -15,7 +15,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 // use super::state::State;
 
-pub fn start<T>(operator_queue: Vec<Operator<T>>)
+pub fn start<T>(operator_queue: Vec<Operator<T>>, sequence_length: usize, batch_size: usize)
 where
     T: PartialOrd
         + Copy
@@ -66,10 +66,7 @@ where
             // let prompt_queue_slice = &queue[..decode_start.min(queue.len())];
             // let decode_queue_slice = &queue[decode_start.min(queue.len())..];
 
-            let sequence_length = 128;
-
             let s = Instant::now();
-            let batch_size = 1;
             for p in 0..sequence_length {
                 println!("thread {} position {}", thread_id, p);
                 for operator in queue.iter() {
@@ -186,12 +183,17 @@ mod test {
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-        let mut model =
-            Model::<f32>::new(&config, sequence_length, sequence_chunk_size, batch_size, topk_size);
+        let mut model = Model::<f32>::new(
+            &config,
+            sequence_length,
+            sequence_chunk_size,
+            batch_size,
+            topk_size,
+        );
 
         let sequences = allocate_init::<usize>((sequence_length + 1) * batch_size, 0);
         let _ = model.forward(sequences);
 
-        start(model.operator_queue.take());
+        start(model.operator_queue.take(), sequence_length, 1);
     }
 }

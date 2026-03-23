@@ -17,10 +17,16 @@ fn main() {
     let config =
         Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-    let mut model = Model::<f16>::new(&config, sequence_length, sequence_chunk_size, batch_size, topk_size);
+    let mut model = Model::<f16>::new(
+        &config,
+        sequence_length,
+        sequence_chunk_size,
+        batch_size,
+        topk_size,
+    );
 
     let sequences = allocate_init::<usize>((sequence_length + 1) * batch_size, 0);
-    let _ = unsafe { model.forward(sequences) };
+    let _ = model.forward(sequences);
 
-    start(model.operator_queue.take());
+    start(model.operator_queue.take(), sequence_length, batch_size);
 }

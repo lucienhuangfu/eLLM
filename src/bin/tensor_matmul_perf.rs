@@ -4,75 +4,43 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::f16;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::thread;
 use std::time::Instant;
 
-use ellm::compiler::operator::Operator;
 use ellm::init::matmul_params::MatMulParams;
 use ellm::memory::cache::Cache;
 use ellm::ptensor::tensor::Tensor;
+use ellm::serving::start::start;
 
+const SEQUENCE_LENGTH: usize = 128;
 const SEQUENCE_CHUNK_SIZE: usize = 1;
-const BATCH_SIZE: usize = 384;
-const K: usize = 1536;
-const N: usize = 1536;
-
-fn avail_threads() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-}
-
-fn run_operator_parallel_once(op: Arc<Operator<f16>>, batch: usize, cpu_num: usize) {
-    let core_ids = core_affinity::get_core_ids();
-    let mut handles = Vec::with_capacity(cpu_num);
-
-    for thread_id in 0..cpu_num {
-        let op = Arc::clone(&op);
-        let core_id = core_ids
-            .as_ref()
-            .and_then(|ids| ids.get(thread_id % ids.len()).copied());
-
-        let handle = thread::spawn(move || {
-            if let Some(core_id) = core_id {
-                core_affinity::set_for_current(core_id);
-            }
-
-            op.run(0, 1, batch, cpu_num, thread_id);
-        });
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        handle.join().unwrap();
-    }
-}
+const BATCH_SIZE: usize = 1;
+const K: usize = 2048;
+const N: usize = 151936;
 
 fn main() {
     if !cfg!(target_arch = "x86_64") || !std::arch::is_x86_feature_detected!("avx512fp16") {
-        println!("AVX512FP16 not supported on this machine, skipping tensor.matmul perf run.");
+        println!("AVX512FP16 not supported on this machine, skipping Qwen3 vocab matmul perf run.");
         return;
     }
 
     println!(
-        "tensor.matmul perf init: seq_chunk={}, batch={}, n={}, k={}",
-        SEQUENCE_CHUNK_SIZE, BATCH_SIZE, N, K
+        "Qwen3 vocab matmul perf init: seq_len={}, seq_chunk={}, batch={}, vocab={}, hidden={}",
+        SEQUENCE_LENGTH, SEQUENCE_CHUNK_SIZE, BATCH_SIZE, N, K
     );
 
     let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
-    let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
+    let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
     let input_tensor = Tensor::<f16>::from_cache(
         vec![SEQUENCE_CHUNK_SIZE, BATCH_SIZE, K],
-        "perf.matmul.input".to_string(),
+        "perf.qwen3_vocab.input".to_string(),
         cache.clone(),
         operator_queue.clone(),
     );
 
     let weight_tensor = Tensor::<f16>::from_cache(
         vec![N, K],
-        "perf.matmul.weight".to_string(),
+        "perf.qwen3_vocab.weight".to_string(),
         cache.clone(),
         operator_queue.clone(),
     );
@@ -96,8 +64,8 @@ fn main() {
     }
 
     let params = MatMulParams {
-        a_row_step_macro: 96,
-        b_row_step_macro: 128,
+        a_row_step_macro: 3,
+        b_row_step_macro: 64,
         column_step_macro: 64,
         a_row_step_micro: 3,
         b_row_step_micro: 32,
@@ -107,34 +75,32 @@ fn main() {
         &weight_tensor,
         params,
         SEQUENCE_CHUNK_SIZE,
-        "perf.matmul".to_string(),
+        "perf.qwen3_vocab".to_string(),
     );
 
-    let operator = {
-        let queue = operator_queue.borrow();
-        assert_eq!(
-            queue.len(),
-            1,
-            "expected exactly one operator from tensor.matmul"
-        );
-        Arc::new(queue[0].clone())
-    };
+    assert_eq!(
+        operator_queue.borrow().len(),
+        1,
+        "expected exactly one operator from Qwen3 vocab matmul"
+    );
 
-    let panel_threads = match operator.as_ref() {
-        Operator::MatMul(runner) => runner.panel_threads(),
-        _ => panic!("tensor.matmul should enqueue a MatMul operator"),
-    };
+    let cpu_num = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let started_at = Instant::now();
+    start(operator_queue.take(), SEQUENCE_LENGTH, BATCH_SIZE);
+    let elapsed = started_at.elapsed();
 
-    let cpu_num = avail_threads().min(panel_threads.max(1)).min(16);
-    let start = Instant::now();
-    run_operator_parallel_once(operator, BATCH_SIZE, cpu_num);
-    let elapsed = start.elapsed();
-
-    let flops = 2.0f64 * BATCH_SIZE as f64 * N as f64 * K as f64;
+    let flops = 2.0f64 * SEQUENCE_LENGTH as f64 * BATCH_SIZE as f64 * N as f64 * K as f64;
     let gflops = flops / elapsed.as_secs_f64() / 1e9;
 
     println!(
-        "tensor.matmul perf: batch={}, n={}, k={}, threads={}, elapsed={:?}, gflops={:.2}",
-        BATCH_SIZE, N, K, cpu_num, elapsed, gflops
+        "Qwen3 vocab matmul perf: batch={}, vocab={}, hidden={}, threads={}, elapsed={:?}, gflops={:.2}",
+        BATCH_SIZE,
+        N,
+        K,
+        cpu_num,
+        elapsed,
+        gflops
     );
 }
