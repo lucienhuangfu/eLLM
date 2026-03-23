@@ -1,15 +1,7 @@
 [build]
-rustflags = ["-C", "target-cpu=native"]
 incremental = false
 
-[profile.release]
-opt-level = 3
-debug = false
-rpath = false
-lto = "fat"
-debug-assertions = false
-codegen-units = 1
-strip = "symbols"
-panic = "abort"
-unwind-tables = false
-overflow-checks = false
+[target.x86_64-unknown-linux-gnu]
+# Use the host CPU's ISA when building for Linux so the generated binary can
+# take full advantage of AVX2/AVX-512/FMA/etc. on the deployment machine.
+rustflags = ["-C", "target-cpu=native"]
