@@ -1,9 +1,10 @@
 use core_affinity;
 use std::cell::RefCell;
 use std::cell::SyncUnsafeCell;
+use std::hint::spin_loop;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::Barrier;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Instant;
 
@@ -18,6 +19,37 @@ use crate::kernel::generic::sigmoid::Sigmoid;
 use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 // use super::state::State;
+
+struct Barrier {
+    arrived: AtomicUsize,
+    generation: AtomicUsize,
+    parties: usize,
+}
+
+impl Barrier {
+    fn new(parties: usize) -> Self {
+        Self {
+            arrived: AtomicUsize::new(0),
+            generation: AtomicUsize::new(0),
+            parties,
+        }
+    }
+
+    fn wait(&self) {
+        let generation = self.generation.load(Ordering::Acquire);
+        let arrived = self.arrived.fetch_add(1, Ordering::AcqRel) + 1;
+
+        if arrived == self.parties {
+            self.arrived.store(0, Ordering::Release);
+            self.generation.fetch_add(1, Ordering::AcqRel);
+            return;
+        }
+
+        while self.generation.load(Ordering::Acquire) == generation {
+            spin_loop();
+        }
+    }
+}
 
 pub fn start<T>(operator_queue: Vec<Operator<T>>)
 where
