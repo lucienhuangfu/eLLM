@@ -27,6 +27,7 @@ pub mod linear {
     pub use super::matmul::matmul::MatMul;
     pub use super::matmul::matmul3::MatMul3;
     pub use super::matmul::matmul_add::MatMulAdd;
+    pub use super::matmul::matmul_sigmoid::MatMulSigmoid;
 }
 
 pub mod matmul {
@@ -34,6 +35,7 @@ pub mod matmul {
     pub mod matmul3;
     pub mod matmul_add;
     pub mod matmul_topk;
+    pub mod matmul_sigmoid;
 }
 
 pub mod movement {
@@ -48,16 +50,15 @@ pub mod normalization {
 
 pub mod routing {
     pub use super::matmul::matmul_topk::MatMulTopK;
-    pub use super::softmax::experts_softmax_norm::ExpertsSoftmaxNorm;
-    pub use super::softmax::experts_sigmoid_gate::ExpertsSigmoidGate;
-    pub use super::softmax::experts_topk_norm::ExpertsTopkNorm;
+    pub use super::matmul::matmul_sigmoid::MatMulSigmoid;
+    pub use super::softmax::softmax_norm::ExpertsSoftmaxNorm;
+    pub use super::softmax::topk_norm::ExpertsTopkNorm;
     pub use super::softmax::topk_softmax::TopKSoftmax;
 }
 
 pub mod softmax {
-    pub mod experts_sigmoid_gate;
-    pub mod experts_softmax_norm;
-    pub mod experts_topk_norm;
+    pub mod softmax_norm;
+    pub mod topk_norm;
     pub mod topk_softmax;
 }
 
@@ -77,10 +78,7 @@ pub mod traits {
     pub mod softmax;
 
     pub use expert::{ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait};
-    pub use linear::{AttentionTrait, MatMulAddTrait, MatMulTrait, MatMulkqvTrait};
+    pub use linear::{AttentionTrait, MatMulAddTrait, MatMulSigmoidTrait, MatMulTrait, MatMulkqvTrait};
     pub use map::{MapTrait, ZipMapTrait};
-    pub use softmax::{
-        ExpertsSigmoidGateTrait, ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait,
-        TopKSoftmaxTrait,
-    };
+    pub use softmax::{ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
 }

@@ -1,12 +1,16 @@
-use std::f16;
 use std::ops::{Add, Mul};
 
+use crate::common::matmul_params::MatMulParams;
 use crate::common::num_traits::Sigmoid;
-use crate::operators::softmax::experts_sigmoid_gate::ExpertsSigmoidGate;
-use crate::operators::traits::MatMulTrait;
 
-pub fn experts_sigmoid_gate<T>(
-    gate: &ExpertsSigmoidGate<T>,
+pub fn matmul_sigmoid<T>(
+    a_base: *const T,
+    b_nt_ptr: *const T,
+    c_base: *mut T,
+    params: &MatMulParams,
+    m_max: usize,
+    n_max: usize,
+    k_max: usize,
     bias_ptr: Option<*const T>,
     use_routing_bias: bool,
     num_experts: usize,
@@ -14,33 +18,27 @@ pub fn experts_sigmoid_gate<T>(
     n0: usize,
     m_blk: usize,
     n_blk: usize,
-    thread_id: usize,
+    b_panel_ptr: *mut T,
 ) where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default + Sigmoid,
 {
     unsafe {
-        let n = gate.n_max;
-        let k = gate.k_max;
+        let n = n_max;
+        let k = k_max;
 
-        let kc = gate.params.column_step_macro.max(1);
-        let mr = gate.params.a_row_step_micro.max(1);
-        let nr = gate.params.b_row_step_micro.max(1);
+        let kc = params.column_step_macro.max(1);
+        let mr = params.a_row_step_micro.max(1);
+        let nr = params.b_row_step_micro.max(1);
 
         debug_assert!(m_blk % mr == 0);
         debug_assert!(n_blk % nr == 0);
         debug_assert!(k % kc == 0);
-
-        debug_assert!(m0 + m_blk <= gate.m_max);
+        debug_assert!(m0 + m_blk <= m_max);
         debug_assert!(n0 + n_blk <= n);
 
-        let a_base = gate.ptr1.ptr;
-        let c_base = gate.output_ptr.ptr;
         let lda = k;
         let ldc = n;
-
-        let b_nt_ptr = gate.ptr2.ptr;
         let ldb_row = k;
-        let b_panel_ptr = gate.thread_b_panel_ptr(thread_id);
 
         let bias_slice = if use_routing_bias {
             bias_ptr.map(|ptr| std::slice::from_raw_parts(ptr, num_experts))
@@ -63,9 +61,15 @@ pub fn experts_sigmoid_gate<T>(
                 let dst_row = out.add(p * nr);
                 for lane in 0..nr {
                     let j = n0 + lane;
-                    let src = b_nt.add(j * ldb_row + src_col);
-                    *dst_row.add(lane) = *src;
+                    *dst_row.add(lane) = *b_nt.add(j * ldb_row + src_col);
                 }
+            }
+        }
+
+        for mi in 0..m_blk {
+            let c_row = c_base.add((m0 + mi) * ldc + n0);
+            for c in 0..n_blk {
+                *c_row.add(c) = T::default();
             }
         }
 
@@ -80,8 +84,17 @@ pub fn experts_sigmoid_gate<T>(
                     let a_tile = a_base.add((m0 + mi) * lda + k0);
                     let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
 
-                    MatMulTrait::compute(gate, a_tile, b_panel_ptr as *const T, c_tile);
-                    apply_sigmoid_bias_tile(c_tile, bias_slice, nt, mr, nr, ldc);
+                    for i in 0..mr {
+                        for j in 0..nr {
+                            let mut acc = *c_tile.add(i * ldc + j);
+                            for kk in 0..kc {
+                                let a_value = *a_tile.add(i * lda + kk);
+                                let b_value = *b_panel_ptr.add(kk * nr + j);
+                                acc = acc + a_value * b_value;
+                            }
+                            *c_tile.add(i * ldc + j) = acc;
+                        }
+                    }
                     mi += mr;
                 }
 
@@ -89,28 +102,27 @@ pub fn experts_sigmoid_gate<T>(
             }
             k0 += kc;
         }
+
+        for mi in 0..m_blk {
+            let c_row = c_base.add((m0 + mi) * ldc + n0);
+            apply_sigmoid_bias_row(c_row, bias_slice, n0, n_blk);
+        }
     }
 }
 
-unsafe fn apply_sigmoid_bias_tile<T>(
-    c_tile: *mut T,
+unsafe fn apply_sigmoid_bias_row<T>(
+    c_row: *mut T,
     bias_slice: Option<&[T]>,
     col_offset: usize,
-    mr: usize,
-    nr: usize,
-    ldc: usize,
+    n_blk: usize,
 ) where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default + Sigmoid,
 {
-    for r in 0..mr {
-        let row_ptr = c_tile.add(r * ldc);
-        for c in 0..nr {
-            let expert_idx = col_offset + c;
-            let mut value = *row_ptr.add(c);
-            if let Some(bias) = bias_slice {
-                value = value + bias[expert_idx];
-            }
-            *row_ptr.add(c) = value.sigmoid();
+    for c in 0..n_blk {
+        let mut value = *c_row.add(c);
+        if let Some(bias) = bias_slice {
+            value = value + bias[col_offset + c];
         }
+        *c_row.add(c) = value.sigmoid();
     }
 }

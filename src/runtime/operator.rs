@@ -7,7 +7,7 @@ use crate::runtime::inference::SequenceState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::operators::routing::ExpertsSoftmaxNorm;
-use crate::operators::routing::ExpertsSigmoidGate;
+use crate::operators::routing::MatMulSigmoid;
 use crate::operators::routing::ExpertsTopkNorm;
 use crate::operators::transform::LookupRMSMap;
 
@@ -56,7 +56,7 @@ pub enum Operator<T>
     ExpertsMatMulDown(ExpertsMatMulDown<T>),
     ExpertsMatMulSilu(ExpertsMatMulSilu<T>),
     ExpertsMergeAdd(ExpertsMergeAdd<T>),
-    ExpertsSigmoidGate(ExpertsSigmoidGate<T>),
+    MatMulSigmoid(MatMulSigmoid<T>),
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
     ExpertsTopkNorm(ExpertsTopkNorm<T>),
     LiftVector(LiftVector<T>),
@@ -134,7 +134,7 @@ where
             Self::ExpertsMergeAdd(operator) => {
                 run_simple!(operator);
             }
-            Self::ExpertsSigmoidGate(operator) => {
+            Self::MatMulSigmoid(operator) => {
                 run_simple!(operator);
             }
             Self::ExpertsSoftmaxNorm(operator) => {

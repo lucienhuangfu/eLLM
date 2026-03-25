@@ -21,11 +21,13 @@ pub trait MatMulTrait<T> {
     fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T);
     fn compute2(
         &self,
-        input_ptr1: *const T,
-        input_ptr2: *const T,
-        output_ptr: *mut T,
-        length: usize,
-    );
+        _input_ptr1: *const T,
+        _input_ptr2: *const T,
+        _output_ptr: *mut T,
+        _length: usize,
+    ) {
+        unreachable!("MatMulTrait::compute2 is not implemented for this operator")
+    }
 }
 
 pub trait MatMulAddTrait<T> {
@@ -36,6 +38,10 @@ pub trait MatMulAddTrait<T> {
         input_ptr3: *const T,
         output_ptr: *mut T,
     );
+}
+
+pub trait MatMulSigmoidTrait<T> {
+    fn compute(&self, m0: usize, n0: usize, m_blk: usize, n_blk: usize, thread_id: usize);
 }
 
 pub trait MatMulkqvTrait<T> {

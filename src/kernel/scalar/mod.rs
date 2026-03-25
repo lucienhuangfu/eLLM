@@ -1,7 +1,7 @@
 pub mod add;
 pub mod argmax;
 pub mod block_flash_attention;
-pub mod block_experts_sigmoid_gate;
+pub mod block_matmul_sigmoid;
 pub mod complex_mul;
 pub mod dot_product;
 pub mod experts_topk_softmax_norm;

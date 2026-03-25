@@ -13,7 +13,7 @@ use crate::mem_mgr::cache::Cache;
 
 use crate::operators::movement::LiftVector;
 use crate::operators::routing::ExpertsSoftmaxNorm;
-use crate::operators::routing::ExpertsSigmoidGate;
+use crate::operators::routing::MatMulSigmoid;
 use crate::operators::routing::ExpertsTopkNorm;
 use crate::operators::transform::LookupRMSMap;
 use crate::operators::transform::SigmoidMap;
@@ -453,8 +453,8 @@ where
             b_row_step_micro: 32,
         };
 
-        let operator = Operator::ExpertsSigmoidGate(unsafe {
-            ExpertsSigmoidGate::new(
+        let operator = Operator::MatMulSigmoid(unsafe {
+            MatMulSigmoid::new(
                 self.data,
                 gate_weight.data,
                 bias_tensor.map(|tensor| tensor.data as *const T),

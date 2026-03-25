@@ -160,8 +160,8 @@ fn test_sparse_moe_sigmoid_queue_structure() {
     assert!(q.len() >= 5, "Expected >=5 operators, got {}", q.len());
 
     match &q[0] {
-        Operator::ExpertsSigmoidGate(_) => {}
-        _ => panic!("op[0] should be ExpertsSigmoidGate"),
+        Operator::MatMulSigmoid(_) => {}
+        _ => panic!("op[0] should be MatMulSigmoid"),
     }
     match &q[1] {
         Operator::ExpertsTopkNorm(_) => {}

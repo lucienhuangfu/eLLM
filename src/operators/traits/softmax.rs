@@ -30,10 +30,6 @@ pub trait SoftmaxTrait<T> {
     );
 }
 
-pub trait ExpertsSigmoidGateTrait<T> {
-    fn compute(&self, m0: usize, n0: usize, m_blk: usize, n_blk: usize, thread_id: usize);
-}
-
 pub trait ExpertsTopkNormTrait<T> {
     fn compute(
         &self,
