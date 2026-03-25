@@ -21,6 +21,8 @@ pub struct MatMulSigmoid<T> {
     pub k_max: usize,
     b_panel_pool: Box<[T]>,
     b_panel_stride_elems: usize,
+    acc_pool: Box<[T]>,
+    acc_stride_elems: usize,
     bias_ptr: Option<ConstPtr<T>>,
     use_routing_bias: bool,
     num_experts: usize,
@@ -44,13 +46,18 @@ where
     ) -> Self {
         let kc = params.column_step_macro.max(1);
         let nr = params.b_row_step_micro.max(1);
+        let mb = params.a_row_step_macro.max(1);
+        let nb = params.b_row_step_macro.max(1);
         let b_panel_stride_elems = kc * nr;
+        let acc_stride_elems = mb * nb;
 
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
         let pool_len = threads * b_panel_stride_elems;
+        let acc_pool_len = threads * acc_stride_elems;
         let b_panel_pool: Vec<T> = vec![T::default(); pool_len];
+        let acc_pool: Vec<T> = vec![T::default(); acc_pool_len];
 
         Self {
             ptr1: ConstPtr { ptr: input_ptr },
@@ -65,6 +72,8 @@ where
             k_max: hidden_size,
             b_panel_pool: b_panel_pool.into_boxed_slice(),
             b_panel_stride_elems,
+            acc_pool: acc_pool.into_boxed_slice(),
+            acc_stride_elems,
             bias_ptr: bias_ptr.map(|ptr| ConstPtr { ptr }),
             use_routing_bias,
             num_experts,
@@ -91,6 +100,15 @@ where
             self.b_panel_pool
                 .as_ptr()
                 .add(thread_id * self.b_panel_stride_elems) as *mut T
+        }
+    }
+
+    #[inline(always)]
+    pub fn thread_acc_ptr(&self, thread_id: usize) -> *mut T {
+        unsafe {
+            self.acc_pool
+                .as_ptr()
+                .add(thread_id * self.acc_stride_elems) as *mut T
         }
     }
 
@@ -154,6 +172,7 @@ where
 {
     default fn compute(&self, m0: usize, n0: usize, m_blk: usize, n_blk: usize, thread_id: usize) {
         let b_panel_ptr = self.thread_b_panel_ptr(thread_id);
+        let acc_ptr = self.thread_acc_ptr(thread_id);
         kernel::scalar::block_matmul_sigmoid::matmul_sigmoid(
             self.ptr1.ptr,
             self.ptr2.ptr,
@@ -170,6 +189,7 @@ where
             m_blk,
             n_blk,
             b_panel_ptr,
+            acc_ptr,
         );
     }
 }
@@ -177,6 +197,7 @@ where
 impl MatMulSigmoidTrait<f16> for MatMulSigmoid<f16> {
     fn compute(&self, m0: usize, n0: usize, m_blk: usize, n_blk: usize, thread_id: usize) {
         let b_panel_ptr = self.thread_b_panel_ptr(thread_id);
+        let acc_ptr = self.thread_acc_ptr(thread_id);
         kernel::scalar::block_matmul_sigmoid::matmul_sigmoid(
             self.ptr1.ptr,
             self.ptr2.ptr,
@@ -193,6 +214,7 @@ impl MatMulSigmoidTrait<f16> for MatMulSigmoid<f16> {
             m_blk,
             n_blk,
             b_panel_ptr,
+            acc_ptr,
         );
     }
 }
@@ -200,6 +222,7 @@ impl MatMulSigmoidTrait<f16> for MatMulSigmoid<f16> {
 impl MatMulSigmoidTrait<f32> for MatMulSigmoid<f32> {
     fn compute(&self, m0: usize, n0: usize, m_blk: usize, n_blk: usize, thread_id: usize) {
         let b_panel_ptr = self.thread_b_panel_ptr(thread_id);
+        let acc_ptr = self.thread_acc_ptr(thread_id);
         kernel::scalar::block_matmul_sigmoid::matmul_sigmoid(
             self.ptr1.ptr,
             self.ptr2.ptr,
@@ -216,6 +239,7 @@ impl MatMulSigmoidTrait<f32> for MatMulSigmoid<f32> {
             m_blk,
             n_blk,
             b_panel_ptr,
+            acc_ptr,
         );
     }
 }

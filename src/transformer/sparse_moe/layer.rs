@@ -62,14 +62,14 @@ where
         }
     }
 
-    fn route_tokens(
+    fn forward(
         &self,
         hidden_states: &Tensor<T>,
         decode_only_flag: bool,
     ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
         match self {
-            Self::Softmax(router) => router.route_tokens(hidden_states, decode_only_flag),
-            Self::Sigmoid(router) => router.route_tokens(hidden_states, decode_only_flag),
+            Self::Softmax(router) => router.forward(hidden_states, decode_only_flag),
+            Self::Sigmoid(router) => router.forward(hidden_states, decode_only_flag),
         }
     }
 }
@@ -163,7 +163,7 @@ where
     ) -> Tensor<T> {
         println!("Entering SparseMoe forward: {}", tensor_name);
         let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) =
-            self.router.route_tokens(hidden_states, decode_only_flag);
+            self.router.forward(hidden_states, decode_only_flag);
 
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,

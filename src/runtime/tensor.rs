@@ -386,7 +386,7 @@ where
         output_tensor
     }
 
-    pub fn experts_softmax_norm(
+    pub fn softmax_norm(
         &self,
         num_experts: usize,
         num_experts_per_tok: usize,
@@ -422,7 +422,7 @@ where
         (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr)
     }
 
-    pub fn experts_sigmoid_gate(
+    pub fn sigmoid_gate(
         &self,
         gate_weight: &Tensor<T>,
         bias_tensor: Option<&Tensor<T>>,
@@ -433,7 +433,7 @@ where
             assert_eq!(
                 bias_tensor.shape,
                 vec![gate_weight.shape[0]],
-                "experts_sigmoid_gate bias shape mismatch"
+                "sigmoid_gate bias shape mismatch"
             );
         }
 
@@ -471,7 +471,7 @@ where
         output_tensor
     }
 
-    fn experts_topk_norm_impl(
+    pub fn topk_norm(
         &self,
         num_experts: usize,
         num_experts_per_tok: usize,
@@ -497,22 +497,6 @@ where
         ));
         self.operator_queue.borrow_mut().push(operator);
         (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr)
-    }
-
-    pub fn experts_topk_norm(
-        &self,
-        num_experts: usize,
-        num_experts_per_tok: usize,
-        _bias_tensor: Option<&Tensor<T>>,
-        decode_only_flag: bool,
-        scope_name: String,
-    ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
-        self.experts_topk_norm_impl(
-            num_experts,
-            num_experts_per_tok,
-            decode_only_flag,
-            scope_name,
-        )
     }
 
     pub fn from_cache(

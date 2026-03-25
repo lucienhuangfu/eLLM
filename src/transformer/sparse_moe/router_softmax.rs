@@ -51,7 +51,7 @@ where
         }
     }
 
-    pub(super) fn route_tokens(
+    pub(super) fn forward(
         &self,
         hidden_states: &Tensor<T>,
         decode_only_flag: bool,
@@ -70,7 +70,7 @@ where
             format!("{}.gate", self.scope_name),
         );
 
-        gate_output.experts_softmax_norm(
+        gate_output.softmax_norm(
             self.num_experts,
             self.num_topk,
             decode_only_flag,

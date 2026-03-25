@@ -232,7 +232,7 @@ mod test {
     // use std::thread;
 
     #[test]
-    fn test_experts_softmax_norm() {
+    fn test_softmax_norm() {
         if !std::arch::is_x86_feature_detected!("avx2") {
             println!("AVX2 not supported, skipping test.");
             return;

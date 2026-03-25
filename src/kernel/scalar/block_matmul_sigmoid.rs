@@ -19,6 +19,7 @@ pub fn matmul_sigmoid<T>(
     m_blk: usize,
     n_blk: usize,
     b_panel_ptr: *mut T,
+    acc_ptr: *mut T,
 ) where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default + Sigmoid,
 {
@@ -39,6 +40,7 @@ pub fn matmul_sigmoid<T>(
         let lda = k;
         let ldc = n;
         let ldb_row = k;
+        let acc_stride = n_blk;
 
         let bias_slice = if use_routing_bias {
             bias_ptr.map(|ptr| std::slice::from_raw_parts(ptr, num_experts))
@@ -66,11 +68,8 @@ pub fn matmul_sigmoid<T>(
             }
         }
 
-        for mi in 0..m_blk {
-            let c_row = c_base.add((m0 + mi) * ldc + n0);
-            for c in 0..n_blk {
-                *c_row.add(c) = T::default();
-            }
+        for idx in 0..(m_blk * n_blk) {
+            *acc_ptr.add(idx) = T::default();
         }
 
         let mut k0 = 0;
@@ -82,17 +81,19 @@ pub fn matmul_sigmoid<T>(
                 let mut mi = 0;
                 while mi < m_blk {
                     let a_tile = a_base.add((m0 + mi) * lda + k0);
-                    let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
+                    let acc_tile = acc_ptr.add(mi * acc_stride + nt);
 
                     for i in 0..mr {
+                        let a_row = a_tile.add(i * lda);
+                        let acc_row = acc_tile.add(i * acc_stride);
                         for j in 0..nr {
-                            let mut acc = *c_tile.add(i * ldc + j);
+                            let mut acc = *acc_row.add(j);
                             for kk in 0..kc {
-                                let a_value = *a_tile.add(i * lda + kk);
+                                let a_value = *a_row.add(kk);
                                 let b_value = *b_panel_ptr.add(kk * nr + j);
                                 acc = acc + a_value * b_value;
                             }
-                            *c_tile.add(i * ldc + j) = acc;
+                            *acc_row.add(j) = acc;
                         }
                     }
                     mi += mr;
@@ -103,26 +104,42 @@ pub fn matmul_sigmoid<T>(
             k0 += kc;
         }
 
+        let bias_row = bias_slice.map(|bias| &bias[n0..n0 + n_blk]);
+
         for mi in 0..m_blk {
+            let acc_row = acc_ptr.add(mi * acc_stride);
             let c_row = c_base.add((m0 + mi) * ldc + n0);
-            apply_sigmoid_bias_row(c_row, bias_slice, n0, n_blk);
+            if let Some(bias) = bias_row {
+                apply_sigmoid_bias_row_with_bias(c_row, acc_row, bias, n_blk);
+            } else {
+                apply_sigmoid_row_no_bias(c_row, acc_row, n_blk);
+            }
         }
     }
 }
 
-unsafe fn apply_sigmoid_bias_row<T>(
+unsafe fn apply_sigmoid_bias_row_with_bias<T>(
     c_row: *mut T,
-    bias_slice: Option<&[T]>,
-    col_offset: usize,
+    acc_row: *const T,
+    bias_row: &[T],
     n_blk: usize,
 ) where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default + Sigmoid,
 {
     for c in 0..n_blk {
-        let mut value = *c_row.add(c);
-        if let Some(bias) = bias_slice {
-            value = value + bias[col_offset + c];
-        }
+        let value = *acc_row.add(c) + bias_row[c];
         *c_row.add(c) = value.sigmoid();
+    }
+}
+
+unsafe fn apply_sigmoid_row_no_bias<T>(
+    c_row: *mut T,
+    acc_row: *const T,
+    n_blk: usize,
+) where
+    T: Copy + Sigmoid,
+{
+    for c in 0..n_blk {
+        *c_row.add(c) = (*acc_row.add(c)).sigmoid();
     }
 }

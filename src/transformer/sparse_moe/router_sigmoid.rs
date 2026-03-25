@@ -53,22 +53,21 @@ where
         }
     }
 
-    pub(super) fn route_tokens(
+    pub(super) fn forward(
         &self,
         hidden_states: &Tensor<T>,
         decode_only_flag: bool,
     ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
-        let gate_output = hidden_states.experts_sigmoid_gate(
+        let gate_output = hidden_states.sigmoid_gate(
             &self.gate_weight,
             self.gate_bias.as_ref(),
             decode_only_flag,
             format!("{}.gate", self.scope_name),
         );
 
-        gate_output.experts_topk_norm(
+        gate_output.topk_norm(
             self.num_experts,
             self.num_topk,
-            None,
             decode_only_flag,
             format!("{}.router_probs", self.scope_name),
         )
