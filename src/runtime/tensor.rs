@@ -452,20 +452,16 @@ where
             a_row_step_micro: 3,
             b_row_step_micro: 32,
         };
-        let sigmoid_params = crate::common::matmul_params::MatMulSigmoidParams::new(
-            params,
-            self.shape[0],
-            gate_weight.shape[0],
-            self.shape[1],
-        );
-
         let operator = Operator::MatMulSigmoid(unsafe {
             MatMulSigmoid::new(
                 self.data,
                 gate_weight.data,
                 bias_tensor.map(|tensor| tensor.data as *const T),
                 output_tensor.data,
-                sigmoid_params,
+                params,
+                self.shape[0],
+                gate_weight.shape[0],
+                self.shape[1],
                 bias_tensor.is_some(),
             )
         });
