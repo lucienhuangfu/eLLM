@@ -1,7 +1,3 @@
-// use crate::common::num_traits::Exp;
-
-use num_traits::Inv;
-
 use super::activation::exp256;
 use crate::common::heap::FixedMinHeap;
 use std::arch::x86_64::*;
@@ -31,19 +27,11 @@ pub fn experts_topk_softmax_norm(
             num_experts,
             num_topk,
         );
-        let (max_val, denom) = softmax_stats_avx(input_ptr, num_experts);
-        softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
-
         if norm_topk_prob == true {
-            // Normalize top-k probabilities to sum to 1
-            let mut sum = 0.0;
-            for i in 0..num_topk {
-                sum += *topk_values_ptr.add(i);
-            }
-            let scale = sum.recip();
-            for i in 0..num_topk {
-                *topk_values_ptr.add(i) *= scale;
-            }
+            softmax_topk_only_inplace(topk_values_ptr, num_topk);
+        } else {
+            let (max_val, denom) = softmax_stats_avx(input_ptr, num_experts);
+            softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
         }
 
         for i in 0..num_topk {
@@ -132,6 +120,29 @@ unsafe fn softmax_stats_avx(input_ptr: *const f32, len: usize) -> (f32, f32) {
     let mut denom = _mm_cvtss_f32(_mm256_castps256_ps128(total));
     denom = denom.max(f32::MIN_POSITIVE);
     (max_scalar, denom)
+}
+
+#[inline(always)]
+unsafe fn softmax_topk_only_inplace(out_values: *mut f32, topk: usize) {
+    debug_assert!(!out_values.is_null());
+    debug_assert!(topk > 0 && topk <= 8);
+    let max_val = *out_values;
+    let mut lane_buf = [f32::NEG_INFINITY; 8];
+    for i in 0..topk {
+        lane_buf[i] = *out_values.add(i);
+    }
+    let values = _mm256_loadu_ps(lane_buf.as_ptr());
+    let shifted = _mm256_sub_ps(values, _mm256_set1_ps(max_val));
+    let exp_vals = exp256(shifted);
+    _mm256_storeu_ps(lane_buf.as_mut_ptr(), exp_vals);
+    let mut sum = 0.0f32;
+    for i in 0..topk {
+        sum += lane_buf[i];
+    }
+    let inv_sum = 1.0f32 / sum.max(f32::MIN_POSITIVE);
+    for i in 0..topk {
+        *out_values.add(i) = lane_buf[i] * inv_sum;
+    }
 }
 
 #[inline(always)]
