@@ -426,7 +426,7 @@ where
         &self,
         gate_weight: &Tensor<T>,
         bias_tensor: Option<&Tensor<T>>,
-        decode_only_flag: bool,
+        _decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
         if let Some(bias_tensor) = bias_tensor {
@@ -452,6 +452,12 @@ where
             a_row_step_micro: 3,
             b_row_step_micro: 32,
         };
+        let sigmoid_params = crate::common::matmul_params::MatMulSigmoidParams::new(
+            params,
+            self.shape[0],
+            gate_weight.shape[0],
+            self.shape[1],
+        );
 
         let operator = Operator::MatMulSigmoid(unsafe {
             MatMulSigmoid::new(
@@ -459,11 +465,7 @@ where
                 gate_weight.data,
                 bias_tensor.map(|tensor| tensor.data as *const T),
                 output_tensor.data,
-                params,
-                self.shape[0],
-                gate_weight.shape[0],
-                self.shape[1],
-                decode_only_flag,
+                sigmoid_params,
                 bias_tensor.is_some(),
             )
         });

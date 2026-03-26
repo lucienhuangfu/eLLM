@@ -2,7 +2,7 @@ use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
-use crate::common::matmul_params::MatMulParams;
+use crate::common::matmul_params::MatMulSigmoidParams;
 use crate::common::num_traits::Sigmoid;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
@@ -14,18 +14,14 @@ pub struct MatMulSigmoid<T> {
     pub ptr1: ConstPtr<T>,
     pub ptr2: ConstPtr<T>,
     pub output_ptr: MutPtr<T>,
-    pub params: MatMulParams,
+    pub params: MatMulSigmoidParams,
     pub _marker: PhantomData<T>,
-    pub m_max: usize,
-    pub n_max: usize,
-    pub k_max: usize,
     b_panel_pool: Box<[T]>,
     b_panel_stride_elems: usize,
     acc_pool: Box<[T]>,
     acc_stride_elems: usize,
     bias_ptr: Option<ConstPtr<T>>,
     use_routing_bias: bool,
-    num_experts: usize,
 }
 
 impl<T> MatMulSigmoid<T>
@@ -37,17 +33,13 @@ where
         gate_weight_ptr: *const T,
         bias_ptr: Option<*const T>,
         output_ptr: *mut T,
-        params: MatMulParams,
-        batch_size: usize,
-        num_experts: usize,
-        hidden_size: usize,
-        _decode_only_flag: bool,
+        params: MatMulSigmoidParams,
         use_routing_bias: bool,
     ) -> Self {
-        let kc = params.column_step_macro.max(1);
-        let nr = params.b_row_step_micro.max(1);
-        let mb = params.a_row_step_macro.max(1);
-        let nb = params.b_row_step_macro.max(1);
+        let kc = params.kc();
+        let nr = params.nr();
+        let mb = params.mb();
+        let nb = params.nb();
         let b_panel_stride_elems = kc * nr;
         let acc_stride_elems = mb * nb;
 
@@ -67,16 +59,12 @@ where
             output_ptr: MutPtr { ptr: output_ptr },
             params,
             _marker: PhantomData,
-            m_max: batch_size,
-            n_max: num_experts,
-            k_max: hidden_size,
             b_panel_pool: b_panel_pool.into_boxed_slice(),
             b_panel_stride_elems,
             acc_pool: acc_pool.into_boxed_slice(),
             acc_stride_elems,
             bias_ptr: bias_ptr.map(|ptr| ConstPtr { ptr }),
             use_routing_bias,
-            num_experts,
         }
     }
 }
@@ -121,17 +109,17 @@ where
     ) {
         unsafe {
             let m_run = prefill_size;
-            let n = self.n_max;
-            let k = self.k_max;
+            let n = self.params.n_max;
+            let k = self.params.k_max;
 
-            let mb = self.params.a_row_step_macro.max(1);
-            let nb = self.params.b_row_step_macro.max(1);
-            let kc = self.params.column_step_macro.max(1);
-            let mr = self.params.a_row_step_micro.max(1);
-            let nr = self.params.b_row_step_micro.max(1);
+            let mb = self.params.mb();
+            let nb = self.params.nb();
+            let kc = self.params.kc();
+            let mr = self.params.mr();
+            let nr = self.params.nr();
 
-            let m_pad = ((m_run + mr - 1) / mr) * mr;
-            debug_assert!(m_pad <= self.m_max);
+            let m_pad = self.params.padded_m(m_run);
+            debug_assert!(m_pad <= self.params.m_max);
             debug_assert!(mb % mr == 0);
             debug_assert!(n % nr == 0);
             debug_assert!(k % kc == 0);
@@ -178,12 +166,8 @@ where
             self.ptr2.ptr,
             self.output_ptr.ptr,
             &self.params,
-            self.m_max,
-            self.n_max,
-            self.k_max,
             self.bias_ptr.map(|ptr| ptr.ptr),
             self.use_routing_bias,
-            self.num_experts,
             m0,
             n0,
             m_blk,
@@ -203,12 +187,8 @@ impl MatMulSigmoidTrait<f16> for MatMulSigmoid<f16> {
             self.ptr2.ptr,
             self.output_ptr.ptr,
             &self.params,
-            self.m_max,
-            self.n_max,
-            self.k_max,
             self.bias_ptr.map(|ptr| ptr.ptr),
             self.use_routing_bias,
-            self.num_experts,
             m0,
             n0,
             m_blk,
@@ -228,12 +208,8 @@ impl MatMulSigmoidTrait<f32> for MatMulSigmoid<f32> {
             self.ptr2.ptr,
             self.output_ptr.ptr,
             &self.params,
-            self.m_max,
-            self.n_max,
-            self.k_max,
             self.bias_ptr.map(|ptr| ptr.ptr),
             self.use_routing_bias,
-            self.num_experts,
             m0,
             n0,
             m_blk,
