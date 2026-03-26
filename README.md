@@ -21,4 +21,12 @@ eLLM provides million-token inference on CPU-only machines
 - **Stable call-site ergonomics**: runtime code can import from semantic buckets without needing knowledge of internal file layout.
 - **Trait centralization**: all trait definitions are merged under `src/operators/traits` for unified maintenance.
 
+## Docs
+
+Selected design notes live under [`docs/`](docs/):
+
+- [`docs/matmul.md`](docs/matmul.md): high-performance matrix multiplication principles and how they map to this repository
+- [`docs/attention.md`](docs/attention.md): attention scheduling and static parallel decomposition
+- [`docs/minimal_model_abstraction.md`](docs/minimal_model_abstraction.md): minimal model abstraction strategy
+
 
