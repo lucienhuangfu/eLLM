@@ -59,7 +59,6 @@ where
         let handle = thread::spawn(move || {
             let thread_id = i;
             core_affinity::set_for_current(core_id);
-            println!("{} start", thread_id);
             // let mut counter = 0;
 
             // 预先创建子切片，避免在热循环中重复操作
@@ -67,8 +66,7 @@ where
             // let decode_queue_slice = &queue[decode_start.min(queue.len())..];
 
             let s = Instant::now();
-            for p in 0..sequence_length {
-                println!("thread {} position {}", thread_id, p);
+            for _p in 0..sequence_length {
                 for operator in queue.iter() {
                     operator.run(0, 1, batch_size, thread_num, thread_id);
                     b.wait();

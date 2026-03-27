@@ -30,10 +30,8 @@ pub struct MatMul<T> {
     pub n_max: usize,
     pub k_max: usize,
 
-    // 线程私有 KC×NR 面板池：连续大块，按 thread_id 切片
-    // 布局：[threads][kc*nr]
-    b_panel_pool: Box<[T]>,
-    b_panel_stride_elems: usize, // = kc * nr
+    packed_b: Box<[T]>,         // [panels_k][panels_n][kc*nr]
+    packed_panel_stride: usize, // = kc * nr
 }
 
 impl<T> MatMul<T>
@@ -53,24 +51,14 @@ where
         n_max: usize,
         k_max: usize,
     ) -> Self {
-        // === (1) 不再构造期转置：ptr2 直接引用传入的 B_nt[N×K] ===
-        let b_nt_base = ptr2_b_nt_nxk;
-
-        // === (2) 预分配 panel pool：线程数来自 CPU 并行度 ===
         let kc = params.column_step_macro.max(1);
         let nr = params.b_row_step_micro.max(1);
-        let b_panel_stride_elems = kc * nr;
-
-        let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-
-        let pool_len = threads * b_panel_stride_elems;
-        let b_panel_pool: Vec<T> = vec![T::default(); pool_len];
+        let packed_panel_stride = kc * nr;
+        let packed_b = Self::pack_b_panels(ptr2_b_nt_nxk, n_max, k_max, kc, nr);
 
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
-            ptr2: ConstPtr { ptr: b_nt_base },
+            ptr2: ConstPtr { ptr: ptr2_b_nt_nxk },
             output_ptr: MutPtr { ptr: output_ptr },
             output_to_kv,
             params,
@@ -78,28 +66,56 @@ where
             m_max,
             n_max,
             k_max,
-            b_panel_pool: b_panel_pool.into_boxed_slice(),
-            b_panel_stride_elems,
+            packed_b,
+            packed_panel_stride,
         }
     }
 
-    /// 当前 pool 支持的线程数（由 pool_len / stride 推导）
     #[inline(always)]
     pub fn panel_threads(&self) -> usize {
-        if self.b_panel_stride_elems == 0 {
-            0
-        } else {
-            self.b_panel_pool.len() / self.b_panel_stride_elems
-        }
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
     }
 
-    /// 取得本线程的 KC×NR 面板指针（不分配）
     #[inline(always)]
-    pub fn thread_b_panel_ptr(&self, thread_id: usize) -> *mut T {
+    fn pack_b_panels(b_nt: *const T, n: usize, k: usize, kc: usize, nr: usize) -> Box<[T]> {
+        let panels_k = k.div_ceil(kc);
+        let panels_n = n.div_ceil(nr);
+        let panel_stride = kc * nr;
+        let mut packed = vec![T::default(); panels_k * panels_n * panel_stride];
+
         unsafe {
-            self.b_panel_pool
+            for kb in 0..panels_k {
+                let k0 = kb * kc;
+                let kc_cur = (k - k0).min(kc);
+                for nb in 0..panels_n {
+                    let n0 = nb * nr;
+                    let nr_cur = (n - n0).min(nr);
+                    let panel = packed.as_mut_ptr().add((kb * panels_n + nb) * panel_stride);
+                    for p in 0..kc_cur {
+                        let dst_row = panel.add(p * nr);
+                        for lane in 0..nr_cur {
+                            *dst_row.add(lane) = *b_nt.add((n0 + lane) * k + (k0 + p));
+                        }
+                    }
+                }
+            }
+        }
+
+        packed.into_boxed_slice()
+    }
+
+    #[inline(always)]
+    fn packed_panel_ptr(&self, n0: usize, k0: usize) -> *const T {
+        let kc = self.params.column_step_macro.max(1);
+        let nr = self.params.b_row_step_micro.max(1);
+        let panels_n = self.n_max.div_ceil(nr);
+        let panel_idx = (k0 / kc) * panels_n + (n0 / nr);
+        unsafe {
+            self.packed_b
                 .as_ptr()
-                .add(thread_id * self.b_panel_stride_elems) as *mut T
+                .add(panel_idx * self.packed_panel_stride)
         }
     }
 
@@ -142,42 +158,13 @@ where
         debug_assert!(n % nr == 0);
         debug_assert!(k % kc == 0);
 
-        // 线程数只要不超过 pool 支持即可
-        let max_threads = self.panel_threads();
         debug_assert!(cpu_num >= 1);
         debug_assert!(thread_id < cpu_num);
-        debug_assert!(cpu_num <= max_threads);
 
         let a_base = self.ptr1.ptr;
         let c_base = self.output_ptr.ptr;
         let lda = k;
         let ldc = n;
-
-        let b_nt_ptr = self.ptr2.ptr; // N×K row-major
-        let ldb_row = k;
-
-        let b_panel_ptr = self.thread_b_panel_ptr(thread_id);
-
-        #[inline(always)]
-        unsafe fn pack_b_panel<T: Copy>(
-            b_nt: *const T,
-            ldb_row: usize,
-            n0: usize,
-            k0: usize,
-            kc: usize,
-            nr: usize,
-            out: *mut T,
-        ) {
-            for p in 0..kc {
-                let src_col = k0 + p;
-                let dst_row = out.add(p * nr);
-                for lane in 0..nr {
-                    let j = n0 + lane;
-                    let src = b_nt.add(j * ldb_row + src_col);
-                    *dst_row.add(lane) = *src;
-                }
-            }
-        }
 
         // 这里开始：所有 tile 切分按 m_pad 而不是 m_run
         let tiles_m = (m_pad + mb - 1) / mb;
@@ -202,14 +189,14 @@ where
                 while k0 < k {
                     let mut nt = 0;
                     while nt < n_blk {
-                        pack_b_panel::<T>(b_nt_ptr, ldb_row, n0 + nt, k0, kc, nr, b_panel_ptr);
+                        let b_panel_ptr = self.packed_panel_ptr(n0 + nt, k0);
 
                         let mut mi = 0;
                         while mi < m_blk {
                             let a_tile = a_base.add((m0 + mi) * lda + k0);
                             let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
 
-                            self.compute(a_tile, b_panel_ptr as *const T, c_tile);
+                            self.compute(a_tile, b_panel_ptr, c_tile);
                             mi += mr;
                         }
 

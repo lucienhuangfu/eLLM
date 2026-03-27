@@ -11,11 +11,12 @@ use ellm::memory::cache::Cache;
 use ellm::ptensor::tensor::Tensor;
 use ellm::serving::start::start;
 
-const SEQUENCE_LENGTH: usize = 128;
+const SEQUENCE_LENGTH: usize = 1280;
 const SEQUENCE_CHUNK_SIZE: usize = 1;
 const BATCH_SIZE: usize = 1;
-const K: usize = 2048;
-const N: usize = 151936;
+const PADDED_BATCH_SIZE: usize = 3;
+const K: usize = 4096;
+const N: usize = 65536;
 
 fn main() {
     if !cfg!(target_arch = "x86_64") || !std::arch::is_x86_feature_detected!("avx512fp16") {
@@ -32,15 +33,15 @@ fn main() {
     let operator_queue = Rc::new(RefCell::new(Vec::new()));
 
     let input_tensor = Tensor::<f16>::from_cache(
-        vec![SEQUENCE_CHUNK_SIZE, BATCH_SIZE, K],
-        "perf.qwen3_vocab.input".to_string(),
+        vec![SEQUENCE_CHUNK_SIZE, PADDED_BATCH_SIZE, K],
+        "model.layers.0.perf.qwen3_vocab.input".to_string(),
         cache.clone(),
         operator_queue.clone(),
     );
 
     let weight_tensor = Tensor::<f16>::from_cache(
         vec![N, K],
-        "perf.qwen3_vocab.weight".to_string(),
+        "model.layers.0.perf.qwen3_vocab.weight".to_string(),
         cache.clone(),
         operator_queue.clone(),
     );
@@ -75,7 +76,7 @@ fn main() {
         &weight_tensor,
         params,
         SEQUENCE_CHUNK_SIZE,
-        "perf.qwen3_vocab".to_string(),
+        "model.layers.0.perf.qwen3_vocab".to_string(),
     );
 
     assert_eq!(

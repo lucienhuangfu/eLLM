@@ -2546,7 +2546,7 @@ mod tests {
     }
 
     #[test]
-    fn test_matmul_panel_pool_non_overlapping_f16() {
+    fn test_matmul_panel_threads_available_f16() {
         if !cfg!(target_arch = "x86_64") || !std::arch::is_x86_feature_detected!("avx512fp16") {
             println!("AVX512FP16 not supported, skipping test.");
             return;
@@ -2556,10 +2556,7 @@ mod tests {
         const K: usize = 64;
         const N: usize = 32;
 
-        let threads = avail_threads().min(16);
-
         let a = vec![0.0f16; M * K];
-        // ✅ NEW contract: B is N×K (still same element count as K×N here, but indexing differs)
         let b_nt = vec![0.0f16; N * K];
         let mut c = vec![0.0f16; M * N];
 
@@ -2585,35 +2582,6 @@ mod tests {
         };
 
         assert!(matmul.panel_threads() >= 1);
-
-        let kc = matmul.params.column_step_macro.max(1);
-        let nr = matmul.params.b_row_step_micro.max(1);
-        let stride = kc * nr;
-
-        let used = threads.min(matmul.panel_threads());
-        for tid in 0..used {
-            let p = matmul.thread_b_panel_ptr(tid);
-            unsafe {
-                for i in 0..stride {
-                    *p.add(i) = ((tid + 1) as f32) as f16;
-                }
-            }
-        }
-
-        for tid in 0..used {
-            let p = matmul.thread_b_panel_ptr(tid);
-            let expected = ((tid + 1) as f32) as f16;
-            unsafe {
-                for i in 0..stride {
-                    let got = *p.add(i);
-                    assert_eq!(
-                        got, expected,
-                        "panel overlap detected at tid={}, i={}",
-                        tid, i
-                    );
-                }
-            }
-        }
     }
 
     #[test]
