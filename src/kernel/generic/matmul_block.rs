@@ -42,6 +42,27 @@ where
     }
 }
 
+pub fn matmul_block_one_row<T>(a: *const T, b: *const T, c: *mut T, param: &MatMulParams)
+where
+    T: Copy + Add<Output = T> + Mul<Output = T>,
+{
+    let nr = param.b_row_step_micro;
+    let kc = param.column_step_macro;
+    let ldb_panel = nr;
+
+    for j in 0..nr {
+        let mut acc = unsafe { *c.add(j) };
+        for k in 0..kc {
+            let a_value = unsafe { *a.add(k) };
+            let b_value = unsafe { *b.add(k * ldb_panel + j) };
+            acc = acc + (a_value * b_value);
+        }
+        unsafe {
+            *c.add(j) = acc;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

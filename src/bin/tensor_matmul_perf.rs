@@ -65,10 +65,10 @@ fn main() {
     }
 
     let params = MatMulParams {
-        a_row_step_macro: 3,
-        b_row_step_macro: 64,
-        column_step_macro: 64,
-        a_row_step_micro: 3,
+        a_row_step_macro: 1,
+        b_row_step_macro: 256,
+        column_step_macro: 128,
+        a_row_step_micro: 1,
         b_row_step_micro: 32,
     };
 

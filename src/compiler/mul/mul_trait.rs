@@ -12,6 +12,7 @@ pub trait AttentionTrait<T> {
 
 pub trait MatMulTrait<T> {
     fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T);
+    fn compute_row(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T);
     fn compute2(
         &self,
         input_ptr1: *const T,

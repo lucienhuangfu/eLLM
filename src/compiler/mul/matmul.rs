@@ -119,6 +119,50 @@ where
         }
     }
 
+    #[inline(always)]
+    fn run_batch_size_one_packed(&self, cpu_num: usize, thread_id: usize) {
+        let n = self.n_max;
+        let k = self.k_max;
+        let nb = self.params.b_row_step_macro.max(1);
+        let kc = self.params.column_step_macro.max(1);
+        let nr = self.params.b_row_step_micro.max(1);
+
+        debug_assert!(n % nr == 0);
+        debug_assert!(k % kc == 0);
+        debug_assert!(nb % nr == 0);
+        debug_assert!(cpu_num >= 1);
+        debug_assert!(thread_id < cpu_num);
+
+        unsafe {
+            let a_base = self.ptr1.ptr;
+            let c_base = self.output_ptr.ptr;
+            let tiles_n = n.div_ceil(nb);
+
+            if let Some((tb, te)) = assign(tiles_n, cpu_num, thread_id) {
+                for tn in tb..te {
+                    let n0 = tn * nb;
+                    let n_blk = (n - n0).min(nb);
+                    debug_assert!(n_blk % nr == 0);
+
+                    let mut k0 = 0;
+                    while k0 < k {
+                        let a_tile = a_base.add(k0);
+
+                        let mut nt = 0;
+                        while nt < n_blk {
+                            let b_panel_ptr = self.packed_panel_ptr(n0 + nt, k0);
+                            let c_tile = c_base.add(n0 + nt);
+                            self.compute_row(a_tile, b_panel_ptr, c_tile);
+                            nt += nr;
+                        }
+
+                        k0 += kc;
+                    }
+                }
+            }
+        }
+    }
+
     pub fn run(
     &self,
     position_index: usize,
@@ -132,6 +176,11 @@ where
 
     unsafe {
         let m_run = batch_size;
+
+        if m_run == 1 {
+            self.run_batch_size_one_packed(cpu_num, thread_id);
+            return;
+        }
 
         let n = self.n_max;
         let k = self.k_max;
@@ -228,6 +277,23 @@ where
         kernel::generic::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
     }
 
+    default fn compute_row(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T) {
+        let call_param = MatMulParams {
+            a_row_step_macro: self.k_max,
+            b_row_step_macro: self.n_max,
+            column_step_macro: self.params.column_step_macro,
+            a_row_step_micro: 1,
+            b_row_step_micro: self.params.b_row_step_micro,
+        };
+
+        kernel::generic::matmul_block::matmul_block_one_row(
+            input_ptr1,
+            input_ptr2,
+            output_ptr,
+            &call_param,
+        );
+    }
+
     default fn compute2(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T, length: usize) {
         kernel::generic::dot_product::dot_product(input_ptr1, input_ptr2, output_ptr, length);
     }
@@ -252,6 +318,34 @@ impl MatMulTrait<f16> for MatMul<f16> {
         kernel::generic::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
     }
 
+    fn compute_row(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
+        let call_param = MatMulParams {
+            a_row_step_macro: self.k_max,
+            b_row_step_macro: self.n_max,
+            column_step_macro: self.params.column_step_macro,
+            a_row_step_micro: 1,
+            b_row_step_micro: self.params.b_row_step_micro,
+        };
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            kernel::x86_64::f16_512::matmul_block::matmul_block_one_row(
+                input_ptr1,
+                input_ptr2,
+                output_ptr,
+                &call_param,
+            );
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        kernel::generic::matmul_block::matmul_block_one_row(
+            input_ptr1,
+            input_ptr2,
+            output_ptr,
+            &call_param,
+        );
+    }
+
     fn compute2(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16, length: usize) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
@@ -265,6 +359,9 @@ impl MatMulTrait<f16> for MatMul<f16> {
 
 impl MatMulTrait<f32> for MatMul<f32> {
     fn compute(&self, _a: *const f32, _b: *const f32, _c: *mut f32) {
+        /* TODO */
+    }
+    fn compute_row(&self, _a: *const f32, _b: *const f32, _c: *mut f32) {
         /* TODO */
     }
     fn compute2(&self, _a: *const f32, _b: *const f32, _c: *mut f32, _length: usize) {
@@ -411,6 +508,70 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_matmul_runner_f16_batch1_direct_path() {
+        const M_RUN: usize = 1;
+        const M_MAX: usize = 3;
+        const K: usize = 64;
+        const N: usize = 96;
+
+        let thread_num = avail_threads().min(8);
+
+        let mut a = vec![0.0f16; M_MAX * K];
+        let mut b_nt = vec![0.0f16; N * K];
+        let mut c = vec![0.0f16; M_MAX * N];
+
+        for kk in 0..K {
+            a[kk] = (((kk * 13 + 5) % 29) as f32 * 0.05) as f16;
+        }
+
+        for j in 0..N {
+            for kk in 0..K {
+                b_nt[j * K + kk] = (((j * 7 + kk * 11) % 31) as f32 * 0.03) as f16;
+            }
+        }
+
+        let params = MatMulParams {
+            a_row_step_macro: 6,
+            b_row_step_macro: 64,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+
+        let matmul = unsafe {
+            MatMul::<f16>::new(
+                a.as_ptr(),
+                b_nt.as_ptr(),
+                c.as_mut_ptr(),
+                false,
+                params,
+                M_MAX,
+                N,
+                K,
+            )
+        };
+
+        for tid in 0..thread_num {
+            matmul.run(0, 1, M_RUN, thread_num, tid);
+        }
+
+        for j in 0..N {
+            let mut sum = 0.0f32;
+            for kk in 0..K {
+                sum += (a[kk] as f32) * (b_nt[j * K + kk] as f32);
+            }
+            assert_abs_diff_eq!(c[j] as f32, sum, epsilon = 1e-1);
+        }
+
+        for i in 1..M_MAX {
+            for j in 0..N {
+                assert_abs_diff_eq!(c[i * N + j] as f32, 0.0, epsilon = 1e-3);
+            }
+        }
+    }
+
     #[test]
 fn test_matmul_runner_f16_batch7_pad_to9() {
     const M_RUN: usize = 7;
