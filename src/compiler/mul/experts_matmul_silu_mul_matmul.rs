@@ -43,13 +43,15 @@ pub struct ExpertsMatMulSilu<T> {
     pub num_experts: usize, // E
 
     // === strides（保留）===
-    pub b_panel_stride: usize, // kc*nr
-    pub acc_stride: usize,     // mr*nr
-    pub a_tile_stride: usize,  // mr*kc
+    pub packed_panel_stride: usize, // kc*nr
+    pub acc_stride: usize,          // mr*nr
+    pub a_tile_stride: usize,       // mr*kc
+
+    // === prepacked weights ===
+    pub packed_gate: Box<[T]>, // [E][panels_k][panels_n][kc*nr]
+    pub packed_up: Box<[T]>,   // [E][panels_k][panels_n][kc*nr]
 
     // === pools（按 threads 切片）===
-    pub gate_panel_pool: Box<[T]>,
-    pub up_panel_pool: Box<[T]>,
     pub gate_acc_pool: Box<[T]>,
     pub up_acc_pool: Box<[T]>,
     pub a_tile_pool: Box<[T]>,
@@ -89,17 +91,20 @@ where
         let mr = a_row_step_micro.max(1);
         let nr = b_row_step_micro.max(1);
 
-        let b_panel_stride = kc * nr;
+        let packed_panel_stride = kc * nr;
         let acc_stride = mr * nr;
         let a_tile_stride = mr * kc;
+
+        let packed_gate =
+            Self::pack_expert_b_panels(gate_nt_ptr, num_experts, inter, hidden, kc, nr);
+        let packed_up =
+            Self::pack_expert_b_panels(up_nt_ptr, num_experts, inter, hidden, kc, nr);
 
         // threads 只在 new() 用一次
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
 
-        let gate_panel_pool = vec![T::default(); threads * b_panel_stride].into_boxed_slice();
-        let up_panel_pool = vec![T::default(); threads * b_panel_stride].into_boxed_slice();
         let gate_acc_pool = vec![T::default(); threads * acc_stride].into_boxed_slice();
         let up_acc_pool = vec![T::default(); threads * acc_stride].into_boxed_slice();
         let a_tile_pool = vec![T::default(); threads * a_tile_stride].into_boxed_slice();
@@ -128,12 +133,12 @@ where
             hidden,
             num_experts,
 
-            b_panel_stride,
+            packed_panel_stride,
             acc_stride,
             a_tile_stride,
 
-            gate_panel_pool,
-            up_panel_pool,
+            packed_gate,
+            packed_up,
             gate_acc_pool,
             up_acc_pool,
             a_tile_pool,
@@ -145,10 +150,8 @@ where
     }
 
     #[inline(always)]
-    fn thread_slices(&self, tid: usize) -> (*mut T, *mut T, *mut T, *mut T, *mut T, *mut usize) {
+    fn thread_slices(&self, tid: usize) -> (*mut T, *mut T, *mut T, *mut usize) {
         unsafe {
-            let gp = self.gate_panel_pool.as_ptr().add(tid * self.b_panel_stride) as *mut T;
-            let up = self.up_panel_pool.as_ptr().add(tid * self.b_panel_stride) as *mut T;
             let ga = self.gate_acc_pool.as_ptr().add(tid * self.acc_stride) as *mut T;
             let ua = self.up_acc_pool.as_ptr().add(tid * self.acc_stride) as *mut T;
             let at = self.a_tile_pool.as_ptr().add(tid * self.a_tile_stride) as *mut T;
@@ -156,27 +159,63 @@ where
                 .idx_buf_pool
                 .as_ptr()
                 .add(tid * self.params.a_row_step_macro) as *mut usize;
-            (gp, up, ga, ua, at, idx)
+            (ga, ua, at, idx)
         }
     }
 
     #[inline(always)]
-    pub unsafe fn pack_panel_from_bnt(
-        b_nt: *const T, // [N×K]
-        ldb_row: usize, // = K
-        n0: usize,
-        k0: usize,
+    fn pack_expert_b_panels(
+        b_nt: *const T, // [E, N, K]
+        experts: usize,
+        n: usize,
+        k: usize,
         kc: usize,
         nr: usize,
-        out: *mut T, // KC×NR
-    ) {
-        for p in 0..kc {
-            let dst = out.add(p * nr);
-            let col_k = k0 + p;
-            for lane in 0..nr {
-                let j = n0 + lane;
-                *dst.add(lane) = *b_nt.add(j * ldb_row + col_k);
+    ) -> Box<[T]> {
+        let panels_k = k.div_ceil(kc);
+        let panels_n = n.div_ceil(nr);
+        let panel_stride = kc * nr;
+        let expert_stride = panels_k * panels_n * panel_stride;
+        let mut packed = vec![T::default(); experts * expert_stride];
+
+        unsafe {
+            for ex in 0..experts {
+                let src_ex = b_nt.add(ex * n * k);
+                let dst_ex = packed.as_mut_ptr().add(ex * expert_stride);
+                for kb in 0..panels_k {
+                    let k0 = kb * kc;
+                    let kc_cur = (k - k0).min(kc);
+                    for nb in 0..panels_n {
+                        let n0 = nb * nr;
+                        let nr_cur = (n - n0).min(nr);
+                        let panel =
+                            dst_ex.add((kb * panels_n + nb) * panel_stride);
+                        for p in 0..kc_cur {
+                            let dst = panel.add(p * nr);
+                            for lane in 0..nr_cur {
+                                *dst.add(lane) = *src_ex.add((n0 + lane) * k + (k0 + p));
+                            }
+                        }
+                    }
+                }
             }
+        }
+
+        packed.into_boxed_slice()
+    }
+
+    #[inline(always)]
+    fn packed_panel_ptr(&self, packed: &[T], expert: usize, n0: usize, k0: usize) -> *const T {
+        let kc = self.params.column_step_macro.max(1);
+        let nr = self.params.b_row_step_micro.max(1);
+        let panels_n = self.inter.div_ceil(nr);
+        let panels_k = self.hidden.div_ceil(kc);
+        let expert_stride = panels_k * panels_n * self.packed_panel_stride;
+        let panel_idx = (k0 / kc) * panels_n + (n0 / nr);
+        unsafe {
+            packed
+                .as_ptr()
+                .add(expert * expert_stride + panel_idx * self.packed_panel_stride)
         }
     }
 
@@ -292,11 +331,9 @@ where
             let c_base = self.output_ptr.ptr;
             let c_stride_e = self.batch * self.inter; // 每 expert 的 C 块跨度
 
-            let ldb_row = self.hidden; // K
             let w_stride = self.inter * self.hidden; // I*H per expert
 
-            let (gate_panel, up_panel, gate_acc, up_acc, a_tile, idx_buf) =
-                self.thread_slices(thread_id);
+            let (gate_acc, up_acc, a_tile, idx_buf) = self.thread_slices(thread_id);
 
             let tiles_n = (n + nb - 1) / nb;
             let (expert_tasks, routed_tokens, total_tasks) = self.build_task_space(b, mb, tiles_n);
@@ -324,13 +361,16 @@ where
                     }
 
                     let e = meta.expert_id;
-                    let wgate_nt_e = self.gate_nt_ptr.ptr.add(e * w_stride);
-                    let wup_nt_e = self.up_nt_ptr.ptr.add(e * w_stride);
+                    let _ = w_stride;
 
                     let mut nt = 0usize;
                     while nt < n_blk {
                         let cols_this = (n_blk - nt).min(nr);
                         debug_assert!(cols_this == nr || nt + cols_this == n_blk);
+                        let gate_panel =
+                            self.packed_panel_ptr(&self.packed_gate, e, n0 + nt, 0);
+                        let up_panel =
+                            self.packed_panel_ptr(&self.packed_up, e, n0 + nt, 0);
 
                         let mut off = 0usize;
                         while off < be {
@@ -345,33 +385,27 @@ where
 
                             let mut k0 = 0usize;
                             while k0 < k {
-                                Self::pack_panel_from_bnt(
-                                    wgate_nt_e,
-                                    ldb_row,
-                                    n0 + nt,
-                                    k0,
-                                    kc,
-                                    nr,
-                                    gate_panel,
-                                );
-                                Self::pack_panel_from_bnt(
-                                    wup_nt_e,
-                                    ldb_row,
-                                    n0 + nt,
-                                    k0,
-                                    kc,
-                                    nr,
-                                    up_panel,
-                                );
-
                                 Self::pack_a_tile_mrkc(
                                     a_base, lda, idx_buf, off, valid_rows, k0, kc, a_tile, mr,
                                 );
 
+                                let gate_panel = self.packed_panel_ptr(
+                                    &self.packed_gate,
+                                    e,
+                                    n0 + nt,
+                                    k0,
+                                );
+                                let up_panel = self.packed_panel_ptr(
+                                    &self.packed_up,
+                                    e,
+                                    n0 + nt,
+                                    k0,
+                                );
+
                                 self.compute1(
                                     a_tile as *const T,
-                                    gate_panel as *const T,
-                                    up_panel as *const T,
+                                    gate_panel,
+                                    up_panel,
                                     gate_acc as *mut T,
                                     up_acc as *mut T,
                                     kc,

@@ -30,10 +30,8 @@ pub struct MatMulAdd<T> {
     pub n_max: usize,
     pub k_max: usize,
 
-    // 线程私有 KC×NR 面板池（连续大块，按线程切片）
-    b_panel_pool: Box<[T]>,
-    b_panel_stride_elems: usize, // = kc * nr
-    cpu_max_for_scratch: usize,
+    packed_b: Box<[T]>,         // [panels_k][panels_n][kc*nr]
+    packed_panel_stride: usize, // = kc * nr
 }
 
 impl<T> MatMulAdd<T>
@@ -43,7 +41,7 @@ where
     /// 构造函数：
     /// - 不再转置 B
     /// - ptr2 直接指向 B_nt[N×K]
-    /// - 只预分配每线程 KC×NR panel scratch
+    /// - 预打包 B 面板，避免 run() 中重复 pack
     pub unsafe fn new(
         ptr1: *const T,          // A[M×K]
         ptr2_b_nt_nxk: *const T, // ✅ B_nt[N×K] row-major
@@ -56,14 +54,8 @@ where
     ) -> Self {
         let kc = params.column_step_macro.max(1);
         let nr = params.b_row_step_micro.max(1);
-        let b_panel_stride_elems = kc * nr;
-
-        let cpu_max_for_scratch = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-
-        let pool_len = cpu_max_for_scratch * b_panel_stride_elems;
-        let b_panel_pool: Vec<T> = vec![T::default(); pool_len];
+        let packed_panel_stride = kc * nr;
+        let packed_b = Self::pack_b_panels(ptr2_b_nt_nxk, n_max, k_max, kc, nr);
 
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
@@ -77,20 +69,56 @@ where
             m_max,
             n_max,
             k_max,
-            b_panel_pool: b_panel_pool.into_boxed_slice(),
-            b_panel_stride_elems,
-            cpu_max_for_scratch,
+            packed_b,
+            packed_panel_stride,
         }
     }
 
-    /// 取得本线程的 KC×NR 面板指针（不分配）
     #[inline(always)]
-    pub fn thread_b_panel_ptr(&self, thread_id: usize) -> *mut T {
-        debug_assert!(thread_id < self.cpu_max_for_scratch);
+    pub fn panel_threads(&self) -> usize {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    }
+
+    #[inline(always)]
+    fn pack_b_panels(b_nt: *const T, n: usize, k: usize, kc: usize, nr: usize) -> Box<[T]> {
+        let panels_k = k.div_ceil(kc);
+        let panels_n = n.div_ceil(nr);
+        let panel_stride = kc * nr;
+        let mut packed = vec![T::default(); panels_k * panels_n * panel_stride];
+
         unsafe {
-            self.b_panel_pool
+            for kb in 0..panels_k {
+                let k0 = kb * kc;
+                let kc_cur = (k - k0).min(kc);
+                for nb in 0..panels_n {
+                    let n0 = nb * nr;
+                    let nr_cur = (n - n0).min(nr);
+                    let panel = packed.as_mut_ptr().add((kb * panels_n + nb) * panel_stride);
+                    for p in 0..kc_cur {
+                        let dst_row = panel.add(p * nr);
+                        for lane in 0..nr_cur {
+                            *dst_row.add(lane) = *b_nt.add((n0 + lane) * k + (k0 + p));
+                        }
+                    }
+                }
+            }
+        }
+
+        packed.into_boxed_slice()
+    }
+
+    #[inline(always)]
+    fn packed_panel_ptr(&self, n0: usize, k0: usize) -> *const T {
+        let kc = self.params.column_step_macro.max(1);
+        let nr = self.params.b_row_step_micro.max(1);
+        let panels_n = self.n_max.div_ceil(nr);
+        let panel_idx = (k0 / kc) * panels_n + (n0 / nr);
+        unsafe {
+            self.packed_b
                 .as_ptr()
-                .add(thread_id * self.b_panel_stride_elems) as *mut T
+                .add(panel_idx * self.packed_panel_stride)
         }
     }
 
@@ -127,40 +155,16 @@ where
         debug_assert!(mb % mr == 0);
         debug_assert!(n % nr == 0);
         debug_assert!(k % kc == 0);
-        debug_assert!(cpu_num <= self.cpu_max_for_scratch);
+        debug_assert!(cpu_num >= 1);
         debug_assert!(thread_id < cpu_num);
 
         // ===== 基址与 stride（元素计）=====
         let a_base = self.ptr1.ptr;        // A[M×K]
         let r_base = self.ptr3.ptr;        // residual[M×N]
         let c_base = self.output_ptr.ptr;  // C[M×N]
-        let b_nt = self.ptr2.ptr;          // B_nt[N×K]
 
         let lda = k;
         let ldc = n;
-        let ldb_row = k;
-
-        let b_panel_ptr = self.thread_b_panel_ptr(thread_id);
-
-        #[inline(always)]
-        unsafe fn pack_b_panel_from_nt<T: Copy>(
-            b_nt: *const T,
-            ldb_row: usize,
-            n0: usize,
-            k0: usize,
-            kc: usize,
-            nr: usize,
-            out: *mut T,
-        ) {
-            for p in 0..kc {
-                let src_col = k0 + p;
-                let dst_row = out.add(p * nr);
-                for lane in 0..nr {
-                    let j = n0 + lane;
-                    *dst_row.add(lane) = *b_nt.add(j * ldb_row + src_col);
-                }
-            }
-        }
 
         // ===== tiles（按 m_pad 切分）=====
         let tiles_m = (m + mb - 1) / mb;
@@ -190,9 +194,7 @@ where
                         for r in 0..mr {
                             let rs = r_tile.add(r * ldc);
                             let cs = c_tile.add(r * ldc);
-                            for cc in 0..nr {
-                                *cs.add(cc) = *rs.add(cc);
-                            }
+                            std::ptr::copy_nonoverlapping(rs, cs, nr);
                         }
 
                         mi += mr;
@@ -205,14 +207,14 @@ where
                 while k0 < k {
                     let mut nt = 0;
                     while nt < n_blk {
-                        pack_b_panel_from_nt::<T>(b_nt, ldb_row, n0 + nt, k0, kc, nr, b_panel_ptr);
+                        let b_panel_ptr = self.packed_panel_ptr(n0 + nt, k0);
 
                         let mut mi = 0;
                         while mi < m_blk {
                             let a_tile = a_base.add((m0 + mi) * lda + k0);
                             let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
 
-                            self.compute(a_tile, b_panel_ptr as *const T, std::ptr::null(), c_tile);
+                            self.compute(a_tile, b_panel_ptr, std::ptr::null(), c_tile);
 
                             mi += mr;
                         }
@@ -298,6 +300,96 @@ mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
 
+    fn avail_threads() -> usize {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    }
+
+    #[test]
+    fn test_matmul_add_new_packs_b_panels_f16() {
+        const K: usize = 8;
+        const N: usize = 6;
+        const M: usize = 3;
+
+        let a = vec![0.0f16; M * K];
+        let mut b_nt = vec![0.0f16; N * K];
+        let residual = vec![0.0f16; M * N];
+        let mut c = vec![0.0f16; M * N];
+
+        for j in 0..N {
+            for kk in 0..K {
+                b_nt[j * K + kk] = (100 * j + kk) as f32 as f16;
+            }
+        }
+
+        let params = MatMulParams {
+            a_row_step_macro: 3,
+            b_row_step_macro: 32,
+            column_step_macro: 4,
+            a_row_step_micro: 3,
+            b_row_step_micro: 2,
+        };
+
+        let runner = unsafe {
+            MatMulAdd::<f16>::new(
+                a.as_ptr(),
+                b_nt.as_ptr(),
+                residual.as_ptr(),
+                c.as_mut_ptr(),
+                params,
+                M,
+                N,
+                K,
+            )
+        };
+
+        let panel_00 = unsafe { std::slice::from_raw_parts(runner.packed_panel_ptr(0, 0), 8) };
+        let expected_00 = [0.0, 100.0, 1.0, 101.0, 2.0, 102.0, 3.0, 103.0];
+        for (got, expected) in panel_00.iter().zip(expected_00) {
+            assert_abs_diff_eq!(*got as f32, expected, epsilon = 0.0);
+        }
+
+        let panel_24 = unsafe { std::slice::from_raw_parts(runner.packed_panel_ptr(2, 4), 8) };
+        let expected_24 = [204.0, 304.0, 205.0, 305.0, 206.0, 306.0, 207.0, 307.0];
+        for (got, expected) in panel_24.iter().zip(expected_24) {
+            assert_abs_diff_eq!(*got as f32, expected, epsilon = 0.0);
+        }
+    }
+
+    #[test]
+    fn test_matmul_add_panel_threads_available_f16() {
+        const M: usize = 3;
+        const K: usize = 64;
+        const N: usize = 32;
+
+        let a = vec![0.0f16; M * K];
+        let b_nt = vec![0.0f16; N * K];
+        let residual = vec![0.0f16; M * N];
+        let mut c = vec![0.0f16; M * N];
+
+        let params = MatMulParams {
+            a_row_step_macro: 3,
+            b_row_step_macro: 32,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+
+        let runner = unsafe {
+            MatMulAdd::<f16>::new(
+                a.as_ptr(),
+                b_nt.as_ptr(),
+                residual.as_ptr(),
+                c.as_mut_ptr(),
+                params,
+                M,
+                N,
+                K,
+            )
+        };
+
+        assert!(runner.panel_threads() >= 1);
+    }
+
     #[test]
     fn test_matmul_add_runner_f16_nt_6x64x32() {
         if !std::arch::is_x86_feature_detected!("avx512fp16") {
@@ -308,7 +400,7 @@ mod tests {
         const K: usize = 64;
         const N: usize = 32;
 
-        let thread_num = 4;
+        let thread_num = avail_threads().min(8).max(1);
 
         let mut a = vec![0.0f16; M * K];
         let mut b_nt = vec![0.0f16; N * K];
@@ -368,81 +460,79 @@ mod tests {
         }
     }
     #[test]
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-fn test_matmul_add_runner_f16_nt_batch7_pad_to9() {
-    const M_RUN: usize = 7;
-    const M_MAX: usize = 9; // ceil_div(7,3)*3
-    const K: usize = 64;
-    const N: usize = 32;
+    fn test_matmul_add_runner_f16_nt_batch7_pad_to9() {
+        const M_RUN: usize = 7;
+        const M_MAX: usize = 9; // ceil_div(7,3)*3
+        const K: usize = 64;
+        const N: usize = 32;
 
-    let thread_num = 4;
+        let thread_num = avail_threads().min(8).max(1);
 
-    let mut a = vec![0.0f16; M_MAX * K];
-    let mut b_nt = vec![0.0f16; N * K];
-    let mut residual = vec![0.0f16; M_MAX * N];
-    let mut c = vec![0.0f16; M_MAX * N];
+        let mut a = vec![0.0f16; M_MAX * K];
+        let mut b_nt = vec![0.0f16; N * K];
+        let mut residual = vec![0.0f16; M_MAX * N];
+        let mut c = vec![0.0f16; M_MAX * N];
 
-    // A：前 7 行填值，pad 行保持 0
-    for i in 0..M_RUN {
-        for kk in 0..K {
-            a[i * K + kk] = (0.01f32 * (i as f32) + 0.001f32 * (kk as f32)) as f16;
-        }
-    }
-
-    // B_nt：N×K
-    for j in 0..N {
-        for kk in 0..K {
-            b_nt[j * K + kk] = (0.02f32 * (kk as f32) + 0.003f32 * (j as f32)) as f16;
-        }
-    }
-
-    // residual：前 7 行填值，pad 行也给 0（避免 pad 行影响计时以外的东西）
-    for i in 0..M_RUN {
-        for j in 0..N {
-            residual[i * N + j] = (0.05f32 * (i as f32) + 0.0007f32 * (j as f32)) as f16;
-        }
-    }
-    // c 初始随便（会被 residual 覆盖），但我们也给 0
-    for x in &mut c {
-        *x = 0.0f32 as f16;
-    }
-
-    let params = MatMulParams {
-        a_row_step_macro: 6,   // MB（3 的倍数）
-        b_row_step_macro: 32,  // NB
-        column_step_macro: 64, // KC
-        a_row_step_micro: 3,   // MR
-        b_row_step_micro: 32,  // NR
-    };
-
-    let runner = unsafe {
-        MatMulAdd::<f16>::new(
-            a.as_ptr(),
-            b_nt.as_ptr(),
-            residual.as_ptr(),
-            c.as_mut_ptr(),
-            params,
-            M_MAX, // m_max
-            N,
-            K,
-        )
-    };
-
-    let used = thread_num.min(runner.cpu_max_for_scratch);
-    for tid in 0..used {
-        runner.run(0, 1, M_RUN, used, tid); // batch=7（非 3 倍数）
-    }
-
-    // 只验证前 7 行
-    for i in 0..M_RUN {
-        for j in 0..N {
-            let mut sum = residual[i * N + j] as f32;
+        for i in 0..M_RUN {
             for kk in 0..K {
-                sum += (a[i * K + kk] as f32) * (b_nt[j * K + kk] as f32);
+                a[i * K + kk] = (0.01f32 * (i as f32) + 0.001f32 * (kk as f32)) as f16;
             }
-            let got = c[i * N + j] as f32;
-            assert_abs_diff_eq!(got, sum, epsilon = 2e-1);
+        }
+
+        for j in 0..N {
+            for kk in 0..K {
+                b_nt[j * K + kk] = (0.02f32 * (kk as f32) + 0.003f32 * (j as f32)) as f16;
+            }
+        }
+
+        for i in 0..M_RUN {
+            for j in 0..N {
+                residual[i * N + j] = (0.05f32 * (i as f32) + 0.0007f32 * (j as f32)) as f16;
+            }
+        }
+
+        let params = MatMulParams {
+            a_row_step_macro: 6,
+            b_row_step_macro: 32,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+
+        let runner = unsafe {
+            MatMulAdd::<f16>::new(
+                a.as_ptr(),
+                b_nt.as_ptr(),
+                residual.as_ptr(),
+                c.as_mut_ptr(),
+                params,
+                M_MAX,
+                N,
+                K,
+            )
+        };
+
+        let used = thread_num.min(runner.panel_threads()).max(1);
+        for tid in 0..used {
+            runner.run(0, 1, M_RUN, used, tid);
+        }
+
+        for i in 0..M_RUN {
+            for j in 0..N {
+                let mut sum = residual[i * N + j] as f32;
+                for kk in 0..K {
+                    sum += (a[i * K + kk] as f32) * (b_nt[j * K + kk] as f32);
+                }
+                let got = c[i * N + j] as f32;
+                assert_abs_diff_eq!(got, sum, epsilon = 2e-1);
+            }
+        }
+
+        for i in M_RUN..M_MAX {
+            for j in 0..N {
+                let got = c[i * N + j] as f32;
+                assert_abs_diff_eq!(got, 0.0, epsilon = 1e-1);
+            }
         }
     }
-}
 }

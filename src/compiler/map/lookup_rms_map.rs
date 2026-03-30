@@ -67,11 +67,11 @@ impl<T: Sqrt> LookupRMSMap<T> {
                     .sequences
                     .ptr
                     .wrapping_add(self.max_batch_size * position_start);
-
+                    /* 
                 println!(
                     "LookupRMSMap run: begin {}, end {}, row_index {}, col_index {}",
                     begin, end, row_index, col_index
-                );
+                );*/
                 let output_normal_ptr = self.output_normal_ptr.ptr;
                 let output_hidden_ptr = self.output_hidden_ptr.ptr;
                 for _ in begin..end {

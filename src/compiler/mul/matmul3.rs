@@ -9,7 +9,7 @@ use super::super::super::init::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
-use super::super::assign::{assign_kqv_tile, KqvPath};
+use super::super::assign::{assign, KqvPath};
 use super::mul_trait::MatMulkqvTrait;
 
 // 添加 generic kernel 的引用
@@ -32,11 +32,8 @@ use crate::kernel::generic::rms_norm::rms_norm;
 pub struct MatMul3<T> {
     // A / W / C
     hidden_ptr: ConstPtr<T>,   // A[M×K]
-    q_weight_ptr: ConstPtr<T>, // Wq_nt[Nq×K]
     q_state_ptr: MutPtr<T>,    // Cq[M×Nq]
-    k_weight_ptr: ConstPtr<T>, // Wk_nt[Nkv×K]
     k_state_ptr: MutPtr<T>,    // Ck[M×Nkv]
-    v_weight_ptr: ConstPtr<T>, // Wv_nt[Nkv×K]
     v_state_ptr: MutPtr<T>,    // Cv[M×Nkv]
 
     // RoPE 相位表（按 N 方向拉平或按 head×dim 展开）
@@ -53,9 +50,10 @@ pub struct MatMul3<T> {
     pub params: MatMulParams,
     _marker: PhantomData<T>,
 
-    // 线程私有 KC×NR 面板池
-    b_panel_pool: Box<[T]>,
-    b_panel_stride_elems: usize,
+    packed_q: Box<[T]>,         // [panels_k][panels_nq][kc*nr]
+    packed_k: Box<[T]>,         // [panels_k][panels_nkv][kc*nr]
+    packed_v: Box<[T]>,         // [panels_k][panels_nkv][kc*nr]
+    packed_panel_stride: usize, // = kc * nr
 }
 
 impl<T> MatMul3<T>
@@ -83,25 +81,17 @@ where
         a_row_step_micro: usize,
         b_row_step_micro: usize,
     ) -> Self {
-        // 线程面板池：threads × (KC×NR)；threads 只在 new() 用一次，不进 struct
         let kc = column_step_macro.max(1);
         let nr = b_row_step_micro.max(1);
-        let b_panel_stride_elems = kc * nr;
-
-        let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-
-        let pool_len = threads * b_panel_stride_elems;
-        let b_panel_pool = vec![T::default(); pool_len].into_boxed_slice();
+        let packed_panel_stride = kc * nr;
+        let packed_q = Self::pack_b_panels(q_weight_ptr_nt, b_q_row, col, kc, nr);
+        let packed_k = Self::pack_b_panels(k_weight_ptr_nt, b_kv_row, col, kc, nr);
+        let packed_v = Self::pack_b_panels(v_weight_ptr_nt, b_kv_row, col, kc, nr);
 
         Self {
             hidden_ptr: ConstPtr { ptr: hidden_ptr },
-            q_weight_ptr: ConstPtr { ptr: q_weight_ptr_nt }, // ✅ 直接引用外部 N×K
             q_state_ptr: MutPtr { ptr: q_state_ptr },
-            k_weight_ptr: ConstPtr { ptr: k_weight_ptr_nt }, // ✅
             k_state_ptr: MutPtr { ptr: k_state_ptr },
-            v_weight_ptr: ConstPtr { ptr: v_weight_ptr_nt }, // ✅
             v_state_ptr: MutPtr { ptr: v_state_ptr },
 
             rope_ptr: ConstPtr { ptr: rope_ptr },
@@ -121,40 +111,58 @@ where
             },
             _marker: PhantomData,
 
-            b_panel_pool,
-            b_panel_stride_elems,
+            packed_q,
+            packed_k,
+            packed_v,
+            packed_panel_stride,
         }
     }
 
     #[inline(always)]
-    fn thread_b_panel_ptr(&self, thread_id: usize) -> *mut T {
+    pub fn panel_threads(&self) -> usize {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    }
+
+    #[inline(always)]
+    fn pack_b_panels(b_nt: *const T, n: usize, k: usize, kc: usize, nr: usize) -> Box<[T]> {
+        let panels_k = k.div_ceil(kc);
+        let panels_n = n.div_ceil(nr);
+        let panel_stride = kc * nr;
+        let mut packed = vec![T::default(); panels_k * panels_n * panel_stride];
+
         unsafe {
-            self.b_panel_pool
-                .as_ptr()
-                .add(thread_id * self.b_panel_stride_elems) as *mut T
+            for kb in 0..panels_k {
+                let k0 = kb * kc;
+                let kc_cur = (k - k0).min(kc);
+                for nb in 0..panels_n {
+                    let n0 = nb * nr;
+                    let nr_cur = (n - n0).min(nr);
+                    let panel = packed.as_mut_ptr().add((kb * panels_n + nb) * panel_stride);
+                    for p in 0..kc_cur {
+                        let dst_row = panel.add(p * nr);
+                        for lane in 0..nr_cur {
+                            *dst_row.add(lane) = *b_nt.add((n0 + lane) * k + (k0 + p));
+                        }
+                    }
+                }
+            }
         }
+
+        packed.into_boxed_slice()
     }
 
-    /// 从 B_nt[N×K] 打 kc×32 连续面板
     #[inline(always)]
-    unsafe fn pack_b_panel_from_bnt(
-        &self,
-        b_nt: *const T, // N×K 行主
-        ldb_row: usize, // = K
-        n0: usize,      // N 起点
-        k0: usize,      // K 起点
-        kc: usize,
-        nr: usize,   // = 32
-        out: *mut T, // 输出: kc×nr 行主（每行 32 连续）
-    ) {
-        for p in 0..kc {
-            let dst_row = out.add(p * nr);
-            let col_k = k0 + p;
-            for lane in 0..nr {
-                let n = n0 + lane;
-                let src = b_nt.add(n * ldb_row + col_k); // b_nt[n, col_k]
-                *dst_row.add(lane) = *src;
-            }
+    fn packed_panel_ptr(&self, packed_b: &[T], n: usize, n0: usize, k0: usize) -> *const T {
+        let kc = self.params.column_step_macro.max(1);
+        let nr = self.params.b_row_step_micro.max(1);
+        let panels_n = n.div_ceil(nr);
+        let panel_idx = (k0 / kc) * panels_n + (n0 / nr);
+        unsafe {
+            packed_b
+                .as_ptr()
+                .add(panel_idx * self.packed_panel_stride)
         }
     }
 
@@ -164,13 +172,12 @@ where
         &self,
         a: *const T,    // A[M×K]
         c: *mut T,      // C[M×N]
-        b_nt: *const T, // B_nt[N×K]
+        packed_b: &[T], // packed [panels_k][panels_n][kc*nr]
         m: usize,
         n: usize,
         k: usize,
         ldc: usize,
         rope_base: *const T, // 与 C 同行布局的 RoPE，相同 N 方向
-        thread_id: usize,
         tile_begin: usize,
         tile_end: usize,
         finalize: bool, // 是否做 RMS+RoPE（3×128）
@@ -193,7 +200,6 @@ where
         let tiles_n = (n + nb - 1) / nb;
         let total_tiles = tiles_m * tiles_n;
 
-        let b_panel_ptr = self.thread_b_panel_ptr(thread_id);
         let head_dim = self.head_dim;
 
         debug_assert!(tile_begin <= tile_end);
@@ -218,15 +224,7 @@ where
 
                 let mut nt = 0;
                 while nt < n_blk {
-                    self.pack_b_panel_from_bnt(
-                        b_nt,
-                        k, // ldb_row_nt = K
-                        n0 + nt,
-                        k0,
-                        kc_cur,
-                        nr,
-                        b_panel_ptr,
-                    );
+                    let b_panel_ptr = self.packed_panel_ptr(packed_b, n, n0 + nt, k0);
 
                     let mut mi = 0;
                     while mi < m_blk {
@@ -235,7 +233,7 @@ where
 
                         self.compute1(
                             a_tile,
-                            b_panel_ptr as *const T,
+                            b_panel_ptr,
                             c_tile,
                             k, // lda = K
                             ldc,
@@ -264,6 +262,27 @@ where
                 k0 += kc_cur;
             }
         }
+    }
+
+    #[inline(always)]
+    fn decode_task(
+        v_tiles: usize,
+        k_tiles: usize,
+        q_tiles: usize,
+        task_id: usize,
+    ) -> Option<(KqvPath, usize)> {
+        let total = v_tiles + k_tiles + q_tiles;
+        if task_id >= total {
+            return None;
+        }
+        if task_id < v_tiles {
+            return Some((KqvPath::V, task_id));
+        }
+        let task_id = task_id - v_tiles;
+        if task_id < k_tiles {
+            return Some((KqvPath::K, task_id));
+        }
+        Some((KqvPath::Q, task_id - k_tiles))
     }
 
     /// 入口：不再有 S 维度，只针对当前 A[M×K] 做一次 K/Q/V。
@@ -301,10 +320,6 @@ where
         let ck_base = self.k_state_ptr.ptr;
         let cv_base = self.v_state_ptr.ptr;
 
-        let wq_nt = self.q_weight_ptr.ptr;
-        let wk_nt = self.k_weight_ptr.ptr;
-        let wv_nt = self.v_weight_ptr.ptr;
-
         let ldq = n_q;
         let ldk = n_kv;
         let ldv = n_kv;
@@ -317,63 +332,53 @@ where
         let k_tiles = v_tiles;
         let q_tiles = tiles_m * ((n_q + nb - 1) / nb);
 
-        if cpu_num == 1 {
-            self.gemm_one_path_tiles(
-                a_base, cv_base, wv_nt, m_pad, n_kv, k, ldv, rope_base, thread_id, 0, v_tiles, false,
-            );
-            self.gemm_one_path_tiles(
-                a_base, ck_base, wk_nt, m_pad, n_kv, k, ldk, rope_base, thread_id, 0, k_tiles, true,
-            );
-            self.gemm_one_path_tiles(
-                a_base, cq_base, wq_nt, m_pad, n_q, k, ldq, rope_base, thread_id, 0, q_tiles, true,
-            );
-            return;
-        }
-
-        if let Some(task) = assign_kqv_tile(v_tiles, k_tiles, q_tiles, cpu_num, thread_id) {
-            match task.path {
-                KqvPath::V => self.gemm_one_path_tiles(
-                    a_base,
-                    cv_base,
-                    wv_nt,
-                    m_pad,
-                    n_kv,
-                    k,
-                    ldv,
-                    rope_base,
-                    thread_id,
-                    task.begin,
-                    task.end,
-                    false,
-                ),
-                KqvPath::K => self.gemm_one_path_tiles(
-                    a_base,
-                    ck_base,
-                    wk_nt,
-                    m_pad,
-                    n_kv,
-                    k,
-                    ldk,
-                    rope_base,
-                    thread_id,
-                    task.begin,
-                    task.end,
-                    true,
-                ),
-                KqvPath::Q => self.gemm_one_path_tiles(
-                    a_base,
-                    cq_base,
-                    wq_nt,
-                    m_pad,
-                    n_q,
-                    k,
-                    ldq,
-                    rope_base,
-                    thread_id,
-                    task.begin,
-                    task.end,
-                    true,
-                ),
+        let total_tasks = v_tiles + k_tiles + q_tiles;
+        if let Some((tb, te)) = assign(total_tasks, cpu_num, thread_id) {
+            for task_id in tb..te {
+                let Some((path, local_tile)) = Self::decode_task(v_tiles, k_tiles, q_tiles, task_id) else {
+                    continue;
+                };
+                match path {
+                    KqvPath::V => self.gemm_one_path_tiles(
+                        a_base,
+                        cv_base,
+                        &self.packed_v,
+                        m_pad,
+                        n_kv,
+                        k,
+                        ldv,
+                        rope_base,
+                        local_tile,
+                        local_tile + 1,
+                        false,
+                    ),
+                    KqvPath::K => self.gemm_one_path_tiles(
+                        a_base,
+                        ck_base,
+                        &self.packed_k,
+                        m_pad,
+                        n_kv,
+                        k,
+                        ldk,
+                        rope_base,
+                        local_tile,
+                        local_tile + 1,
+                        true,
+                    ),
+                    KqvPath::Q => self.gemm_one_path_tiles(
+                        a_base,
+                        cq_base,
+                        &self.packed_q,
+                        m_pad,
+                        n_q,
+                        k,
+                        ldq,
+                        rope_base,
+                        local_tile,
+                        local_tile + 1,
+                        true,
+                    ),
+                }
             }
         }
     }

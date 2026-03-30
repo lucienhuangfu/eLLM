@@ -53,10 +53,9 @@ pub struct ExpertsMatMulDown<T> {
     _marker: PhantomData<T>,
 
 
-    // ---- thread-private scratch pools（按 tid 切片）----
-    // B_panel: KC × NR（行主，每行 NR 连续）
-    b_panel_pool: Box<[T]>,
-    b_panel_stride: usize, // = kc * nr
+    // ---- prepacked weights ----
+    packed_wdown: Box<[T]>,     // [E][panels_k][panels_n][kc*nr]
+    packed_panel_stride: usize, // = kc * nr
 
     // A_tile: MR × KC（行主，每行 KC 连续）
     a_tile_pool: Box<[T]>,
@@ -117,15 +116,17 @@ where
         // 转置后： [H][Hmid]，行距=Hmid
         
 
+        let packed_panel_stride = kc * nr;
+        let packed_wdown =
+            Self::pack_expert_b_panels(wdown_nt_ptr, num_experts, h, hmid, kc, nr);
+
         // -------- (2) 分配 thread-private pools --------
         let threads = Self::detect_threads();
 
-        let b_panel_stride = kc * nr;
         let a_tile_stride = mr * kc;
         let acc_stride = mr * nr;
         let idx_stride = mb;
 
-        let b_panel_pool = vec![T::default(); threads * b_panel_stride].into_boxed_slice();
         let a_tile_pool = vec![T::default(); threads * a_tile_stride].into_boxed_slice();
         let acc_pool = vec![T::default(); threads * acc_stride].into_boxed_slice();
         let idx_buf_pool = vec![0usize; threads * idx_stride].into_boxed_slice();
@@ -154,9 +155,8 @@ where
             params,
             _marker: PhantomData,
 
-
-            b_panel_pool,
-            b_panel_stride,
+            packed_wdown,
+            packed_panel_stride,
 
             a_tile_pool,
             a_tile_stride,
@@ -170,40 +170,67 @@ where
     }
 
     #[inline(always)]
-    fn thread_slices(&self, tid: usize) -> (*mut T, *mut T, *mut T, *mut usize) {
+    fn thread_slices(&self, tid: usize) -> (*mut T, *mut T, *mut usize) {
         unsafe {
-            let b_panel = self.b_panel_pool.as_ptr().add(tid * self.b_panel_stride) as *mut T;
             let a_tile = self.a_tile_pool.as_ptr().add(tid * self.a_tile_stride) as *mut T;
             let acc = self.acc_pool.as_ptr().add(tid * self.acc_stride) as *mut T;
             let idx = self.idx_buf_pool.as_ptr().add(tid * self.idx_stride) as *mut usize;
-            (b_panel, a_tile, acc, idx)
+            (a_tile, acc, idx)
         }
     }
 
-    /// pack B: 从转置后的 W_down_nt[e]（[H, Hmid]，stride=Hmid）抽取 KC×NR
-    /// 支持 cols_this < NR：剩余 lane 填 0，避免越界
     #[inline(always)]
-    unsafe fn pack_b_panel(
-        b_nt: *const T, // [H, Hmid]
-        ldb_row: usize, // = Hmid
-        n0: usize,      // H 维起点（输出列起点）
-        k0: usize,      // Hmid 维起点
+    fn pack_expert_b_panels(
+        b_nt: *const T, // [E, H, Hmid]
+        experts: usize,
+        n: usize,
+        k: usize,
         kc: usize,
         nr: usize,
-        cols_this: usize, // <= nr
-        out: *mut T,      // KC×NR
-    ) {
-        for p in 0..kc {
-            let col_k = k0 + p;
-            let dst = out.add(p * nr);
-            for lane in 0..nr {
-                if lane < cols_this {
-                    let j = n0 + lane; // 0..H-1
-                    *dst.add(lane) = *b_nt.add(j * ldb_row + col_k);
-                } else {
-                    *dst.add(lane) = T::default();
+    ) -> Box<[T]> {
+        let panels_k = k.div_ceil(kc);
+        let panels_n = n.div_ceil(nr);
+        let panel_stride = kc * nr;
+        let expert_stride = panels_k * panels_n * panel_stride;
+        let mut packed = vec![T::default(); experts * expert_stride];
+
+        unsafe {
+            for ex in 0..experts {
+                let src_ex = b_nt.add(ex * n * k);
+                let dst_ex = packed.as_mut_ptr().add(ex * expert_stride);
+                for kb in 0..panels_k {
+                    let k0 = kb * kc;
+                    let kc_cur = (k - k0).min(kc);
+                    for nb in 0..panels_n {
+                        let n0 = nb * nr;
+                        let nr_cur = (n - n0).min(nr);
+                        let panel = dst_ex.add((kb * panels_n + nb) * panel_stride);
+                        for p in 0..kc_cur {
+                            let dst = panel.add(p * nr);
+                            for lane in 0..nr_cur {
+                                *dst.add(lane) = *src_ex.add((n0 + lane) * k + (k0 + p));
+                            }
+                        }
+                    }
                 }
             }
+        }
+
+        packed.into_boxed_slice()
+    }
+
+    #[inline(always)]
+    fn packed_panel_ptr(&self, expert: usize, n0: usize, k0: usize) -> *const T {
+        let kc = self.params.column_step_macro.max(1);
+        let nr = self.params.b_row_step_micro.max(1);
+        let panels_n = self.h.div_ceil(nr);
+        let panels_k = self.hmid.div_ceil(kc);
+        let expert_stride = panels_k * panels_n * self.packed_panel_stride;
+        let panel_idx = (k0 / kc) * panels_n + (n0 / nr);
+        unsafe {
+            self.packed_wdown
+                .as_ptr()
+                .add(expert * expert_stride + panel_idx * self.packed_panel_stride)
         }
     }
 
@@ -324,8 +351,6 @@ where
         thread_id: usize,
     ) {
         unsafe {
-            let bcap = self.num_token;// bmax
-
             let m = batch_size; // token 数
             let n = self.h; // 输出列 H
             let k = self.hmid; // 输入维 Hmid
@@ -341,7 +366,7 @@ where
                 self.build_task_space(m, mb, tiles_n);
 
             // thread-private slices
-            let (b_panel, a_tile, acc, idx_buf) = self.thread_slices(thread_id);
+            let (a_tile, acc, idx_buf) = self.thread_slices(thread_id);
 
             if let Some((tb, te)) = assign(total_tasks, cpu_num, thread_id) {
                 for t in tb..te {
@@ -365,8 +390,6 @@ where
                     }
 
                     let e = meta.expert_id;
-                    let b_nt_e = self.wdown_nt_ptr.ptr.add(e * (self.h * self.hmid));
-
                     // NB 不要求==NR；内部按 NR 切
                     let mut nt = 0usize;
                     while nt < n_blk {
@@ -393,20 +416,10 @@ where
                                     mr,
                                 );
 
-                                // pack B: KC×NR（cols_this<NR 时填 0）
-                                Self::pack_b_panel(
-                                    b_nt_e,
-                                    self.hmid, // ldb_row = Hmid
-                                    n0 + nt,   // col start in H
-                                    k0,        // k start in Hmid
-                                    kc,
-                                    nr,
-                                    cols_this,
-                                    b_panel,
-                                );
+                                let b_panel = self.packed_panel_ptr(e, n0 + nt, k0);
 
                                 // compute1: acc += (MR×KC) × (KC×NR)
-                                self.compute1(a_tile as *const T, b_panel as *const T, acc);
+                                self.compute1(a_tile as *const T, b_panel, acc);
 
                                 k0 += kc;
                             }

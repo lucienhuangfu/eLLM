@@ -2585,6 +2585,100 @@ mod tests {
     }
 
     #[test]
+    fn test_matmul_add_new_uses_bnt_directly_f16() {
+        if !cfg!(target_arch = "x86_64") || !std::arch::is_x86_feature_detected!("avx512fp16") {
+            println!("AVX512FP16 not supported, skipping test.");
+            return;
+        }
+
+        const K: usize = 8;
+        const N: usize = 6;
+        const M: usize = 3;
+
+        let a = vec![0.0f16; M * K];
+        let mut b_nt = vec![0.0f16; N * K];
+        let residual = vec![0.0f16; M * N];
+        let mut c = vec![0.0f16; M * N];
+
+        for j in 0..N {
+            for kk in 0..K {
+                let v = (100 * j + kk) as f32;
+                b_nt[j * K + kk] = v as f16;
+            }
+        }
+
+        let params = MatMulParams {
+            a_row_step_macro: 3,
+            b_row_step_macro: 32,
+            column_step_macro: 4,
+            a_row_step_micro: 3,
+            b_row_step_micro: 2,
+        };
+
+        let matmul_add = unsafe {
+            MatMulAdd::<f16>::new(
+                a.as_ptr(),
+                b_nt.as_ptr(),
+                residual.as_ptr(),
+                c.as_mut_ptr(),
+                params,
+                M,
+                N,
+                K,
+            )
+        };
+
+        let internal_b_nt = unsafe { std::slice::from_raw_parts(matmul_add.ptr2.ptr, N * K) };
+        for j in 0..N {
+            for kk in 0..K {
+                let got = internal_b_nt[j * K + kk] as f32;
+                let expected = b_nt[j * K + kk] as f32;
+                assert_abs_diff_eq!(got, expected, epsilon = 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_matmul_add_panel_threads_available_f16() {
+        if !cfg!(target_arch = "x86_64") || !std::arch::is_x86_feature_detected!("avx512fp16") {
+            println!("AVX512FP16 not supported, skipping test.");
+            return;
+        }
+
+        const M: usize = 3;
+        const K: usize = 64;
+        const N: usize = 32;
+
+        let a = vec![0.0f16; M * K];
+        let b_nt = vec![0.0f16; N * K];
+        let residual = vec![0.0f16; M * N];
+        let mut c = vec![0.0f16; M * N];
+
+        let params = MatMulParams {
+            a_row_step_macro: 3,
+            b_row_step_macro: 32,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+
+        let matmul_add = unsafe {
+            MatMulAdd::<f16>::new(
+                a.as_ptr(),
+                b_nt.as_ptr(),
+                residual.as_ptr(),
+                c.as_mut_ptr(),
+                params,
+                M,
+                N,
+                K,
+            )
+        };
+
+        assert!(matmul_add.panel_threads() >= 1);
+    }
+
+    #[test]
     fn test_matmul_runner_f16_multi_tile_and_threads() {
         if !cfg!(target_arch = "x86_64") || !std::arch::is_x86_feature_detected!("avx512fp16") {
             println!("AVX512FP16 not supported, skipping test.");

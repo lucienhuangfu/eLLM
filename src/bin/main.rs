@@ -15,7 +15,7 @@ fn main() {
     let topk_size = 8;
 
     let config =
-        Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+        Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config1.json").unwrap();
 
     let mut model = Model::<f16>::new(
         &config,
