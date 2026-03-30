@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, Semaphore};
 
 use crate::common::send_sync_ptr::SharedMut;
 use crate::runtime::batch_sequence::BatchSequence;
-use crate::runtime::schedule::{Phase, SequenceState};
+use crate::runtime::{Phase, SequenceState};
 
 #[derive(Clone)]
 pub(super) struct AppState {

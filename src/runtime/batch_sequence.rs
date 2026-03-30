@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tiktoken_rs::CoreBPE;
 
 use crate::runtime::chat_template::ChatTemplate;
-use crate::runtime::schedule::SequenceState;
+use crate::runtime::SequenceState;
 use crate::runtime::tokenizer_loader::load_tiktoken;
 
 pub struct BatchSequence {

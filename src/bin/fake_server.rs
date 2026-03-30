@@ -3,7 +3,7 @@
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
 use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::schedule::{Phase, SequenceState};
+use ellm::runtime::{Phase, SequenceState};
 use ellm::serving;
 use std::sync::Arc;
 use std::time::Duration;

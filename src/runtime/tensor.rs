@@ -22,7 +22,7 @@ use crate::common::sequence_slice::SequenceSlice;
 use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 use crate::operators::routing::TopKSoftmax;
-use crate::runtime::schedule::{Phase, SequenceState};
+use crate::runtime::{Phase, SequenceState};
 // use super::super::operators::mul::matmul_silu_mul_matmul::MatMulSilu;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddRMSZipMap;

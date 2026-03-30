@@ -10,7 +10,7 @@ use crate::runtime::operator::Operator;
 use crate::common::num_traits::{
     exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt,
 };
-use crate::runtime::schedule::BatchScheduler;
+use crate::runtime::BatchScheduler;
 
 /// Runs the inference serving loop.
 ///
@@ -21,11 +21,6 @@ pub struct ServingRunner<T> {
     operator_queue: Vec<Operator<T>>,
     batch_scheduler: BatchScheduler,
     temperature_list: Arc<[T]>,
-}
-
-struct SharedState {
-    sizes: (usize, usize),
-    scheduler: BatchScheduler,
 }
 
 impl<T> ServingRunner<T>

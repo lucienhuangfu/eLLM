@@ -3,7 +3,7 @@ use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::common::sequence_slice::SequenceSlice;
 use crate::operators::assign::assign;
-use crate::runtime::schedule::SequenceState;
+use crate::runtime::SequenceState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::operators::routing::ExpertsSoftmaxNorm;
@@ -225,7 +225,7 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 mod test {
     use super::*;
     use crate::common::sequence_slice::SequenceSlice;
-    use crate::runtime::schedule::{Phase, SequenceState};
+    use crate::runtime::{Phase, SequenceState};
     use approx::assert_ulps_eq;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use std::sync::{Arc, Barrier};

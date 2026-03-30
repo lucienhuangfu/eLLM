@@ -3,7 +3,7 @@
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
 use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::schedule::{BatchScheduler, Phase, SequenceState, ServingRunner};
+use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
 use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
