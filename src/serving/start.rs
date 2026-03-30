@@ -73,7 +73,7 @@ where
                 }
             }
             let t = s.elapsed();
-            println!("thread {} decode time {:?}", thread_id, t);
+                println!("thread {} decode time {:?}", thread_id, t);
         });
 
         // std::mem::forget(handle);
