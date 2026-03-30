@@ -38,6 +38,7 @@ where
     pub batch_size: usize,
     pub hidden_size: usize,
     pub topk_size: usize,
+    pub eos_id: usize,
     scope_name: String,
     pub ctx: Rc<TensorCtx<T>>,
 }
@@ -64,6 +65,7 @@ where
         sequence_length: usize,
         batch_size: usize,
         topk_size: usize,
+        eos_id: usize,
     ) -> Self {
         let model_names = model_tensor_names(config);
         let scope_name = model_names.scope.clone();
@@ -113,17 +115,14 @@ where
             hidden_size: config.hidden_size,
             // sequence_chunk_size: sequence_chunk_size,
             topk_size: topk_size,
+            eos_id: eos_id,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
             ctx: ctx,
         }
     }
 
-    pub fn forward(
-        &mut self,
-        input_sequences: *mut usize,
-        eos_id: usize,
-    ) -> (*const usize, Tensor<T>) {
+    pub fn forward(&mut self, input_sequences: *mut usize) -> (*const usize, Tensor<T>) {
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
@@ -171,7 +170,7 @@ where
             indices_ptr,
             input_sequences,
             self.topk_size,
-            eos_id,
+            self.eos_id,
             format!("{}.softmax", self.scope_name),
         );
 
@@ -252,17 +251,19 @@ mod test {
             config.rope_theta as f32,
         )
         .forward::<f32>();
+        let eos_id = 151643;
         let mut model = Model::<f32>::new(
             &config,
             position_vec,
             sequence_length,
             batch_size,
             topk_size, // word_embedding,
-                       // position_embedding,
-                       // norm_weight,
-                       // cpu_num,
-                       // cache.clone(),
-                       // operator_queue.clone(),
+            // position_embedding,
+            // norm_weight,
+            // cpu_num,
+            // cache.clone(),
+            // operator_queue.clone(),
+            eos_id,
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
@@ -272,9 +273,8 @@ mod test {
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
         let temperature = vec![1.0f32; batch_size];
-        let eos_id = 151643;
 
-        let (_output_indices, _output_tensor) = model.forward(sequences, eos_id);
+        let (_output_indices, _output_tensor) = model.forward(sequences);
 
         for thread_id in 0..thread_num {
             for operator in model.ctx.operator_queue.borrow().iter() {
@@ -326,6 +326,7 @@ mod test {
             config.rope_theta as f32,
         )
         .forward::<f16>();
+        let eos_id = 151643;
         let mut model = Model::<f16>::new(
             &config,
             position_vec,
@@ -333,6 +334,7 @@ mod test {
             // sequence_chunk_size,
             batch_size,
             topk_size,
+            eos_id,
         );
 
         let sequences = allocate_init::<usize>((config.max_position_embeddings) * batch_size, 0);
@@ -340,9 +342,8 @@ mod test {
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
         let temperature = vec![1.0 as f16; batch_size];
-        let eos_id = 151643;
 
-        let (_output_indices, _output_tensor) = model.forward(sequences, eos_id);
+        let (_output_indices, _output_tensor) = model.forward(sequences);
 
         for thread_id in 0..thread_num {
             for operator in model.ctx.operator_queue.borrow().iter() {

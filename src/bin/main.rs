@@ -2,8 +2,8 @@
 
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
+use ellm::runtime::batch_sequence::BatchSequence;
 use ellm::runtime::schedule::{BatchScheduler, Phase, SequenceState, ServingRunner};
-use ellm::runtime::tokenizer_loader::load_tiktoken;
 use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
@@ -22,8 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tokenizer_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
     let tokenizer_config_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer_config.json";
-    let tokenizer = load_tiktoken(tokenizer_path, tokenizer_config_path)
-        .map_err(|e| format!("failed to load tokenizer: {}", e))?;
+    let chat_template_path = "models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
 
     let fixed_prompts = [
         "Hello from a fixed runner.",
@@ -31,29 +30,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "The sequence data is hardcoded.",
     ];
 
-    let prompt_tokens: Vec<Vec<usize>> = fixed_prompts
-        .iter()
-        .map(|prompt| {
-            tokenizer
-                .encode_with_special_tokens(prompt)
-                .into_iter()
-                .map(|id| id as usize)
-                .collect::<Vec<_>>()
-        })
-        .collect();
-
     let sequences = allocate_init::<usize>(sequence_capacity * batch_size, 0);
-    for (batch_index, tokens) in prompt_tokens.iter().enumerate() {
-        let row_start = batch_index * sequence_capacity;
-        for (offset, token_id) in tokens.iter().copied().enumerate() {
-            if offset >= sequence_length {
-                break;
-            }
 
-            unsafe {
-                sequences.add(row_start + offset).write(token_id);
-            }
-        }
+    let mut batch_seq = BatchSequence::new(
+        sequences,
+        batch_size,
+        sequence_capacity,
+        tokenizer_path,
+        tokenizer_config_path,
+        chat_template_path,
+    )
+    .map_err(|e| format!("failed to create batch sequence: {}", e))?;
+
+    // write fixed prompts into each slot using BatchSequence
+    let mut written_lengths = Vec::with_capacity(batch_size);
+    for (slot, prompt) in fixed_prompts.iter().enumerate().take(batch_size) {
+        let messages: [(&str, &str); 1] = [("user", prompt)];
+        let write_len = batch_seq
+            .write_prompts(slot, &messages)
+            .map_err(|e| format!("failed to write prompt: {}", e))?;
+        written_lengths.push(write_len);
     }
 
     let position_vec = RotaryEmbedding::new(
@@ -63,16 +59,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.rope_theta as f32,
     )
     .forward::<f16>();
+    // use eos id from model config
+    let eos_id = config.eos_token_id;
+
     let mut model = Model::<f16>::new(
         &config,
         position_vec,
         sequence_length,
         batch_size,
         topk_size,
+        eos_id,
     );
 
-    let eos_id = 151643;
-    let (_output_indices, _output_tensor) = model.forward(sequences, eos_id);
+    let (_output_indices, _output_tensor) = model.forward(sequences);
 
     let thread_num = core_affinity::get_core_ids().unwrap().len();
     let mut temperature_list = Vec::with_capacity(batch_size);
@@ -84,8 +83,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut batch_scheduler: BatchScheduler =
         BatchScheduler::new(sequence_length, batch_size, thread_num);
     let mut batch_list = Vec::with_capacity(batch_size);
-    batch_list.extend(prompt_tokens.iter().map(|tokens| SequenceState {
-        filling_length: tokens.len().min(sequence_length),
+    batch_list.extend(written_lengths.iter().map(|&len| SequenceState {
+        filling_length: len.min(sequence_length),
         sequence_index: 0,
         kv_index: 0,
         phase: Phase::Prefill,
