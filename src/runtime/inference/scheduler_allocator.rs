@@ -100,3 +100,94 @@ impl FairTaskAllocator {
         take
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::FairTaskAllocator;
+
+    #[test]
+    // A long token run should be split as evenly as possible.
+    // This mirrors the scheduler documentation example where the remainder is
+    // distributed to the earliest tasks first.
+    fn init_balances_a_long_run_across_tasks() {
+        let mut allocator = FairTaskAllocator::new(6);
+        allocator.init(47);
+
+        let mut per_task = [0usize; 6];
+        let mut trace = Vec::new();
+
+        while let Some(task_index) = allocator.current_task_index() {
+            let taken = allocator.take(usize::MAX);
+            if taken == 0 {
+                break;
+            }
+            per_task[task_index] += taken;
+            trace.push((task_index, taken));
+        }
+
+        assert_eq!(per_task, [8, 8, 8, 8, 8, 7]);
+        assert_eq!(trace, vec![(0, 8), (1, 8), (2, 8), (3, 8), (4, 8), (5, 7)]);
+        assert!(allocator.is_done());
+        assert_eq!(allocator.scheduled_tokens(), 47);
+        assert_eq!(allocator.remaining_tokens(), 0);
+        assert_eq!(allocator.current_task_index(), None);
+    }
+
+    #[test]
+    // When there are more tasks than tokens, only the first `total_tokens`
+    // tasks should receive one token each and the rest should remain inactive.
+    fn init_with_more_tasks_than_tokens_activates_only_necessary_tasks() {
+        let mut allocator = FairTaskAllocator::new(8);
+        allocator.init(5);
+
+        let mut trace = Vec::new();
+        while let Some(task_index) = allocator.current_task_index() {
+            let taken = allocator.take(1);
+            if taken == 0 {
+                break;
+            }
+            trace.push((task_index, taken));
+        }
+
+        assert_eq!(trace, vec![(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]);
+        assert!(allocator.is_done());
+        assert_eq!(allocator.scheduled_tokens(), 5);
+        assert_eq!(allocator.remaining_tokens(), 0);
+        assert_eq!(allocator.current_task_index(), None);
+    }
+
+    #[test]
+    // `set_task_count` is used by the outer scheduler before each round, so it
+    // needs to change the quota shape before `init()` runs.
+    fn set_task_count_changes_the_quota_shape_before_init() {
+        let mut allocator = FairTaskAllocator::new(2);
+        allocator.set_task_count(5);
+        allocator.init(12);
+
+        let mut per_task = [0usize; 5];
+        while let Some(task_index) = allocator.current_task_index() {
+            let taken = allocator.take(usize::MAX);
+            if taken == 0 {
+                break;
+            }
+            per_task[task_index] += taken;
+        }
+
+        assert_eq!(per_task, [3, 3, 2, 2, 2]);
+        assert!(allocator.is_done());
+        assert_eq!(allocator.scheduled_tokens(), 12);
+    }
+
+    #[test]
+    // Zero tokens should be a no-op: nothing becomes active and the allocator
+    // is immediately done.
+    fn init_with_zero_tokens_is_immediately_done() {
+        let mut allocator = FairTaskAllocator::new(4);
+        allocator.init(0);
+
+        assert!(allocator.is_done());
+        assert_eq!(allocator.current_task_index(), None);
+        assert_eq!(allocator.scheduled_tokens(), 0);
+        assert_eq!(allocator.remaining_tokens(), 0);
+    }
+}

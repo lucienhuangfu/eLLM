@@ -209,333 +209,358 @@ mod tests {
     use super::*;
     use tokio::sync::Notify;
 
-    fn state(phase: Phase, sequence_index: usize, kv_index: usize) -> SequenceState {
+    // Build a decode-phase record.
+    // Decode records represent already-prefilled sequences that should emit
+    // exactly one token this round, so `filling_length` is always 0 here.
+    fn decode_state(sequence_index: usize, kv_index: usize) -> SequenceState {
         SequenceState {
-            filling_length: kv_index.saturating_sub(sequence_index),
-            phase,
+            filling_length: 0,
+            phase: Phase::Decode,
             sequence_index,
             kv_index,
             notify: std::sync::Arc::new(Notify::new()),
         }
     }
 
-    #[test]
-    fn schedule_prefill_only() {
-        // Input:
-        // - Eight SequenceState in Phase::Prefill
-        // - sequence_index=0, length=6 => 6 tokens remaining per record
-        // - sequence_length=8, batch_size=32, thread_num=8
-        // Output (expected):
-        // - prefill == 48 (all 8 * 6 tokens scheduled)
-        // - decode == 0 (no decode tokens scheduled in prefill-only case)
-        // - prefill_list[0..8] each has one slice starting at sequence position 0
-        // - decode_list records one full attention slice per record
-        let batch_size = 32;
-        let mut scheduler = BatchScheduler::new(8, batch_size, 8);
-        scheduler.batch_list.with_mut(|batch_list| {
-            for _ in 0..8 {
-                batch_list.push(state(Phase::Prefill, 0, 6));
-            }
-        });
-
-        let (prefill, decode) = scheduler.schedule_batch();
-
-        assert_eq!(prefill, 48);
-        assert_eq!(decode, 8);
-
-        assert_eq!(scheduler.prefill_list.len(), 8);
-        assert_eq!(scheduler.decode_list.len(), 8);
-
-        scheduler.batch_list.with(|batch_list| {
-            for record in batch_list.iter().take(8) {
-                assert_eq!(record.phase, Phase::Decode);
-                assert_eq!(record.sequence_index, 6);
-                assert_eq!(record.kv_index, 6);
-                assert_eq!(record.filling_length, 0);
-            }
-        });
-
-        for task_index in 0..8 {
-            assert_eq!(scheduler.prefill_list[task_index].len(), 1);
-            let slice = &scheduler.prefill_list[task_index][0];
-            assert_eq!(slice.batch_index, task_index);
-            assert_eq!(slice.sequence_index, 0);
-            assert_eq!(slice.token_start_index, task_index * 6);
-            assert_eq!(slice.length, 6);
-        }
-
-        for sequence_offset in 0..8 {
-            let attention_slice = &scheduler.decode_list[sequence_offset];
-            assert_eq!(attention_slice.batch_index, sequence_offset);
-            assert_eq!(attention_slice.sequence_index, 0);
-            assert_eq!(attention_slice.token_start_index, sequence_offset * 6);
-            assert_eq!(attention_slice.length, 6);
-            assert!(attention_slice.last_token_flag);
+    // Build a prefill-phase record.
+    // The `kv_index` is derived from `sequence_index + filling_length` so the
+    // state matches the scheduler's expectation that prefill advances both
+    // cursors together when work is assigned.
+    fn prefill_state(sequence_index: usize, filling_length: usize) -> SequenceState {
+        SequenceState {
+            filling_length,
+            phase: Phase::Prefill,
+            sequence_index,
+            kv_index: sequence_index + filling_length,
+            notify: std::sync::Arc::new(Notify::new()),
         }
     }
 
     #[test]
-    fn schedule_decode_only_prioritizes_decode_tasks() {
-        // Input:
-        // - batch_size=2 limits decode scheduling to 2 records
-        // - Mixed phases: Decode, Prefill, Decode, Decode
-        // Output (expected):
-        // - decode == 2, prefill == 0
-        // - Only first two decode records are scheduled
-        // - decode slices are evenly assigned to two tasks
-        // - prefill_list stays empty because decode has priority
-        let mut scheduler = BatchScheduler::new(8, 2, 2);
+    // Empty batch means there is no work to schedule, so the scheduler must
+    // stay idle instead of inventing slices or spinning on bogus state.
+    fn plan_next_round_returns_idle_for_empty_batch() {
+        let scheduler = BatchScheduler::new(16, 4, 3);
+
+        match scheduler.plan_next_round() {
+            BatchPlan::Idle => {}
+            _ => panic!("expected idle plan for an empty batch"),
+        }
+    }
+
+    #[test]
+    // Decode has hard priority over prefill.
+    // This test mixes both phases in a longer batch and verifies that the
+    // scheduler selects only decode candidates, truncates to `batch_size`, and
+    // leaves every prefill task untouched for this round.
+    fn schedule_decode_round_limits_to_batch_size_and_prefill_is_ignored() {
+        let mut scheduler = BatchScheduler::new(16, 4, 3);
         scheduler.batch_list.with_mut(|batch_list| {
-            batch_list.push(state(Phase::Decode, 10, 11));
-            batch_list.push(state(Phase::Prefill, 0, 6));
-            batch_list.push(state(Phase::Decode, 11, 12));
-            batch_list.push(state(Phase::Decode, 12, 13));
+            // Interleave decode and prefill entries to prove that prefill
+            // records are ignored whenever at least one decode record exists.
+            batch_list.push(decode_state(100, 128));
+            batch_list.push(prefill_state(0, 14));
+            batch_list.push(decode_state(200, 256));
+            batch_list.push(prefill_state(32, 12));
+            batch_list.push(decode_state(300, 384));
+            batch_list.push(decode_state(400, 512));
+            batch_list.push(prefill_state(64, 10));
         });
 
         let (prefill, decode) = scheduler.schedule_batch();
 
         assert_eq!(prefill, 0);
-        assert_eq!(decode, 2);
+        assert_eq!(decode, 4);
 
-        for task_index in 0..2 {
-            assert!(scheduler.prefill_list[task_index].is_empty());
+        // The prefill side stays empty because the round is decode-only.
+        assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
+        assert_eq!(scheduler.decode_list.len(), 4);
+
+        // Decode slices are emitted in batch order, one token per slice.
+        let expected = [(0, 128), (2, 256), (4, 384), (5, 512)];
+        for (slice, &(batch_index, sequence_index)) in scheduler.decode_list.iter().zip(expected.iter())
+        {
+            assert_eq!(slice.batch_index, batch_index);
+            assert_eq!(slice.sequence_index, sequence_index);
+            assert_eq!(slice.length, 1);
+            assert!(slice.last_token_flag);
         }
-        assert_eq!(scheduler.decode_list.len(), 2);
-        assert_eq!(scheduler.decode_list[0].length, 1);
-        assert_eq!(scheduler.decode_list[1].length, 1);
-        assert!(scheduler.decode_list[0].last_token_flag);
-        assert!(scheduler.decode_list[1].last_token_flag);
-
-        let first = &scheduler.decode_list[0];
-        assert_eq!(first.batch_index, 0);
-        assert_eq!(first.sequence_index, 11);
-        assert_eq!(first.token_start_index, 0);
-
-        let second = &scheduler.decode_list[1];
-        assert_eq!(second.batch_index, 2);
-        assert_eq!(second.sequence_index, 12);
-        assert_eq!(second.token_start_index, 1);
+        for (index, slice) in scheduler.decode_list.iter().enumerate() {
+            assert_eq!(slice.token_start_index, index);
+        }
     }
 
     #[test]
-    fn schedule_decode_round_clears_stale_prefill_slices() {
-        let mut scheduler = BatchScheduler::new(8, 2, 2);
+    // Prefill rounds are the main exercise for the static slice planner.
+    // This test uses long sequences so we can observe how the allocator splits
+    // work across threads while preserving per-sequence continuity.
+    fn schedule_prefill_round_splits_long_sequences_across_threads() {
+        let mut scheduler = BatchScheduler::new(8, 4, 3);
         scheduler.batch_list.with_mut(|batch_list| {
-            batch_list.push(state(Phase::Prefill, 0, 4));
+            // Three long prefill entries:
+            // - the first fits almost perfectly into the first task quota,
+            // - the second spans multiple thread buckets,
+            // - the third keeps the round non-trivial after the first two.
+            batch_list.push(prefill_state(0, 10));
+            batch_list.push(prefill_state(32, 9));
+            batch_list.push(prefill_state(64, 4));
         });
 
         let (prefill, decode) = scheduler.schedule_batch();
-        assert_eq!(prefill, 4);
-        assert_eq!(decode, 1);
-        assert!(scheduler.prefill_list.iter().any(|task| !task.is_empty()));
 
+        // All 23 tokens are within the prefill window, so nothing is truncated.
+        assert_eq!(prefill, 23);
+        assert_eq!(decode, 3);
+        assert_eq!(scheduler.decode_list.len(), 3);
+
+        // Each entry in `decode_list` is the attention view for one sequence.
+        // The first token_start_index of each slice tracks the global offset.
+        let decode_lengths: Vec<usize> = scheduler.decode_list.iter().map(|slice| slice.length).collect();
+        let decode_flags: Vec<bool> = scheduler
+            .decode_list
+            .iter()
+            .map(|slice| slice.last_token_flag)
+            .collect();
+        let decode_starts: Vec<usize> = scheduler
+            .decode_list
+            .iter()
+            .map(|slice| slice.token_start_index)
+            .collect();
+
+        assert_eq!(decode_lengths, vec![10, 9, 4]);
+        assert_eq!(decode_flags, vec![true, true, true]);
+        assert_eq!(decode_starts, vec![0, 10, 19]);
+
+        // The prefill side is split by thread quota, not by sequence count.
+        // Each thread gets a continuous chunk of tokens, and a sequence may be
+        // split across multiple thread-local slices.
+        assert_eq!(scheduler.prefill_list.len(), 3);
+        assert_eq!(scheduler.prefill_list[0].len(), 1);
+        assert_eq!(scheduler.prefill_list[1].len(), 2);
+        assert_eq!(scheduler.prefill_list[2].len(), 2);
+
+        // Thread 0 gets the first long chunk from sequence 0.
+        let t0 = &scheduler.prefill_list[0][0];
+        assert_eq!(t0.batch_index, 0);
+        assert_eq!(t0.sequence_index, 0);
+        assert_eq!(t0.token_start_index, 0);
+        assert_eq!(t0.length, 8);
+
+        // Thread 1 receives the tail of sequence 0 and the first chunk of sequence 1.
+        let t1_first = &scheduler.prefill_list[1][0];
+        assert_eq!(t1_first.batch_index, 0);
+        assert_eq!(t1_first.sequence_index, 8);
+        assert_eq!(t1_first.token_start_index, 8);
+        assert_eq!(t1_first.length, 2);
+
+        let t1_second = &scheduler.prefill_list[1][1];
+        assert_eq!(t1_second.batch_index, 1);
+        assert_eq!(t1_second.sequence_index, 32);
+        assert_eq!(t1_second.token_start_index, 10);
+        assert_eq!(t1_second.length, 6);
+
+        // Thread 2 finishes the remaining part of sequence 1 and then consumes
+        // sequence 2, demonstrating that the scheduler keeps advancing the
+        // sequence cursor across slice boundaries.
+        let t2_first = &scheduler.prefill_list[2][0];
+        assert_eq!(t2_first.batch_index, 1);
+        assert_eq!(t2_first.sequence_index, 38);
+        assert_eq!(t2_first.token_start_index, 16);
+        assert_eq!(t2_first.length, 3);
+
+        let t2_second = &scheduler.prefill_list[2][1];
+        assert_eq!(t2_second.batch_index, 2);
+        assert_eq!(t2_second.sequence_index, 64);
+        assert_eq!(t2_second.token_start_index, 19);
+        assert_eq!(t2_second.length, 4);
+    }
+
+    #[test]
+    // Prefill must respect the round window.
+    // Here the total demand is larger than the allowed prefill capacity, so
+    // the last sequence is only partially scheduled and its `last_token_flag`
+    // should stay false.
+    fn schedule_prefill_round_truncates_to_window_and_marks_partial_last_slice_false() {
+        let mut scheduler = BatchScheduler::new(5, 2, 2);
+        scheduler.batch_list.with_mut(|batch_list| {
+            // Long enough to force truncation after the first two sequences.
+            batch_list.push(prefill_state(0, 4));
+            batch_list.push(prefill_state(16, 5));
+            batch_list.push(prefill_state(32, 6));
+        });
+
+        let (prefill, decode) = scheduler.schedule_batch();
+
+        // `sequence_length * batch_size = 10`, so only 10 tokens can be
+        // scheduled even though the batch asks for 15.
+        assert_eq!(prefill, 10);
+        assert_eq!(decode, 3);
+        assert_eq!(scheduler.decode_list.len(), 3);
+
+        // The first two slices are fully scheduled; the last one is truncated.
+        let lengths: Vec<usize> = scheduler.decode_list.iter().map(|slice| slice.length).collect();
+        let starts: Vec<usize> = scheduler
+            .decode_list
+            .iter()
+            .map(|slice| slice.token_start_index)
+            .collect();
+        let flags: Vec<bool> = scheduler
+            .decode_list
+            .iter()
+            .map(|slice| slice.last_token_flag)
+            .collect();
+        let sequence_indices: Vec<usize> =
+            scheduler.decode_list.iter().map(|slice| slice.sequence_index).collect();
+
+        assert_eq!(lengths, vec![4, 5, 1]);
+        assert_eq!(starts, vec![0, 4, 9]);
+        assert_eq!(flags, vec![true, true, false]);
+        assert_eq!(sequence_indices, vec![0, 16, 32]);
+
+        // Thread-local prefill slices preserve contiguous token ranges.
+        assert_eq!(scheduler.prefill_list[0].len(), 2);
+        assert_eq!(scheduler.prefill_list[1].len(), 2);
+
+        let thread0 = &scheduler.prefill_list[0];
+        assert_eq!(thread0[0].batch_index, 0);
+        assert_eq!(thread0[0].sequence_index, 0);
+        assert_eq!(thread0[0].token_start_index, 0);
+        assert_eq!(thread0[0].length, 4);
+        assert_eq!(thread0[1].batch_index, 1);
+        assert_eq!(thread0[1].sequence_index, 16);
+        assert_eq!(thread0[1].token_start_index, 4);
+        assert_eq!(thread0[1].length, 1);
+
+        let thread1 = &scheduler.prefill_list[1];
+        assert_eq!(thread1[0].batch_index, 1);
+        assert_eq!(thread1[0].sequence_index, 17);
+        assert_eq!(thread1[0].token_start_index, 5);
+        assert_eq!(thread1[0].length, 4);
+        assert_eq!(thread1[1].batch_index, 2);
+        assert_eq!(thread1[1].sequence_index, 32);
+        assert_eq!(thread1[1].token_start_index, 9);
+        assert_eq!(thread1[1].length, 1);
+    }
+
+    #[test]
+    // Two consecutive rounds should not leak stale slice data.
+    // The first round schedules prefill, the second round switches to decode,
+    // and the old prefill buffers must be cleared before new output is written.
+    fn schedule_batch_clears_stale_outputs_between_rounds() {
+        let mut scheduler = BatchScheduler::new(8, 3, 2);
+        scheduler.batch_list.with_mut(|batch_list| {
+            // First round: long enough to populate both thread-local prefill
+            // queues and the flat decode list.
+            batch_list.push(prefill_state(0, 7));
+            batch_list.push(prefill_state(24, 6));
+            batch_list.push(prefill_state(48, 5));
+        });
+
+        let (prefill, decode) = scheduler.schedule_batch();
+        assert_eq!(prefill, 18);
+        assert_eq!(decode, 3);
+        assert!(scheduler.prefill_list.iter().any(|task| !task.is_empty()));
+        assert_eq!(scheduler.decode_list.len(), 3);
+
+        // Replace the batch with decode-only work and verify the old prefill
+        // slices disappear instead of being appended to.
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.clear();
-            batch_list.push(state(Phase::Decode, 8, 9));
+            batch_list.push(decode_state(128, 140));
+            batch_list.push(decode_state(256, 260));
+            batch_list.push(decode_state(384, 390));
+            batch_list.push(decode_state(512, 520));
         });
 
         let (prefill, decode) = scheduler.schedule_batch();
         assert_eq!(prefill, 0);
-        assert_eq!(decode, 1);
+        assert_eq!(decode, 3);
         assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
-        assert_eq!(scheduler.decode_list.len(), 1);
-        assert_eq!(scheduler.decode_list[0].batch_index, 0);
+        assert_eq!(scheduler.decode_list.len(), 3);
+        assert_eq!(
+            scheduler
+                .decode_list
+                .iter()
+                .map(|slice| slice.sequence_index)
+                .collect::<Vec<_>>(),
+            vec![140, 260, 390]
+        );
     }
 
     #[test]
-    fn fair_task_allocator_balances_tokens() {
-        // Input:
-        // - task_count=3
-        // - total_tokens=11
-        // Output (expected):
-        // - token allocation per task = [4, 4, 3]
-        // - scheduled_tokens == 11
-        let mut allocator = FairTaskAllocator::new(3);
-        allocator.init(11);
+    // Decode should still win even if prefill entries are larger and more
+    // numerous. This verifies the phase decision itself, not the slice size.
+    fn schedule_decode_priority_overrides_prefill_even_with_long_backlog() {
+        let mut scheduler = BatchScheduler::new(12, 5, 4);
+        scheduler.batch_list.with_mut(|batch_list| {
+            // A busy batch with both phases interleaved.
+            batch_list.push(prefill_state(0, 11));
+            batch_list.push(prefill_state(32, 13));
+            batch_list.push(decode_state(100, 144));
+            batch_list.push(prefill_state(64, 7));
+            batch_list.push(decode_state(200, 288));
+            batch_list.push(decode_state(300, 320));
+            batch_list.push(prefill_state(96, 5));
+            batch_list.push(decode_state(400, 448));
+        });
 
-        let mut per_task = [0usize; 3];
+        let (prefill, decode) = scheduler.schedule_batch();
+
+        assert_eq!(prefill, 0);
+        assert_eq!(decode, 4);
+        assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
+
+        // Only decode records are kept, in batch order, up to `batch_size`.
+        assert_eq!(
+            scheduler
+                .decode_list
+                .iter()
+                .map(|slice| (slice.batch_index, slice.sequence_index, slice.length))
+                .collect::<Vec<_>>(),
+            vec![(2, 144, 1), (4, 288, 1), (5, 320, 1), (7, 448, 1)]
+        );
+    }
+
+    #[test]
+    // FairTaskAllocator should divide a long token run as evenly as possible.
+    // With 47 tokens and 6 tasks, the first five tasks get 8 tokens and the
+    // final task gets 7.
+    fn fair_task_allocator_balances_long_token_runs() {
+        let mut allocator = FairTaskAllocator::new(6);
+        allocator.init(47);
+
+        let mut per_task = [0usize; 6];
         while let Some(task_index) = allocator.current_task_index() {
-            let taken = allocator.take(10);
+            let taken = allocator.take(usize::MAX);
             if taken == 0 {
                 break;
             }
             per_task[task_index] += taken;
         }
 
-        assert_eq!(per_task, [4, 4, 3]);
+        assert_eq!(per_task, [8, 8, 8, 8, 8, 7]);
         assert!(allocator.is_done());
-        assert_eq!(allocator.scheduled_tokens(), 11);
+        assert_eq!(allocator.scheduled_tokens(), 47);
     }
 
     #[test]
-    fn fair_task_allocator_zero_tokens() {
-        // Input:
-        // - task_count=4
-        // - total_tokens=0
-        // Output (expected):
-        // - allocator is done immediately
-        // - current_task_index == None
-        // - scheduled_tokens == 0
-        let mut allocator = FairTaskAllocator::new(4);
-        allocator.init(0);
+    // When there are more tasks than tokens, only the first `total_tokens`
+    // tasks should become active and each should receive exactly one token.
+    fn fair_task_allocator_handles_more_tasks_than_tokens() {
+        let mut allocator = FairTaskAllocator::new(8);
+        allocator.init(5);
 
+        let mut trace = Vec::new();
+        while let Some(task_index) = allocator.current_task_index() {
+            let taken = allocator.take(usize::MAX);
+            if taken == 0 {
+                break;
+            }
+            trace.push((task_index, taken));
+        }
+
+        assert_eq!(trace, vec![(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]);
         assert!(allocator.is_done());
-        assert_eq!(allocator.current_task_index(), None);
-        assert_eq!(allocator.scheduled_tokens(), 0);
-    }
-
-    #[test]
-    fn schedule_prefill_partial_keeps_unscheduled_records_in_prefill() {
-        // Input:
-        // - sequence_length=4, batch_size=2 => max_prefill_size = 8
-        // - Two Prefill records each require 6 tokens (total 12 > 8)
-        // Output (expected):
-        // - first record fully scheduled -> switches to Decode
-        // - second record partially scheduled -> remains Prefill with advanced sequence_index
-        let mut scheduler = BatchScheduler::new(4, 2, 2);
-        scheduler.batch_list.with_mut(|batch_list| {
-            batch_list.push(state(Phase::Prefill, 0, 6));
-            batch_list.push(state(Phase::Prefill, 0, 6));
-        });
-
-        let (prefill, decode) = scheduler.schedule_batch();
-
-        assert_eq!(prefill, 8);
-        assert_eq!(decode, 2);
-
-        scheduler.batch_list.with(|batch_list| {
-            assert_eq!(batch_list[0].phase, Phase::Decode);
-            assert_eq!(batch_list[0].sequence_index, 6);
-            assert_eq!(batch_list[0].kv_index, 6);
-            assert_eq!(batch_list[0].filling_length, 0);
-            assert_eq!(batch_list[1].phase, Phase::Prefill);
-            assert_eq!(batch_list[1].sequence_index, 2);
-            assert_eq!(batch_list[1].kv_index, 6);
-            assert_eq!(batch_list[1].filling_length, 4);
-        });
-
-        assert_eq!(scheduler.decode_list.len(), 2);
-
-        let first_attention = &scheduler.decode_list[0];
-        assert_eq!(first_attention.batch_index, 0);
-        assert_eq!(first_attention.sequence_index, 0);
-        assert_eq!(first_attention.token_start_index, 0);
-        assert_eq!(first_attention.length, 6);
-        assert!(first_attention.last_token_flag);
-
-        let second_attention = &scheduler.decode_list[1];
-        assert_eq!(second_attention.batch_index, 1);
-        assert_eq!(second_attention.sequence_index, 0);
-        assert_eq!(second_attention.token_start_index, 6);
-        assert_eq!(second_attention.length, 2);
-        assert!(!second_attention.last_token_flag);
-
-        let first_lift = &scheduler.decode_list[0];
-        assert_eq!(first_lift.batch_index, 0);
-        assert_eq!(first_lift.sequence_index, 0);
-        assert_eq!(first_lift.token_start_index, 0);
-        assert_eq!(first_lift.length, 6);
-
-        let second_lift = &scheduler.decode_list[1];
-        assert_eq!(second_lift.batch_index, 1);
-        assert_eq!(second_lift.sequence_index, 0);
-        assert_eq!(second_lift.token_start_index, 6);
-        assert_eq!(second_lift.length, 2);
-    }
-
-    #[test]
-    fn schedule_prefill_partial_resumes_from_updated_sequence_index() {
-        let mut scheduler = BatchScheduler::new(4, 2, 2);
-        scheduler.batch_list.with_mut(|batch_list| {
-            batch_list.push(state(Phase::Prefill, 0, 6));
-            batch_list.push(state(Phase::Prefill, 0, 6));
-        });
-
-        let (prefill, decode) = scheduler.schedule_batch();
-
-        assert_eq!(prefill, 8);
-        assert_eq!(decode, 2);
-
-        scheduler.batch_list.with(|batch_list| {
-            assert_eq!(batch_list[1].phase, Phase::Prefill);
-            assert_eq!(batch_list[1].sequence_index, 2);
-            assert_eq!(batch_list[1].kv_index, 6);
-            assert_eq!(batch_list[1].filling_length, 4);
-        });
-
-        scheduler.batch_list.with_mut(|batch_list| {
-            batch_list[0].phase = Phase::Eos;
-        });
-
-        let (prefill, decode) = scheduler.schedule_batch();
-
-        assert_eq!(prefill, 4);
-        assert_eq!(decode, 1);
-
-        scheduler.batch_list.with(|batch_list| {
-            assert_eq!(batch_list[0].phase, Phase::Eos);
-            assert_eq!(batch_list[0].sequence_index, 6);
-            assert_eq!(batch_list[1].phase, Phase::Decode);
-            assert_eq!(batch_list[1].sequence_index, 6);
-            assert_eq!(batch_list[1].filling_length, 0);
-        });
-
-        assert_eq!(scheduler.decode_list.len(), 1);
-        let resumed_attention = &scheduler.decode_list[0];
-        assert_eq!(resumed_attention.batch_index, 1);
-        assert_eq!(resumed_attention.sequence_index, 2);
-        assert_eq!(resumed_attention.token_start_index, 0);
-        assert_eq!(resumed_attention.length, 4);
-        assert!(resumed_attention.last_token_flag);
-
-        let resumed_lift = &scheduler.decode_list[0];
-        assert_eq!(resumed_lift.batch_index, 1);
-        assert_eq!(resumed_lift.sequence_index, 2);
-        assert_eq!(resumed_lift.token_start_index, 0);
-        assert_eq!(resumed_lift.length, 4);
-
-        assert_eq!(scheduler.prefill_list[0].len(), 1);
-        let resumed_slice = &scheduler.prefill_list[0][0];
-        assert_eq!(resumed_slice.batch_index, 1);
-        assert_eq!(resumed_slice.sequence_index, 2);
-        assert_eq!(resumed_slice.token_start_index, 0);
-        assert_eq!(resumed_slice.length, 2);
-
-        assert_eq!(scheduler.prefill_list[1].len(), 1);
-        let resumed_slice = &scheduler.prefill_list[1][0];
-        assert_eq!(resumed_slice.batch_index, 1);
-        assert_eq!(resumed_slice.sequence_index, 4);
-        assert_eq!(resumed_slice.token_start_index, 2);
-        assert_eq!(resumed_slice.length, 2);
-    }
-
-    #[test]
-    fn schedule_prefill_splits_by_record_length() {
-        let mut scheduler = BatchScheduler::new(16, 1, 2);
-        scheduler.batch_list.with_mut(|batch_list| {
-            batch_list.push(SequenceState {
-                sequence_index: 0,
-                kv_index: 32,
-                filling_length: 6,
-                phase: Phase::Prefill,
-                notify: std::sync::Arc::new(Notify::new()),
-            });
-        });
-
-        let (prefill, decode) = scheduler.schedule_batch();
-
-        assert_eq!(prefill, 6);
-        assert_eq!(decode, 1);
-        assert_eq!(scheduler.decode_list.len(), 1);
-        assert_eq!(scheduler.decode_list[0].length, 6);
-        assert_eq!(scheduler.decode_list[0].token_start_index, 0);
-        assert!(scheduler.decode_list[0].last_token_flag);
-
-        scheduler.batch_list.with(|batch_list| {
-            assert_eq!(batch_list[0].sequence_index, 6);
-            assert_eq!(batch_list[0].kv_index, 32);
-            assert_eq!(batch_list[0].filling_length, 0);
-            assert_eq!(batch_list[0].phase, Phase::Decode);
-        });
+        assert_eq!(allocator.scheduled_tokens(), 5);
     }
 }
