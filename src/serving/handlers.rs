@@ -9,13 +9,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 
-use crate::runtime::inference::Phase;
+use crate::runtime::schedule::Phase;
 
 use super::types::{
     ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, StreamChoice,
     StreamResponse,
 };
-use super::AppState;
+use super::bootstrap::AppState;
 
 pub(super) async fn chat_completions(
     State(state): State<AppState>,

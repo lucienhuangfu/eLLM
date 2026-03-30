@@ -106,9 +106,6 @@ mod tests {
     use super::FairTaskAllocator;
 
     #[test]
-    // A long token run should be split as evenly as possible.
-    // This mirrors the scheduler documentation example where the remainder is
-    // distributed to the earliest tasks first.
     fn init_balances_a_long_run_across_tasks() {
         let mut allocator = FairTaskAllocator::new(6);
         allocator.init(47);
@@ -134,8 +131,6 @@ mod tests {
     }
 
     #[test]
-    // When there are more tasks than tokens, only the first `total_tokens`
-    // tasks should receive one token each and the rest should remain inactive.
     fn init_with_more_tasks_than_tokens_activates_only_necessary_tasks() {
         let mut allocator = FairTaskAllocator::new(8);
         allocator.init(5);
@@ -157,8 +152,6 @@ mod tests {
     }
 
     #[test]
-    // `set_task_count` is used by the outer scheduler before each round, so it
-    // needs to change the quota shape before `init()` runs.
     fn set_task_count_changes_the_quota_shape_before_init() {
         let mut allocator = FairTaskAllocator::new(2);
         allocator.set_task_count(5);
@@ -179,8 +172,6 @@ mod tests {
     }
 
     #[test]
-    // Zero tokens should be a no-op: nothing becomes active and the allocator
-    // is immediately done.
     fn init_with_zero_tokens_is_immediately_done() {
         let mut allocator = FairTaskAllocator::new(4);
         allocator.init(0);

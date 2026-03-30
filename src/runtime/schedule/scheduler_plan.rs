@@ -93,8 +93,6 @@ mod tests {
     }
 
     #[test]
-    // A single long sequence should be cut into per-task slices that follow
-    // the allocator quota exactly.
     fn schedule_for_sequence_splits_a_long_sequence_evenly() {
         let mut scheduler = SliceScheduler::new(3);
         scheduler.init(11);
@@ -135,8 +133,6 @@ mod tests {
     }
 
     #[test]
-    // If the round budget is smaller than the sequence length, the scheduler
-    // must stop at the budget boundary and leave the rest for the next round.
     fn schedule_for_sequence_truncates_to_the_available_budget() {
         let mut scheduler = SliceScheduler::new(4);
         scheduler.init(10);
@@ -181,8 +177,6 @@ mod tests {
     }
 
     #[test]
-    // Zero budget should leave the output lists untouched and keep the
-    // allocator in the done state.
     fn schedule_for_sequence_with_zero_budget_emits_no_slices() {
         let mut scheduler = SliceScheduler::new(3);
         scheduler.init(0);

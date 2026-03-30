@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use tiktoken_rs::CoreBPE;
 
-use crate::runtime::inference::SequenceState;
-use crate::serving::chat_template::ChatTemplate;
-use crate::serving::tokenizer_loader::load_tiktoken;
+use crate::runtime::chat_template::ChatTemplate;
+use crate::runtime::schedule::SequenceState;
+use crate::runtime::tokenizer_loader::load_tiktoken;
 
 pub struct BatchSequence {
-    pub sequences: *mut usize, // 展平的二维矩阵 [row_size][col_size]
+    pub sequences: *mut usize,
     pub row_size: usize,
     pub col_size: usize,
     pub tokenizer: Arc<CoreBPE>,
@@ -50,10 +50,8 @@ impl BatchSequence {
         let ids = tokens;
         let write_len = ids.len().min(self.col_size);
 
-        // 计算在展平矩阵中的起始偏移量
         let offset = slot_index * self.col_size;
 
-        // 将 tokens 写入对应 slot 的 buffer
         for (i, id) in ids[..write_len].iter().enumerate() {
             unsafe {
                 *self.sequences.add(offset + i) = *id as usize;
@@ -89,7 +87,6 @@ impl BatchSequence {
     }
 }
 
-// Raw pointer is shared without locking; callers must ensure safe access.
 unsafe impl Send for BatchSequence {}
 unsafe impl Sync for BatchSequence {}
 

@@ -2,9 +2,9 @@
 
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
-use ellm::runtime::inference::{Phase, SequenceState};
-use ellm::serving::batch_sequence::BatchSequence;
-use ellm::serving::server;
+use ellm::runtime::batch_sequence::BatchSequence;
+use ellm::runtime::schedule::{Phase, SequenceState};
+use ellm::serving;
 use std::sync::Arc;
 use std::time::Duration;
 use tiktoken_rs::CoreBPE;
@@ -151,6 +151,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch_size,
     );
 
-    server::run(batch_sequences, batch_list).await?;
+    serving::run(batch_sequences, batch_list).await?;
     Ok(())
 }

@@ -2,8 +2,8 @@
 
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::allocate_init;
-use ellm::runtime::inference::{BatchScheduler, Phase, SequenceState, ServingRunner};
-use ellm::serving::tokenizer_loader::load_tiktoken;
+use ellm::runtime::schedule::{BatchScheduler, Phase, SequenceState, ServingRunner};
+use ellm::runtime::tokenizer_loader::load_tiktoken;
 use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;

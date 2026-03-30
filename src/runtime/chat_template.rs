@@ -55,7 +55,6 @@ mod tests {
     fn test_chat_template() -> Result<(), Box<dyn Error + Send + Sync>> {
         let template_path = "./models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
 
-        // 模拟一个对话
         let messages = vec![
             ("system", "You are a helpful assistant."),
             ("user", "你好，世界！这是一次分词测试。"),
@@ -71,7 +70,6 @@ mod tests {
     fn test_chat_template_multi_turn() -> Result<(), Box<dyn Error + Send + Sync>> {
         let template_path = "./models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
 
-        // 模拟多轮对话
         let messages = vec![
             ("system", "You are a helpful coding assistant."),
             ("user", "请帮我写一个 Rust 的快速排序函数。"),
@@ -127,8 +125,6 @@ mod tests {
             }),
         ];
 
-        // 一个包含两次工具调用的多轮例子：
-        // user -> assistant(tool_call) -> tool -> assistant -> user -> assistant(tool_call) -> tool -> assistant
         let messages = vec![
             json!({"role": "system", "content": "You are a helpful assistant."}),
             json!({"role": "user", "content": "帮我查下北京天气。"}),

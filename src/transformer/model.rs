@@ -191,7 +191,7 @@ mod test {
     // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::common::sequence_slice::SequenceSlice;
     use crate::mem_mgr::allocator::allocate_init;
-    use crate::runtime::inference::{Phase, SequenceState};
+    use crate::runtime::schedule::{Phase, SequenceState};
 
     fn build_batch_list(batch_size: usize) -> Vec<SequenceState> {
         (0..batch_size)

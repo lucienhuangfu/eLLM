@@ -5,15 +5,15 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::common::send_sync_ptr::SharedMut;
-use crate::runtime::inference::{Phase, SequenceState};
-use crate::serving::batch_sequence::BatchSequence;
+use crate::runtime::batch_sequence::BatchSequence;
+use crate::runtime::schedule::{Phase, SequenceState};
 
 #[derive(Clone)]
-pub(in crate::serving::server) struct AppState {
-    pub(in crate::serving::server) batch_sequences: Arc<SharedMut<BatchSequence>>,
-    pub(in crate::serving::server) batch_list: Arc<SharedMut<Vec<SequenceState>>>,
-    pub(in crate::serving::server) free_slots: Arc<Mutex<VecDeque<usize>>>,
-    pub(in crate::serving::server) available_slots: Arc<Semaphore>,
+pub(super) struct AppState {
+    pub(super) batch_sequences: Arc<SharedMut<BatchSequence>>,
+    pub(super) batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+    pub(super) free_slots: Arc<Mutex<VecDeque<usize>>>,
+    pub(super) available_slots: Arc<Semaphore>,
 }
 
 pub(super) fn build_app_state(
