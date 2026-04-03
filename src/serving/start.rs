@@ -1,14 +1,10 @@
 use core_affinity;
-use std::cell::RefCell;
-use std::cell::SyncUnsafeCell;
-use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::Barrier;
 use std::thread;
 use std::time::Instant;
 
 // use hurdles::Barrier;
-// use super::barrier::Barrier;
+use crate::runtime::barrier::Barrier;
 // use serde::{Deserialize, Serialize};
 use std::ops::{AddAssign, Neg, Sub};
 
@@ -19,7 +15,7 @@ use crate::kernel::generic::sqrt::Sqrt;
 use crate::kernel::generic::{exp::Exp, neg_infinity::NegInfinity};
 // use super::state::State;
 
-pub fn start<T>(operator_queue: Vec<Operator<T>>)
+pub fn start<T>(operator_queue: Vec<Operator<T>>, sequence_length: usize, batch_size: usize)
 where
     T: PartialOrd
         + Copy
@@ -43,7 +39,6 @@ where
 
     let barrier = Arc::new(Barrier::new(thread_num));
 
-    let sequence_chunk_size = 64;
     let mut handles = Vec::with_capacity(thread_num);
     let core_ids = core_affinity::get_core_ids().unwrap();
     for (i, core_id) in core_ids.into_iter().enumerate() {
@@ -64,26 +59,21 @@ where
         let handle = thread::spawn(move || {
             let thread_id = i;
             core_affinity::set_for_current(core_id);
-            println!("{} start", thread_id);
             // let mut counter = 0;
 
             // 预先创建子切片，避免在热循环中重复操作
             // let prompt_queue_slice = &queue[..decode_start.min(queue.len())];
             // let decode_queue_slice = &queue[decode_start.min(queue.len())..];
 
-            let sequence_length = 128;
-
             let s = Instant::now();
-            let batch_size = 1;
-            for p in 0..sequence_length {
-                println!("thread {} position {}", thread_id, p);
+            for _p in 0..sequence_length {
                 for operator in queue.iter() {
                     operator.run(0, 1, batch_size, thread_num, thread_id);
                     b.wait();
                 }
             }
             let t = s.elapsed();
-            println!("thread {} decode time {:?}", thread_id, t);
+                println!("thread {} decode time {:?}", thread_id, t);
         });
 
         // std::mem::forget(handle);
@@ -97,12 +87,8 @@ where
 
 #[cfg(test)]
 mod test {
-    use approx::assert_relative_eq;
-
     use super::*;
     use crate::memory::allocator::allocate_init;
-    use crate::memory::cache::Cache;
-    use crate::ptensor::tensor::Tensor;
     use crate::qwen3_moe::config::Config;
     use crate::qwen3_moe::model::Model;
     // use crate::qwen3_moe::sparse_moe_block::SparseMoeBlock;
@@ -195,13 +181,17 @@ mod test {
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-        let mut model =
-            Model::<f32>::new(&config, sequence_length, sequence_chunk_size, batch_size, topk_size);
+        let mut model = Model::<f32>::new(
+            &config,
+            sequence_length,
+            sequence_chunk_size,
+            batch_size,
+            topk_size,
+        );
 
-        let mut sequences =
-            allocate_init::<usize>((sequence_length + 1) * batch_size, 0);
-        let _ = unsafe { model.forward(sequences) };
+        let sequences = allocate_init::<usize>((sequence_length + 1) * batch_size, 0);
+        let _ = model.forward(sequences);
 
-        start(model.operator_queue.take());
+        start(model.operator_queue.take(), sequence_length, 1);
     }
 }

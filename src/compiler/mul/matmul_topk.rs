@@ -38,12 +38,9 @@ where
     // ✅ 内部 thread_max（用于 scratch/heaps 绑定）
     thread_max: usize,
 
-    // ✅ 不再持有转置缓冲（外部保证 B_nt 生命周期）
-    // b_nt_buf: Box<[T]>,
-
-    // 每线程的 B 面板池：[thread_max][kc×nr]
-    b_panel_pool: Box<[T]>,
-    b_panel_stride_elems: usize, // = kc * nr
+    // 预打包的 B panel：[panels_k][panels_n][kc*nr]
+    packed_b: Box<[T]>,
+    packed_panel_stride: usize, // = kc * nr
 
     // 每线程的 C_tile 池：[thread_max][mr×nr]
     c_tile_pool: Box<[T]>,
@@ -99,17 +96,12 @@ where
         // ✅ 内部决定 thread_max
         let thread_max = Self::detect_threads();
 
-        // ✅ 直接使用外部 B_nt
-        let b_nt_base = ptr2_b_nt_nxk;
-
-        // === (1) scratch pools: [thread_max][...] ===
         let kc = params.column_step_macro.max(1);
         let nr = params.b_row_step_micro.max(1);
         let mr = params.a_row_step_micro.max(1);
 
-        let b_panel_stride_elems = kc * nr;
-        let b_panel_pool_len = thread_max * b_panel_stride_elems;
-        let b_panel_pool: Vec<T> = vec![T::default(); b_panel_pool_len];
+        let packed_panel_stride = kc * nr;
+        let packed_b = Self::pack_b_panels(ptr2_b_nt_nxk, n_max, k_max, kc, nr);
 
         let c_tile_stride_elems = mr * nr;
         let c_tile_pool_len = thread_max * c_tile_stride_elems;
@@ -131,7 +123,7 @@ where
 
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
-            ptr2: ConstPtr { ptr: b_nt_base },
+            ptr2: ConstPtr { ptr: ptr2_b_nt_nxk },
             indice_ptr: MutPtr { ptr: indice_ptr },
             value_ptr: MutPtr { ptr: value_ptr },
 
@@ -144,23 +136,13 @@ where
             batch_max,
             thread_max,
 
-            b_panel_pool: b_panel_pool.into_boxed_slice(),
-            b_panel_stride_elems,
+            packed_b,
+            packed_panel_stride,
             c_tile_pool: c_tile_pool.into_boxed_slice(),
             c_tile_stride_elems,
 
             heaps: heaps_vec.into_boxed_slice(),
             _marker: PhantomData,
-        }
-    }
-
-    #[inline(always)]
-    fn thread_b_panel_ptr(&self, thread_id: usize) -> *mut T {
-        debug_assert!(thread_id < self.thread_max);
-        unsafe {
-            self.b_panel_pool
-                .as_ptr()
-                .add(thread_id * self.b_panel_stride_elems) as *mut T
         }
     }
 
@@ -185,24 +167,43 @@ where
     }
 
     #[inline(always)]
-    unsafe fn pack_b_panel(
-        &self,
-        b_nt: *const T,  // N×K
-        ldb_row: usize,  // = K
-        n0: usize,       // N 起点（全局列）
-        k0: usize,
-        kc: usize,
-        nr: usize,
-        out: *mut T,
-    ) {
-        for p in 0..kc {
-            let src_col = k0 + p;
-            let dst_row = out.add(p * nr);
-            for lane in 0..nr {
-                let j = n0 + lane;
-                let src = b_nt.add(j * ldb_row + src_col);
-                *dst_row.add(lane) = *src;
+    fn pack_b_panels(b_nt: *const T, n: usize, k: usize, kc: usize, nr: usize) -> Box<[T]> {
+        let panels_k = k.div_ceil(kc);
+        let panels_n = n.div_ceil(nr);
+        let panel_stride = kc * nr;
+        let mut packed = vec![T::default(); panels_k * panels_n * panel_stride];
+
+        unsafe {
+            for kb in 0..panels_k {
+                let k0 = kb * kc;
+                let kc_cur = (k - k0).min(kc);
+                for nb in 0..panels_n {
+                    let n0 = nb * nr;
+                    let nr_cur = (n - n0).min(nr);
+                    let panel = packed.as_mut_ptr().add((kb * panels_n + nb) * panel_stride);
+                    for p in 0..kc_cur {
+                        let dst_row = panel.add(p * nr);
+                        for lane in 0..nr_cur {
+                            *dst_row.add(lane) = *b_nt.add((n0 + lane) * k + (k0 + p));
+                        }
+                    }
+                }
             }
+        }
+
+        packed.into_boxed_slice()
+    }
+
+    #[inline(always)]
+    fn packed_panel_ptr(&self, n0: usize, k0: usize) -> *const T {
+        let kc = self.params.column_step_macro.max(1);
+        let nr = self.params.b_row_step_micro.max(1);
+        let panels_n = self.b_row.div_ceil(nr);
+        let panel_idx = (k0 / kc) * panels_n + (n0 / nr);
+        unsafe {
+            self.packed_b
+                .as_ptr()
+                .add(panel_idx * self.packed_panel_stride)
         }
     }
 
@@ -246,11 +247,6 @@ where
 
         let a_base = self.ptr1.ptr;
         let lda = k;
-
-        let b_nt_ptr = self.ptr2.ptr;
-        let ldb_row = k;
-
-        let b_panel_ptr = self.thread_b_panel_ptr(thread_id);
         let c_tile_ptr = self.thread_c_tile_ptr(thread_id);
 
         // 清本线程 heap：只清真实 batch
@@ -293,19 +289,10 @@ where
 
                         let mut k0 = 0usize;
                         while k0 < k {
-                            self.pack_b_panel(
-                                b_nt_ptr,
-                                ldb_row,
-                                global_n_start,
-                                k0,
-                                kc,
-                                nr,
-                                b_panel_ptr,
-                            );
-
                             let a_tile = a_base.add(global_m_start * lda + k0);
+                            let b_panel_ptr = self.packed_panel_ptr(global_n_start, k0);
 
-                            self.compute(a_tile, b_panel_ptr as *const T, c_tile_ptr);
+                            self.compute(a_tile, b_panel_ptr, c_tile_ptr);
 
                             k0 += kc;
                         }

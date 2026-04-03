@@ -9,6 +9,7 @@ pub struct FixedMinHeap<T: PartialOrd + Copy> {
 }
 
 impl<T: PartialOrd + Copy> FixedMinHeap<T> {
+    #[inline(always)]
     pub fn new(values: *mut T, indices: *mut usize, limit: usize) -> Self {
         debug_assert!(!values.is_null());
         debug_assert!(!indices.is_null());
@@ -20,53 +21,48 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
         }
     }
 
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
     }
 
+    #[inline(always)]
     pub fn push(&mut self, value: T, index: usize) {
         if self.limit == 0 {
             return;
         }
-        unsafe {
-            if self.len < self.limit {
-                self.set(self.len, value, index);
-                self.sift_up(self.len);
-                self.len += 1;
-            } else if Self::cmp_pair(self.value_at(0), self.index_at(0), value, index)
-                == Ordering::Less
-            {
-                self.set(0, value, index);
-                self.sift_down(0);
-            }
+
+        if self.len < self.limit {
+            let idx = self.len;
+            self.len += 1;
+            self.sift_up_with(idx, value, index);
+            return;
+        }
+
+        let root_value = self.value_at(0);
+        let root_index = self.index_at(0);
+        if Self::cmp_pair(root_value, root_index, value, index) == Ordering::Less {
+            self.sift_down_with(0, value, index, self.len);
         }
     }
+
+    #[inline(always)]
     pub fn clear(&mut self) {
         self.len = 0;
     }
 
     pub fn sort_desc(&mut self) {
-        unsafe {
-            for i in 0..self.len {
-                let mut max = i;
-                for j in (i + 1)..self.len {
-                    if Self::cmp_pair(
-                        self.value_at(j),
-                        self.index_at(j),
-                        self.value_at(max),
-                        self.index_at(max),
-                    ) == Ordering::Greater
-                    {
-                        max = j;
-                    }
-                }
-                if max != i {
-                    self.swap(i, max);
-                }
-            }
+        if self.len <= 1 {
+            return;
+        }
+
+        for end in (1..self.len).rev() {
+            self.swap(0, end);
+            self.sift_down_range(0, end);
         }
     }
 
+    #[inline(always)]
     fn set(&mut self, idx: usize, value: T, index: usize) {
         unsafe {
             ptr::write(self.values.add(idx), value);
@@ -74,14 +70,17 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
         }
     }
 
+    #[inline(always)]
     fn value_at(&self, idx: usize) -> T {
         unsafe { *self.values.add(idx) }
     }
 
+    #[inline(always)]
     fn index_at(&self, idx: usize) -> usize {
         unsafe { *self.indices.add(idx) }
     }
 
+    #[inline(always)]
     fn cmp_pair(value_a: T, index_a: usize, value_b: T, index_b: usize) -> Ordering {
         match value_a.partial_cmp(&value_b) {
             Some(ordering) if ordering != Ordering::Equal => ordering,
@@ -89,6 +88,7 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
         }
     }
 
+    #[inline(always)]
     fn cmp_at(&self, lhs: usize, rhs: usize) -> Ordering {
         Self::cmp_pair(
             self.value_at(lhs),
@@ -98,6 +98,7 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
         )
     }
 
+    #[inline(always)]
     fn swap(&mut self, a: usize, b: usize) {
         unsafe {
             ptr::swap(self.values.add(a), self.values.add(b));
@@ -105,40 +106,58 @@ impl<T: PartialOrd + Copy> FixedMinHeap<T> {
         }
     }
 
-    fn sift_up(&mut self, mut idx: usize) {
-        unsafe {
-            while idx > 0 {
-                let parent = (idx - 1) >> 1;
-                if self.cmp_at(idx, parent) == Ordering::Less {
-                    self.swap(idx, parent);
-                    idx = parent;
-                } else {
-                    break;
-                }
+    #[inline(always)]
+    fn sift_up_with(&mut self, mut idx: usize, value: T, index: usize) {
+        while idx > 0 {
+            let parent = (idx - 1) >> 1;
+            let parent_value = self.value_at(parent);
+            let parent_index = self.index_at(parent);
+            if Self::cmp_pair(value, index, parent_value, parent_index) == Ordering::Less {
+                self.set(idx, parent_value, parent_index);
+                idx = parent;
+            } else {
+                break;
             }
         }
+        self.set(idx, value, index);
     }
 
-    fn sift_down(&mut self, mut idx: usize) {
-        unsafe {
-            loop {
-                let left = (idx << 1) + 1;
-                if left >= self.len {
-                    break;
-                }
-                let right = left + 1;
-                let mut smallest = left;
-                if right < self.len && self.cmp_at(right, left) == Ordering::Less {
-                    smallest = right;
-                }
-                if self.cmp_at(smallest, idx) == Ordering::Less {
-                    self.swap(idx, smallest);
-                    idx = smallest;
-                } else {
-                    break;
-                }
+    #[inline(always)]
+    fn sift_down_with(&mut self, mut idx: usize, value: T, index: usize, len: usize) {
+        loop {
+            let left = (idx << 1) + 1;
+            if left >= len {
+                break;
+            }
+
+            let right = left + 1;
+            let mut child = left;
+            if right < len && self.cmp_at(right, left) == Ordering::Less {
+                child = right;
+            }
+
+            let child_value = self.value_at(child);
+            let child_index = self.index_at(child);
+            if Self::cmp_pair(child_value, child_index, value, index) == Ordering::Less {
+                self.set(idx, child_value, child_index);
+                idx = child;
+            } else {
+                break;
             }
         }
+
+        self.set(idx, value, index);
+    }
+
+    #[inline(always)]
+    fn sift_down_range(&mut self, idx: usize, len: usize) {
+        if len <= 1 {
+            return;
+        }
+
+        let value = self.value_at(idx);
+        let index = self.index_at(idx);
+        self.sift_down_with(idx, value, index, len);
     }
 }
 

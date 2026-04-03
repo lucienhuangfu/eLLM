@@ -1,28 +1,41 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::hint::spin_loop;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[repr(align(64))]
+struct CachePadded<T>(T);
 
 pub struct Barrier {
-    pub done: AtomicUsize,
-    pub iteration: AtomicBool,
-    pub tids: usize,
+    arrived: CachePadded<AtomicUsize>,
+    generation: CachePadded<AtomicUsize>,
+    tids: usize,
 }
 
 impl Barrier {
     pub fn new(tids: usize) -> Barrier {
+        debug_assert!(tids > 0, "Barrier requires at least one participant");
+
         Barrier {
-            done: AtomicUsize::new(0),
-            iteration: AtomicBool::new(false),
+            arrived: CachePadded(AtomicUsize::new(0)),
+            generation: CachePadded(AtomicUsize::new(0)),
             tids,
         }
     }
 
+    #[inline]
     pub fn wait(&self) {
-        let iteration = self.iteration.load(Ordering::SeqCst);
-        let num_done = self.done.fetch_add(1, Ordering::SeqCst) + 1;
-        if num_done == self.tids {
-            self.done.store(0, Ordering::SeqCst);
-            self.iteration.fetch_xor(true, Ordering::SeqCst);
-        } else {
-            while iteration == self.iteration.load(Ordering::SeqCst) {}
+        let generation = self.generation.0.load(Ordering::Relaxed);
+        let arrived = self.arrived.0.fetch_add(1, Ordering::AcqRel) + 1;
+
+        if arrived == self.tids {
+            self.arrived.0.store(0, Ordering::Relaxed);
+            self.generation
+                .0
+                .store(generation.wrapping_add(1), Ordering::Release);
+            return;
+        }
+
+        while self.generation.0.load(Ordering::Acquire) == generation {
+            spin_loop();
         }
     }
     /*
