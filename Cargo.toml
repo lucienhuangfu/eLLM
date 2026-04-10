@@ -39,6 +39,17 @@ safetensors = "0.4.1"
 memmap2 = "0.9.4"
 minijinja = "2.12.0"
 
+[profile.release]
+opt-level = 3
+debug = 0
+debug-assertions = false
+overflow-checks = false
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+unwind-tables = false
+rpath = false
 
 # half = { version = "2.4.1", features = ["num-traits", "std"] }
 # linked-hash-map = "0.5.6"

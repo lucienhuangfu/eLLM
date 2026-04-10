@@ -12,6 +12,15 @@ use super::super::super::init::{
 use super::super::assign::assign;
 use super::mul_trait::ExpertsSiluTrait;
 
+#[derive(Clone, Copy, Debug)]
+struct ExpertTaskMeta {
+    expert_id: usize,
+    token_begin: usize,
+    token_count: usize,
+    task_begin: usize,
+    task_end: usize,
+}
+
 #[derive(Clone)]
 pub struct ExpertsMatMulSilu<T> {
     pub input_ptr: ConstPtr<T>, // A[B,H]
@@ -34,13 +43,15 @@ pub struct ExpertsMatMulSilu<T> {
     pub num_experts: usize, // E
 
     // === strides（保留）===
-    pub b_panel_stride: usize, // kc*nr
-    pub acc_stride: usize,     // mr*nr
-    pub a_tile_stride: usize,  // mr*kc
+    pub packed_panel_stride: usize, // kc*nr
+    pub acc_stride: usize,          // mr*nr
+    pub a_tile_stride: usize,       // mr*kc
+
+    // === prepacked weights ===
+    pub packed_gate: Box<[T]>, // [E][panels_k][panels_n][kc*nr]
+    pub packed_up: Box<[T]>,   // [E][panels_k][panels_n][kc*nr]
 
     // === pools（按 threads 切片）===
-    pub gate_panel_pool: Box<[T]>,
-    pub up_panel_pool: Box<[T]>,
     pub gate_acc_pool: Box<[T]>,
     pub up_acc_pool: Box<[T]>,
     pub a_tile_pool: Box<[T]>,
@@ -80,17 +91,20 @@ where
         let mr = a_row_step_micro.max(1);
         let nr = b_row_step_micro.max(1);
 
-        let b_panel_stride = kc * nr;
+        let packed_panel_stride = kc * nr;
         let acc_stride = mr * nr;
         let a_tile_stride = mr * kc;
+
+        let packed_gate =
+            Self::pack_expert_b_panels(gate_nt_ptr, num_experts, inter, hidden, kc, nr);
+        let packed_up =
+            Self::pack_expert_b_panels(up_nt_ptr, num_experts, inter, hidden, kc, nr);
 
         // threads 只在 new() 用一次
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
 
-        let gate_panel_pool = vec![T::default(); threads * b_panel_stride].into_boxed_slice();
-        let up_panel_pool = vec![T::default(); threads * b_panel_stride].into_boxed_slice();
         let gate_acc_pool = vec![T::default(); threads * acc_stride].into_boxed_slice();
         let up_acc_pool = vec![T::default(); threads * acc_stride].into_boxed_slice();
         let a_tile_pool = vec![T::default(); threads * a_tile_stride].into_boxed_slice();
@@ -119,12 +133,12 @@ where
             hidden,
             num_experts,
 
-            b_panel_stride,
+            packed_panel_stride,
             acc_stride,
             a_tile_stride,
 
-            gate_panel_pool,
-            up_panel_pool,
+            packed_gate,
+            packed_up,
             gate_acc_pool,
             up_acc_pool,
             a_tile_pool,
@@ -136,10 +150,8 @@ where
     }
 
     #[inline(always)]
-    fn thread_slices(&self, tid: usize) -> (*mut T, *mut T, *mut T, *mut T, *mut T, *mut usize) {
+    fn thread_slices(&self, tid: usize) -> (*mut T, *mut T, *mut T, *mut usize) {
         unsafe {
-            let gp = self.gate_panel_pool.as_ptr().add(tid * self.b_panel_stride) as *mut T;
-            let up = self.up_panel_pool.as_ptr().add(tid * self.b_panel_stride) as *mut T;
             let ga = self.gate_acc_pool.as_ptr().add(tid * self.acc_stride) as *mut T;
             let ua = self.up_acc_pool.as_ptr().add(tid * self.acc_stride) as *mut T;
             let at = self.a_tile_pool.as_ptr().add(tid * self.a_tile_stride) as *mut T;
@@ -147,27 +159,63 @@ where
                 .idx_buf_pool
                 .as_ptr()
                 .add(tid * self.params.a_row_step_macro) as *mut usize;
-            (gp, up, ga, ua, at, idx)
+            (ga, ua, at, idx)
         }
     }
 
     #[inline(always)]
-    pub unsafe fn pack_panel_from_bnt(
-        b_nt: *const T, // [N×K]
-        ldb_row: usize, // = K
-        n0: usize,
-        k0: usize,
+    fn pack_expert_b_panels(
+        b_nt: *const T, // [E, N, K]
+        experts: usize,
+        n: usize,
+        k: usize,
         kc: usize,
         nr: usize,
-        out: *mut T, // KC×NR
-    ) {
-        for p in 0..kc {
-            let dst = out.add(p * nr);
-            let col_k = k0 + p;
-            for lane in 0..nr {
-                let j = n0 + lane;
-                *dst.add(lane) = *b_nt.add(j * ldb_row + col_k);
+    ) -> Box<[T]> {
+        let panels_k = k.div_ceil(kc);
+        let panels_n = n.div_ceil(nr);
+        let panel_stride = kc * nr;
+        let expert_stride = panels_k * panels_n * panel_stride;
+        let mut packed = vec![T::default(); experts * expert_stride];
+
+        unsafe {
+            for ex in 0..experts {
+                let src_ex = b_nt.add(ex * n * k);
+                let dst_ex = packed.as_mut_ptr().add(ex * expert_stride);
+                for kb in 0..panels_k {
+                    let k0 = kb * kc;
+                    let kc_cur = (k - k0).min(kc);
+                    for nb in 0..panels_n {
+                        let n0 = nb * nr;
+                        let nr_cur = (n - n0).min(nr);
+                        let panel =
+                            dst_ex.add((kb * panels_n + nb) * panel_stride);
+                        for p in 0..kc_cur {
+                            let dst = panel.add(p * nr);
+                            for lane in 0..nr_cur {
+                                *dst.add(lane) = *src_ex.add((n0 + lane) * k + (k0 + p));
+                            }
+                        }
+                    }
+                }
             }
+        }
+
+        packed.into_boxed_slice()
+    }
+
+    #[inline(always)]
+    fn packed_panel_ptr(&self, packed: &[T], expert: usize, n0: usize, k0: usize) -> *const T {
+        let kc = self.params.column_step_macro.max(1);
+        let nr = self.params.b_row_step_micro.max(1);
+        let panels_n = self.inter.div_ceil(nr);
+        let panels_k = self.hidden.div_ceil(kc);
+        let expert_stride = panels_k * panels_n * self.packed_panel_stride;
+        let panel_idx = (k0 / kc) * panels_n + (n0 / nr);
+        unsafe {
+            packed
+                .as_ptr()
+                .add(expert * expert_stride + panel_idx * self.packed_panel_stride)
         }
     }
 
@@ -194,6 +242,66 @@ where
                 *dst.add(p) = *src.add(p);
             }
         }
+    }
+
+    #[inline]
+    fn build_task_space(
+        &self,
+        batch_size: usize,
+        mb: usize,
+        tiles_n: usize,
+    ) -> (Vec<ExpertTaskMeta>, Vec<usize>, usize) {
+        let mut expert_tasks = Vec::new();
+        let mut routed_tokens = Vec::new();
+        let mut total_tasks = 0usize;
+
+        unsafe {
+            for e in 0..self.num_experts {
+                if !*self.experts_indicator.ptr.add(e) {
+                    continue;
+                }
+
+                let token_begin = routed_tokens.len();
+                let idx_base = self.indice_ptr.ptr.add(e * self.batch);
+                for b_idx in 0..batch_size {
+                    if *idx_base.add(b_idx) {
+                        routed_tokens.push(b_idx);
+                    }
+                }
+
+                let token_count = routed_tokens.len() - token_begin;
+                if token_count == 0 {
+                    routed_tokens.truncate(token_begin);
+                    continue;
+                }
+
+                let tiles_m_e = token_count.div_ceil(mb);
+                let task_count = tiles_m_e * tiles_n;
+                expert_tasks.push(ExpertTaskMeta {
+                    expert_id: e,
+                    token_begin,
+                    token_count,
+                    task_begin: total_tasks,
+                    task_end: total_tasks + task_count,
+                });
+                total_tasks += task_count;
+            }
+        }
+
+        (expert_tasks, routed_tokens, total_tasks)
+    }
+
+    #[inline(always)]
+    fn decode_task(
+        expert_tasks: &[ExpertTaskMeta],
+        tiles_n: usize,
+        task_id: usize,
+    ) -> Option<(ExpertTaskMeta, usize, usize)> {
+        let meta_idx = expert_tasks.partition_point(|meta| meta.task_end <= task_id);
+        let meta = *expert_tasks.get(meta_idx)?;
+        debug_assert!(task_id >= meta.task_begin && task_id < meta.task_end);
+        let local_task = task_id - meta.task_begin;
+        Some((meta, local_task / tiles_n, local_task % tiles_n))
     }
 
     pub fn run(
@@ -223,22 +331,18 @@ where
             let c_base = self.output_ptr.ptr;
             let c_stride_e = self.batch * self.inter; // 每 expert 的 C 块跨度
 
-            let ldb_row = self.hidden; // K
             let w_stride = self.inter * self.hidden; // I*H per expert
 
-            let (gate_panel, up_panel, gate_acc, up_acc, a_tile, idx_buf) =
-                self.thread_slices(thread_id);
+            let (gate_acc, up_acc, a_tile, idx_buf) = self.thread_slices(thread_id);
 
-            let tiles_m = (b + mb - 1) / mb;
             let tiles_n = (n + nb - 1) / nb;
+            let (expert_tasks, routed_tokens, total_tasks) = self.build_task_space(b, mb, tiles_n);
 
-            if let Some((tb, te)) = assign(tiles_m * tiles_n, cpu_num, thread_id) {
+            if let Some((tb, te)) = assign(total_tasks, cpu_num, thread_id) {
                 for t in tb..te {
-                    let tm = t / tiles_n;
-                    let tn = t % tiles_n;
-
-                    let slot_start = tm * mb;
-                    let slot_end = slot_start + mb;
+                    let Some((meta, tm, tn)) = Self::decode_task(&expert_tasks, tiles_n, t) else {
+                        continue;
+                    };
 
                     let n0 = tn * nb;
                     let n_blk = (n - n0).min(nb);
@@ -246,112 +350,91 @@ where
                         continue;
                     }
 
-                    for e in 0..self.num_experts {
-                        if !*self.experts_indicator.ptr.add(e) {
-                            continue;
-                        }
+                    let slot_start = tm * mb;
+                    let be = (meta.token_count - slot_start).min(mb);
+                    debug_assert!(be > 0);
 
-                        let idx_base = self.indice_ptr.ptr.add(e * self.batch);
-                        let mut be = 0usize;
-                        let mut seen = 0usize;
+                    let token_slice =
+                        &routed_tokens[(meta.token_begin + slot_start)..(meta.token_begin + slot_start + be)];
+                    for (dst, &b_idx) in token_slice.iter().enumerate() {
+                        *idx_buf.add(dst) = b_idx;
+                    }
 
-                        for b_idx in 0..b {
-                            if *idx_base.add(b_idx) {
-                                if seen >= slot_start && seen < slot_end {
-                                    *idx_buf.add(be) = b_idx;
-                                    be += 1;
-                                    if be == mb {
-                                        break;
-                                    }
-                                }
-                                seen += 1;
-                                if seen >= slot_end {
-                                    break;
-                                }
+                    let e = meta.expert_id;
+                    let _ = w_stride;
+
+                    let mut nt = 0usize;
+                    while nt < n_blk {
+                        let cols_this = (n_blk - nt).min(nr);
+                        debug_assert!(cols_this == nr || nt + cols_this == n_blk);
+                        let gate_panel =
+                            self.packed_panel_ptr(&self.packed_gate, e, n0 + nt, 0);
+                        let up_panel =
+                            self.packed_panel_ptr(&self.packed_up, e, n0 + nt, 0);
+
+                        let mut off = 0usize;
+                        while off < be {
+                            let valid_rows = (be - off).min(mr);
+
+                            for i in 0..(mr * nr) {
+                                *gate_acc.add(i) = T::default();
                             }
-                        }
-                        if be == 0 {
-                            continue;
-                        }
-
-                        let mut nt = 0usize;
-                        while nt < n_blk {
-                            let cols_this = (n_blk - nt).min(nr);
-                            debug_assert!(cols_this == nr || nt + cols_this == n_blk);
-
-                            let mut off = 0usize;
-                            while off < be {
-                                let valid_rows = (be - off).min(mr);
-
-                                for i in 0..(mr * nr) {
-                                    *gate_acc.add(i) = T::default();
-                                }
-                                for i in 0..(mr * nr) {
-                                    *up_acc.add(i) = T::default();
-                                }
-
-                                let wgate_nt_e = self.gate_nt_ptr.ptr.add(e * w_stride);
-                                let wup_nt_e = self.up_nt_ptr.ptr.add(e * w_stride);
-
-                                let mut k0 = 0usize;
-                                while k0 < k {
-                                    Self::pack_panel_from_bnt(
-                                        wgate_nt_e,
-                                        ldb_row,
-                                        n0 + nt,
-                                        k0,
-                                        kc,
-                                        nr,
-                                        gate_panel,
-                                    );
-                                    Self::pack_panel_from_bnt(
-                                        wup_nt_e,
-                                        ldb_row,
-                                        n0 + nt,
-                                        k0,
-                                        kc,
-                                        nr,
-                                        up_panel,
-                                    );
-
-                                    Self::pack_a_tile_mrkc(
-                                        a_base, lda, idx_buf, off, valid_rows, k0, kc, a_tile, mr,
-                                    );
-
-                                    self.compute1(
-                                        a_tile as *const T,
-                                        gate_panel as *const T,
-                                        up_panel as *const T,
-                                        gate_acc as *mut T,
-                                        up_acc as *mut T,
-                                        kc,
-                                    );
-
-                                    k0 += kc;
-                                }
-
-                                for r in 0..valid_rows {
-                                    let b_idx = *idx_buf.add(off + r);
-                                    let c_row = c_base
-                                        .add(e * c_stride_e)
-                                        .add(b_idx * self.inter)
-                                        .add(n0 + nt);
-
-                                    let gate_row = gate_acc.add(r * nr);
-                                    let up_row = up_acc.add(r * nr);
-
-                                    self.compute2(
-                                        gate_row as *const T,
-                                        up_row as *const T,
-                                        c_row as *mut T,
-                                    );
-                                }
-
-                                off += valid_rows;
+                            for i in 0..(mr * nr) {
+                                *up_acc.add(i) = T::default();
                             }
 
-                            nt += nr;
+                            let mut k0 = 0usize;
+                            while k0 < k {
+                                Self::pack_a_tile_mrkc(
+                                    a_base, lda, idx_buf, off, valid_rows, k0, kc, a_tile, mr,
+                                );
+
+                                let gate_panel = self.packed_panel_ptr(
+                                    &self.packed_gate,
+                                    e,
+                                    n0 + nt,
+                                    k0,
+                                );
+                                let up_panel = self.packed_panel_ptr(
+                                    &self.packed_up,
+                                    e,
+                                    n0 + nt,
+                                    k0,
+                                );
+
+                                self.compute1(
+                                    a_tile as *const T,
+                                    gate_panel,
+                                    up_panel,
+                                    gate_acc as *mut T,
+                                    up_acc as *mut T,
+                                    kc,
+                                );
+
+                                k0 += kc;
+                            }
+
+                            for r in 0..valid_rows {
+                                let b_idx = *idx_buf.add(off + r);
+                                let c_row = c_base
+                                    .add(e * c_stride_e)
+                                    .add(b_idx * self.inter)
+                                    .add(n0 + nt);
+
+                                let gate_row = gate_acc.add(r * nr);
+                                let up_row = up_acc.add(r * nr);
+
+                                self.compute2(
+                                    gate_row as *const T,
+                                    up_row as *const T,
+                                    c_row as *mut T,
+                                );
+                            }
+
+                            off += valid_rows;
                         }
+
+                        nt += nr;
                     }
                 }
             }
@@ -752,6 +835,267 @@ mod tests {
         }
     }
 
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    fn test_experts_silu_uneven_expert_loads_many_threads() {
+        const B: usize = 13;
+        const H: usize = 64;
+        const I: usize = 64;
+        const E: usize = 3;
+
+        let mb = 3;
+        let nb = 32;
+        let kc = 64;
+        let mr = 3;
+        let nr = 32;
+        let cpu_num = 8;
+
+        let mut a = vec![0.0f16; B * H];
+        let mut w_gate = vec![0.0f16; E * H * I];
+        let mut w_up = vec![0.0f16; E * H * I];
+        let mut out = vec![0.0f16; E * B * I];
+
+        let experts_indicator = vec![true, true, true];
+        let mut indice = vec![false; E * B];
+
+        for &bb in &[0usize, 1, 3, 4, 7, 9, 12] {
+            indice[0 * B + bb] = true;
+        }
+        for &bb in &[2usize, 10] {
+            indice[1 * B + bb] = true;
+        }
+        indice[2 * B + 5] = true;
+
+        for bb in 0..B {
+            for kk in 0..H {
+                a[bb * H + kk] = ((bb as f32) * 0.02 + (kk as f32) * 0.0015) as f16;
+            }
+        }
+        for ex in 0..E {
+            for kk in 0..H {
+                for ii in 0..I {
+                    let base = ex * H * I + kk * I + ii;
+                    w_gate[base] =
+                        ((ex as f32 + 1.0) * 0.002 + (kk as f32) * 0.0002 + (ii as f32) * 0.0001)
+                            as f16;
+                    w_up[base] =
+                        ((ex as f32 + 1.0) * 0.003 + (kk as f32) * 0.0001 - (ii as f32) * 0.00005)
+                            as f16;
+                }
+            }
+        }
+
+        let w_gate_nt = transpose_expert_kxn_to_nt(&w_gate, E, H, I);
+        let w_up_nt = transpose_expert_kxn_to_nt(&w_up, E, H, I);
+
+        let runner = unsafe {
+            ExpertsMatMulSilu::<f16>::new(
+                a.as_ptr(),
+                w_gate_nt.as_ptr(),
+                w_up_nt.as_ptr(),
+                experts_indicator.as_ptr(),
+                indice.as_ptr(),
+                out.as_mut_ptr(),
+                B,
+                I,
+                H,
+                E,
+                mb,
+                nb,
+                kc,
+                mr,
+                nr,
+            )
+        };
+
+        run_all_threads(&runner, B, cpu_num);
+
+        let mut ref_out = vec![0.0f32; E * B * I];
+        ref_one(
+            &a,
+            &w_gate,
+            &w_up,
+            &experts_indicator,
+            &indice,
+            &mut ref_out,
+            B,
+            H,
+            I,
+            E,
+        );
+
+        for ex in 0..E {
+            for bb in 0..B {
+                let routed = indice[ex * B + bb];
+                for ii in 0..I {
+                    let got = out[ex * (B * I) + bb * I + ii] as f32;
+                    let exp = ref_out[ex * (B * I) + bb * I + ii];
+                    if routed {
+                        assert_abs_diff_eq!(got, exp, epsilon = 7e-1);
+                    } else {
+                        assert_abs_diff_eq!(got, 0.0, epsilon = 1e-3);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    fn test_experts_silu_more_threads_than_tasks() {
+        const B: usize = 3;
+        const H: usize = 64;
+        const I: usize = 64;
+        const E: usize = 2;
+
+        let mb = 3;
+        let nb = 32;
+        let kc = 64;
+        let mr = 3;
+        let nr = 32;
+        let cpu_num = 16;
+
+        let mut a = vec![0.0f16; B * H];
+        let mut w_gate = vec![0.0f16; E * H * I];
+        let mut w_up = vec![0.0f16; E * H * I];
+        let mut out = vec![0.0f16; E * B * I];
+
+        let experts_indicator = vec![true, false];
+        let mut indice = vec![false; E * B];
+        for bb in 0..B {
+            indice[0 * B + bb] = true;
+        }
+
+        for bb in 0..B {
+            for kk in 0..H {
+                a[bb * H + kk] = (0.1 + bb as f32 * 0.03 + kk as f32 * 0.0007) as f16;
+            }
+        }
+        for kk in 0..H {
+            for ii in 0..I {
+                w_gate[kk * I + ii] = (0.01 + kk as f32 * 0.0001 + ii as f32 * 0.00005) as f16;
+                w_up[kk * I + ii] = (0.02 - kk as f32 * 0.00008 + ii as f32 * 0.00003) as f16;
+            }
+        }
+
+        let w_gate_nt = transpose_expert_kxn_to_nt(&w_gate, E, H, I);
+        let w_up_nt = transpose_expert_kxn_to_nt(&w_up, E, H, I);
+
+        let runner = unsafe {
+            ExpertsMatMulSilu::<f16>::new(
+                a.as_ptr(),
+                w_gate_nt.as_ptr(),
+                w_up_nt.as_ptr(),
+                experts_indicator.as_ptr(),
+                indice.as_ptr(),
+                out.as_mut_ptr(),
+                B,
+                I,
+                H,
+                E,
+                mb,
+                nb,
+                kc,
+                mr,
+                nr,
+            )
+        };
+
+        run_all_threads(&runner, B, cpu_num);
+
+        let mut ref_out = vec![0.0f32; E * B * I];
+        ref_one(
+            &a,
+            &w_gate,
+            &w_up,
+            &experts_indicator,
+            &indice,
+            &mut ref_out,
+            B,
+            H,
+            I,
+            E,
+        );
+
+        for idx in 0..(E * B * I) {
+            assert_abs_diff_eq!(out[idx] as f32, ref_out[idx], epsilon = 7e-1);
+        }
+    }
+
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    fn test_experts_silu_active_expert_with_zero_tokens_keeps_output_zero() {
+        const B: usize = 6;
+        const H: usize = 64;
+        const I: usize = 64;
+        const E: usize = 3;
+
+        let mb = 3;
+        let nb = 32;
+        let kc = 64;
+        let mr = 3;
+        let nr = 32;
+        let cpu_num = 4;
+
+        let mut a = vec![0.0f16; B * H];
+        let mut w_gate = vec![0.0f16; E * H * I];
+        let mut w_up = vec![0.0f16; E * H * I];
+        let mut out = vec![0.0f16; E * B * I];
+
+        let experts_indicator = vec![true, true, false];
+        let mut indice = vec![false; E * B];
+        for &bb in &[0usize, 2, 4] {
+            indice[0 * B + bb] = true;
+        }
+
+        for bb in 0..B {
+            for kk in 0..H {
+                a[bb * H + kk] = ((bb as f32) * 0.015 + (kk as f32) * 0.0009) as f16;
+            }
+        }
+        for ex in 0..E {
+            for kk in 0..H {
+                for ii in 0..I {
+                    let base = ex * H * I + kk * I + ii;
+                    w_gate[base] = ((ex as f32 + 1.0) * 0.005 + kk as f32 * 0.00005) as f16;
+                    w_up[base] = ((ex as f32 + 1.0) * 0.004 + ii as f32 * 0.00004) as f16;
+                }
+            }
+        }
+
+        let w_gate_nt = transpose_expert_kxn_to_nt(&w_gate, E, H, I);
+        let w_up_nt = transpose_expert_kxn_to_nt(&w_up, E, H, I);
+
+        let runner = unsafe {
+            ExpertsMatMulSilu::<f16>::new(
+                a.as_ptr(),
+                w_gate_nt.as_ptr(),
+                w_up_nt.as_ptr(),
+                experts_indicator.as_ptr(),
+                indice.as_ptr(),
+                out.as_mut_ptr(),
+                B,
+                I,
+                H,
+                E,
+                mb,
+                nb,
+                kc,
+                mr,
+                nr,
+            )
+        };
+
+        run_all_threads(&runner, B, cpu_num);
+
+        for bb in 0..B {
+            for ii in 0..I {
+                let v = out[1 * (B * I) + bb * I + ii] as f32;
+                assert_abs_diff_eq!(v, 0.0, epsilon = 1e-3);
+            }
+        }
+    }
+
 #[test]
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
 fn test_experts_matmul_silu_qwen_moe_config() {
@@ -899,6 +1243,117 @@ fn test_experts_matmul_silu_qwen_moe_config() {
         samples
     );
 }
+    
+#[test]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+fn test_silu_stride_capacity_batch_run_must_not_touch_rows_7_8() {
+    use std::arch::is_x86_feature_detected;
+    if !is_x86_feature_detected!("avx512fp16") {
+        eprintln!("skip: avx512fp16 not detected");
+        return;
+    }
+
+    const B_CAP: usize = 9;
+    const B_RUN: usize = 7;
+    const H: usize = 64;
+    const I: usize = 64;
+    const E: usize = 1;
+
+    let mb = 3;
+    let nb = 32;
+    let kc = 64;
+    let mr = 3;
+    let nr = 32;
+
+    // A[B_CAP,H]：前 7 行是 1，后 2 行是 50（如果被算到，会输出明显非零）
+    let mut a = vec![0.0f16; B_CAP * H];
+    for b in 0..B_RUN {
+        for kk in 0..H {
+            a[b * H + kk] = 1.0f32 as f16;
+        }
+    }
+    for b in B_RUN..B_CAP {
+        for kk in 0..H {
+            a[b * H + kk] = 50.0f32 as f16;
+        }
+    }
+
+    // gate/up 权重 K×N（参考用）=> 转 NT 给算子
+    let mut w_gate_kxn = vec![0.0f16; E * H * I];
+    let mut w_up_kxn = vec![0.0f16; E * H * I];
+
+    // 让输出稳定非零：gate=0.01, up=0.02
+    for kk in 0..H {
+        for ii in 0..I {
+            w_gate_kxn[kk * I + ii] = 0.01f32 as f16;
+            w_up_kxn[kk * I + ii] = 0.02f32 as f16;
+        }
+    }
+
+    // 你文件里已有这个 helper
+    let w_gate_nt = transpose_expert_kxn_to_nt(&w_gate_kxn, E, H, I);
+    let w_up_nt = transpose_expert_kxn_to_nt(&w_up_kxn, E, H, I);
+
+    // routing：capacity 0..8 都 true（故意）
+    // 正确行为：run(batch=7) 只能处理 0..6，7/8 绝不能写 output
+    let experts_indicator = vec![true; E];
+    let mut indice = vec![false; E * B_CAP];
+    for b in 0..B_CAP {
+        indice[b] = true;
+    }
+
+    // output[E,B_CAP,I]：先清零
+    let mut out = vec![0.0f16; E * B_CAP * I];
+
+    let op = unsafe {
+        ExpertsMatMulSilu::<f16>::new(
+            a.as_ptr(),
+            w_gate_nt.as_ptr(),
+            w_up_nt.as_ptr(),
+            experts_indicator.as_ptr(),
+            indice.as_ptr(),
+            out.as_mut_ptr(),
+            B_CAP, // capacity
+            I,
+            H,
+            E,
+            mb,
+            nb,
+            kc,
+            mr,
+            nr,
+        )
+    };
+
+    // 单线程即可复现
+    op.run(0, 0, B_RUN, 1, 0);
+
+    // row 7/8 必须仍为 0（没被触碰）
+    for b in B_RUN..B_CAP {
+        for ii in 0..I {
+            let v = out[b * I + ii] as f32;
+            assert!(
+                v.abs() <= 1e-3,
+                "row {} should remain 0, got {}",
+                b,
+                v
+            );
+        }
+    }
+
+    // 前 7 行至少应有非零（避免“全没算”的假通过）
+    let mut any_nonzero = false;
+    'outer: for b in 0..B_RUN {
+        for ii in 0..I {
+            if (out[b * I + ii] as f32).abs() > 1e-3 {
+                any_nonzero = true;
+                break 'outer;
+            }
+        }
+    }
+    assert!(any_nonzero, "expected some non-zero outputs for rows 0..6");
+}
+
     #[test]
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
 fn test_experts_silu_batch7_capacity9_must_not_touch_rows_7_8() {
@@ -1137,113 +1592,5 @@ fn test_experts_matmul_silu_moe_smoke_fast_sampled() {
 
     assert!(checked >= samples / 2, "too few routed samples checked: {}/{}", checked, samples);
 }
-#[test]
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-fn test_silu_stride_capacity_batch_run_must_not_touch_rows_7_8() {
-    use std::arch::is_x86_feature_detected;
-    if !is_x86_feature_detected!("avx512fp16") {
-        eprintln!("skip: avx512fp16 not detected");
-        return;
-    }
 
-    const B_CAP: usize = 9;
-    const B_RUN: usize = 7;
-    const H: usize = 64;
-    const I: usize = 64;
-    const E: usize = 1;
-
-    let mb = 3;
-    let nb = 32;
-    let kc = 64;
-    let mr = 3;
-    let nr = 32;
-
-    // A[B_CAP,H]：前 7 行是 1，后 2 行是 50（如果被算到，会输出明显非零）
-    let mut a = vec![0.0f16; B_CAP * H];
-    for b in 0..B_RUN {
-        for kk in 0..H {
-            a[b * H + kk] = 1.0f32 as f16;
-        }
-    }
-    for b in B_RUN..B_CAP {
-        for kk in 0..H {
-            a[b * H + kk] = 50.0f32 as f16;
-        }
-    }
-
-    // gate/up 权重 K×N（参考用）=> 转 NT 给算子
-    let mut w_gate_kxn = vec![0.0f16; E * H * I];
-    let mut w_up_kxn = vec![0.0f16; E * H * I];
-
-    // 让输出稳定非零：gate=0.01, up=0.02
-    for kk in 0..H {
-        for ii in 0..I {
-            w_gate_kxn[kk * I + ii] = 0.01f32 as f16;
-            w_up_kxn[kk * I + ii] = 0.02f32 as f16;
-        }
-    }
-
-    // 你文件里已有这个 helper
-    let w_gate_nt = transpose_expert_kxn_to_nt(&w_gate_kxn, E, H, I);
-    let w_up_nt = transpose_expert_kxn_to_nt(&w_up_kxn, E, H, I);
-
-    // routing：capacity 0..8 都 true（故意）
-    // 正确行为：run(batch=7) 只能处理 0..6，7/8 绝不能写 output
-    let experts_indicator = vec![true; E];
-    let mut indice = vec![false; E * B_CAP];
-    for b in 0..B_CAP {
-        indice[b] = true;
-    }
-
-    // output[E,B_CAP,I]：先清零
-    let mut out = vec![0.0f16; E * B_CAP * I];
-
-    let op = unsafe {
-        ExpertsMatMulSilu::<f16>::new(
-            a.as_ptr(),
-            w_gate_nt.as_ptr(),
-            w_up_nt.as_ptr(),
-            experts_indicator.as_ptr(),
-            indice.as_ptr(),
-            out.as_mut_ptr(),
-            B_CAP, // capacity
-            I,
-            H,
-            E,
-            mb,
-            nb,
-            kc,
-            mr,
-            nr,
-        )
-    };
-
-    // 单线程即可复现
-    op.run(0, 0, B_RUN, 1, 0);
-
-    // row 7/8 必须仍为 0（没被触碰）
-    for b in B_RUN..B_CAP {
-        for ii in 0..I {
-            let v = out[b * I + ii] as f32;
-            assert!(
-                v.abs() <= 1e-3,
-                "row {} should remain 0, got {}",
-                b,
-                v
-            );
-        }
-    }
-
-    // 前 7 行至少应有非零（避免“全没算”的假通过）
-    let mut any_nonzero = false;
-    'outer: for b in 0..B_RUN {
-        for ii in 0..I {
-            if (out[b * I + ii] as f32).abs() > 1e-3 {
-                any_nonzero = true;
-                break 'outer;
-            }
-        }
-    }
-    assert!(any_nonzero, "expected some non-zero outputs for rows 0..6");
-}
 }
