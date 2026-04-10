@@ -2,10 +2,6 @@
 incremental = false
 rustflags = ["-C", "target-cpu=native"]
 
-[target.x86_64-unknown-linux-gnu]
-# Use the host CPU's ISA when building for Linux so the generated binary can
-# take full advantage of AVX2/AVX-512/FMA/etc. on the deployment machine.
-rustflags = ["-C", "target-cpu=native"]
 
 [profile.release]
 opt-level = 3
