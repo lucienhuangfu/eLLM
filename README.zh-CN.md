@@ -66,9 +66,9 @@ eLLM 以 **长上下文、长生命周期、低延迟** 的推理特性为核心
 截至目前，eLLM 的最小原型已经完成。为验证它的性能潜力，我们设计了短文本与长文本两类实验，并分别考察 Prefill 和 Decode 两个阶段，比较单块 CPU 服务器与由 8 块 GPU 组成的推理节点在不同场景下的表现。短文本推理场景下，CPU 明显落后于 GPU；但在长文本推理场景下，eLLM 有机会凭借 CPU 的大内存优势实现反超。
 
 ### 目标
-- 验证 eLLM 是否在常见推理场景（短 Prompt、长 Prompt、Prefill、Multi-turn）上：
+验证 eLLM 是否在常见推理场景（短 Prompt、长 Prompt、Prefill、Multi-turn）上：
   1) 显著优于现有 CPU baseline；
-  2) 在多数长上下文或多轮场景下优于 GPU baseline（原文断言：若只在单轮短文本场景会慢于 GPU）。
+  2) 在长上下文优于 GPU baseline。
 
 ### 实验设置
 - CPU baseline: SgLang CPU endpoint（单块 CPU 服务器）
@@ -86,13 +86,22 @@ eLLM 以 **长上下文、长生命周期、低延迟** 的推理特性为核心
 #### 实验 1 — Decode 短文本（已完成）
 
 **目的**  
-验证 eLLM 在短文本 decode 场景下是否能够稳定降低 TPOT，并观察其相对于 CPU baseline 的收益来源。
+验证 eLLM 在短文本 decode 场景下是否能够稳定降低 TPOT，并进一步分析其相对于 CPU baseline 的性能收益来自哪里。
 
 **实验设置**  
 - 沿用上文的 baseline 与硬件环境
+- 模型：Qwen3-Coder-30B-A3B-Instruct
 - 场景：短 Prompt，`batch=1`，`prompt_len={128,256,512}`
 - 指标：TPOT（Time Per Output Token，ms/token）
 - 关注点：不同上下文长度下的延迟变化趋势
+
+**实验说明要点**
+- 当前实验聚焦于 **benchmark 与系统性能评估**，用于验证短文本 decode 场景下的延迟收益。
+- **算子层面**已完成测试与对齐，说明底层执行链路已经具备基本可用性。
+- **模型层面**的输出仍未与参考实现完全一致，因此暂时不作为端到端正确性结论。
+  - 当前加载的是 **随机初始化参数**，尚未接入真实模型权重。
+  - 本阶段尚未纳入 **attention** 和 **切词（tokenization）** 流程
+
 
 **结果**  
 在 `prompt_len=128/256/512` 的三组测试中，eLLM 均稳定优于 vLLM CPU baseline，在 CPU 上表现出更低的 TPOT。综合来看，eLLM 约带来 `1.6×` 的性能提升，对应约 `38%` 的延迟下降。随着上下文长度增加，两者的 TPOT 都呈近似线性增长，但 eLLM 的斜率更低，说明其在短上下文范围内已经展现出更好的效率趋势。
