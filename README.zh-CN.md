@@ -96,9 +96,9 @@ eLLM 以 **长上下文、长生命周期、低延迟** 的推理特性为核心
 
 **实验设置**  
 - 模型：Qwen3-Coder-30B-A3B-Instruct （Float 16）
-- 场景：短 Prompt，`batch=1`，`prompt_len={128,256,512}`
+- 场景：短 Prompt，`batch=1`，`prompt length={128,256,512}`
 - 指标：TPOT（Time Per Output Token，ms/token）
-- 显然所有CPU的推理框架的性能都是远远落后于GPU，所以GPU实验就不做了。
+- 显然所有CPU推理框架decode短文本的性能都是远远落后于GPU，所以GPU的对比实验就不做了。
 
 **结果**
 在 `prompt_len=128/256/512` 的三组测试中，eLLM 均稳定优于 vLLM CPU baseline，在 CPU 上表现出更低的 TPOT。综合来看，eLLM 约带来 `1.6×` 的性能提升，对应约 `38%` 的延迟下降。随着上下文长度增加，两者的 TPOT 都呈近似线性增长，但 eLLM 的斜率更低，说明其在短上下文范围内已经展现出更好的效率趋势。
@@ -128,35 +128,26 @@ xychart-beta
 
 #### 实验 2 — Prefill 长 Prompt（预计5月底完成）
 
-**目的**  
-验证 eLLM 在长文本 Prefill 场景下，是否能够在整段上下文写入 KV Cache 时保持更低的耗时与更可控的内存开销，并进一步分析其相对于 CPU baseline 的收益来源。
+**目的**
+
+验证 eLLM 在长文本 Prefill 场景下是否能够稳定降低 TTFT，并进一步拆解其相对于 GPU baseline 的收益来源。
 
 **实验设置**  
-- 沿用上文的 baseline 与硬件环境
 - 模型：Minimax M2.5（Float 16）
-- 场景：100条请求，每条请求长度10万
-  - eLLM: batch size 10, chunk size 10万, 完成需要10轮
-  - GPU baseline: batch size 100, chunk size 1 万，完成需要1轮
+- 场景：batch size = 10, prompt length = 100,000
+  - eLLM：chunk size = 100 万，整段可一次完成
+  - GPU baseline：chunk size = 1 万，需要分 10 段完成
 - 指标：Time to First Token（TTFT）
-- 关注点：不同实现下，长上下文写入 KV Cache 时的控制成本、访存成本与参数加载成本差异
-
-**实验说明要点**
-- 当前实验仍处于推进阶段，先以 benchmark 与系统性能评估为主，用于验证长文本场景下的 Time to First Token（TTFT）表现。
-- 重点观察整段 Prefill 是否能减少重复参数加载、KV 管理和中间状态维护开销，并进一步影响首 token 延迟。
-- **算子层面**已具备连续写入与缓存复用的基础能力，说明底层执行链路可以支撑长文本评估。
-- **模型层面**的端到端正确性仍不是本阶段重点，因此暂不以生成结果作为最终结论。
-  - 当前仍需要继续补充真实权重接入后的结果验证。
-  - 后续还需把 Prefill 与 Decode 的边界测量拆得更清楚。
 
 **结果**  
-目前实验数据仍在收集与整理中，尚未形成最终结论。初步预期是：在长 Prompt 场景下，eLLM 更适合整段 Prefill，因为其固定形状 KV Cache 和连续内存布局能够减少控制路径开销，从而压低 Time to First Token（TTFT）；相比之下，如果需要分段 Prefill，则参数重载和中间态管理会更容易放大系统开销。
+目前实验数据仍在收集与整理中，尚未形成最终结论。基于当前系统设计，eLLM 在长 Prompt 场景下更有机会把 TTFT 压下来，核心原因并不只是单次算子更快，而是它更容易把 Prefill 组织成一次连续、低干预的执行流程。相对而言，GPU baseline 如果必须拆成多轮 chunk 处理，就会引入更多调度、同步和中间态维护成本，这些成本会直接反映到首 token 延迟上。
 
 **分析**  
-Prefill 阶段的核心成本不只来自算子计算本身，更来自长上下文下的内存带宽、参数加载次数和 KV 写入路径。对于分段 Prefill 来说，每一段都要重复经历调度、地址映射和状态维护，因此随着 prompt 变长，控制开销会被持续放大。
+Prefill 阶段的主要开销不只来自算子计算本身和调度，更来自模型参数加载次数和 KV 载入次数。可以把这个过程理解为“参数加载”和“KV 访问”两条链路共同决定首 token 延迟。
 
-eLLM 的设计更偏向整段 Prefill：一方面，静态计算图和固定形状的 KV Cache 减少了运行时的动态分配；另一方面，连续的张量布局让写入路径更接近顺序访存，从而降低额外的地址转换和缓存抖动。理论上，这类结构在长 Prompt 场景下更容易把 CPU 的大内存优势转化为可见的端到端收益。
+- **模型参数加载次数**：eLLM 模型的载入次数比 GPU baseline 少得多。虽然 CPU 的 DDR5 内存带宽比 GPU 的 HBM 小，单次参数载入会更慢，但 GPU 的内存容量小，导致需要多次载入参数。也就是说，单次更快不一定抵得过重复加载更多带来的累计开销。
+- **KV 载入次数**：eLLM 的 KV 载入次数也比 GPU baseline 少得多。KV 的组织方式会直接影响访问局部性和重复搬运成本。eLLM 采用逐 head 计算，所有核计算完一条数据的一个 head 后，再计算下一个 head，对应的 cache 只需要存储一个 head 的 KV。而 GPU 的 cache 需要支持多个 head 同时计算，对应的 cache 需要存储多个 head 的 KV。因为每次 attention 计算都要从头访问对应的 KV，长文本的KV值会占满Cache， 发生 cache 频繁替换。CPU 可以支持更长的head，更晚发生 cache 替换。
 
-从实验 2 的角度看，真正需要验证的不只是“Prefill 是否更快”，而是“当上下文足够长时，eLLM 是否能把重复加载和分段处理的损耗控制在更低水平，并最终反映到更低的 Time to First Token（TTFT）上”，这也是它相对 GPU baseline 最值得关注的差异点。
 
 **小结**  
 实验 2 主要用于验证长文本 Prefill 场景下的内存与控制路径收益。当前结果仍在补充中，但从设计目标上看，eLLM 若能稳定支持整段 Prefill，就有机会在长上下文场景里把“连续访问、少重载、低控制开销”的优势明确体现出来。
