@@ -65,18 +65,13 @@ eLLM 以 **长上下文、长生命周期、低延迟** 的推理特性为核心
 
 截至目前，eLLM 的最小原型已经完成。为验证它的性能潜力，我们设计了短文本与长文本两类实验，并分别考察 Prefill 和 Decode 两个阶段，比较单块 CPU 服务器与由 8 块 GPU 组成的推理节点在不同场景下的表现。短文本推理场景下，CPU 明显落后于 GPU；但在长文本推理场景下，eLLM 有机会凭借 CPU 的大内存优势实现反超。
 
-### 目标
-验证 eLLM 是否在常见推理场景上：
-  1) 显著优于现有 CPU baseline；
-  2) 在长上下文优于 GPU baseline。
-
 ### 实验设置
 - CPU baseline: SgLang CPU endpoint（单块 CPU 服务器）
 - GPU baseline: SgLang GPU endpoint（多卡 GPU 服务器，示例使用 8x H20 节点）
 - Prefill 指标: TTFT （Time to First Token，ms/token）
 - Decode 指标: TPOT（Time Per Output Token，ms/token）
 
-| CPU-only 服务器 | 条目 | GPU 服务器 | |
+| CPU-only 服务器 （虚拟机） | 条目 | GPU 服务器 | |
 |----------|--------------|------------|------|
 |CPU       |               |CPU         |GPU| 
 | Xeon 6982P-C | 型号           |   Xeon 8480+     | H20   |
@@ -124,10 +119,7 @@ xychart-beta
 - 服务框架 / 运行时开销：API 服务、请求生命周期和 streaming 调度都会带来额外成本；GIL、上下文切换和动态数据结构操作也会进一步拖慢端到端延迟。
 
 #### 长文本实验（预计5月底完成）
-GPU 的内存小，限制 长文本的batch size。不会影响Prefill，但是会影响decode。
-
-
-
+GPU 的内存小，限制 长文本的batch size。小batch size 不会影响Prefill，但是会影响decode。
 
 **实验设置**  
 - 模型：Minimax M2.5（Float 16）
@@ -152,19 +144,14 @@ eLLM 会显著快于 GPU baseline。在超长 Prompt 的 Prefill 阶段，首 to
   - eLLM 优势：若能把 Prefill 做成一次连续的流水（整段 Prefill），可显著减少调度与同步点，从而把控制路径开销降到最低。  
 
 **Decode 分析**  
-在超长上下文的 decode 阶段，eLLM 显然慢于 GPU baseline，但是没有两者的理论带宽那么大。
+在长上下文 decode 阶段，eLLM 的性能虽然低于 GPU baseline，但两者的差距明显小于 CPU DDR 与 GPU HBM 的理论带宽差距。这说明 GPU 的带宽优势在该场景下并没有被充分发挥。
 
-1) GPU 有效带宽下降  
- - 说明：GPU 在高并行度场景下能更好地隐藏内存延迟与提升带宽利用率，但当并行度（例如 batch 或 token 并发）不足时，实际带宽利用会显著下降。小批量或低并行度会限制 GPU 隐藏延迟的能力，从而削弱其带宽优势。
+小 batch 导致并行度不足。decode 阶段通常 batch size 较小，使得 GPU 无法同时调度足够多的 SM，从而导致整体并行度下降并降低有效带宽。GPU 的高带宽依赖大量 warp 并发执行、高 memory-level parallelism 以及持续的内存请求流，但在小 batch 场景下，这些条件难以满足，因此内存延迟无法被有效隐藏，HBM 的高延迟无法被覆盖，SM 频繁出现等待内存的数据停顿。
 
-2) KV 访问模式与缓存层次  
- - 说明：超长序列使得 KV 成为一个超大 working set，低重用率”的 streaming 模式，无法完全驻留在片上缓存（L2）导致 cache 几乎失效
+KV 访问退化为 streaming，cache 基本失效。在长上下文场景中，KV cache 的工作集随着序列长度线性增长，同时几乎不存在重复访问，使得 cache 命中率显著下降，L1、L2 甚至更高层 cache 的作用被明显削弱，最终访问模式退化为直接访问主存的 streaming load。因此整体性能主要受限于主存带宽，而不是 cache 命中优化。
 
-3）kv 分page 开销很大。后果：高频的 cache miss、chunk 间地址映射与重复加载，显著增加每 token 的访存延迟；同时分块（chunking）会引入额外的拷贝与索引转换开销。  
+Paged KV 带来额外访存开销。Paged KV 进一步降低访存效率。首先，KV 被分页存储后，原本连续的内存访问变为离散访问，这会破坏 memory coalescing，使 GPU 无法高效合并访存请求，从而降低单次访存效率。其次，访问 KV 需要通过 page table 进行地址映射，并可能产生 pointer chasing，这会引入额外的 load 操作和更长的依赖链，从而降低指令级并行性。最后，由于访问不再连续，同样的数据需要更多 memory transaction 才能完成，导致有效带宽被进一步放大消耗。
   
-
-
-
 
 
 
