@@ -68,6 +68,7 @@ eLLM 以 **长上下文、长生命周期、低延迟** 的推理特性为核心
 ### 实验设置
 - CPU baseline: SgLang CPU endpoint（单块 CPU 服务器）
 - GPU baseline: SgLang GPU endpoint（多卡 GPU 服务器，示例使用 8x H20 节点）
+- SgLang Version: v0.5.9
 - Prefill 指标: TTFT （Time to First Token，ms/token）
 - Decode 指标: TPOT（Time Per Output Token，ms/token）
 
@@ -77,7 +78,7 @@ eLLM 以 **长上下文、长生命周期、低延迟** 的推理特性为核心
 | Xeon 6982P-C | 型号           |   Xeon 8480+     | H20   |
 |0.192|内存容量(TB)|2|0.141|
 | 1| 数量          |4        | 8  |
-|1.7|总价(万元) |150|
+|1.7|总价(万美元) |150|
 
 ### 实验说明
 - 当前实验聚焦于 **benchmark 与系统性能评估**。
