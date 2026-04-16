@@ -144,14 +144,46 @@ eLLM 会显著快于 GPU baseline。在超长 Prompt 的 Prefill 阶段，首 to
   - eLLM 优势：若能把 Prefill 做成一次连续的流水（整段 Prefill），可显著减少调度与同步点，从而把控制路径开销降到最低。  
 
 **Decode 分析**  
-在长上下文 decode 阶段，eLLM 的性能虽然低于 GPU baseline，但两者的差距明显小于 CPU DDR 与 GPU HBM 的理论带宽差距。这说明 GPU 的带宽优势在该场景下并没有被充分发挥。
 
-小 batch 导致并行度不足。decode 阶段通常 batch size 较小，使得 GPU 无法同时调度足够多的 SM，从而导致整体并行度下降并降低有效带宽。GPU 的高带宽依赖大量 warp 并发执行、高 memory-level parallelism 以及持续的内存请求流，但在小 batch 场景下，这些条件难以满足，因此内存延迟无法被有效隐藏，HBM 的高延迟无法被覆盖，SM 频繁出现等待内存的数据停顿。
+在长上下文的 decode 阶段，eLLM 虽然整体性能仍低于 GPU baseline，但两者之间的差距显著小于 DDR 与 HBM 的理论带宽差距。这表明，在该场景下，GPU 的带宽优势并未被充分发挥，其性能瓶颈更多来源于并行度不足与访存模式不理想，而非纯粹的带宽上限。
 
-KV 访问退化为 streaming，cache 基本失效。在长上下文场景中，KV cache 的工作集随着序列长度线性增长，同时几乎不存在重复访问，使得 cache 命中率显著下降，L1、L2 甚至更高层 cache 的作用被明显削弱，最终访问模式退化为直接访问主存的 streaming load。因此整体性能主要受限于主存带宽，而不是 cache 命中优化。
+- **1) batch size 小：**
+  - 问题：长序列会直接压缩 batch size。在 GPU 显存受限、chunk size 固定的情况下，sequence length 越长，可同时容纳的 batch size 越小。decode 阶段每个请求都需要携带完整历史 KV cache，使得有效并发进一步下降。
+  - eLLM 优势：CPU 内存容量更大，支持更大的 chunk size，batch size 不易受限，从而能够维持更高的并发度。
 
-Paged KV 带来额外访存开销。Paged KV 进一步降低访存效率。首先，KV 被分页存储后，原本连续的内存访问变为离散访问，这会破坏 memory coalescing，使 GPU 无法高效合并访存请求，从而降低单次访存效率。其次，访问 KV 需要通过 page table 进行地址映射，并可能产生 pointer chasing，这会引入额外的 load 操作和更长的依赖链，从而降低指令级并行性。最后，由于访问不再连续，同样的数据需要更多 memory transaction 才能完成，导致有效带宽被进一步放大消耗。
-  
+- **2) MoE 负载不均：**
+  - 问题：MoE 专家分布在不同 GPU 上，而专家激活具有随机性。在小 batch 场景下，容易导致专家负载分布不均，部分 GPU 过载而其他 GPU 空闲，甚至退化为仅少数 GPU 在工作。
+  - eLLM 优势：eLLM 在单机 CPU 上运行，无需跨设备分布专家，避免了负载不均和跨设备通信问题，能够稳定利用全部计算资源。
+
+- **3) 有效内存带宽不理想：**
+  - 问题：GPU 的高带宽依赖于大量 warp 并发执行以及持续的 memory-level parallelism 来隐藏内存访问延迟。在小 batch 场景下，可调度的 warp 数量不足，SM 无法被充分占满，内存请求流不连续，HBM 延迟暴露，SM 频繁因等待数据而停顿，从而导致有效带宽显著下降。
+  - eLLM 优势：CPU 核数较少，对并行度要求更低，即使在小 batch 场景下也能较容易填满计算资源；同时配合 cache 与预取机制，可以更稳定地接近理论内存带宽。
+
+- **4) 访存效率低：**
+  - 问题：Paged KV Cache 进一步降低访存效率。KV 被拆分为离散 page 后，原本连续的访问被打散，破坏 memory coalescing，降低访存合并效率。同时需要通过 page table 进行地址映射，并伴随 pointer chasing，引入额外 load 和更长依赖链，降低指令级并行性。此外，还会带来 TLB miss 和 cache miss，非连续访问使得同样数据需要更多 memory transaction 才能完成加载，进一步放大带宽消耗。
+  - eLLM 优势：采用静态连续 KV tensor，通过坐标直接访问，实现线性访存模式，能够充分利用硬件 prefetch 和 cache，提高整体访存效率。
+
+- **5) Kernel launch / 调度开销放大：**
+  - 问题：decode 是逐 token 推进的过程，每一步都会触发一系列 GPU kernel（attention、matmul、layernorm 等）。在小 batch 场景下，单次 kernel 计算量较小，但 kernel launch 与调度开销不变，导致其占比显著上升。同时由于计算粒度过小，GPU 难以形成持续饱和的执行流水线，utilization 波动明显，SM 无法长期满载，整体吞吐下降。
+  - eLLM 优势：eLLM 在 CPU 上以函数调用方式执行，无需 kernel 启动开销，在小 batch 和低并行度场景下具有更稳定的执行效率。
+
+
+## 结论
+
+GPU 长期以来被认为在大模型推理中具有压倒性优势，通常一块 CPU 难以与一块 GPU 竞争。然而，eLLM 展示了不同的结果：在特定场景下，尤其是长上下文推理中，CPU 也可以具备竞争力，甚至实现性能反超。
+
+
+在长文本推理场景下，eLLM 充分利用 CPU 大内存与连续 KV 的优势，使整体性能超过 GPU 方案，在部分配置下单机 CPU 甚至可以对比多卡 GPU（如 8 卡）取得更优的端到端性能表现。在长上下文场景中，prefill 阶段占比更高，eLLM 在该阶段的优势能够弥补 decode 阶段的劣势，从而在整体推理时间上取得领先。
+
+需要强调的是，这种优势具有明显的场景依赖性。在短文本或 decode 占主导的场景下，GPU 依然具备优势，其高并行度与高带宽可以被充分利用；
+
+
+基于上述分析，可以预期在一台双路 CPU 服务器上运行 eLLM，有潜力达到甚至超过 8 卡 GPU 系统的整体性能，并能够覆盖大多数长上下文推理应用的需求。
+
+
+
+
+
 
 
 
