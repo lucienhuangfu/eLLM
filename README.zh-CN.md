@@ -7,14 +7,14 @@
 📧 联系方式：**lucienhuangfu@outlook.com**
 
 ## 🚀 进展与更新
-- 2026-04-06: 发布 Alpha 版本  
-- 2025-12-20: Initial Release  
+- [v0.1.0-alpha.1] (2026-04-06) 发布 Alpha 版本  
+- [v0.0.1] (2025-12-20) 项目开源 
 
 ## 🔑 功能
 **eLLM**：专为 **CPU 服务器**打造的大模型推理框架
 - **纯 CPU 推理**：运行在 **CPU 服务器**（Xeon / EPYC）上，**无需 GPU / NPU**
 - **兼容 vLLM API**：可无缝接入现有生态
-- **结果等价 GPU 推理**：与 GPU 推理在数值与行为上保持一致
+- **等价 GPU 推理**：与 GPU 推理在数值与行为上保持一致
 
 ## 硬件要求（无需 GPU / NPU）
 - **CPU**：Intel Xeon Gen4 及以上（支持 AMX 指令集）
@@ -58,17 +58,15 @@ eLLM 以 **长上下文、长生命周期、低延迟** 的推理特性为核心
   为张量预留足够大的 token / sequence 维度，构建近似“无限长度”的 KV Tensor，支持整段 Prefill，从而尽量避免重复 Prefill 和参数反复载入，适配超长 Prompt 和长生命周期上下文。
 
 ## 🤖 支持模型
-- ✅ MiniMax M2.5  
 - ✅ Qwen3 系列  
+- ✅ MiniMax M2.5 
 
 ## 实验
-
 截至目前，eLLM 的最小原型已经完成。为验证它的性能潜力，我们设计了短文本与长文本两类实验，并分别考察 Prefill 和 Decode 两个阶段，比较单块 CPU 服务器与由 8 块 GPU 组成的推理节点在不同场景下的表现。短文本推理场景下，CPU 明显落后于 GPU；但在长文本推理场景下，eLLM 有机会凭借 CPU 的大内存优势实现反超。
 
 ### 实验设置
 - CPU baseline: SgLang CPU endpoint（单块 CPU 服务器）
-- GPU baseline: SgLang GPU endpoint（多卡 GPU 服务器，示例使用 8x H20 节点）
-- SgLang Version: v0.5.9
+- GPU baseline: SgLang GPU endpoint v0.5.9（多卡 GPU 服务器，示例使用 8x H20 节点）
 - Prefill 指标: TTFT （Time to First Token，ms/token）
 - Decode 指标: TPOT（Time Per Output Token，ms/token）
 
@@ -78,7 +76,7 @@ eLLM 以 **长上下文、长生命周期、低延迟** 的推理特性为核心
 | Xeon 6982P-C | 型号           |   Xeon 8480+     | H20   |
 |0.192|内存容量(TB)|2|0.141|
 | 1| 数量          |4        | 8  |
-|1.7|总价(万美元) |150|
+|17,000|总价($) |220,000|
 
 ### 实验说明
 - 当前实验聚焦于 **benchmark 与系统性能评估**。
@@ -96,9 +94,8 @@ eLLM 以 **长上下文、长生命周期、低延迟** 的推理特性为核心
 - 显然所有CPU推理框架decode短文本的性能都是远远落后于GPU，所以GPU的对比实验就不做了。
 - 只做 Decode 实验，Prefill 不做了，Prefill 可以在长文本的实验中得到验证   
 
-
 **Decode 结果**
-在 `prompt_len=128/256/512` 的三组测试中，eLLM 均稳定优于 vLLM CPU baseline，在 CPU 上表现出更低的 TPOT。综合来看，eLLM 约带来 `1.6×` 的性能提升，对应约 `38%` 的延迟下降。随着上下文长度增加，两者的 TPOT 都呈近似线性增长，但 eLLM 的斜率更低，说明其在短上下文范围内已经展现出更好的效率趋势。
+在 `prompt_len=128/256/512` 的三组测试中，eLLM 均稳定优于 SgLang CPU baseline，在 CPU 上表现出更低的 TPOT。综合来看，eLLM 约带来 `1.6×` 的性能提升，对应约 `38%` 的延迟下降。随着上下文长度增加，两者的 TPOT 都呈近似线性增长，但 eLLM 的斜率更低，说明其在短上下文范围内已经展现出更好的效率趋势。
 
 ```mermaid
 xychart-beta
@@ -106,7 +103,7 @@ xychart-beta
     x-axis [128, 256, 512]
     y-axis 0 --> 60
     line "eLLM (CPU end)" [32.94, 33.01, 33.13]
-    line "vLLM (CPU end)" [52.5, 52.47, 52.71]
+    line "SgLang (CPU end)" [52.5, 52.47, 52.71]
 ```
 
 **Decode 分析**  
@@ -120,10 +117,11 @@ xychart-beta
 - 服务框架 / 运行时开销：API 服务、请求生命周期和 streaming 调度都会带来额外成本；GIL、上下文切换和动态数据结构操作也会进一步拖慢端到端延迟。
 
 #### 长文本实验（预计5月底完成）
-GPU 的内存小，限制 长文本的batch size。小batch size 不会影响Prefill，但是会影响decode。
+GPU 显存容量较小，chunk size 受限，使得长 prompt 必须分段处理，同时也限制了 batch size 的规模。在 prefill 阶段，需要对分段后的长上下文进行重复处理，带来额外开销。在 decode 阶段，小 batch size 会导致并行度不足，从而引起性能明显下降。
+ 
 
 **实验设置**  
-- 模型：Minimax M2.5（Float 16）
+- 模型：Qwen3-Coder-480B-A35B-Instruct（Float 16）
 - 场景：batch size = 10, prompt length = 100,000
   - eLLM：chunk size = 1，000,000 ，batch size = 10, sequence length = 100,000 , 整段完成
   - GPU baseline：chunk size = 10,000 ，batch size = 10, sequence length = 1,000 , 需要分 100 段完成
@@ -171,15 +169,7 @@ eLLM 会显著快于 GPU baseline。在超长 Prompt 的 Prefill 阶段，首 to
 
 ## 结论
 
-GPU 长期以来被认为在大模型推理中具有压倒性优势，通常一块 CPU 难以与一块 GPU 竞争。然而，eLLM 展示了不同的结果：在特定场景下，尤其是长上下文推理中，CPU 也可以具备竞争力，甚至实现性能反超。
-
-
-在长文本推理场景下，eLLM 充分利用 CPU 大内存与连续 KV 的优势，使整体性能超过 GPU 方案，在部分配置下单机 CPU 甚至可以对比多卡 GPU（如 8 卡）取得更优的端到端性能表现。在长上下文场景中，prefill 阶段占比更高，eLLM 在该阶段的优势能够弥补 decode 阶段的劣势，从而在整体推理时间上取得领先。
-
-需要强调的是，这种优势具有明显的场景依赖性。在短文本或 decode 占主导的场景下，GPU 依然具备优势，其高并行度与高带宽可以被充分利用；
-
-
-基于上述分析，可以预期在一台双路 CPU 服务器上运行 eLLM，有潜力达到甚至超过 8 卡 GPU 系统的整体性能，并能够覆盖大多数长上下文推理应用的需求。
+GPU 长期以来被认为在大模型推理中具有压倒性优势，通常一块 CPU 难以与 GPU 竞争。 然而，eLLM 表明，在长上下文推理中，单块 CPU 也可以在端到端性能上对比甚至超过多卡 GPU（如 8 卡）系统。因为eLLM 利用 CPU 大内存支持整段 Prefill 长 prompt，使得 prefill 阶段显著快于 GPU 方案。当 decode 占比相对较低时，prefill 的优势能够主导整体推理时间，从而实现端到端性能领先。 基于这一特性，可以进一步预期，将 eLLM 扩展到 NUMA 架构的多路 CPU 服务器上，有望获得更好的性能，适用大多数推理场景。
 
 
 
