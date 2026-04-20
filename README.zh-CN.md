@@ -71,18 +71,25 @@ eLLM 以 **长上下文、长生命周期、低延迟** 的推理特性为核心
 ### 实验设置
 - CPU baseline: SgLang CPU endpoint（单块 CPU 服务器）
 - GPU baseline: SgLang GPU endpoint v0.5.9（多卡 GPU 服务器，示例使用 8x H20 节点）
+- 当前实验运行在共有云上的 CPU 虚拟机里，只占服务器的小部分资源
 - Prefill 指标: TTFT （Time to First Token，ms/token）
 - Decode 指标: TPOT（Time Per Output Token，ms/token）
 
-| CPU-only 服务器 （虚拟机） | 条目 | GPU 服务器 | |
+| CPU 服务器  | 条目 | GPU 服务器 | |
 |----------|--------------|------------|------|
 |CPU       |               |CPU         |GPU| 
 | Xeon 6982P-C | 型号           |   Xeon 8480+     | H20   |
+|128|核数||16,000|
+|250|FP16矩阵算力(TFLOPS)||296|
 |504 (L3) |Cache (MB)||60 (L2)|
 |3|最大内存容量(TB)||0.141|
-|0.192|配置内存容量(TB)|2|0.141|
 | 1| 数量          |4        | 8  |
 |17,000|总价($) |220,000|
+|CPU 虚拟机||||
+||配置核数|||
+|0.192|配置内存容量(TB)|||
+
+
 
 ### 实验说明
 - 当前实验聚焦于 **benchmark 与系统性能评估**。
@@ -129,7 +136,7 @@ GPU 显存容量较小，chunk size 受限，使得长 prompt 必须分段处理
 **实验设置**  
 - 模型：Qwen3-Coder-480B-A35B-Instruct（Float 16）
 - 场景：batch size = 10, prompt length = 100,000
-  - eLLM：chunk size = 1，000,000 ，batch size = 10, sequence length = 100,000 , 整段完成
+  - eLLM：chunk size = 1,000,000 ，batch size = 10, sequence length = 100,000 , 整段完成
   - GPU baseline：chunk size = 10,000 ，batch size = 10, sequence length = 1,000 , 需要分 100 段完成
 
 **结果**  
@@ -139,11 +146,13 @@ GPU 显存容量较小，chunk size 受限，使得长 prompt 必须分段处理
 eLLM 会显著快于 GPU baseline。在超长 Prompt 的 Prefill 阶段，首 token 延迟（TTFT）主要由两类因素驱动：其一是大规模的数据读取（模型参数与 KV 的加载），其二是分段处理带来的调度与同步开销。eLLM 的目标是将 Prefill 组织为尽可能连续且低干预的流水线，从根本上压缩这两类开销。eLLM 能稳定支持整段 Prefill，就有望将“连续访问、减少重复载入、降低控制开销”的优势转化为可观的首 token 延迟下降。下面按因果链逐项说明：
 
 - **1) 参数与 KV 的读取：**  
-  - 问题：对于超长输入，显存无法一次容纳时，GPU 往往将输入拆成多个 chunk 顺序处理。受分段策略和显存管理限制，每个 chunk 的处理需要重复将模型参数及相关 KV 加载到 GPU 缓存，导致多次重复的内存 I/O，从而累积显著延迟。  
-  - eLLM 优势：服务器级 CPU 通常拥有更大的主内存，能够用更少的分段甚至一次性完成 Prefill，显著降低重复内存 I/O。尽管 CPU 的 DDR5 带宽低于 GPU 的 HBM，但通过减少重复载入，TTFT 通常能获得更明显的改善。  
-- **2) KV（Key/Value）组织与访问局部性：**  
-  - 问题：超长上下文会使 KV 体量显著增加，访问模式（按 head 或按 token）直接影响缓存命中率与搬运量。如果硬件或运行时要求同时驻留多个 head 的 KV（例如某些 GPU 的并行策略），会加剧缓存替换与带宽竞争。  
-  - eLLM 优势：采用固定形状、维度优先的 KV 存储，并在计算策略上倾向“逐 head”顺序：在 CPU 实现中，各计算核先完成某一 head 的所有 token 计算并写回对应 KV，再处理下一个 head；这保证了对单个 head KV 的连续访问和短期缓存驻留，显著降低同时驻留多个 head KV 带来的缓存压力。相比之下，GPU 的多 head 并行策略需要同时保存多个 head 的 KV，增加了缓存替换与带宽争用，在超长上下文下会放大数据搬运成本。  
+  - 问题：对于超长输入，显存无法一次容纳时，GPU 往往将输入拆成多个 chunk 顺序处理。受分段策略和显存管理限制，每个 chunk 的处理需要重复将模型参数及相关 KV 加载 （假设Cache 可以完整缓存所有 KV）到 GPU 缓存，导致多次重复的内存 I/O，从而累积显著延迟。  
+  - eLLM 优势：服务器级 CPU 通常拥有更大的主内存，能够用更少的分段甚至一次性完成 Prefill，显著降低重复内存 I/O。尽管 CPU 的 DDR5 带宽低于 GPU 的 HBM，但通过减少重复载入，TTFT 通常能获得更明显的改善。
+
+ - **2) KV（Key/Value）组织与访问局部性：**  
+  - 问题： 在超长上下文场景下，KV cache 规模随序列长度线性增长，其访问模式（按 head 或按 token）直接决定缓存命中率与内存搬运开销。在 GPU many-core 架构下，为最大化吞吐能力，通常采用 batch × head 维度的高度并行计算方式，并在计算过程中需要同时驻留多个 KV head 数据。这会显著增加 cache footprint，导致更频繁的 cache eviction，并加剧 HBM 带宽竞争与数据搬运开销，尤其在超长上下文推理场景中问题会被进一步放大。  
+  - eLLM 优势： CPU 具备显著更大的片上缓存（L2/L3 cache），在 KV 数据驻留能力与访问局部性方面具有天然优势。基于这一特性，eLLM 采用固定形状、dimension-first 的 KV 存储布局，并在执行策略上采用“逐 head 顺序计算”。 在 CPU 实现中，各计算核心先完成某一 attention head 的全部 token 计算，期间该 head 的 KV 数据**能够长期驻留于 cache 中并被高频复用**，随后再切换至下一个 head。该设计使单个 head 的 KV 在 cache 中获得更长的驻留时间窗口与更连续的访问路径，从而显著增强时间局部性与空间局部性，大幅提升 cache reuse rate，并有效降低 cache thrashing 风险。得益于 CPU cache 的容量特性与 eLLM 的访问模式优化，该设计使单个 KV head 的有效 cache 驻留能力相较常规并行执行模式提升约 **2–3 个数量级**，显著减少 KV 在内存层级之间的反复回流开销，从而提升长上下文推理的稳定性与整体吞吐效率。 相比之下，GPU 的多 head 并行策略需要在 cache 层级同时驻留多个 head 的 KV 数据，在超长上下文条件下更容易产生 cache pressure 与 memory bandwidth contention，从而放大数据搬运成本与访存延迟。
+
 - **3) 分段带来的控制与同步成本：**  
   - 问题：将长 Prompt 切成多个 chunk 会引入额外的调度点、同步开销、内存碎片和跨段中间态维护（例如 KV 重组与合并），这些都会直接增加首 token 的延迟。  
   - eLLM 优势：若能把 Prefill 做成一次连续的流水（整段 Prefill），可显著减少调度与同步点，从而把控制路径开销降到最低。  
