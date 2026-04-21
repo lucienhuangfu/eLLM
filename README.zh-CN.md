@@ -1,11 +1,10 @@
 # eLLM：让 LLM 推理在 CPUs 上快过 GPUs
 ## eLLM：让 Xeon/EPYC 成为最优的 AI 推理芯片
-### 使命：打破 GPU 壁垒，让强大的 AI 能力触达每一个人
 
 👉 项目主页：[https://github.com/lucienhuangfu/eLLM](https://github.com/lucienhuangfu/eLLM)  
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)  
 🎓 目前仅开放 1–2 个 Trainee 名额，欢迎计算机专业在校生报名  
-💼 我们寻求具备产业协同能力的战略投资方  
+💼 我们致力于推动开源与 AI 民主化，诚挚寻求资助支持  
 📧 联系方式：**lucienhuangfu@outlook.com**
 
 ## 🚀 进展与更新
@@ -70,8 +69,8 @@ eLLM 以 **长上下文、长生命周期、低延迟** 的推理特性为核心
 截至目前，eLLM 的最小原型已经完成。为验证它的性能潜力，我们设计了短文本与长文本两类实验，并分别考察 Prefill 和 Decode 两个阶段，比较单块 CPU 服务器与由 8 块 GPU 组成的推理节点在不同场景下的表现。短文本推理场景下，CPU 明显落后于 GPU；但在长文本推理场景下，eLLM 有机会凭借 CPU 的大内存优势实现反超。
 
 ### 实验设置
-- CPU baseline: SgLang CPU endpoint（单块 CPU 服务器）
-- GPU baseline: SgLang GPU endpoint v0.5.9（多卡 GPU 服务器，示例使用 8x H20 节点）
+- CPU baseline: SGLang CPU endpoint（单块 CPU 服务器）
+- GPU baseline: SGLang GPU endpoint v0.5.9（多卡 GPU 服务器，示例使用 8x H20 节点）
 - 当前实验运行在公有云上的 CPU 虚拟机中，仅占服务器的一小部分资源
 - Prefill 指标：TTFT（Time to First Token，ms）
 - Decode 指标：TPOT（Time Per Output Token，ms/token）
