@@ -8,7 +8,11 @@ GitHub: https://github.com/lucienhuangfu/eLLM
 
 
 
-
+# about
+Rethinking AI infrastructure beyond GPUs.
+- Building eLLM, a CPU-only LLM inference framework.
+- A single CPU server (Xeon) can outperform an 8-GPU H20 server in prefilling-heavy, long-context workloads.
+GitHub: https://github.com/lucienhuangfu/eLLM
 
 
 
@@ -20,10 +24,36 @@ GitHub: https://github.com/lucienhuangfu/eLLM
 
 
 # v2
+
+Rethinking AI infrastructure beyond GPUs. Building eLLM, a CPU-only LLM inference framework. A single CPU server (Xeon) can outperform an 8-GPU H20 server in prefilling-heavy, long-context workloads.
 - With its large memory capacity, eLLM can prefill the entire long prompt in a single pass, avoiding chunked execution and repeated parameter loading;
 - With its large cache, eLLM computes attention head by head, reducing repeated KV loads.
+GitHub: https://github.com/lucienhuangfu/eLLM
+
+
+
+
+# v3
+Founder & Independent Developer
+Rethinking AI infrastructure beyond GPUs.
+Building eLLM, a CPU-only LLM inference framework.
+eLLM can infer LLM on CPUs faster than on GPUs
+GitHub: https://github.com/lucienhuangfu/eLLM
+LinkedIn: https://www.linkedin.com/in/yaguang-huangfu/
+
+
+
+# t
+Rethinking AI infrastructure beyond GPUs.
+- Building eLLM, a CPU-only LLM inference framework.
+- A single CPU server (Xeon) can outperform an 8-GPU H20 server in prefilling-heavy, long-context workloads.
+GitHub: https://github.com/lucienhuangfu/eLLM
+
+
+- A single CPU server (Xeon) can outperform an 8-GPU H20 server in prefilling-heavy, long-context workloads.
+
+
 
 eLLM makes CPUs (Xeon/EPYC) the best AI inference chips.
-
 
 eLLM can infer LLM on CPUs faster than on GPUs
