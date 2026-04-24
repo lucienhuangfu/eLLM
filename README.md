@@ -1,68 +1,68 @@
-# eLLM: Make LLM Inference on CPUs Faster Than GPUs
-## eLLM: Make CPUs (Xeon/EPYC) the Best AI Inference Chips
+# eLLM: can Run LLM Inference on CPUs Faster Than on GPUs. 
+## eLLM Makes CPUs (Xeon/EPYC) the Best AI Inference Chips.
 👉 Project home: [https://github.com/lucienhuangfu/eLLM](https://github.com/lucienhuangfu/eLLM)  
 🌐 Languages: [English](README.md) | [简体中文](README.zh-CN.md)  
-🎓 We currently have 1-2 trainee openings, and computer science students are welcome to apply  
-💼 We are committed to open source and to making AI more accessible, and we welcome industry collaboration  
+🎓 We currently have only 1–2 trainee openings, and we welcome applications from computer science students  
+💼 We are committed to open source and AI democratization, and we look forward to working with industry partners  
 📧 Contact: **lucienhuangfu@outlook.com**
 
 ## 🚀 Progress and Updates
 - `v0.1.0-alpha.1` (2026-04-06): Alpha release
-- `v0.0.1` (2025-12-20): Project open sourced
+- `v0.0.1` (2025-12-20): Open-sourced the project
 
-## 🔑 Features
-**eLLM** is a large-model inference framework built specifically for **CPU servers**
-- **CPU-only inference**: Runs on **CPU servers** (Xeon/EPYC) with **no GPU/NPU required**
-- **vLLM API compatible**: Fits neatly into the existing ecosystem
-- **GPU-equivalent inference**: Aims to match GPU inference numerically and behaviorally as closely as possible
+## 🔑 Highlights
+**eLLM** is a large-model inference framework built specifically for **CPU servers**.
+- **Pure CPU inference**: Runs on **CPU servers** (Xeon / EPYC), with **no GPU/NPU required**
+- **vLLM API compatible**: Integrates smoothly with the existing ecosystem
+- **GPU-consistent inference**: matches GPU inference in both numerical results and runtime behavior
 
 ## Hardware Requirements (No GPU/NPU Required)
 - **CPU**: Intel Xeon 4th Gen or newer, with AMX support
-- **Memory**: Plenty of DDR5 memory, no HBM required
+- **Memory**: Sufficient DDR5 capacity, no HBM required
 
 ## ✨ Advantages
-eLLM is designed to fully exploit the **architectural strengths of CPUs in inference workloads**, allowing it to outperform GPU inference on several key metrics:
-- **Low latency**: Full-pass Prefill and per-head attention computation significantly reduce time to first token
-- **High throughput**: Even though single-instance concurrency is lower, the shorter end-to-end latency leads to higher **effective QPS**
-- **Long context**: Large memory makes it possible to support an effectively unlimited context window
+eLLM fully exploits the **architectural strengths of CPUs in inference workloads**, allowing it to outperform GPU-based inference on several critical metrics:
+- **Low latency**: Entire Prefill executed end-to-end, with attention computed head by head, significantly reducing time to first token
+- **High throughput**: Even though single-instance concurrency is lower, the smaller end-to-end latency can translate into **higher real QPS**
+- **Long context**: Large memory capacity supports nearly unlimited context windows
 - **Lower energy use**: Prefill loads parameters only once, greatly reducing the energy cost of repeated memory access
-- **Lower cost**: Both hardware cost and per-user inference cost are far below GPU-based solutions
+- **Lower cost**: Hardware cost and per-user inference cost are significantly lower than GPU-based deployments
 
 ## Use Cases
-eLLM is a strong fit for long-context inference tasks centered on **Prefill**, especially agents that need to ingest very long context in a single pass:
+eLLM is well suited for long-text inference tasks centered on **Prefill**, especially agents that need to ingest extremely long contexts in one go:
 - **Code Copilot**
-  - Ultra-long cross-file and cross-module code context can be prefetched and processed in a single pass
-  - Well suited to frequent incremental inference tasks such as refactoring, code review, and code completion
+  - Handles cross-file, cross-module code contexts that are too large for ordinary workflows by completing Prefill in one shot
+  - Well suited for refactoring, code review, completion, and other high-frequency incremental inference workloads
 - **RAG (Retrieval-Augmented Generation)**
-  - Can dynamically inject large external document sets and knowledge bases into long context
-  - Well suited to ultra-long document understanding and enterprise knowledge-base Q&A
+  - Dynamically injects large-scale external documents and knowledge bases into long context
+  - Ideal for long-document understanding and enterprise knowledge-base QA
 - **Deep Research**
-  - Well suited to multi-step retrieval, reasoning, and information synthesis, with a large amount of material loaded in the first pass
-  - Supports continuous research workflows that can run for hours or even days
+  - Fits multi-step retrieval, reasoning, and information synthesis workflows, with large amounts of material loaded in the first pass
+  - Supports continuous research sessions spanning hours or even days
 
-## ⚙️ Method
-Built around the CPU-server profile of **large memory, large cache, and modest compute**, eLLM follows a "**trade storage for computation**" design philosophy. It rethinks the large-model inference stack and compresses inference into a preallocatable, directly addressable, and stably reusable execution path, delivering more consistent end-to-end latency with lower runtime overhead.
+## ⚙️ Approach
+Based on the CPU server’s architectural profile of "large memory, large cache, modest compute," eLLM adopts an **"store more, compute less"** design philosophy. It rethinks the LLM inference stack and compresses the inference flow into a pre-allocatable, directly addressable, and stably reusable execution pipeline, trading lower runtime overhead for more predictable end-to-end latency.
 
 - 🧩 **Elastic static computation graph**
-  Build a globally unique static computation graph and store tensors in a **dimension-first** layout, so elements with the same logical coordinates always map to the same memory location. This lets one execution graph handle different input lengths without being rebuilt.
-- **Static-shape KV Cache (non-paged)**
-  Preallocate fixed-shape tensors for the KV cache instead of relying on paged block management. Reads and writes address KV directly by tensor coordinates, and KV is accessed continuously along the sequence dimension, which reduces metadata management, address translation, and dynamic allocation overhead while keeping TLB and cache misses to a minimum.
-- 📦 **Ultra-large dimension tensors**
-  Reserve very large token and sequence dimensions to build an effectively "infinite-length" KV tensor. This supports full-pass Prefill while avoiding repeated Prefill and repeated parameter loading, making it suitable for ultra-long prompts and long-lived contexts.
-- **⚡ Per-head attention computation (FlashAttention)**
-  During Prefill, use "one token, one KV head" as the basic unit of computation. The CPU finishes one head before moving on to the next. This better matches CPU hardware characteristics: limited core counts but large cache capacity. It keeps a single head's KV data in on-chip cache for as long as possible and reduces repeated memory loads.
+  Build a globally unique static computation graph and use a **dimension-first** tensor layout so that elements at the same logical coordinates map to the same memory location. This lets the same execution graph handle different input lengths without rebuilding the graph.
+- **Static-shape KV cache (non-paged)**
+  Preallocate a fixed-shape tensor for the KV cache instead of using paged block management. Read and write KV directly by tensor coordinates, and read contiguously along the sequence dimension to reduce metadata maintenance, address mapping, and dynamic allocation overhead while minimizing TLB and cache misses.
+- 📦 **Massive-dimensional tensors**
+  Reserve sufficiently large token / sequence dimensions to build an effectively "unbounded" KV tensor. This supports full Prefill in one pass and helps avoid repeated Prefill and repeated parameter loading, making it suitable for ultra-long prompts and long-lived contexts.
+- **⚡ Head-by-head attention computation (FlashAttention)**
+  During Prefill, the basic compute unit is a single token's single KV head. The CPU finishes one head before moving to the next. This matches the hardware characteristics of CPUs, which have limited core counts but large caches: keep a single head's KV data resident in cache as long as possible to reduce repeated memory loads.
 
 ## 🤖 Supported Models
 - ✅ Qwen3 series
 - ✅ MiniMax M2.5
 
 ## Experiments
-So far, the minimal eLLM prototype has been completed. To validate its performance potential, we designed both short-text and long-text experiments and evaluated Prefill and Decode separately, comparing a single CPU server with an inference node made up of 8 GPUs under different scenarios. In short-text inference, CPU is still clearly behind GPU; in long-text inference, however, eLLM has a chance to pull ahead by exploiting the CPU's large-memory advantage.
+At this stage, eLLM's minimum viable prototype is complete. To validate its performance potential, we designed both short-text and long-text experiments, evaluating Prefill and Decode separately and comparing a single CPU server against an inference node made up of 8 GPUs under different scenarios. In short-text inference, CPU is clearly behind GPU; but for long-text inference, eLLM has a chance to overtake by leveraging CPU memory capacity.
 
-### Experimental Setup
+### Experiment Setup
 - CPU baseline: SGLang CPU endpoint (single CPU server)
-- GPU baseline: SGLang GPU endpoint v0.5.9 (multi-GPU server; the example uses an 8x H20 node)
-- The current experiments run on a public-cloud CPU VM and use only a small portion of the available server resources
+- GPU baseline: SGLang GPU endpoint v0.5.9 (multi-GPU server, example uses an 8x H20 node)
+- Current experiments run on a public-cloud CPU VM and use only a fraction of the server's resources
 - Prefill metric: TTFT (Time to First Token, ms)
 - Decode metric: TPOT (Time Per Output Token, ms/token)
 
@@ -72,41 +72,37 @@ So far, the minimal eLLM prototype has been completed. To validate its performan
 |---|---|---|
 | Model | Xeon 6982P-C | H20 |
 | Cores | 128 | 16,000 |
-| FP16 matrix compute (TFLOPS) | 250 | 296 |
+| FP16 matrix throughput (TFLOPS) | 250 | 296 |
 | Cache (MB) | 504 (L3) | 60 (L2) |
-| Maximum memory capacity (TB) | 3 | 0.141 |
+| Max memory capacity (TB) | 3 | 0.141 |
 | Quantity | 1 | 8 |
-| Total price ($) | 17,000 | 220,000 |
+| Total cost ($) | 17,000 | 220,000 |
 
-
-
-
-### Experiment Notes
-- The current experiments focus on **benchmarking and system performance evaluation**.
-- **Operator-level** tests and alignment have been completed, which shows that the underlying execution path is already basically usable.
-- The **model-level** outputs are not yet fully aligned with the reference implementation.
+### Notes on the Experiments
+- The current focus is **benchmarking and systems performance evaluation**.
+- **Operator-level** tests and alignment have been completed, which indicates the underlying execution path is basically functional.
+- **Model-level** outputs are not yet fully consistent with the reference implementation.
   - The current setup uses **randomly initialized parameters** and has not yet been connected to real model weights.
-  - This stage still does not include **attention** or **tokenization**.
-
+  - **Attention** and **tokenization** are not included in this stage.
 
 #### Short-Text Experiment (Completed)
 
-**Experimental Setup**
+**Setup**
 - Model: Qwen3-Coder-30B-A3B-Instruct (FP16)
-- Scenario: short prompt, `batch = 1`, `prompt length = {128, 256, 512}`
-- Since CPU inference frameworks are typically far behind GPUs on Decode for short prompts, this experiment does not include a separate GPU comparison.
-- This experiment evaluates Decode only; Prefill is covered by the long-text experiment.
+- Scenario: short prompts, `batch = 1`, `prompt length = {128, 256, 512}`
+- In short-text settings, CPU inference frameworks are usually far behind GPU in Decode performance, so we do not include a separate GPU comparison in this experiment.
+- This experiment measures Decode only; Prefill is evaluated in the long-text experiment.
 
-**Experimental Environment**
+**Environment**
 
 | Item | Configuration |
 |---|---|
 | Environment | CPU VM |
-| Configured cores | 48 |
-| Configured memory capacity (TB) | 0.192 |
+| Cores | 48 |
+| Memory (TB) | 0.192 |
 
 **Decode Results**
-Across the three tests with `prompt_len=128/256/512`, eLLM consistently outperformed the SgLang CPU baseline and delivered lower TPOT on CPU. Overall, eLLM achieved about a `1.6×` speedup, corresponding to roughly a `38%` reduction in latency. As context length increases, TPOT rises approximately linearly for both systems, but eLLM has the gentler slope, which suggests a better efficiency trend even in short-context settings.
+Across the three tests with `prompt_len=128/256/512`, eLLM consistently outperforms the SgLang CPU baseline and shows lower TPOT on CPU. Overall, eLLM delivers about a `1.6x` performance gain, corresponding to roughly a `38%` reduction in latency. As context length increases, TPOT for both systems rises roughly linearly, but eLLM has a lower slope, indicating a better efficiency trend even within short contexts.
 
 ```mermaid
 xychart-beta
@@ -118,80 +114,80 @@ xychart-beta
 ```
 
 **Decode Analysis**  
-This result shows that the bottleneck in short-text Decode is not mainly operator computation itself, but rather control-path overhead such as scheduling, memory management, and runtime execution. eLLM's static computation graph and lighter execution path reduce the cost of dynamic scheduling and state maintenance, leaving more time for actual operator execution and producing stable gains over the CPU baseline.
+This result suggests that the bottleneck in short-text decoding is not mainly the operator math itself, but rather the overhead from scheduling, memory management, and the runtime control path. eLLM's static computation graph and leaner execution path reduce dynamic scheduling and state-management costs, leaving more time for actual operator execution and delivering consistent gains over the CPU baseline.
 
-From the CPU baseline execution path, the main costs fall into four categories:
+From the CPU baseline execution path, the main sources of overhead can be grouped into four categories:
 
-- Scheduling overhead: continuous batching, token-level routing, and request merge/split operations all have to happen repeatedly; every generated token passes through the scheduling path, so control overhead keeps rising as the number of active requests grows.
-- KV cache management: autoregressive Decode must continuously preserve historical token KV state and handle KV block allocation, reclamation, and address mapping. These operations are cheap individually, but they are so frequent that metadata and memory-access costs become amplified.
-- Intermediate tensor management: Decode still produces temporary tensors such as Q, K, V projections, attention intermediates, MLP activations, and residual buffers. If they cannot be reused effectively, they lead to frequent allocation and release, memory fragmentation, and bandwidth pressure.
-- Service framework/runtime overhead: API serving, request lifecycle management, and streaming scheduling all add extra cost. GIL, context switching, and dynamic data structure operations further increase end-to-end latency.
+- Scheduling overhead: frequent continuous batching, token-level routing, and request merge / split operations; every generated token goes through a scheduling path, and control overhead rises as active requests increase.
+- KV cache management: autoregressive decode must continuously preserve historical token KV states and handle KV block allocation, reclamation, and address mapping; each operation is small, but high frequency amplifies metadata and memory-access costs.
+- Intermediate tensor management: decode still creates temporary tensors such as Q/K/V projections, attention intermediates, MLP activations, and residual buffers; if these cannot be reused consistently, they cause frequent allocation and deallocation, fragmentation, and bandwidth pressure.
+- Service framework / runtime overhead: API serving, request lifecycle handling, and streaming scheduling all add extra cost; GIL contention, context switching, and dynamic data-structure operations further increase end-to-end latency.
 
-#### Long-Text Experiment (Expected to Complete by End of May)
-GPU memory capacity is relatively limited, so chunk size is constrained. That means long prompts must be processed in segments, and batch size is constrained as well. In Prefill, segmented long contexts have to be processed repeatedly, which adds extra overhead. In Decode, a small batch size leaves too little parallelism and causes a noticeable performance drop.
+#### Long-Text Experiment (Expected by End of May)
+GPU VRAM is limited, which constrains chunk size and forces long prompts to be processed in segments. That also limits batch size. In Prefill, segmented long contexts must be processed repeatedly, adding overhead. In Decode, small batch sizes reduce parallelism and can significantly hurt performance.
 
-
-**Experimental Setup**
+**Setup**
 - Model: Qwen3-Coder-480B-A35B-Instruct (FP16)
 - Scenario: `batch size = 10`, `prompt length = 100,000`
-  - eLLM: `chunk size = 1,000,000`, `batch size = 10`, `sequence length = 100,000`, completed in a single pass
-  - GPU baseline: `chunk size = 10,000`, `batch size = 10`, `sequence length = 1,000`, requires 100 segments to complete
+  - eLLM: `chunk size = 1,000,000`, `batch size = 10`, `sequence length = 100,000`, processed in one pass
+  - GPU baseline: `chunk size = 10,000`, `batch size = 10`, `sequence length = 1,000`, processed in 100 chunks
 
 **Results**  
-We are still collecting and organizing the experimental data, so there is no final conclusion yet.
+The experimental data is still being collected and organized, so no final conclusion is available yet.
 
 **Prefill Analysis**  
-eLLM is expected to be significantly faster than the GPU baseline. In the Prefill stage for ultra-long prompts, time to first token (TTFT) is driven mainly by two factors: large-scale data movement (loading model parameters and KV) and the scheduling and synchronization overhead introduced by segmentation. eLLM aims to make Prefill as continuous and low-intervention as possible, which should fundamentally reduce both costs. If eLLM can stably support full-pass Prefill, the advantages of continuous access, reduced repeated loading, and lower control overhead should translate into a substantial TTFT reduction. The causal chain is described below:
+eLLM is expected to be significantly faster than the GPU baseline. In the Prefill stage for ultra-long prompts, TTFT is mainly driven by two factors: large-scale data movement (model parameters and KV loading) and the scheduling / synchronization overhead caused by chunked processing. eLLM aims to structure Prefill as a continuous, low-interference pipeline, fundamentally reducing both costs. If eLLM can reliably support full-pass Prefill, the advantages of contiguous access, fewer reloads, and lower control overhead should translate into a meaningful reduction in TTFT. The causal chain is as follows:
 
-- **1) Parameter and KV reads:**
-  - Problem: For ultra-long inputs, if the entire prompt cannot fit in memory at once, GPUs often have to split it into multiple chunks and process them sequentially. Because of segmentation and memory-management limits, each chunk may reload model parameters and related KV into GPU cache, causing multiple memory I/Os and adding substantial latency.
-  - eLLM advantage: Server-grade CPUs usually have much larger main memory, which allows Prefill to run in fewer segments or even in a single pass, dramatically reducing repeated memory I/O. Although CPU DDR5 bandwidth is lower than GPU HBM, cutting repeated loads usually produces a more meaningful TTFT improvement.
+- **1) Parameter and KV loading:**
+  - Problem: for ultra-long inputs, if VRAM cannot hold everything at once, GPUs usually split the input into multiple chunks and process them sequentially. Due to chunking strategy and memory-management constraints, each chunk may require reloading model parameters and related KV data into GPU cache, causing repeated memory I/O and accumulating noticeable latency.
+  - eLLM advantage: server-class CPUs usually have much larger main memory, allowing Prefill to be completed with fewer chunks or even in one pass, greatly reducing repeated memory I/O. Although DDR5 bandwidth is lower than GPU HBM bandwidth, reducing repeated loads often improves TTFT more significantly.
 
-- **2) KV organization and access pattern:**
-  - Problem: In ultra-long-context scenarios, KV cache size grows linearly with sequence length, and the access pattern, whether by head or by token, directly determines cache hit rate and memory transfer overhead. On GPU many-core architectures, throughput is usually maximized with a highly parallel batch × head computation pattern, which means multiple KV head datasets have to live in memory at the same time. That increases the cache footprint, leads to more frequent cache eviction, and intensifies HBM bandwidth contention and data transfer overhead, which becomes even more pronounced in ultra-long-context inference.
-  - eLLM advantage: CPUs have much larger on-chip caches (L3 cache), giving them a natural advantage in KV residency and access locality. eLLM builds on this by using a fixed-shape, dimension-first KV storage layout and a **per-head sequential execution** strategy. On the CPU, compute cores finish all token computations for one attention head first, during which that head's KV data can stay in cache and be reused for a long time, before switching to the next head. This gives each head a longer cache residency window and a more continuous access path, substantially improving temporal and spatial locality. With CPU cache capacity and eLLM's access-pattern optimization, the effective cache residency of a single KV head can improve by about **2-3 orders of magnitude** compared with a conventional parallel execution pattern.
+- **2) KV layout and access pattern:**
+  - Problem: in ultra-long context scenarios, KV cache size grows linearly with sequence length, and the access pattern, by head or by token, directly determines cache hit rate and memory movement overhead. On GPU many-core architectures, maximizing throughput often requires highly parallel batch × head computation, which means multiple KV heads must be resident at the same time. This increases cache footprint, causes more frequent cache eviction, and intensifies HBM bandwidth contention and data-movement cost, especially for very long-context inference.
+  - eLLM advantage: CPUs have much larger on-chip caches, especially L3 cache, so they naturally have stronger KV residency and locality characteristics. eLLM uses a fixed-shape, dimension-first KV layout and a sequential head-by-head execution strategy. In the CPU implementation, the cores finish all token computations for one attention head first, keeping that head's KV data resident in cache for reuse, and then move on to the next head. This extends the residency window and creates a more continuous access path, improving both temporal and spatial locality. Thanks to CPU cache capacity and eLLM's access-pattern optimization, the effective cache residency of a single KV head can improve by roughly **2-3 orders of magnitude** compared with a conventional parallel execution pattern.
 
-- **3) Control and synchronization costs from segmentation:**
-  - Problem: Splitting a long prompt into multiple chunks introduces extra scheduling points, synchronization overhead, memory fragmentation, and cross-segment intermediate-state maintenance, such as KV reorganization and merging, all of which directly increase TTFT.
-  - eLLM advantage: If Prefill can be turned into one continuous pipeline, that is, full-pass Prefill, scheduling and synchronization points can be reduced significantly, minimizing control-path overhead.
+- **3) Control and synchronization costs from chunking:**
+  - Problem: splitting a long prompt into multiple chunks introduces extra scheduling points, synchronization overhead, memory fragmentation, and cross-chunk state maintenance such as KV reassembly and merging, all of which directly increase TTFT.
+  - eLLM advantage: if Prefill can be turned into one continuous pipeline, scheduling and synchronization points are dramatically reduced, minimizing control-path overhead.
 
 **Decode Analysis**  
-In the Decode stage for long contexts, eLLM is still slower overall than the GPU baseline, but the gap is much smaller than the theoretical DDR-versus-HBM bandwidth difference. That suggests the GPU bandwidth advantage is not being fully realized here, and the bottleneck is more about insufficient parallelism and suboptimal memory-access patterns than about the raw bandwidth ceiling.
+During decode on long contexts, eLLM is still slower overall than the GPU baseline, but the gap is much smaller than the theoretical DDR vs HBM bandwidth difference. This suggests that the GPU bandwidth advantage is not fully realized in this scenario; the bottleneck is more about insufficient parallelism and suboptimal memory-access patterns than about raw bandwidth limits.
 
 - **1) Small batch size:**
-  - Problem: Long sequences directly reduce batch size. When GPU memory is constrained and chunk size is fixed, the longer the sequence, the smaller the batch that can be kept in flight. In the Decode stage, each request must carry the full historical KV cache, which further reduces effective concurrency.
-  - eLLM advantage: CPUs have larger memory capacity and can support a larger chunk size, so batch size is less constrained and higher concurrency is easier to maintain.
+  - Problem: long sequences directly shrink batch size. When GPU VRAM is limited and chunk size is fixed, the longer the sequence, the smaller the batch that can be resident at once. During decode, each request must carry the full historical KV cache, which further reduces effective concurrency.
+  - eLLM advantage: CPUs have larger memory capacity and can support larger chunk sizes, so batch size is less constrained and higher concurrency can be maintained.
 
-- **2) Uneven MoE load:**
-  - Problem: MoE experts are spread across different GPUs, and expert activation is random. In small-batch scenarios, that can easily lead to load imbalance, with some GPUs overloaded while others sit idle, or even only a few GPUs doing useful work.
-  - eLLM advantage: eLLM runs on a single CPU machine and does not need to distribute experts across devices. That avoids load imbalance and cross-device communication issues, and lets all compute resources stay busy more consistently.
+- **2) Poor efficiency for skinny matrix multiplication:**
+  - Problem: once batch size gets small, linear layers degenerate into skinny matrix multiplication; in MoE settings, some expert computations may further degenerate into vector-matrix multiplication. These operators are typically small and irregular, making it hard for GPUs to exploit their large-scale parallelism. Limited L2 cache also makes it difficult to keep enough concurrent matrix multiplications resident at the same time.
+  - eLLM advantage: CPUs are friendlier to small-batch, low-dimensional, and irregular matrix operations, and their execution paths are more stable. With a larger L3 cache, weights and intermediate results are easier to reuse, so multiple matrix multiplications can be processed more efficiently in parallel.
 
-- **3) Inefficient effective memory bandwidth:**
-  - Problem: High GPU bandwidth depends on massive warp concurrency and sustained memory-level parallelism to hide memory-access latency. In small-batch scenarios, there are not enough warps to schedule, SMs cannot be fully occupied, memory requests become less continuous, HBM latency is exposed, and SMs frequently stall while waiting for data, which drives effective bandwidth down sharply.
-  - eLLM advantage: CPUs have fewer cores and lower parallelism requirements, so they can saturate compute resources more easily even with small batches. Combined with cache and prefetch mechanisms, they can stay closer to theoretical memory bandwidth more consistently.
+- **3) MoE load imbalance:**
+  - Problem: MoE experts are distributed across different GPUs, and expert activation is random. In small-batch scenarios, load balancing is often poor: some GPUs are overloaded while others sit idle, and in the extreme case only a few GPUs do most of the work.
+  - eLLM advantage: eLLM runs on a single CPU server, so experts do not need to be distributed across devices. This avoids load imbalance and cross-device communication, and allows all compute resources to be used consistently.
 
-- **4) Poor memory-access efficiency:**
-  - Problem: Paged KV cache further hurts memory-access efficiency. Once KV is split into discrete pages, what used to be contiguous access becomes scattered, which breaks memory coalescing and lowers transaction efficiency. It also requires page-table translation and pointer chasing, which adds extra loads and longer dependency chains and reduces instruction-level parallelism. On top of that, TLB misses and cache misses increase, and non-contiguous access means more memory transactions are needed to fetch the same data, further increasing bandwidth usage.
-  - eLLM advantage: It uses a static, contiguous KV tensor with direct coordinate-based access, creating a linear memory-access pattern that makes full use of hardware prefetch and cache to improve overall memory efficiency.
+- **4) Ineffective memory bandwidth:**
+  - Problem: GPU bandwidth depends on high warp concurrency and sustained memory-level parallelism to hide memory latency. With small batches, there are not enough warps to schedule, SMs are not fully occupied, memory requests are less continuous, HBM latency becomes visible, and SMs frequently stall waiting for data, which reduces effective bandwidth.
+  - eLLM advantage: CPUs have fewer cores and lower parallelism requirements, so it is easier to fill the compute resources even with small batches. Combined with cache and prefetching, CPUs can more consistently approach their theoretical memory bandwidth.
 
-- **5) Amplified kernel launch/scheduling overhead:**
-  - Problem: Decode advances token by token, and each step triggers a chain of GPU kernels such as attention, matmul, and layernorm. In small-batch scenarios, the work per kernel is small, but kernel launch and scheduling overhead stay the same, so their share rises sharply. At the same time, the computation granularity is too fine for the GPU to keep a fully saturated execution pipeline, utilization fluctuates, SMs cannot remain fully loaded for long, and overall throughput drops.
-  - eLLM advantage: eLLM runs on the CPU through function calls, so there is no kernel launch overhead, and execution is more stable in small-batch, low-parallelism settings.
+- **5) Poor memory-access efficiency:**
+  - Problem: a paged KV cache further reduces access efficiency. Once KV is split into discrete pages, what used to be contiguous access becomes scattered, breaking memory coalescing and reducing access merging efficiency. Address mapping through page tables also introduces pointer chasing, extra loads, longer dependency chains, and lower instruction-level parallelism. In addition, TLB misses and cache misses increase, and non-contiguous access requires more memory transactions to load the same data, further amplifying bandwidth consumption.
+  - eLLM advantage: eLLM uses a static contiguous KV tensor and direct coordinate-based access, producing a linear memory-access pattern that takes full advantage of hardware prefetch and cache, improving overall access efficiency.
 
+- **6) Amplified kernel launch / scheduling overhead:**
+  - Problem: decode advances token by token, and each step triggers a series of GPU kernels such as attention, matmul, and layer norm. With small batches, the work per kernel is small, but launch and scheduling costs remain fixed, so their share rises sharply. Because the compute granularity is too small, GPUs struggle to maintain a continuously saturated execution pipeline; utilization fluctuates and SMs cannot stay fully occupied, reducing overall throughput.
+  - eLLM advantage: eLLM runs on CPU through function calls and does not pay kernel launch overhead, so it has more stable execution efficiency in small-batch, low-parallelism scenarios.
 
 ## Conclusion
 
-GPUs have long been seen as the default choice for large-model inference, while CPUs are often assumed to be unable to compete in the same arena. eLLM's experimental results suggest that this is not always true: in long-context inference, a single CPU can compete directly with a multi-GPU system on end-to-end performance, and may even outperform it.
+GPUs have long been viewed as the mainstream choice for large-model inference, while CPUs are often considered unable to compete in the same arena. eLLM's results suggest that this assumption is not always correct: in long-text inference, a single CPU server can compete head-on with a multi-GPU system at the end-to-end level, and may even pull ahead.
 
-The core reason is that eLLM makes full use of two key CPU advantages. First, CPUs have larger main memory, which supports full-pass Prefill for long prompts and reduces the repeated loading and scheduling overhead introduced by segmentation. Second, CPUs have larger cache capacity, and combined with per-head attention execution, they can greatly improve data residency and reuse, which lowers overall Prefill latency.
+The core reason is that eLLM makes full use of two major CPU hardware advantages. First, CPUs have much larger main memory, which supports full-pass Prefill for long prompts and reduces repeated loading and scheduling overhead caused by chunked processing. Second, CPUs have much larger cache capacity, and when paired with head-by-head attention execution, they can greatly improve data residency and reuse, resulting in lower overall Prefill latency.
 
-As a result, in inference workloads dominated by Prefill, even if Decode is a bit slower, the Prefill advantage can still dominate total runtime and deliver better end-to-end performance. Looking ahead, if eLLM is extended to multi-socket NUMA CPU servers and paired with more memory and more parallel resources, it could cover an even broader set of long-context, long-lived, low-latency inference scenarios and offer a cost-effective alternative to the GPU route.
-
-
-
+As a result, in inference tasks dominated by Prefill, even if Decode is slightly slower, the Prefill advantage can still dominate total latency and produce better end-to-end performance. Looking further ahead, if eLLM is extended to multi-socket NUMA CPU servers and combined with larger memory and more parallel resources, it could cover more long-context, long-lived, low-latency inference scenarios and establish a cost-effective inference path distinct from the GPU-centric one.
 
 ## 📄 Paper
-If you'd like to learn more about eLLM's design and technical details, feel free to read and cite our paper. Please note that the public version is still an **early draft**, and some implementation details do not yet fully reflect the latest progress of eLLM. We are continuing to update it, so thank you for your understanding.
+If you are interested in the underlying design and technical details of eLLM, you are welcome to read and cite our [paper](ellm.pdf). Please note that the public version is an **early paper**, and some implementation details do not yet fully reflect eLLM's latest progress. We are continuing to update it, and appreciate your understanding.
+
 ```bibtex
 @misc{huangfu2025ellm,
   title        = {eLLM: Achieving Lossless Million-Token LLM Inference on CPUs Faster Than GPUs},
@@ -203,4 +199,4 @@ If you'd like to learn more about eLLM's design and technical details, feel free
 ```
 
 ## 📜 License
-This project is released under the [Apache 2.0 License](LICENSE).
+This project is licensed under the [Apache 2.0 License](LICENSE).
