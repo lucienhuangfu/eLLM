@@ -79,7 +79,7 @@ The minimum viable prototype of eLLM is now complete. To validate its performanc
 | Cache (MB) | 504 (L3) | 60 (L2) |
 | Max memory capacity (TB) | 3 | 0.141 |
 | Quantity | 1 | 8 |
-| Total cost ($) | 17,000 | 220,000 |
+| Total cost ($) | 14,000 | 220,000 |
 
 ### Notes on the Experiments
 - The current focus is **benchmarking and systems performance evaluation**.
