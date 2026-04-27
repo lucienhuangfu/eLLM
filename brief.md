@@ -24,12 +24,13 @@ GitHub: https://github.com/lucienhuangfu/eLLM
 
 
 # v2
+eLLM: Run LLM Inference on CPUs Faster Than on GPUs
 
-Rethinking AI infrastructure beyond GPUs. Building eLLM, a CPU-only LLM inference framework. A single CPU server (Xeon) can outperform an 8-GPU H20 server in prefilling-heavy, long-context workloads.
+Rethinking AI infrastructure beyond GPUs. Building eLLM, a CPU-only LLM inference framework in Rust. A single CPU server (Xeon) can outperform an 8-GPU H20 server in prefilling-heavy, long-context workloads.
 - With its large memory capacity, eLLM can prefill the entire long prompt in a single pass, avoiding chunked execution and repeated parameter loading;
-- With its large cache, eLLM computes attention head by head, reducing repeated KV loads.
-GitHub: https://github.com/lucienhuangfu/eLLM
+- With its large cache, eLLM computes attention head by head, reducing repeated KV loads from memory.
 
+GitHub: https://github.com/lucienhuangfu/eLLM
 
 
 
