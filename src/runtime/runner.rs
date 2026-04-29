@@ -58,4 +58,77 @@ where
             temperature_list: temperature_list.into(),
         }
     }
+
+    pub fn start(self) {
+        let core_ids = core_affinity::get_core_ids().unwrap_or_default();
+        let thread_num = core_ids.len().max(1);
+
+        let operator_queue: Arc<[Operator<T>]> = self.operator_queue.into();
+        let temperature_list = self.temperature_list;
+
+        let barrier = Arc::new(Barrier::new(thread_num));
+        let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
+        let shared_scheduler = Arc::new(SyncUnsafeCell::new(self.batch_scheduler));
+
+        let mut handles = Vec::with_capacity(thread_num);
+
+        for thread_id in 0..thread_num {
+            let barrier = Arc::clone(&barrier);
+            let queue = Arc::clone(&operator_queue);
+            let temperature_list = Arc::clone(&temperature_list);
+            let shared_sizes = Arc::clone(&shared_sizes);
+            let shared_scheduler = Arc::clone(&shared_scheduler);
+            let core_id = core_ids.get(thread_id).copied();
+
+            let handle = thread::spawn(move || {
+                if let Some(core_id) = core_id {
+                    core_affinity::set_for_current(core_id);
+                }
+
+                let sizes_ptr = shared_sizes.get();
+                let scheduler_ptr = shared_scheduler.get();
+
+                loop {
+                    if thread_id == 0 {
+                        unsafe {
+                            let scheduler = &mut *scheduler_ptr;
+                            *sizes_ptr = scheduler.schedule_batch();
+                        }
+                    }
+
+                    barrier.wait();
+
+                    let (prefill_size, decode_size) = unsafe { *sizes_ptr };
+                    let (prefill_list, decode_list, batch_list) = unsafe {
+                        let scheduler = &mut *scheduler_ptr;
+                        (
+                            &scheduler.prefill_list,
+                            &scheduler.decode_list,
+                            &mut *scheduler.batch_list.get(),
+                        )
+                    };
+
+                    for operator in queue.iter() {
+                        operator.run(
+                            prefill_size,
+                            decode_size,
+                            thread_num,
+                            thread_id,
+                            prefill_list,
+                            decode_list,
+                            &temperature_list,
+                            batch_list,
+                        );
+                        barrier.wait();
+                    }
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            let _ = handle.join();
+        }
+    }
 }
