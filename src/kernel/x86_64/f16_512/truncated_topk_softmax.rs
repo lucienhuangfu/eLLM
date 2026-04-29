@@ -3,7 +3,7 @@ use std::f16;
 use std::ptr;
 
 use super::activation::exp512;
-use crate::kernel::common::heap::FixedMinHeap;
+use crate::common::heap::FixedMinHeap;
 
 // #[target_feature(enable = "avx512f", enable = "avx512fp16")]
 pub fn truncated_topk_softmax(
@@ -11,12 +11,13 @@ pub fn truncated_topk_softmax(
     input_values_ptr: *const f16,
     // [thread_num, topk_size]
     input_indices_ptr: *const usize,
+    temperature: f16,
     // [topk_size]
     output_values_ptr: *mut f16,
     // [topk_size]
     output_indices_ptr: *mut usize,
     // [1]
-    output_token_ptr: *mut usize,
+    // output_token_ptr: *mut usize,
     thread_num: usize,
     topk_size: usize,
 ) {
@@ -38,8 +39,9 @@ pub fn truncated_topk_softmax(
         ptr::copy_nonoverlapping(output_values_ptr, buffer.as_mut_ptr(), len);
 
         let max_broadcast = _mm512_set1_ph(max_val);
+        let inv_temperature = _mm512_set1_ph(temperature.recip());
         let chunk = _mm512_loadu_ph(buffer.as_ptr());
-        let shifted = _mm512_sub_ph(chunk, max_broadcast);
+        let shifted = _mm512_mul_ph(_mm512_sub_ph(chunk, max_broadcast), inv_temperature);
         let exp_chunk = exp512(shifted);
 
         let total_sum = _mm512_reduce_add_ph(exp_chunk);
@@ -50,7 +52,7 @@ pub fn truncated_topk_softmax(
         _mm512_storeu_ph(buffer.as_mut_ptr(), normalized);
         ptr::copy_nonoverlapping(buffer.as_ptr(), output_values_ptr, len);
 
-        ptr::write(output_token_ptr, *output_indices_ptr);
+        // ptr::write(output_token_ptr, *output_indices_ptr);
     }
 }
 
@@ -89,9 +91,10 @@ mod tests {
             truncated_topk_softmax(
                 values.as_ptr(),
                 indices.as_ptr(),
+                1.0 as f16,
                 out_vals.as_mut_ptr(),
                 out_idx.as_mut_ptr(),
-                &mut out_token,
+                // &mut out_token,
                 thread_num,
                 topk_size,
             );

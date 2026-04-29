@@ -1,4 +1,4 @@
-use crate::kernel::common::heap::FixedMinHeap;
+use crate::common::heap::FixedMinHeap;
 use crate::kernel::x86_64::f32_256::activation::exp256;
 use core::arch::x86_64::*;
 use std::ptr;
@@ -8,6 +8,7 @@ pub fn truncated_topk_softmax(
     input_values_ptr: *const f32,
     // [thread_num, topk_size]
     input_indices_ptr: *const usize,
+    temperature: f32,
     // [thread_num]
     // _sums_ptr: *const f32,
     // [topk_size]
@@ -15,7 +16,7 @@ pub fn truncated_topk_softmax(
     // [topk_size]
     output_indices_ptr: *mut usize,
     // [1]
-    output_token_ptr: *mut usize,
+    // output_token_ptr: *mut usize,
     thread_num: usize,
     topk_size: usize,
 ) {
@@ -38,10 +39,11 @@ pub fn truncated_topk_softmax(
 
     // let mut sum_vec = _mm256_setzero_ps();
     let max_broadcast = unsafe { _mm256_set1_ps(max_val) };
+    let inv_temperature = unsafe { _mm256_set1_ps(1.0f32 / temperature) };
     for offset in (0..len).step_by(8) {
         unsafe {
             let chunk = _mm256_loadu_ps(output_values_ptr.add(offset));
-            let shifted = _mm256_sub_ps(chunk, max_broadcast);
+            let shifted = _mm256_mul_ps(_mm256_sub_ps(chunk, max_broadcast), inv_temperature);
             let exp_chunk = exp256(shifted);
             _mm256_storeu_ps(output_values_ptr.add(offset), exp_chunk);
         }
@@ -61,7 +63,7 @@ pub fn truncated_topk_softmax(
         }
     }
 
-    unsafe { ptr::write(output_token_ptr, *output_indices_ptr) };
+    // unsafe { ptr::write(output_token_ptr, *output_indices_ptr) };
 }
 
 #[cfg(test)]
@@ -87,10 +89,11 @@ mod tests {
         truncated_topk_softmax(
             values.as_ptr(),
             indices.as_ptr(),
+            1.0f32,
             // sums.as_ptr(),
             out_vals.as_mut_ptr(),
             out_idx.as_mut_ptr(),
-            &mut out_token,
+            // &mut out_token,
             thread_num,
             topk_size,
         );

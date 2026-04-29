@@ -3,9 +3,9 @@
 
 use std::arch::x86_64::{
     _mm512_fmadd_ph,
-    _mm512_loadu_ph,   // ← 改这里
+    _mm512_loadu_ph, // ← 改这里
     _mm512_set1_ph,
-    _mm512_storeu_ph,  // ← 改这里
+    _mm512_storeu_ph, // ← 改这里
 };
 use std::f16;
 
@@ -103,7 +103,7 @@ mod tests {
     use std::slice;
 
     // 你们自己的对齐分配器
-    use crate::memory::allocator::allocate_init;
+    use crate::mem_mgr::allocator::allocate_init;
 
     fn approx_eq(a: f16, b: f16, tol: f32) -> bool {
         let da = a as f32;

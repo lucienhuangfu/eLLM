@@ -1,4 +1,4 @@
-use crate::kernel::common::heap::FixedMinHeap;
+use crate::common::heap::FixedMinHeap;
 use crate::kernel::x86_64::f16_512::activation::exp512;
 use crate::kernel::x86_64::f16_512::bitonic_sort::bitonic_sort_f16_desc;
 
@@ -59,8 +59,8 @@ pub unsafe fn get_topk(
         let chunk_take = topk.min(LANES);
         for i in 0..chunk_take {
             let val = chunk_vals[i];
-            let local_idx = chunk_idx[i] as usize;
-            let global_idx = chunk_start + local_idx;
+            let local_idx = chunk_idx[i];
+            let global_idx = chunk_start + local_idx as usize;
             heap.push(val, global_idx);
         }
 
@@ -120,6 +120,32 @@ unsafe fn softmax_stats_avx512_fp16(input_ptr: *const f16, len: usize) -> (f32, 
 }
 
 #[inline(always)]
+unsafe fn softmax_topk_only_inplace(out_values: *mut f16, topk: usize) {
+    debug_assert!(!out_values.is_null());
+    debug_assert!(topk > 0 && topk <= LANES);
+
+    let max_val = *out_values;
+    let mut lane_buf = [0.0f16; LANES];
+    for i in 0..topk {
+        lane_buf[i] = *out_values.add(i);
+    }
+
+    let values = _mm512_loadu_ph(lane_buf.as_ptr() as *const _);
+    let shifted = _mm512_sub_ph(values, _mm512_set1_ph(max_val as f16));
+    let exp_vals = exp512(shifted);
+    _mm512_storeu_ph(lane_buf.as_mut_ptr() as *mut _, exp_vals);
+
+    let mut sum = 0.0f32;
+    for i in 0..topk {
+        sum += lane_buf[i] as f32;
+    }
+    let scale = (1.0f32 / sum.max(f32::MIN_POSITIVE)) as f16;
+    for i in 0..topk {
+        *out_values.add(i) = lane_buf[i] * scale;
+    }
+}
+
+#[inline(always)]
 unsafe fn softmax_topk_inplace(out_values: *mut f16, topk: usize, max_val: f32, denom: f32) {
     debug_assert!(!out_values.is_null());
     debug_assert!(topk > 0 && topk <= LANES);
@@ -171,18 +197,11 @@ pub fn experts_topk_softmax_norm(
             num_experts,
             num_topk,
         );
-        let (max_val, denom) = softmax_stats_avx512_fp16(input_ptr, num_experts);
-        softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
-
         if norm_topk_prob {
-            let mut sum = 0.0;
-            for i in 0..num_topk {
-                sum += *topk_values_ptr.add(i);
-            }
-            let scale = sum.recip();
-            for i in 0..num_topk {
-                *topk_values_ptr.add(i) *= scale;
-            }
+            softmax_topk_only_inplace(topk_values_ptr, num_topk);
+        } else {
+            let (max_val, denom) = softmax_stats_avx512_fp16(input_ptr, num_experts);
+            softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
         }
 
         for i in 0..num_topk {

@@ -6,7 +6,7 @@ use std::arch::x86_64::{
 };
 use std::f16;
 
-use crate::init::matmul_params::MatMulParams;
+use crate::common::matmul_params::MatMulParams;
 use crate::kernel::x86_64::f16_512::activation::sigmoid512;
 
 /// 逐 kc 累加：把 A×W_gate 与 A×W_up 的部分和累加到各自的 3×32 累加缓冲。
@@ -122,8 +122,6 @@ mod tests {
     use approx::assert_relative_eq;
     use std::arch::is_x86_feature_detected;
 
-
-
     // 用例 1：单次 kc=K，A/W_gate/W_up 全 1
     // 期望：G = K, U = K => C = SiLU(K) * K
     #[test]
@@ -197,7 +195,7 @@ mod tests {
             let expected: Vec<f16> = (0..mr * ldc_out).map(|_| expected_val as f16).collect();
 
             for (val_c, val_exp) in c.iter().zip(expected.iter()) {
-                assert_relative_eq!((*val_c as f32) , (*val_exp as f32), epsilon = 1e-2);
+                assert_relative_eq!((*val_c as f32), (*val_exp as f32), epsilon = 1e-2);
             }
         }
     }
@@ -283,7 +281,7 @@ mod tests {
             let expected: Vec<f32> = (0..mr * ldc_out).map(|_| expected_val).collect();
 
             for (val_c, val_exp) in c.iter().zip(expected.iter()) {
-                assert_relative_eq!((*val_c as f32) , *val_exp, epsilon = 5e-2);
+                assert_relative_eq!((*val_c as f32), *val_exp, epsilon = 5e-2);
             }
         }
     }
