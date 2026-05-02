@@ -50,7 +50,6 @@ where
         m_max: usize,
         n_max: usize,
         k_max: usize,
-        _decode_only_flag: bool,
     ) -> Self {
         let kc = params.column_step_macro.max(1);
         let nr = params.b_row_step_micro.max(1);
@@ -149,11 +148,11 @@ where
 
             // 你当前的块内循环要求 m_blk % mr == 0，
             // 为了保证这一点且不引入 tile 内 tail 逻辑，要求 MB 是 MR 的倍数
-            debug_assert!(mb % mr == 0);
+            assert!(mb % mr == 0);
 
             // 其他对齐断言：你现在 pack/微核都依赖这些
-            debug_assert!(n % nr == 0);
-            debug_assert!(k % kc == 0);
+            assert!(n % nr == 0);
+            assert!(k % kc == 0);
 
             debug_assert!(thread_num >= 1);
             debug_assert!(thread_id < thread_num);
@@ -172,34 +171,37 @@ where
                 for t in tb..te {
                     let tm = t / tiles_n;
                     let tn = t % tiles_n;
-
                     let m0 = tm * mb;
                     let n0 = tn * nb;
-
-                    // 注意：m_blk 基于 m_pad
                     let m_blk = (m_pad - m0).min(mb);
                     let n_blk = (n - n0).min(nb);
 
                     debug_assert!(m_blk % mr == 0 && n_blk % nr == 0);
-
-                    let mut k0 = 0;
-                    while k0 < k {
+                    // Loop order: (mi, nt) outermost so we can zero each output
+                    // micro-tile once before accumulating across all k-panels.
+                    let mut mi = 0;
+                    while mi < m_blk {
                         let mut nt = 0;
                         while nt < n_blk {
-                            let b_panel_ptr = self.packed_panel_ptr(n0 + nt, k0);
-
-                            let mut mi = 0;
-                            while mi < m_blk {
+                            let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
+                            // Zero the mr×nr output tile before accumulation.    
+                            for row in 0..mr {
+                                for col in 0..nr {
+                                    *c_tile.add(row * ldc + col) = T::default();
+                                }
+                            }
+                        // Accumulate across k-panels into the now-clean tile.
+                        let mut k0 = 0;
+                            while k0 < k {
                                 let a_tile = a_base.add((m0 + mi) * lda + k0);
-                                let c_tile = c_base.add((m0 + mi) * ldc + (n0 + nt));
-
+                                let b_panel_ptr = self.packed_panel_ptr(n0 + nt, k0);
                                 self.compute(a_tile, b_panel_ptr, c_tile);
-                                mi += mr;
+                                k0 += kc;
                             }
 
                             nt += nr;
                         }
-                        k0 += kc;
+                        mi += mr;
                     }
                 }
             }
