@@ -162,16 +162,6 @@ impl MapTrait<f16> for LookupRMSMap<f16> {
     }
 }
 
-// Specialized implementation of MapTrait for f32
-impl MapTrait<f32> for LookupRMSMap<f32> {
-    fn compute(&self, input_ptr: *const f32, output_ptr: *mut f32, length: usize) {
-        kernel::scalar::rms_norm::rms_norm(
-            input_ptr, output_ptr, length, // self.weight.ptr,
-            self.eps,
-        );
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;

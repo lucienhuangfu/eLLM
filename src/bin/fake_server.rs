@@ -26,19 +26,15 @@ fn build_fake_runner(
     batch_size: usize,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
 ) -> ServingRunner<f16> {
-    let thread_num = core_affinity::get_core_ids().map(|ids| ids.len()).unwrap_or(1);
+    let thread_num = core_affinity::get_core_ids()
+        .map(|ids| ids.len())
+        .unwrap_or(1);
 
     let mut batch_scheduler = BatchScheduler::new(sequence_length, batch_size, thread_num);
     batch_scheduler.batch_list = batch_states;
 
     let operator_queue = vec![Operator::FakeEcho(FakeEcho)];
     ServingRunner::new(operator_queue, batch_scheduler)
-}
-
-fn spawn_fake_runner(runner: ServingRunner<f16>) {
-    std::thread::spawn(move || {
-        runner.start();
-    });
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -69,7 +65,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_states = Arc::new(SharedMut::new(build_sequence_state(batch_size)));
     let runner = build_fake_runner(sequence_length, batch_size, batch_states.clone());
 
-    spawn_fake_runner(runner);
+    std::thread::spawn(move || {
+        runner.start();
+    });
 
     serving::run(batch_sequences, batch_states).await?;
     Ok(())

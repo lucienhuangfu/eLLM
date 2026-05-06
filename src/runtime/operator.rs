@@ -179,7 +179,7 @@ where
                 run_simple!(operator);
             }
             Self::FakeEcho(operator) => {
-                operator.run(batch_list, thread_id);
+                operator.run(prefill_list, decode_list, batch_list, thread_id);
             }
         }
     }

@@ -2,6 +2,7 @@
 ## eLLM Makes CPUs (Xeon/EPYC) the Best Inference AI Chips
 👉 Project home: [https://github.com/lucienhuangfu/eLLM](https://github.com/lucienhuangfu/eLLM)  
 🌐 Languages: [English](README.md) | [简体中文](README.zh-CN.md)  
+📚 Docs: [Documentation](docs/index.md)  
 🎓 We currently have 1-2 trainee openings and welcome applications from computer science students  
 💼 We are committed to open source and AI democratization, and welcome collaboration with industry partners  
 📧 Contact: **lucienhuangfu@outlook.com**
