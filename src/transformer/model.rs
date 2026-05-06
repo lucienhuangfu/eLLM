@@ -272,7 +272,6 @@ mod test {
         let mut batch_list = build_batch_list(batch_size);
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
-        let temperature = vec![1.0f32; batch_size];
 
         let (_output_indices, _output_tensor) = model.forward(sequences);
 
@@ -285,7 +284,6 @@ mod test {
                     thread_id,
                     &prefill_list,
                     &decode_list,
-                    &temperature,
                     &mut batch_list,
                 );
             }
@@ -341,7 +339,6 @@ mod test {
         let mut batch_list = build_batch_list(batch_size);
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
-        let temperature = vec![1.0 as f16; batch_size];
 
         let (_output_indices, _output_tensor) = model.forward(sequences);
 
@@ -354,7 +351,6 @@ mod test {
                     thread_id,
                     &prefill_list,
                     &decode_list,
-                    &temperature,
                     &mut batch_list,
                 );
             }

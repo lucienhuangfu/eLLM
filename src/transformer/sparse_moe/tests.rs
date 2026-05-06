@@ -51,7 +51,6 @@ fn run_queue(output: &Tensor<f16>, batch_size: usize, thread_num: usize) {
                 tid,
                 &[],
                 &[],
-                &[],
                 &mut Vec::new(),
             );
         }
