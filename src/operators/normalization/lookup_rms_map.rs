@@ -57,16 +57,21 @@ impl<T: Sqrt> LookupRMSMap<T> {
         decode_size: usize,
         thread_num: usize,
         thread_id: usize,
-        prefill_list: &[SequenceSlice],
+        prefill_list: &[Vec<SequenceSlice>],
         decode_list: &[SequenceSlice],
     ) {
         if prefill_size > 0 {
+            let prefill_slices = prefill_list
+                .get(thread_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+
             unsafe {
                 let sequences_ptr = self.sequences_ptr.ptr;
                 let output_normal_ptr = self.output_normal_ptr.ptr;
                 let output_hidden_ptr = self.output_hidden_ptr.ptr;
 
-                for slice in prefill_list {
+                for slice in prefill_slices {
                     let batch_index = slice.batch_index;
                     let position_start = slice.sequence_index;
                     let token_start = slice.token_start_index;
@@ -258,7 +263,7 @@ mod test {
                 0,
                 thread_num,
                 i,
-                &prefill_lists[i],
+                &prefill_lists,
                 &decode_lists[i],
             );
         }

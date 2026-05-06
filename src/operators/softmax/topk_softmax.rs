@@ -7,6 +7,7 @@ use crate::common::num_traits::FromNumber;
 use crate::common::num_traits::Sqrt;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::common::sequence_slice::SequenceSlice;
+use crate::operators::assign::assign;
 use crate::kernel;
 use crate::operators::traits::TopKSoftmaxTrait;
 use crate::runtime::{Phase, SequenceState};
@@ -61,13 +62,18 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
         prefill_size: usize,
         decode_size: usize,
         thread_num: usize,
-        _thread_id: usize,
+        thread_id: usize,
+        _prefill_list: &[Vec<SequenceSlice>],
         decode_list: &[SequenceSlice],
         batch_list: &mut Vec<SequenceState>,
     ) {
         if prefill_size == 0 && decode_size == 0 {
             return;
         }
+
+        let Some((begin, end)) = assign(decode_list.len(), thread_num, thread_id) else {
+            return;
+        };
 
         unsafe {
             let input_indices_ptr = self.input_indices_ptr.ptr;
@@ -76,7 +82,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
             let output_values_ptr = self.output_values_ptr.ptr;
             let output_sequences_ptr = self.output_sequences.ptr;
 
-            for slice in decode_list {
+            for slice in &decode_list[begin..end] {
                 let batch_index = slice.batch_index;
                 let slice_length = slice.length;
                 if slice_length == 0 || batch_index >= batch_list.len() {
@@ -299,6 +305,7 @@ mod test {
                 batch_size,
                 thread_num,
                 i,
+                &[],
                 &decode_lists[i],
                 &mut batch_list,
             );
@@ -394,6 +401,7 @@ mod test {
             1,
             thread_num,
             0,
+            &[],
             &decode_list,
             &mut batch_list,
         );
@@ -457,6 +465,7 @@ mod test {
             1,
             thread_num,
             0,
+            &[],
             &decode_list,
             &mut batch_list,
         );
@@ -519,6 +528,7 @@ mod test {
             1,
             thread_num,
             0,
+            &[],
             &decode_list,
             &mut batch_list,
         );
@@ -588,6 +598,7 @@ mod test {
             1,
             thread_num,
             0,
+            &[],
             &decode_list,
             &mut batch_list,
         );
@@ -646,6 +657,7 @@ mod test {
             0,
             thread_num,
             0,
+            &[],
             &decode_list,
             &mut batch_list,
         );
@@ -739,6 +751,7 @@ mod test {
                 batch_size,
                 thread_num,
                 i,
+                &[],
                 &decode_lists[i],
                 &mut batch_list,
             );

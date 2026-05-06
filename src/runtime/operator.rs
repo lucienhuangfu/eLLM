@@ -2,7 +2,7 @@ use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::common::sequence_slice::SequenceSlice;
-use crate::operators::assign::assign;
+use crate::operators::fake_echo::FakeEcho;
 use crate::runtime::SequenceState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
@@ -28,22 +28,6 @@ use crate::operators::transform::{AddRMSZipMap, RMSMap};
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 
-#[inline]
-fn thread_slices<'a>(list: &'a [Vec<SequenceSlice>], thread_id: usize) -> &'a [SequenceSlice] {
-    list.get(thread_id).map(Vec::as_slice).unwrap_or(&[])
-}
-
-#[inline]
-fn assigned_decode_slices<'a>(
-    list: &'a [SequenceSlice],
-    thread_num: usize,
-    thread_id: usize,
-) -> &'a [SequenceSlice] {
-    assign(list.len(), thread_num, thread_id)
-        .map(|(begin, end)| &list[begin..end])
-        .unwrap_or(&[])
-}
-
 #[derive(Clone)]
 pub enum Operator<T>
 // where
@@ -68,6 +52,7 @@ pub enum Operator<T>
     MatMulTopK(MatMulTopK<T>),
     RMSMap(RMSMap<T>),
     SigmoidMap(SigmoidMap<T>),
+    FakeEcho(FakeEcho),
     // SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
     TopKSoftmax(TopKSoftmax<T>),
@@ -97,9 +82,6 @@ where
         decode_list: &[SequenceSlice],
         batch_list: &mut Vec<SequenceState>,
     ) {
-        let prefill_slices = thread_slices(prefill_list, thread_id);
-        let decode_slices = assigned_decode_slices(decode_list, cpu_num, thread_id);
-
         macro_rules! run_simple {
             ($op:expr) => {
                 $op.run(prefill_size, decode_size, cpu_num, thread_id)
@@ -145,7 +127,7 @@ where
                     decode_size,
                     cpu_num,
                     thread_id,
-                    prefill_slices,
+                    prefill_list,
                     decode_list,
                 );
             }
@@ -179,7 +161,8 @@ where
                     decode_size,
                     cpu_num,
                     thread_id,
-                    decode_slices,
+                    prefill_list,
+                    decode_list,
                     batch_list,
                 );
             }
@@ -194,6 +177,9 @@ where
             }*/
             Self::SigmoidMap(operator) => {
                 run_simple!(operator);
+            }
+            Self::FakeEcho(operator) => {
+                operator.run(batch_list, thread_id);
             }
         }
     }
@@ -364,6 +350,7 @@ mod test {
             }
             decode_lists.push(slices);
         }
+        let decode_list = decode_lists.iter().flatten().cloned().collect::<Vec<_>>();
 
         let operator = Operator::TopKSoftmax(TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
@@ -384,7 +371,8 @@ mod test {
                     decode_size,
                     thread_num,
                     i,
-                    &decode_lists[i],
+                    &[],
+                    &decode_list,
                     &mut batch_list,
                 );
             }

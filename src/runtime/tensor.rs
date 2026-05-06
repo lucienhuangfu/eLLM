@@ -1090,6 +1090,7 @@ mod test {
             }
             decode_lists.push(slices);
         }
+        let decode_list = decode_lists.iter().flatten().cloned().collect::<Vec<_>>();
 
         unsafe {
             value_tensor
@@ -1114,7 +1115,8 @@ mod test {
                         1,
                         thread_num,
                         i,
-                        &decode_lists[i],
+                        &[],
+                        &decode_list,
                         &mut batch_list,
                     );
                 } else {
@@ -1245,6 +1247,7 @@ mod test {
             }
             decode_lists.push(slices);
         }
+        let decode_list = decode_lists.iter().flatten().cloned().collect::<Vec<_>>();
 
         unsafe {
             value_tensor
@@ -1269,7 +1272,8 @@ mod test {
                         1,
                         thread_num,
                         i,
-                        &decode_lists[i],
+                        &[],
+                        &decode_list,
                         &mut batch_list,
                     );
                 } else {

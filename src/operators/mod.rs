@@ -1,5 +1,6 @@
 pub mod assign;
 pub mod attention;
+pub mod fake_echo;
 
 pub mod elementwise {
     pub mod add_zip;
@@ -40,6 +41,10 @@ pub mod matmul {
 
 pub mod movement {
     pub use super::left_vector::LiftVector;
+}
+
+pub mod testing {
+    pub use super::fake_echo::FakeEcho;
 }
 
 pub mod normalization {
