@@ -2,7 +2,7 @@ use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::common::sequence_slice::SequenceSlice;
-use crate::operators::assign::assign;
+use crate::operators::fake_echo::FakeEcho;
 use crate::runtime::SequenceState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
@@ -28,22 +28,6 @@ use crate::operators::transform::{AddRMSZipMap, RMSMap};
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 
-#[inline]
-fn thread_slices<'a>(list: &'a [Vec<SequenceSlice>], thread_id: usize) -> &'a [SequenceSlice] {
-    list.get(thread_id).map(Vec::as_slice).unwrap_or(&[])
-}
-
-#[inline]
-fn assigned_decode_slices<'a>(
-    list: &'a [SequenceSlice],
-    thread_num: usize,
-    thread_id: usize,
-) -> &'a [SequenceSlice] {
-    assign(list.len(), thread_num, thread_id)
-        .map(|(begin, end)| &list[begin..end])
-        .unwrap_or(&[])
-}
-
 #[derive(Clone)]
 pub enum Operator<T>
 // where
@@ -68,6 +52,7 @@ pub enum Operator<T>
     MatMulTopK(MatMulTopK<T>),
     RMSMap(RMSMap<T>),
     SigmoidMap(SigmoidMap<T>),
+    FakeEcho(FakeEcho),
     // SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
     TopKSoftmax(TopKSoftmax<T>),
@@ -95,12 +80,8 @@ where
         thread_id: usize,
         prefill_list: &[Vec<SequenceSlice>],
         decode_list: &[SequenceSlice],
-        temperature: &[T],
         batch_list: &mut Vec<SequenceState>,
     ) {
-        let prefill_slices = thread_slices(prefill_list, thread_id);
-        let decode_slices = assigned_decode_slices(decode_list, cpu_num, thread_id);
-
         macro_rules! run_simple {
             ($op:expr) => {
                 $op.run(prefill_size, decode_size, cpu_num, thread_id)
@@ -146,7 +127,7 @@ where
                     decode_size,
                     cpu_num,
                     thread_id,
-                    prefill_slices,
+                    prefill_list,
                     decode_list,
                 );
             }
@@ -180,8 +161,8 @@ where
                     decode_size,
                     cpu_num,
                     thread_id,
-                    decode_slices,
-                    temperature,
+                    prefill_list,
+                    decode_list,
                     batch_list,
                 );
             }
@@ -196,6 +177,9 @@ where
             }*/
             Self::SigmoidMap(operator) => {
                 run_simple!(operator);
+            }
+            Self::FakeEcho(operator) => {
+                operator.run(prefill_list, decode_list, batch_list, thread_id);
             }
         }
     }
@@ -271,7 +255,6 @@ mod test {
             thread_id,
             &[],
             &[],
-            &[],
             &mut Vec::new(),
         );
 
@@ -336,7 +319,6 @@ mod test {
         let mut output_values = vec![0.0f32; batch_size * topk_size];
         let mut output_indices = vec![0usize; batch_size * topk_size];
         let mut output_sequences = vec![0usize; batch_size];
-        let temperatures = vec![1.0f32; batch_size];
         let eos_id = 0usize;
 
         let batch_records: Vec<SequenceState> = (0..batch_size)
@@ -368,6 +350,7 @@ mod test {
             }
             decode_lists.push(slices);
         }
+        let decode_list = decode_lists.iter().flatten().cloned().collect::<Vec<_>>();
 
         let operator = Operator::TopKSoftmax(TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
@@ -388,8 +371,8 @@ mod test {
                     decode_size,
                     thread_num,
                     i,
-                    &decode_lists[i],
-                    &temperatures,
+                    &[],
+                    &decode_list,
                     &mut batch_list,
                 );
             }
@@ -494,7 +477,6 @@ mod test {
             0,
             &[],
             &[],
-            &[],
             &mut Vec::new(),
         );
 
@@ -524,7 +506,6 @@ mod test {
                 decode_size,
                 thread_num,
                 tid,
-                &[],
                 &[],
                 &[],
                 &mut Vec::new(),
@@ -625,7 +606,7 @@ mod test {
             let op = Operator::MatMulTopK(runner);
 
             for tid in 0..used_cpu {
-                op.run(M, 1, used_cpu, tid, &[], &[], &[], &mut Vec::new());
+                op.run(M, 1, used_cpu, tid, &[], &[], &mut Vec::new());
             }
 
             for row in 0..M {
@@ -721,7 +702,7 @@ mod test {
             let op = Operator::MatMulTopK(runner);
 
             for tid in 0..used_cpu {
-                op.run(M, 1, used_cpu, tid, &[], &[], &[], &mut Vec::new());
+                op.run(M, 1, used_cpu, tid, &[], &[], &mut Vec::new());
             }
 
             for row in 0..M {
@@ -809,7 +790,7 @@ mod test {
 
     fn run_operator_all_threads(op: &Operator<f16>, batch: usize, cpu_num: usize) {
         for tid in 0..cpu_num {
-            op.run(batch, 1, cpu_num, tid, &[], &[], &[], &mut Vec::new());
+            op.run(batch, 1, cpu_num, tid, &[], &[], &mut Vec::new());
         }
     }
 
@@ -1593,7 +1574,6 @@ mod test {
                     tid,
                     &[],
                     &[],
-                    &[],
                     &mut Vec::new(),
                 );
             }
@@ -1693,7 +1673,6 @@ mod test {
             0,
             &[],
             &[],
-            &[],
             &mut Vec::new(),
         );
 
@@ -1723,7 +1702,6 @@ mod test {
                 decode_size,
                 thread_num,
                 tid,
-                &[],
                 &[],
                 &[],
                 &mut Vec::new(),
@@ -1803,16 +1781,7 @@ mod test {
         ];
         let thread_num: usize = cpu_num;
         for i in 0..thread_num {
-            operator.run(
-                prefill_size,
-                decode_size,
-                cpu_num,
-                i,
-                &[],
-                &[],
-                &[],
-                &mut Vec::new(),
-            );
+            operator.run(prefill_size, decode_size, cpu_num, i, &[], &[], &mut Vec::new());
         }
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
         println!("{:?}", output_data);
@@ -1849,7 +1818,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &[], &mut Vec::new());
+            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &mut Vec::new());
         }
 
         assert_ulps_eq!(output_data[0..180], results[0..180], max_ulps = 4);
@@ -1903,7 +1872,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &[], &mut Vec::new());
+            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &mut Vec::new());
         }
 
         assert_eq!(output_data[0..34], expected);
@@ -1961,7 +1930,7 @@ mod test {
         ));
 
         for i in 0..thread_num {
-            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &[], &mut Vec::new());
+            operator.run(prefill_size, decode_size, thread_num, i, &[], &[], &mut Vec::new());
         }
         let result = vec![
             1.9444659948349,

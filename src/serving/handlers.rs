@@ -44,7 +44,7 @@ pub(super) async fn chat_completions(
 
     notifier.notified().await;
 
-    let generated_text = state.batch_list.with(|batch_list| {
+    let generated_text = state.batch_states.with(|batch_list| {
         state.batch_sequences.with(|batch_sequences| {
             let record = &batch_list[slot_index];
             batch_sequences.decode_generated_text(slot_index, record)
@@ -94,7 +94,7 @@ async fn assign_slot_with_messages(
         .map(|msg| (msg.role.as_str(), msg.content.as_str()))
         .collect::<Vec<_>>();
 
-    let write_result = state.batch_list.with_mut(|batch_list| {
+    let write_result = state.batch_states.with_mut(|batch_list| {
         state.batch_sequences.with_mut(|batch_sequences| {
             let record = &mut batch_list[slot_index];
             if !matches!(record.phase, Phase::Start) {
@@ -134,7 +134,7 @@ async fn assign_slot_with_messages(
 }
 
 async fn reclaim_slot(state: &AppState, slot_index: usize, release_permit: bool) {
-    state.batch_list.with_mut(|batch_list| {
+    state.batch_states.with_mut(|batch_list| {
         if let Some(record) = batch_list.get_mut(slot_index) {
             record.sequence_index = usize::MAX;
             record.kv_index = usize::MAX;

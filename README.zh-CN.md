@@ -2,6 +2,7 @@
 ## eLLM：让 CPU（Xeon/EPYC）成为 AI 推理芯片的首选
 👉 项目主页：[https://github.com/lucienhuangfu/eLLM](https://github.com/lucienhuangfu/eLLM)  
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)  
+📚 文档：[Documentation](docs/index.md)  
 🎓 目前仅开放 1–2 个 Trainee 名额，欢迎计算机专业在校生报名  
 💼 我们致力于推动开源与 AI 民主化，期待与产业携手合作  
 📧 联系方式：**lucienhuangfu@outlook.com**

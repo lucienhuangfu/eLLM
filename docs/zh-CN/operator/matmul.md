@@ -360,7 +360,7 @@ new()
 
 对应文件是：
 
-- [`src/operators/matmul/matmul.rs`](../src/operators/matmul/matmul.rs)
+- [`src/operators/matmul/matmul.rs`](../../../src/operators/matmul/matmul.rs)
 
 这个结构的关键点有两个：
 
@@ -384,7 +384,7 @@ C = residual + A × B
 
 对应文件是：
 
-- [`src/operators/matmul/matmul_add.rs`](../src/operators/matmul/matmul_add.rs)
+- [`src/operators/matmul/matmul_add.rs`](../../../src/operators/matmul/matmul_add.rs)
 
 ## 6.3 `MatMulSigmoid`
 
@@ -412,7 +412,7 @@ output = sigmoid(acc)
 
 对应代码在：
 
-- [`src/operators/matmul/matmul_sigmoid.rs`](../src/operators/matmul/matmul_sigmoid.rs)
+- [`src/operators/matmul/matmul_sigmoid.rs`](../../../src/operators/matmul/matmul_sigmoid.rs)
 
 这里还要注意一点：`b_panel_pool` 和 `acc_pool` 解决的是两类不同问题。
 
@@ -440,9 +440,9 @@ output = sigmoid(acc)
 
 真正的分块计算逻辑不在 operator 层，而在 kernel 层：
 
-- [`src/kernel/scalar/matmul_block.rs`](../src/kernel/scalar/matmul_block.rs)
-- [`src/kernel/scalar/block_matmul_sigmoid.rs`](../src/kernel/scalar/block_matmul_sigmoid.rs)
-- [`src/kernel/x86_64/f16_512/matmul_block.rs`](../src/kernel/x86_64/f16_512/matmul_block.rs)
+- [`src/kernel/scalar/matmul_block.rs`](../../../src/kernel/scalar/matmul_block.rs)
+- [`src/kernel/scalar/block_matmul_sigmoid.rs`](../../../src/kernel/scalar/block_matmul_sigmoid.rs)
+- [`src/kernel/x86_64/f16_512/matmul_block.rs`](../../../src/kernel/x86_64/f16_512/matmul_block.rs)
 
 它们分别负责：
 

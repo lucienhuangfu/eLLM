@@ -57,16 +57,21 @@ impl<T: Sqrt> LookupRMSMap<T> {
         decode_size: usize,
         thread_num: usize,
         thread_id: usize,
-        prefill_list: &[SequenceSlice],
+        prefill_list: &[Vec<SequenceSlice>],
         decode_list: &[SequenceSlice],
     ) {
         if prefill_size > 0 {
+            let prefill_slices = prefill_list
+                .get(thread_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+
             unsafe {
                 let sequences_ptr = self.sequences_ptr.ptr;
                 let output_normal_ptr = self.output_normal_ptr.ptr;
                 let output_hidden_ptr = self.output_hidden_ptr.ptr;
 
-                for slice in prefill_list {
+                for slice in prefill_slices {
                     let batch_index = slice.batch_index;
                     let position_start = slice.sequence_index;
                     let token_start = slice.token_start_index;
@@ -154,16 +159,6 @@ impl MapTrait<f16> for LookupRMSMap<f16> {
 
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::scalar::rms_norm::rms_norm(input_ptr, output_ptr, length, self.eps);
-    }
-}
-
-// Specialized implementation of MapTrait for f32
-impl MapTrait<f32> for LookupRMSMap<f32> {
-    fn compute(&self, input_ptr: *const f32, output_ptr: *mut f32, length: usize) {
-        kernel::scalar::rms_norm::rms_norm(
-            input_ptr, output_ptr, length, // self.weight.ptr,
-            self.eps,
-        );
     }
 }
 
@@ -258,7 +253,7 @@ mod test {
                 0,
                 thread_num,
                 i,
-                &prefill_lists[i],
+                &prefill_lists,
                 &decode_lists[i],
             );
         }

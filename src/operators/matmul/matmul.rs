@@ -344,6 +344,7 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 
@@ -411,6 +412,7 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 
@@ -478,6 +480,7 @@ mod tests {
                 M_MAX, // m_max=9
                 N,
                 K,
+                false,
             )
         };
 

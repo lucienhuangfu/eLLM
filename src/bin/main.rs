@@ -74,12 +74,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_output_indices, _output_tensor) = model.forward(sequences);
 
     let thread_num = core_affinity::get_core_ids().unwrap().len();
-    let mut temperature_list = Vec::with_capacity(batch_size);
-    temperature_list.resize(batch_size, 1.0f16);
-    for (temperature, value) in temperature_list.iter_mut().zip([0.7f16, 0.9f16, 1.0f16]) {
-        *temperature = value;
-    }
-
     let mut batch_scheduler: BatchScheduler =
         BatchScheduler::new(sequence_length, batch_size, thread_num);
     let mut batch_list = Vec::with_capacity(batch_size);
@@ -92,11 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     batch_scheduler.batch_list = Arc::new(SharedMut::new(batch_list));
 
-    let runner = ServingRunner::with_temperature_list(
-        model.ctx.take_operator_queue(),
-        batch_scheduler,
-        temperature_list,
-    );
+    let runner = ServingRunner::new(model.ctx.take_operator_queue(), batch_scheduler);
     runner.start();
     Ok(())
 }

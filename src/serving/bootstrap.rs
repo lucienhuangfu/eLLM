@@ -11,17 +11,17 @@ use crate::runtime::{Phase, SequenceState};
 #[derive(Clone)]
 pub(super) struct AppState {
     pub(super) batch_sequences: Arc<SharedMut<BatchSequence>>,
-    pub(super) batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+    pub(super) batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     pub(super) free_slots: Arc<Mutex<VecDeque<usize>>>,
     pub(super) available_slots: Arc<Semaphore>,
 }
 
 pub(super) fn build_app_state(
     batch_sequences: Arc<SharedMut<BatchSequence>>,
-    batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+    batch_states: Arc<SharedMut<Vec<SequenceState>>>,
 ) -> AppState {
-    let initial_free_slots: VecDeque<usize> = batch_list.with(|batch_list_ref| {
-        batch_list_ref
+    let initial_free_slots: VecDeque<usize> = batch_states.with(|batch_states_ref| {
+        batch_states_ref
             .iter()
             .enumerate()
             .filter_map(|(i, record)| (record.phase == Phase::Start).then_some(i))
@@ -31,7 +31,7 @@ pub(super) fn build_app_state(
 
     AppState {
         batch_sequences,
-        batch_list,
+        batch_states,
         free_slots: Arc::new(Mutex::new(initial_free_slots)),
         available_slots: Arc::new(Semaphore::new(initial_permits)),
     }

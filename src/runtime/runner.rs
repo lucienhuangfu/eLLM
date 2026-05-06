@@ -20,7 +20,6 @@ use crate::runtime::BatchScheduler;
 pub struct ServingRunner<T> {
     operator_queue: Vec<Operator<T>>,
     batch_scheduler: BatchScheduler,
-    temperature_list: Arc<[T]>,
 }
 
 impl<T> ServingRunner<T>
@@ -43,19 +42,6 @@ where
         Self {
             operator_queue,
             batch_scheduler,
-            temperature_list: Vec::<T>::new().into(),
-        }
-    }
-
-    pub fn with_temperature_list(
-        operator_queue: Vec<Operator<T>>,
-        batch_scheduler: BatchScheduler,
-        temperature_list: Vec<T>,
-    ) -> Self {
-        Self {
-            operator_queue,
-            batch_scheduler,
-            temperature_list: temperature_list.into(),
         }
     }
 
@@ -64,7 +50,6 @@ where
         let thread_num = core_ids.len().max(1);
 
         let operator_queue: Arc<[Operator<T>]> = self.operator_queue.into();
-        let temperature_list = self.temperature_list;
 
         let barrier = Arc::new(Barrier::new(thread_num));
         let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
@@ -75,7 +60,6 @@ where
         for thread_id in 0..thread_num {
             let barrier = Arc::clone(&barrier);
             let queue = Arc::clone(&operator_queue);
-            let temperature_list = Arc::clone(&temperature_list);
             let shared_sizes = Arc::clone(&shared_sizes);
             let shared_scheduler = Arc::clone(&shared_scheduler);
             let core_id = core_ids.get(thread_id).copied();
@@ -116,7 +100,6 @@ where
                             thread_id,
                             prefill_list,
                             decode_list,
-                            &temperature_list,
                             batch_list,
                         );
                         barrier.wait();
