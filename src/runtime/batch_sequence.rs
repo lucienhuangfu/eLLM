@@ -1,19 +1,24 @@
 use std::sync::Arc;
 use tiktoken_rs::CoreBPE;
 
+use crate::common::num_traits::FromNumber;
 use crate::runtime::chat_template::ChatTemplate;
 use crate::runtime::tokenizer_loader::load_tiktoken;
 use crate::runtime::SequenceState;
 
-pub struct BatchSequence {
+pub struct BatchSequence<T> {
     pub sequences: *mut usize,
+    pub batch_temperature: Vec<T>,
     pub row_size: usize,
     pub col_size: usize,
     pub tokenizer: Arc<CoreBPE>,
     pub chat_template: Arc<ChatTemplate>,
 }
 
-impl BatchSequence {
+impl<T> BatchSequence<T>
+where
+    T: Copy + FromNumber,
+{
     pub fn new(
         sequences: *mut usize,
         row_size: usize,
@@ -30,6 +35,7 @@ impl BatchSequence {
 
         Ok(Self {
             sequences,
+            batch_temperature: vec![T::from_f32(1.0); row_size],
             row_size,
             col_size,
             tokenizer,
@@ -41,6 +47,7 @@ impl BatchSequence {
         &mut self,
         slot_index: usize,
         messages: &[(&str, &str)],
+        temperature: f32,
     ) -> Result<usize, String> {
         let prompt = self
             .chat_template
@@ -58,9 +65,11 @@ impl BatchSequence {
             }
         }
 
+        self.batch_temperature[slot_index] = T::from_f32(temperature);
+
         println!(
-            "Prompt 已通过 tiktoken 写入 BatchSequence Slot {}, 长度: {}",
-            slot_index, write_len
+            "Prompt 已通过 tiktoken 写入 BatchSequence Slot {}, 长度: {}, temperature: {}",
+            slot_index, write_len, temperature
         );
         Ok(write_len)
     }
@@ -87,8 +96,8 @@ impl BatchSequence {
     }
 }
 
-unsafe impl Send for BatchSequence {}
-unsafe impl Sync for BatchSequence {}
+unsafe impl<T> Send for BatchSequence<T> where T: Send + Copy + FromNumber {}
+unsafe impl<T> Sync for BatchSequence<T> where T: Sync + Copy + FromNumber {}
 
 #[cfg(test)]
 mod tests {
@@ -102,7 +111,7 @@ mod tests {
     #[test]
     fn test_write_prompts_with_qwen3_assets() {
         let mut storage = vec![0usize; 256];
-        let mut batch = match BatchSequence::new(
+        let mut batch = match BatchSequence::<f32>::new(
             storage.as_mut_ptr(),
             1,
             storage.len(),
@@ -131,9 +140,12 @@ mod tests {
             .expect("render failed");
         let expected_ids = batch.tokenizer.encode_with_special_tokens(prompt.as_str());
 
-        let written = batch.write_prompts(0, &messages).expect("write failed");
+        let written = batch
+            .write_prompts(0, &messages, 0.7)
+            .expect("write failed");
         assert!(written > 0);
         assert_eq!(written, expected_ids.len().min(storage.len()));
+        assert_eq!(batch.batch_temperature[0], 0.7);
         assert_eq!(
             &storage[..written],
             &expected_ids[..written]
@@ -146,7 +158,7 @@ mod tests {
     #[test]
     fn test_write_prompts_respects_col_size_limit() {
         let mut storage = vec![0usize; 8];
-        let mut batch = match BatchSequence::new(
+        let mut batch = match BatchSequence::<f32>::new(
             storage.as_mut_ptr(),
             1,
             storage.len(),
@@ -172,8 +184,11 @@ mod tests {
             ),
         ];
 
-        let written = batch.write_prompts(0, &messages).expect("write failed");
+        let written = batch
+            .write_prompts(0, &messages, 0.25)
+            .expect("write failed");
         assert_eq!(written, storage.len());
+        assert_eq!(batch.batch_temperature[0], 0.25);
         assert!(storage.iter().any(|id| *id != 0));
     }
 }

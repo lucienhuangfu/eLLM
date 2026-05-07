@@ -797,6 +797,7 @@ where
         indices_ptr: *const usize,
         // sums_tensor: &Tensor<T>,
         output_sequences: *mut usize,
+        batch_temperature: *mut T,
         num_topk: usize,
         eos_id: usize,
         scope_name: String,
@@ -817,6 +818,7 @@ where
             indice_ptr,
             value_tensor.data,
             output_sequences,
+            batch_temperature,
             self.shape[0],
             num_topk,
             eos_id,
@@ -1027,6 +1029,7 @@ mod test {
         let num_candidates_per_thread = num_topk;
         let num_candidates = num_candidates_per_thread * thread_num;
         let eos_id = 100;
+        let mut batch_temperature = vec![1.0f32; batch_size];
 
         let value_shape = vec![batch_size, num_candidates];
         let value_tensor = Tensor::<f32>::from_cache(
@@ -1102,6 +1105,7 @@ mod test {
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
             output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
             num_topk,
             eos_id,
             "model.layers.0.topk_softmax".to_string(),
@@ -1183,6 +1187,7 @@ mod test {
         let num_candidates_per_thread = num_topk;
         let num_candidates = num_candidates_per_thread * thread_num;
         let eos_id = 100;
+        let mut batch_temperature = vec![1.0f16; batch_size];
 
         let value_shape = vec![batch_size, num_candidates];
         let value_tensor = Tensor::<f16>::from_cache(
@@ -1259,6 +1264,7 @@ mod test {
         let (output_indices_ptr, output_value_tensor) = value_tensor.topk_softmax(
             indices_ptr,
             output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
             num_topk,
             eos_id,
             "model.layers.0.topk_softmax".to_string(),

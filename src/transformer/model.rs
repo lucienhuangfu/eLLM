@@ -122,7 +122,11 @@ where
         }
     }
 
-    pub fn forward(&mut self, input_sequences: *mut usize) -> (*const usize, Tensor<T>) {
+    pub fn forward(
+        &mut self,
+        input_sequences: *mut usize,
+        batch_temperature: *mut T,
+    ) -> (*const usize, Tensor<T>) {
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
@@ -169,6 +173,7 @@ where
         let (topk_indice, topk_value) = values_tensor.topk_softmax(
             indices_ptr,
             input_sequences,
+            batch_temperature,
             self.topk_size,
             self.eos_id,
             format!("{}.softmax", self.scope_name),
@@ -252,6 +257,7 @@ mod test {
         )
         .forward::<f32>();
         let eos_id = 151643;
+        let mut batch_temperature = vec![1.0f32; batch_size];
         let mut model = Model::<f32>::new(
             &config,
             position_vec,
@@ -273,7 +279,7 @@ mod test {
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
-        let (_output_indices, _output_tensor) = model.forward(sequences);
+        let (_output_indices, _output_tensor) = model.forward(sequences, batch_temperature.as_mut_ptr());
 
         for thread_id in 0..thread_num {
             for operator in model.ctx.operator_queue.borrow().iter() {
@@ -325,6 +331,7 @@ mod test {
         )
         .forward::<f16>();
         let eos_id = 151643;
+        let mut batch_temperature = vec![1.0f16; batch_size];
         let mut model = Model::<f16>::new(
             &config,
             position_vec,
@@ -340,7 +347,7 @@ mod test {
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
-        let (_output_indices, _output_tensor) = model.forward(sequences);
+        let (_output_indices, _output_tensor) = model.forward(sequences, batch_temperature.as_mut_ptr());
 
         for thread_id in 0..thread_num {
             for operator in model.ctx.operator_queue.borrow().iter() {

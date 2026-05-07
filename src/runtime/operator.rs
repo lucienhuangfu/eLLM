@@ -320,6 +320,7 @@ mod test {
         let mut output_indices = vec![0usize; batch_size * topk_size];
         let mut output_sequences = vec![0usize; batch_size];
         let eos_id = 0usize;
+        let mut batch_temperature = vec![1.0f32; batch_size];
 
         let batch_records: Vec<SequenceState> = (0..batch_size)
             .map(|_| SequenceState {
@@ -359,6 +360,7 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
             batch_size,
             topk_size,
             eos_id,

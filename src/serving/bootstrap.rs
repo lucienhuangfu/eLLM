@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::f16;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -10,14 +11,14 @@ use crate::runtime::{Phase, SequenceState};
 
 #[derive(Clone)]
 pub(super) struct AppState {
-    pub(super) batch_sequences: Arc<SharedMut<BatchSequence>>,
+    pub(super) batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     pub(super) batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     pub(super) free_slots: Arc<Mutex<VecDeque<usize>>>,
     pub(super) available_slots: Arc<Semaphore>,
 }
 
 pub(super) fn build_app_state(
-    batch_sequences: Arc<SharedMut<BatchSequence>>,
+    batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
 ) -> AppState {
     let initial_free_slots: VecDeque<usize> = batch_states.with(|batch_states_ref| {
