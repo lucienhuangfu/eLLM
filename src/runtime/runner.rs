@@ -115,3 +115,22 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ServingRunner;
+    use crate::runtime::BatchScheduler;
+
+    #[test]
+    fn new_preserves_operator_queue_and_scheduler_layout() {
+        let operator_queue = Vec::<crate::runtime::operator::Operator<f32>>::new();
+        let batch_scheduler = BatchScheduler::new(16, 4, 3);
+
+        let runner = ServingRunner::new(operator_queue, batch_scheduler);
+
+        assert_eq!(runner.operator_queue.len(), 0);
+        assert_eq!(runner.batch_scheduler.prefill_list.len(), 3);
+        assert_eq!(runner.batch_scheduler.prefill_list[0].capacity(), 4);
+        assert_eq!(runner.batch_scheduler.decode_list.len(), 0);
+    }
+}

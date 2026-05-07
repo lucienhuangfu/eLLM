@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SequenceSlice {
     pub token_start_index: usize,
     pub batch_index: usize,
@@ -19,32 +19,44 @@ pub struct DecodeLookupResult {
 #[derive(Clone, Default)]
 pub struct DecodeList {
     slices: Vec<SequenceSlice>,
+    len: usize,
 }
 
 impl DecodeList {
     pub fn with_capacity(capacity: usize) -> Self {
+        // Preallocate the decode buffer to the batch size so each round can
+        // overwrite existing slots instead of growing the Vec.
+        let mut slices = Vec::with_capacity(capacity);
+        slices.resize(capacity, SequenceSlice::default());
         Self {
-            slices: Vec::with_capacity(capacity),
+            slices,
+            len: 0,
         }
     }
 
     pub fn push(&mut self, slice: SequenceSlice) {
-        self.slices.push(slice);
+        debug_assert!(self.len <= self.slices.len());
+        if self.len == self.slices.len() {
+            self.slices.push(slice);
+        } else {
+            self.slices[self.len] = slice;
+        }
+        self.len += 1;
     }
 
     pub fn clear(&mut self) {
-        self.slices.clear();
+        self.len = 0;
     }
 
     pub fn total_token_count(&self) -> usize {
-        self.slices.iter().map(|slice| slice.length).sum()
+        self.slices[..self.len].iter().map(|slice| slice.length).sum()
     }
 
     pub fn lookup_global_index(&self, global_index: usize) -> Option<DecodeLookupResult> {
-        let slice_index = self
-            .slices
+        let slices = self.as_slice();
+        let slice_index = slices
             .partition_point(|slice| slice.token_start_index + slice.length <= global_index);
-        let slice = self.slices.get(slice_index)?;
+        let slice = slices.get(slice_index)?;
         if global_index < slice.token_start_index {
             return None;
         }
@@ -96,13 +108,21 @@ impl DecodeList {
             slice_index += 1;
         }
     }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn as_slice(&self) -> &[SequenceSlice] {
+        &self.slices[..self.len]
+    }
 }
 
 impl Deref for DecodeList {
     type Target = [SequenceSlice];
 
     fn deref(&self) -> &Self::Target {
-        &self.slices
+        self.as_slice()
     }
 }
 

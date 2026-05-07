@@ -19,6 +19,7 @@ pub struct TopKSoftmax<T> {
     output_indices_ptr: MutPtr<usize>,
     output_values_ptr: MutPtr<T>,
     output_sequences: MutPtr<usize>,
+    batch_temperature: MutPtr<T>,
     batch_size: usize,
     topk_size: usize,
     eos_id: usize,
@@ -31,6 +32,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
         output_sequences: *mut usize,
+        batch_temperature: *mut T,
         batch_size: usize,
         topk_size: usize,
         eos_id: usize,
@@ -50,6 +52,9 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
             },
             output_sequences: MutPtr {
                 ptr: output_sequences,
+            },
+            batch_temperature: MutPtr {
+                ptr: batch_temperature,
             },
             batch_size,
             topk_size,
@@ -112,7 +117,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
                 let token_index = slice.token_start_index + last_token_offset;
                 let input_stride = token_index * self.topk_size * thread_num;
                 let output_stride = token_index * self.topk_size;
-                let batch_temperature = T::from_f32(1.0);
+                let batch_temperature = *self.batch_temperature.ptr.add(batch_index);
 
                 self.compute(
                     input_indices_ptr.add(input_stride),
@@ -282,8 +287,10 @@ mod test {
             }
             decode_lists.push(slices);
         }
+        let decode_list = decode_lists.iter().flatten().cloned().collect::<Vec<_>>();
 
         let sums = vec![0.0f32; batch_size];
+        let mut batch_temperature = vec![1.0f32; batch_size];
         let mut output_values = vec![0.0f32; batch_size * topk_size];
         let mut output_indices = vec![0; batch_size * topk_size];
         let mut output_sequences = vec![0; batch_size * sequence_length];
@@ -294,6 +301,7 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
             batch_size,
             topk_size,
             eos_id,
@@ -306,7 +314,7 @@ mod test {
                 thread_num,
                 i,
                 &[],
-                &decode_lists[i],
+                &decode_list,
                 &mut batch_list,
             );
         }
@@ -384,6 +392,7 @@ mod test {
         let mut output_values = vec![0.0f32; batch_size * topk_size];
         let mut output_indices = vec![0usize; batch_size * topk_size];
         let mut output_sequences = vec![usize::MAX; batch_size * sequence_length];
+        let mut batch_temperature = vec![1.0f32; batch_size];
 
         let operator = TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
@@ -391,6 +400,7 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
             batch_size,
             topk_size,
             eos_id,
@@ -448,6 +458,7 @@ mod test {
         let mut output_values = vec![f32::NAN; batch_size * topk_size];
         let mut output_indices = vec![usize::MAX; batch_size * topk_size];
         let mut output_sequences = vec![usize::MAX; batch_size * sequence_length];
+        let mut batch_temperature = vec![1.0f32; batch_size];
 
         let operator = TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
@@ -455,6 +466,7 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
             batch_size,
             topk_size,
             eos_id,
@@ -511,6 +523,7 @@ mod test {
         let mut output_values = vec![f32::NAN; batch_size * topk_size];
         let mut output_indices = vec![usize::MAX; batch_size * topk_size];
         let mut output_sequences = vec![usize::MAX; batch_size * sequence_length];
+        let mut batch_temperature = vec![1.0f32; batch_size];
 
         let operator = TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
@@ -518,6 +531,7 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
             batch_size,
             topk_size,
             eos_id,
@@ -581,6 +595,7 @@ mod test {
         let mut output_values = vec![0.0f32; sequence_length * topk_size];
         let mut output_indices = vec![0usize; sequence_length * topk_size];
         let mut output_sequences = vec![usize::MAX; batch_size * sequence_length];
+        let mut batch_temperature = vec![1.0f32; batch_size];
 
         let operator = TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
@@ -588,6 +603,7 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
             batch_size,
             topk_size,
             eos_id,
@@ -640,6 +656,7 @@ mod test {
         let mut output_values = vec![f32::NAN; batch_size * topk_size];
         let mut output_indices = vec![usize::MAX; batch_size * topk_size];
         let mut output_sequences = vec![usize::MAX; batch_size * sequence_length];
+        let mut batch_temperature = vec![1.0f32; batch_size];
 
         let operator = TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
@@ -647,6 +664,7 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
             batch_size,
             topk_size,
             eos_id,
@@ -729,10 +747,12 @@ mod test {
             }
             decode_lists.push(slices);
         }
+        let decode_list = decode_lists.iter().flatten().cloned().collect::<Vec<_>>();
 
         let mut output_values = vec![0.0 as f16; batch_size * topk_size];
         let mut output_indices = vec![0; batch_size * topk_size];
         let mut output_sequences = vec![0; batch_size * sequence_length];
+        let mut batch_temperature = vec![1.0f16; batch_size];
 
         let operator = TopKSoftmax::<f16>::new(
             input_indices.as_ptr(),
@@ -740,6 +760,7 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
             batch_size,
             topk_size,
             eos_id,
@@ -752,7 +773,7 @@ mod test {
                 thread_num,
                 i,
                 &[],
-                &decode_lists[i],
+                &decode_list,
                 &mut batch_list,
             );
         }

@@ -12,6 +12,7 @@
 - [算子：attention](./operator/attention.md)
 - [算子：fake_echo](./operator/fake_echo.md)
 - [算子：global_index_lookup](./operator/global_index_lookup.md)
+- [算子：left_vector / LiftVector](./operator/left_vector.md)
 - [算子：matmul](./operator/matmul.md)
 - [算子：minimax_m2.5_router](./operator/minimax_m2.5_router.md)
 - [Transformer：minimal_model_abstraction](./transformers/minimal_model_abstraction.md)

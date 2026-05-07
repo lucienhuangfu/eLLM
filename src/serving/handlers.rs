@@ -30,11 +30,13 @@ pub(super) async fn chat_completions(
     );
     let is_stream = request.stream.unwrap_or(false);
 
-    let (slot_index, notifier) = match assign_slot_with_messages(&state, &request.messages).await {
+    let (slot_index, notifier) =
+        match assign_slot_with_messages(&state, &request.messages, request.temperature).await {
         Ok(slot) => slot,
         Err(response) => return response,
     };
 
+    #[cfg(debug_assertions)]
     println!(
         "开始等待推理处理请求: {}, Slot: {}, 模式: {}",
         request_id,
@@ -55,6 +57,7 @@ pub(super) async fn chat_completions(
     if is_stream {
         build_stream_response(request_id, request.model, generated_text)
     } else {
+        #[cfg(debug_assertions)]
         println!("同步推理完成: id={}", request_id);
         build_non_stream_response(request_id, request.model, generated_text)
     }
@@ -63,6 +66,7 @@ pub(super) async fn chat_completions(
 async fn assign_slot_with_messages(
     state: &AppState,
     messages: &[ChatMessage],
+    temperature: Option<f32>,
 ) -> Result<(usize, Arc<Notify>), axum::response::Response> {
     let permit = match state.available_slots.clone().acquire_owned().await {
         Ok(permit) => permit,
@@ -97,11 +101,12 @@ async fn assign_slot_with_messages(
     let write_result = state.batch_states.with_mut(|batch_list| {
         state.batch_sequences.with_mut(|batch_sequences| {
             let record = &mut batch_list[slot_index];
-            if !matches!(record.phase, Phase::Start) {
-                Err("slot is not in Start phase".to_string())
+            if !matches!(record.phase, Phase::Start | Phase::Eos) {
+                Err("slot is not in Start or Eos phase".to_string())
             } else {
+                let temperature = temperature.unwrap_or(1.0);
                 batch_sequences
-                    .write_prompts(slot_index, &message_pairs)
+                    .write_prompts(slot_index, &message_pairs, temperature)
                     .map(|write_len| {
                         record.sequence_index = 0;
                         record.kv_index = 0;

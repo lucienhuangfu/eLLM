@@ -15,6 +15,7 @@ The translated topic pages now live under `docs/en/`:
 - [Operator: attention](./en/operator/attention.md)
 - [Operator: fake_echo](./en/operator/fake_echo.md)
 - [Operator: global_index_lookup](./en/operator/global_index_lookup.md)
+- [Operator: left_vector / LiftVector](./en/operator/left_vector.md)
 - [Operator: matmul](./en/operator/matmul.md)
 - [Operator: minimax_m2.5_router](./en/operator/minimax_m2.5_router.md)
 - [Transformer: minimal_model_abstraction](./en/transformers/minimal_model_abstraction.md)

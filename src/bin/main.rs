@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sequences = allocate_init::<usize>(sequence_capacity * batch_size, 0);
 
-    let mut batch_seq = BatchSequence::new(
+    let mut batch_seq = BatchSequence::<f16>::new(
         sequences,
         batch_size,
         sequence_capacity,
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (slot, prompt) in fixed_prompts.iter().enumerate().take(batch_size) {
         let messages: [(&str, &str); 1] = [("user", prompt)];
         let write_len = batch_seq
-            .write_prompts(slot, &messages)
+            .write_prompts(slot, &messages, 1.0)
             .map_err(|e| format!("failed to write prompt: {}", e))?;
         written_lengths.push(write_len);
     }
@@ -71,7 +71,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eos_id,
     );
 
-    let (_output_indices, _output_tensor) = model.forward(sequences);
+    let (_output_indices, _output_tensor) =
+        model.forward(sequences, batch_seq.batch_temperature.as_mut_ptr());
 
     let thread_num = core_affinity::get_core_ids().unwrap().len();
     let mut batch_scheduler: BatchScheduler =

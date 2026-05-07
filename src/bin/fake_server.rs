@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chat_template_path = format!("{}/chat_template.jinja", model_dir);
 
     let batch_sequences = Arc::new(SharedMut::new(
-        BatchSequence::new(
+        BatchSequence::<f16>::new(
             sequences,
             batch_size,
             sequence_length,

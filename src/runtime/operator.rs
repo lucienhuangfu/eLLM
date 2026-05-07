@@ -261,15 +261,16 @@ mod test {
         // Verification for token 0
         let mut expected1: Vec<(usize, f32)> = input_data1.iter().copied().enumerate().collect();
         expected1.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let max_val1 = input_data1
+        let topk_probs1: Vec<f32> = expected1
             .iter()
-            .copied()
-            .fold(f32::NEG_INFINITY, f32::max);
-        let denom1: f32 = input_data1.iter().map(|v| (v - max_val1).exp()).sum();
+            .take(num_topk)
+            .map(|&(_, val)| val.exp())
+            .collect();
+        let denom1: f32 = topk_probs1.iter().sum();
 
         for i in 0..num_topk {
             let (idx, val) = expected1[i];
-            let prob = (val - max_val1).exp() / denom1;
+            let prob = val.exp() / denom1;
             assert!(experts_indicator[idx]);
             let offset = idx * num_tokens + 0;
             assert!(indice_ptr[offset]);
@@ -279,15 +280,16 @@ mod test {
         // Verification for token 1
         let mut expected2: Vec<(usize, f32)> = input_data2.iter().copied().enumerate().collect();
         expected2.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let max_val2 = input_data2
+        let topk_probs2: Vec<f32> = expected2
             .iter()
-            .copied()
-            .fold(f32::NEG_INFINITY, f32::max);
-        let denom2: f32 = input_data2.iter().map(|v| (v - max_val2).exp()).sum();
+            .take(num_topk)
+            .map(|&(_, val)| val.exp())
+            .collect();
+        let denom2: f32 = topk_probs2.iter().sum();
 
         for i in 0..num_topk {
             let (idx, val) = expected2[i];
-            let prob = (val - max_val2).exp() / denom2;
+            let prob = val.exp() / denom2;
             assert!(experts_indicator[idx]);
             let offset = idx * num_tokens + 1;
             assert!(indice_ptr[offset]);
@@ -320,6 +322,7 @@ mod test {
         let mut output_indices = vec![0usize; batch_size * topk_size];
         let mut output_sequences = vec![0usize; batch_size];
         let eos_id = 0usize;
+        let mut batch_temperature = vec![1.0f32; batch_size];
 
         let batch_records: Vec<SequenceState> = (0..batch_size)
             .map(|_| SequenceState {
@@ -359,6 +362,7 @@ mod test {
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
             batch_size,
             topk_size,
             eos_id,

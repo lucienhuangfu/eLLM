@@ -7,9 +7,11 @@
 先说结论：
 
 * `BatchScheduler` 负责决定本轮是 `Decode`、`Prefill` 还是 `Idle`
+* 它内部会先产出一个 `BatchPlan`，再把计划执行成切片
 * 它只产出切片，不直接推进 `SequenceState`
 * `Prefill` 轮会把 token 按静态配额拆到各线程
 * `Decode` 轮则把每条序列压成一个长度为 1 的切片
+* `decode_list` 是当前轮共用的 attention/decode 切片集合
 
 ---
 
@@ -36,7 +38,7 @@
 | `sequence_index` | 该 slice 在序列里的起点 |
 | `token_start_index` | 本轮扁平 token 视图中的起点 |
 | `length` | 连续 token 长度 |
-| `last_token_flag` | 末 token 是否需要被当成结果 token 处理 |
+| `last_token_flag` | 是否是 prompt 的最后一个 token；如果是，后续需要走 decode / 结果写回链路 |
 
 ### 输出列表
 
@@ -48,11 +50,46 @@
 其中：
 
 * `prefill_list` 按线程分桶
-* `decode_list` 是扁平的全局切片列表
+* `decode_list` 是扁平的 attention/decode 切片列表
 
 ---
 
-## 2. 单轮调度入口
+## 2. `BatchPlan`
+
+`BatchPlan` 是 `BatchScheduler` 内部使用的“计划结果”。
+
+它先表示下一轮该怎么跑，再由调度器真正生成切片：
+
+* `Decode(Vec<(usize, usize)>)`
+* `Prefill { candidates, total_tokens }`
+* `Idle`
+
+这样可以把“决策”和“切片生成”拆开：
+
+* `plan_next_round()` 负责扫描 `batch_list` 并选出一个计划
+* `schedule_batch()` 负责执行这个计划，填充 `prefill_list` / `decode_list`
+
+优先级是：
+
+* 只要存在 `Decode`，这一轮就是 `Decode`
+* 否则如果存在 `Prefill`，这一轮就是 `Prefill`
+* 否则调度器进入 `Idle`
+
+---
+
+## 3. 单轮调度入口
+
+```mermaid
+flowchart TD
+    A["开始 schedule_batch"] --> B["设置 prefill 线程数"]
+    B --> C["plan_next_round 扫描 batch_list"]
+    C --> D{"BatchPlan"}
+    D -->|Decode| E["schedule_decode_round"]
+    D -->|Prefill| F["schedule_prefill_round"]
+    D -->|Idle| G["睡眠 1 ms 后重试"]
+    E --> H["返回 prefill_size=0, decode_count"]
+    F --> I["返回 prefill_count, decode_list.len()"]
+```
 
 `schedule_batch()` 的流程可以概括为：
 
@@ -68,10 +105,11 @@
 
 * `Decode` 优先于 `Prefill`
 * 一轮只执行一种模式
+* 即使是 `Prefill` 轮，也会产出 `decode_list`，因为最后一个 token 之后仍然要走 attention/decode 这条路径
 
 ---
 
-## 3. Decode 轮
+## 4. Decode 轮
 
 ### 候选收集
 
@@ -94,12 +132,12 @@ max_decode_size = batch_size
 因此 decode 轮的结果非常简单：
 
 * 一条序列本轮只贡献 1 个 token
-* `decode_list` 只是一串单 token slice
+* `decode_list` 是这一轮的 attention/decode 切片集合
 * `prefill_list` 会被清空
 
 ---
 
-## 4. Prefill 轮
+## 5. Prefill 轮
 
 ### 候选收集
 
@@ -152,11 +190,11 @@ extra_quota = total_tokens % task_count
 
 ---
 
-## 5. `decode_list` 的实际含义
+## 6. `decode_list` 的实际含义
 
 `decode_list` 不是“只给 decode 用”的列表。
 
-它在两种模式下都承载扁平 token 视图：
+它在两种模式下都承载扁平的 attention/decode token 视图：
 
 * decode 轮：每条 slice 长度固定为 1
 * prefill 轮：slice 表示一段连续 attention 区间
@@ -165,7 +203,7 @@ extra_quota = total_tokens % task_count
 
 ---
 
-## 6. 状态更新边界
+## 7. 状态更新边界
 
 `BatchScheduler` 本身不修改 `SequenceState`。
 
@@ -173,6 +211,7 @@ extra_quota = total_tokens % task_count
 
 * 如果一个 slice 来自 `Prefill`，会先推进 `sequence_index`、`kv_index`、`filling_length`
 * 当 `filling_length == 0` 时，阶段切到 `Decode`
+* `last_token_flag` 只标记“这是不是 prompt 的最后一个 token”
 * 当 slice 是最后一个 token，且记录已经处于 `Decode` 时，才会真正写回输出 token
 * 如果输出 token 命中 `eos_id`，阶段会切到 `Eos` 并通知上层
 
@@ -183,7 +222,20 @@ extra_quota = total_tokens % task_count
 
 ---
 
-## 7. 典型执行路径
+## 8. 典型执行路径
+
+```mermaid
+flowchart TD
+    A[扫描 batch_list] --> B{存在 Decode?}
+    B -->|是| C[进入 decode 轮]
+    C --> D[每条记录 -> 1 个 token slice]
+    B -->|否| E{存在 Prefill?}
+    E -->|是| F[进入 prefill 轮]
+    F --> G[统计总 token]
+    G --> H[截断到 max_prefill_size]
+    H --> I[按线程均分切片]
+    E -->|否| J[Idle，sleep 1 ms]
+```
 
 ```text
 batch_list 扫描
@@ -201,7 +253,7 @@ batch_list 扫描
 
 ---
 
-## 8. 代码入口参考
+## 9. 代码入口参考
 
 * `src/runtime/scheduler.rs`
 * `src/runtime/slice_scheduler.rs`

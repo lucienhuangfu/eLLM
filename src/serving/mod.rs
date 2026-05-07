@@ -4,6 +4,7 @@ mod types;
 
 use axum::{routing::post, Json, Router};
 use std::sync::Arc;
+use std::f16;
 
 use crate::common::send_sync_ptr::SharedMut;
 use crate::runtime::batch_sequence::BatchSequence;
@@ -12,7 +13,7 @@ use crate::runtime::SequenceState;
 use handlers::chat_completions;
 
 pub async fn run(
-    batch_sequences: Arc<SharedMut<BatchSequence>>,
+    batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     bootstrap::print_booting_message();
