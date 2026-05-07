@@ -36,6 +36,7 @@ pub(super) async fn chat_completions(
         Err(response) => return response,
     };
 
+    #[cfg(debug_assertions)]
     println!(
         "开始等待推理处理请求: {}, Slot: {}, 模式: {}",
         request_id,
@@ -56,6 +57,7 @@ pub(super) async fn chat_completions(
     if is_stream {
         build_stream_response(request_id, request.model, generated_text)
     } else {
+        #[cfg(debug_assertions)]
         println!("同步推理完成: id={}", request_id);
         build_non_stream_response(request_id, request.model, generated_text)
     }

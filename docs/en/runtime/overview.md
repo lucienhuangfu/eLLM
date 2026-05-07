@@ -119,6 +119,14 @@ It does two straightforward things:
 
 `ServingRunner::start()` creates the thread pool and lets thread 0 handle each round of scheduling:
 
+```mermaid
+flowchart TD
+    A[ServingRunner::start] --> B[thread 0 calls BatchScheduler::schedule_batch]
+    B --> C[Barrier sync]
+    C --> D[All threads run operator queue in order]
+    D --> E[Same round of prefill_list and decode_list is consumed]
+```
+
 1. Thread 0 calls `BatchScheduler::schedule_batch()`
 2. All threads synchronize through a `Barrier`
 3. Each thread executes the operator queue in order
@@ -181,6 +189,15 @@ In other words, runtime is responsible for "generating the work units for the ro
 ## 8. One-Round Execution Overview
 
 You can think of one runtime round like this:
+
+```mermaid
+flowchart TD
+    A[Thread 0 schedules batch] --> B[Get prefill_size / decode_size / prefill_list / decode_list]
+    B --> C[All threads synchronize at the barrier]
+    C --> D[Operators execute in queue order]
+    D --> E[Operators update SequenceState if needed]
+    E --> F[Notify upper layer when a slot completes]
+```
 
 ```text
 thread 0:

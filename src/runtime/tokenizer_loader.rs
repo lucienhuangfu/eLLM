@@ -6,32 +6,33 @@ use tiktoken_rs::CoreBPE;
 
 #[derive(Debug, Deserialize)]
 struct TokenizerJson {
-    added_tokens: Option<Vec<AddedToken>>,
-    pre_tokenizer: Option<PreTokenizer>,
+    added_tokens: Option<Vec<TokenizerToken>>,
+    pre_tokenizer: Option<TokenizerPreTokenizer>,
     model: TokenizerModel,
 }
 
 #[derive(Debug, Deserialize)]
-struct AddedToken {
-    id: u32,
+struct TokenizerToken {
+    #[serde(default)]
+    id: Option<u32>,
     content: String,
     special: bool,
 }
 
 #[derive(Debug, Deserialize)]
-struct PreTokenizer {
+struct TokenizerPreTokenizer {
     #[serde(default)]
-    pretokenizers: Vec<SubPreTokenizer>,
+    pretokenizers: Vec<TokenizerPreTokenizerItem>,
 }
 
 #[derive(Debug, Deserialize)]
-struct SubPreTokenizer {
+struct TokenizerPreTokenizerItem {
     #[serde(default)]
-    pattern: Option<SplitPattern>,
+    pattern: Option<TokenizerSplitPattern>,
 }
 
 #[derive(Debug, Deserialize)]
-struct SplitPattern {
+struct TokenizerSplitPattern {
     #[serde(rename = "Regex")]
     regex: String,
 }
@@ -43,16 +44,10 @@ struct TokenizerModel {
 
 #[derive(Debug, Deserialize)]
 struct TokenizerConfigJson {
-    added_tokens_decoder: Option<HashMap<String, AddedTokenConfig>>,
+    added_tokens_decoder: Option<HashMap<String, TokenizerToken>>,
     additional_special_tokens: Option<Vec<String>>,
     eos_token: Option<TokenField>,
     pad_token: Option<TokenField>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AddedTokenConfig {
-    content: String,
-    special: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,15 +55,6 @@ struct AddedTokenConfig {
 enum TokenField {
     String(String),
     Object { content: String },
-}
-
-impl TokenField {
-    fn content(self) -> String {
-        match self {
-            Self::String(value) => value,
-            Self::Object { content } => content,
-        }
-    }
 }
 
 fn build_bytelevel_decoder() -> HashMap<char, u8> {
@@ -95,11 +81,6 @@ fn build_bytelevel_decoder() -> HashMap<char, u8> {
         .zip(cs)
         .filter_map(|(byte, mapped)| char::from_u32(mapped).map(|ch| (ch, byte as u8)))
         .collect()
-}
-
-fn bytelevel_decoder() -> &'static HashMap<char, u8> {
-    static BYTELEVEL_DECODER: OnceLock<HashMap<char, u8>> = OnceLock::new();
-    BYTELEVEL_DECODER.get_or_init(build_bytelevel_decoder)
 }
 
 fn decode_bytelevel_token(token: &str, decoder: &HashMap<char, u8>) -> Result<Vec<u8>, String> {
@@ -161,7 +142,10 @@ pub fn load_tiktoken(
             )
         })?;
 
-    let bytelevel_decoder = bytelevel_decoder();
+    let bytelevel_decoder = {
+        static BYTELEVEL_DECODER: OnceLock<HashMap<char, u8>> = OnceLock::new();
+        BYTELEVEL_DECODER.get_or_init(build_bytelevel_decoder)
+    };
 
     let encoder = parsed.model.vocab.iter().try_fold(
         HashMap::with_capacity(parsed.model.vocab.len()),
@@ -178,7 +162,13 @@ pub fn load_tiktoken(
         HashMap::with_capacity(added_tokens.len());
     for token in added_tokens {
         if token.special {
-            special_tokens_encoder.insert(token.content, token.id);
+            let id = token.id.ok_or_else(|| {
+                format!(
+                    "Missing token id for special token {:?} in tokenizer json {}",
+                    token.content, tokenizer_json_path
+                )
+            })?;
+            special_tokens_encoder.insert(token.content, id);
         }
     }
 
@@ -225,11 +215,17 @@ pub fn load_tiktoken(
     }
 
     if let Some(token) = tokenizer_config.eos_token {
-        let token = token.content();
+        let token = match token {
+            TokenField::String(value) => value,
+            TokenField::Object { content } => content,
+        };
         insert_from_vocab_or_config(&token);
     }
     if let Some(token) = tokenizer_config.pad_token {
-        let token = token.content();
+        let token = match token {
+            TokenField::String(value) => value,
+            TokenField::Object { content } => content,
+        };
         insert_from_vocab_or_config(&token);
     }
 

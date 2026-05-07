@@ -119,6 +119,14 @@
 
 `ServingRunner::start()` 会创建线程池，并让线程 0 负责每轮调度：
 
+```mermaid
+flowchart TD
+    A[ServingRunner::start] --> B[线程 0 调用 BatchScheduler::schedule_batch]
+    B --> C[Barrier 同步]
+    C --> D[所有线程按顺序执行 operator queue]
+    D --> E[消费同一轮的 prefill_list 和 decode_list]
+```
+
 1. 线程 0 调用 `BatchScheduler::schedule_batch()`
 2. 所有线程通过 `Barrier` 同步
 3. 每个线程依次执行 operator queue
@@ -181,6 +189,15 @@ prefill 轮由 `FairTaskAllocator` 和 `SliceScheduler` 共同完成。
 ## 8. 一轮执行概览
 
 可以把一轮 runtime 执行理解为：
+
+```mermaid
+flowchart TD
+    A[线程 0 调度 batch] --> B[得到 prefill_size / decode_size / prefill_list / decode_list]
+    B --> C[所有线程在 barrier 上同步]
+    C --> D[按 queue 顺序执行 operators]
+    D --> E[必要时由 operator 更新 SequenceState]
+    E --> F[slot 完成时通知上层]
+```
 
 ```text
 thread 0:
