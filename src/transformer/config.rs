@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{collections::HashMap, fs::File, io::BufReader, path::Path};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +71,7 @@ pub struct Config {
     pub output_router_logits: bool,
     pub qkv_bias: bool,
     pub rms_norm_eps: f32,
-    pub rope_scaling: Option<HashMap<String, String>>,
+    pub rope_scaling: Option<HashMap<String, Value>>,
     pub rope_theta: usize,
     pub rotary_dim: usize,
     pub router_scoring: RouterScoringKind,
@@ -128,7 +129,7 @@ struct HfConfig {
     qkv_bias: bool,
     #[serde(default)]
     rms_norm_eps: f32,
-    rope_scaling: Option<HashMap<String, String>>,
+    rope_scaling: Option<HashMap<String, Value>>,
     rope_theta: Option<usize>,
     rotary_dim: Option<usize>,
     scoring_func: Option<String>,

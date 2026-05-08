@@ -57,6 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.rotary_dim,
         config.max_position_embeddings,
         config.rope_theta as f32,
+        config.rope_scaling.clone(),
     )
     .forward::<f16>();
     // use eos id from model config

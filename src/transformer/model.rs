@@ -254,6 +254,7 @@ mod test {
             config.rotary_dim,
             config.max_position_embeddings,
             config.rope_theta as f32,
+            config.rope_scaling.clone(),
         )
         .forward::<f32>();
         let eos_id = 151643;
@@ -328,6 +329,7 @@ mod test {
             config.rotary_dim,
             config.max_position_embeddings,
             config.rope_theta as f32,
+            config.rope_scaling.clone(),
         )
         .forward::<f16>();
         let eos_id = 151643;
