@@ -18,3 +18,4 @@ The topic pages now live under `docs/en/` with the same structure as the Chinese
 - [Transformer: minimal_model_abstraction](./transformers/minimal_model_abstraction.md)
 - [Transformer: minimax_m2.5_rope](./transformers/minimax_m2.5_rope.md)
 - [Transformer: moe_refactor](./transformers/moe_refactor.md)
+- [Reference: Hugging Face alignment](./reference/hf_alignment.md)

@@ -21,3 +21,4 @@ The translated topic pages now live under `docs/en/`:
 - [Transformer: minimal_model_abstraction](./en/transformers/minimal_model_abstraction.md)
 - [Transformer: minimax_m2.5_rope](./en/transformers/minimax_m2.5_rope.md)
 - [Transformer: moe_refactor](./en/transformers/moe_refactor.md)
+- [Reference: Hugging Face alignment](./en/reference/hf_alignment.md)
