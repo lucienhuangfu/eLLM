@@ -1,11 +1,13 @@
-
 // === alignment/rope_alignment_test.rs ===
 use std::fs;
 
-// Import our RoPE implementation
 #[path = "../src/transformer/rope.rs"]
 mod rope;
 use rope::RotaryEmbedding;
+
+fn write_npy(path: &str, data: &[f32], shape: &[usize]) {
+    let descr = npy::to_numpy_file(path, data, shape).unwrap();
+}
 
 fn main() {
     println!("===== RoPE Alignment Test =====");
@@ -15,25 +17,18 @@ fn main() {
     let rope = RotaryEmbedding::new(64, 64, 16, 10000.0, None);
     let output = rope.forward::<f32>();
     println!("Output length: {}", output.len());
-
-    // Save as raw binary for easy comparison
-    let bytes: Vec<u8> = output
-        .iter()
-        .flat_map(|&x| x.to_le_bytes())
-        .collect();
-    fs::write("alignment/dump/rust_rope_basic.bin", bytes).unwrap();
+    write_npy("alignment/dump/rust_rope_basic.npy", &output, &[16, 64]);
 
     // Test 2: Partial Rotary
     println!("\n--- Test 2: Partial Rotary ---");
     let rope_partial = RotaryEmbedding::new(8, 4, 2, 10000.0, None);
     let output_partial = rope_partial.forward::<f32>();
     println!("Output length: {}", output_partial.len());
-
-    let bytes_partial: Vec<u8> = output_partial
-        .iter()
-        .flat_map(|&x| x.to_le_bytes())
-        .collect();
-    fs::write("alignment/dump/rust_rope_partial.bin", bytes_partial).unwrap();
+    write_npy(
+        "alignment/dump/rust_rope_partial.npy",
+        &output_partial,
+        &[2, 8],
+    );
 
     // Test 3: Yarn Scaling
     println!("\n--- Test 3: Yarn Scaling ---");
@@ -56,12 +51,7 @@ fn main() {
     let output_yarn = rope_yarn.forward::<f32>();
     println!("Output length: {}", output_yarn.len());
     println!("Attention scaling: {}", rope_yarn.attention_scaling);
-
-    let bytes_yarn: Vec<u8> = output_yarn
-        .iter()
-        .flat_map(|&x| x.to_le_bytes())
-        .collect();
-    fs::write("alignment/dump/rust_rope_yarn.bin", bytes_yarn).unwrap();
+    write_npy("alignment/dump/rust_rope_yarn.npy", &output_yarn, &[16, 8]);
 
     println!("\n--- Done ---");
 }

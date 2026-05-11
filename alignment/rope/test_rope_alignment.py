@@ -1,6 +1,11 @@
 import math
-import struct
 import numpy as np
+import os
+from pathlib import Path
+
+# Get script directory to resolve relative paths
+SCRIPT_DIR = Path(__file__).parent
+DUMP_DIR = SCRIPT_DIR / "dump"
 
 
 def inv_freqs(dim, theta):
@@ -133,11 +138,8 @@ class RotaryEmbeddingPython:
         return np.array(out, dtype=np.float32)
 
 
-def read_rust_bin(path, expected_len):
-    with open(path, "rb") as f:
-        data = f.read()
-    floats = struct.unpack(f"<{len(data)//4}f", data)
-    return np.array(floats, dtype=np.float32)
+def read_rust_npy(path):
+    return np.load(path)
 
 
 def compare_arrays(a, b, name):
@@ -200,9 +202,9 @@ def main():
 
     # Read Rust data if available, otherwise generate
     try:
-        rust_output = read_rust_bin("alignment/dump/rust_rope_basic.bin", len(python_output))
-        rust_output_partial = read_rust_bin("alignment/dump/rust_rope_partial.bin", len(python_output_partial))
-        rust_output_yarn = read_rust_bin("alignment/dump/rust_rope_yarn.bin", len(python_output_yarn))
+        rust_output = read_rust_npy(str(DUMP_DIR / "rust_rope_basic.npy"))
+        rust_output_partial = read_rust_npy(str(DUMP_DIR / "rust_rope_partial.npy"))
+        rust_output_yarn = read_rust_npy(str(DUMP_DIR / "rust_rope_yarn.npy"))
     except FileNotFoundError:
         print("\nRust output files not found. Generating from Python logic only.")
         # Let's just verify our logic is correct by checking against known values
@@ -215,11 +217,11 @@ def main():
         print("✓ Position 0 check passed")
 
         # Save reference files
-        np.save("alignment/dump/python_rope_basic.npy", python_output.reshape(16, 64))
-        np.save("alignment/dump/python_rope_partial.npy", python_output_partial.reshape(2, 8))
-        np.save("alignment/dump/python_rope_yarn.npy", python_output_yarn.reshape(16, 8))
+        np.save(str(DUMP_DIR / "python_rope_basic.npy"), python_output.reshape(16, 64))
+        np.save(str(DUMP_DIR / "python_rope_partial.npy"), python_output_partial.reshape(2, 8))
+        np.save(str(DUMP_DIR / "python_rope_yarn.npy"), python_output_yarn.reshape(16, 8))
 
-        print("\nReference files saved to alignment/dump/")
+        print(f"\nReference files saved to {DUMP_DIR}/")
         print("\nTo run full alignment:")
         print("  1. Create a simple Rust binary to export the output")
         print("  2. Or extend this script to call Rust via FFI")
