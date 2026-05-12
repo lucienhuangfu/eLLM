@@ -29,6 +29,8 @@ pub enum FfnKind {
         num_experts: usize,
         num_experts_per_tok: usize,
         norm_topk_prob: bool,
+        router_scoring: RouterScoringKind,
+        use_routing_bias: bool,
     },
 }
 
@@ -44,48 +46,29 @@ pub struct LayerPlan {
     pub ffn: FfnKind,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub family: ModelFamily,
-    pub layers: Vec<LayerPlan>,
-    pub architectures: Vec<String>,
-    pub attention_dropout: f32,
-    pub decoder_sparse_step: usize,
-    pub eos_token_id: usize,
-    pub head_dim: usize,
-    pub hidden_act: String,
+    pub vocab_size: usize,
     pub hidden_size: usize,
-    pub initializer_range: f32,
-    pub intermediate_size: usize,
-    pub max_position_embeddings: usize,
-    pub max_window_layers: usize,
-    pub mlp_only_layers: Vec<usize>,
-    pub model_type: String,
-    pub moe_intermediate_size: usize,
-    pub norm_topk_prob: bool,
-    pub num_attention_heads: usize,
-    pub num_experts: usize,
-    pub num_experts_per_tok: usize,
     pub num_hidden_layers: usize,
+    pub num_attention_heads: usize,
     pub num_key_value_heads: usize,
-    pub output_router_logits: bool,
-    pub qkv_bias: bool,
+    pub head_dim: usize,
+    pub max_position_embeddings: usize,
     pub rms_norm_eps: f32,
-    pub rope_scaling: Option<HashMap<String, Value>>,
     pub rope_theta: usize,
     pub rotary_dim: usize,
-    pub router_scoring: RouterScoringKind,
-    pub router_aux_loss_coef: f32,
-    pub shared_experts_intermediate_size: usize,
-    pub sliding_window: Option<usize>,
-    pub use_routing_bias: bool,
     pub tie_word_embeddings: bool,
-    pub torch_dtype: String,
-    pub transformers_version: String,
-    pub use_cache: bool,
+    pub layers: Vec<LayerPlan>,
+    pub qkv_bias: bool,
     pub use_qk_norm: bool,
+    pub rope_scaling: Option<HashMap<String, Value>>,
+    pub eos_token_id: usize,
+    pub max_window_layers: usize,
     pub use_sliding_window: bool,
-    pub vocab_size: usize,
+    pub sliding_window: Option<usize>,
+    pub intermediate_size: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -187,54 +170,50 @@ impl Config {
         let use_routing_bias = raw
             .use_routing_bias
             .unwrap_or(matches!(family, ModelFamily::MiniMaxM2));
+        let decoder_sparse_step = raw.decoder_sparse_step.max(1);
 
         let mut config = Self {
             family,
-            layers: Vec::with_capacity(raw.num_hidden_layers),
-            architectures: raw.architectures,
-            attention_dropout: raw.attention_dropout,
-            decoder_sparse_step: raw.decoder_sparse_step.max(1),
-            eos_token_id: raw.eos_token_id,
-            head_dim,
-            hidden_act: raw.hidden_act,
+            vocab_size: raw.vocab_size,
             hidden_size: raw.hidden_size,
-            initializer_range: raw.initializer_range,
-            intermediate_size,
-            max_position_embeddings: raw.max_position_embeddings,
-            max_window_layers,
-            mlp_only_layers: raw.mlp_only_layers,
-            model_type: raw.model_type,
-            moe_intermediate_size,
-            norm_topk_prob: raw.norm_topk_prob,
-            num_attention_heads: raw.num_attention_heads,
-            num_experts,
-            num_experts_per_tok,
             num_hidden_layers: raw.num_hidden_layers,
+            num_attention_heads: raw.num_attention_heads,
             num_key_value_heads,
-            output_router_logits: raw.output_router_logits,
-            qkv_bias: raw.qkv_bias,
+            head_dim,
+            max_position_embeddings: raw.max_position_embeddings,
             rms_norm_eps: raw.rms_norm_eps,
-            rope_scaling: raw.rope_scaling,
             rope_theta: raw.rope_theta.unwrap_or(10000),
             rotary_dim: raw.rotary_dim.unwrap_or(head_dim),
-            router_scoring,
-            router_aux_loss_coef: raw.router_aux_loss_coef,
-            shared_experts_intermediate_size: raw.shared_experts_intermediate_size.unwrap_or(0),
-            sliding_window: raw.sliding_window,
-            use_routing_bias,
             tie_word_embeddings: raw.tie_word_embeddings,
-            torch_dtype: raw.torch_dtype,
-            transformers_version: raw.transformers_version,
-            use_cache: raw.use_cache,
+            layers: Vec::with_capacity(raw.num_hidden_layers),
+            qkv_bias: raw.qkv_bias,
             use_qk_norm: raw.use_qk_norm,
+            rope_scaling: raw.rope_scaling,
+            eos_token_id: raw.eos_token_id,
+            max_window_layers,
             use_sliding_window: raw.use_sliding_window,
-            vocab_size: raw.vocab_size,
+            sliding_window: raw.sliding_window,
+            intermediate_size,
+        };
+
+        // Extract layer_types before borrowing mlp_only_layers
+        let layer_types = raw.layer_types;
+
+        // Resolve layer plans using raw HfConfig values (not stored in ResolvedConfig)
+        let ffn_params = FfnResolveParams {
+            mlp_only_layers: &raw.mlp_only_layers,
+            num_experts,
+            num_experts_per_tok,
+            moe_intermediate_size,
+            norm_topk_prob: raw.norm_topk_prob,
+            decoder_sparse_step,
+            intermediate_size,
         };
 
         config.layers = (0..config.num_hidden_layers)
             .map(|layer_idx| LayerPlan {
-                attention: resolve_attention_kind(&config, raw.layer_types.as_deref(), layer_idx),
-                ffn: resolve_ffn_kind(&config, layer_idx),
+                attention: resolve_attention_kind(&config, layer_types.as_deref(), layer_idx),
+                ffn: resolve_ffn_kind(&ffn_params, layer_idx, &router_scoring, use_routing_bias),
             })
             .collect();
 
@@ -289,24 +268,41 @@ fn resolve_attention_kind(
     AttentionKind::Full
 }
 
-fn resolve_ffn_kind(config: &Config, layer_idx: usize) -> FfnKind {
-    if config.mlp_only_layers.contains(&layer_idx) || config.num_experts == 0 {
+struct FfnResolveParams<'a> {
+    mlp_only_layers: &'a [usize],
+    num_experts: usize,
+    num_experts_per_tok: usize,
+    moe_intermediate_size: usize,
+    norm_topk_prob: bool,
+    decoder_sparse_step: usize,
+    intermediate_size: usize,
+}
+
+fn resolve_ffn_kind(
+    params: &FfnResolveParams,
+    layer_idx: usize,
+    router_scoring: &RouterScoringKind,
+    use_routing_bias: bool,
+) -> FfnKind {
+    if params.mlp_only_layers.contains(&layer_idx) || params.num_experts == 0 {
         return FfnKind::Dense {
-            intermediate_size: config.intermediate_size,
+            intermediate_size: params.intermediate_size,
         };
     }
 
-    if (layer_idx + 1) % config.decoder_sparse_step == 0 {
+    if (layer_idx + 1) % params.decoder_sparse_step == 0 {
         return FfnKind::SparseMoe {
-            intermediate_size: config.moe_intermediate_size,
-            num_experts: config.num_experts,
-            num_experts_per_tok: config.num_experts_per_tok,
-            norm_topk_prob: config.norm_topk_prob,
+            intermediate_size: params.moe_intermediate_size,
+            num_experts: params.num_experts,
+            num_experts_per_tok: params.num_experts_per_tok,
+            norm_topk_prob: params.norm_topk_prob,
+            router_scoring: router_scoring.clone(),
+            use_routing_bias,
         };
     }
 
     FfnKind::Dense {
-        intermediate_size: config.intermediate_size,
+        intermediate_size: params.intermediate_size,
     }
 }
 

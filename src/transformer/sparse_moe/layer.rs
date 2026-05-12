@@ -115,15 +115,10 @@ where
         let scope_name = names.scope.clone();
         let gate_weight = ctx.zeros(vec![num_experts, hidden_size], names.router_gate);
         let router_bias = if use_routing_bias {
-            Some(
-                ctx.zeros(
-                    vec![num_experts],
-                    names
-                        .router_bias
-                        .clone()
-                        .unwrap_or_else(|| format!("{}.e_score_correction_bias", scope_name)),
-                ),
-            )
+            let bias_name = names
+                .router_bias
+                .expect("use_routing_bias is true but SparseMoeTensorNames.router_bias is None");
+            Some(ctx.zeros(vec![num_experts], bias_name))
         } else {
             None
         };
@@ -163,7 +158,8 @@ where
         decode_only_flag: bool,
         tensor_name: String,
     ) -> Tensor<T> {
-        println!("Entering SparseMoe forward: {}", tensor_name);
+        #[cfg(debug_assertions)]
+        eprintln!("Entering SparseMoe forward: {}", tensor_name);
         let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) =
             self.router.forward(hidden_states, decode_only_flag);
 
