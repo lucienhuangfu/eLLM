@@ -62,8 +62,9 @@ pub fn norm(input_ptr: *const f16, output_ptr: *mut f16, length: usize, denomina
 #[inline(always)]
 pub fn rms_norm(input_ptr: *const f16, output_ptr: *mut f16, length: usize, eps: f16) {
     let sum = sum_square(input_ptr, length);
-    let square_root = f16::sqrt(sum / length as f16);
-    let denominator = (square_root + eps).recip();
+    let variance = sum / length as f16;
+    let square_root = f16::sqrt(variance + eps);
+    let denominator = square_root.recip();
     norm(input_ptr, output_ptr, length, denominator);
 }
 
@@ -75,8 +76,9 @@ pub fn add_rms_norm(
     eps: f16,
 ) {
     let sum = add_sum_square(input_ptr1, input_ptr2, output_ptr, length);
-    let square_root = f16::sqrt(sum / length as f16);
-    let denominator = (square_root + eps).recip();
+    let variance = sum / length as f16;
+    let square_root = f16::sqrt(variance + eps);
+    let denominator = square_root.recip();
     norm(output_ptr, output_ptr, length, denominator);
 }
 #[cfg(test)]

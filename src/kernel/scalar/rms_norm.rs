@@ -1,4 +1,4 @@
-// use crate::common::num_traits::FromNumber;
+use crate::common::num_traits::FromNumber;
 use crate::common::num_traits::Sqrt;
 // use std::ops::{Add, Div, Mul};
 use std::ptr;
@@ -16,7 +16,7 @@ where
                 .unwrap();
             sum / T::from_usize(length)
         };
-        let rrms = T::from_usize(1) / (variance.sqrt() + eps);
+        let rrms = T::from_usize(1) / (variance + eps).sqrt();
         for (vptr, optr) in (0..length).map(|x| (input_ptr.add(x), output_ptr.add(x))) {
             ptr::write(optr, *vptr * rrms);
         }

@@ -7,6 +7,14 @@ edition = "2021"
 name = "ellm"
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "rope_alignment_test"
+path = "alignment/rope/rope_alignment_test.rs"
+
+[[bin]]
+name = "silu_mul_alignment_test"
+path = "alignment/silu_mul/silu_mul_alignment_test.rs"
+
 [dependencies]
 num_cpus = "1.13"
 regex = "1.10.2"
@@ -22,7 +30,6 @@ num = "0.4.3"
 safetensors = "0.4.1"
 memmap2 = "0.9.4"
 tiktoken-rs = "0.6"
-numpy = "0.22"
 npy = "0.2"
 async-stream = "0.3.6"
 axum = "0.8.4"

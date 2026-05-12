@@ -1,105 +1,82 @@
-// === alignment/silu_mul/silu_mul_alignment_test.rs ===
-use std::fs;
-use std::path::PathBuf;
+use ellm::operators::elementwise::silu_mul_zip::SiluMulZipMap;
+use npy::NpyData;
+use std::path::Path;
 
-// Import our SiluMulZipMap operator
-// Note: We need to adjust the path based on the actual project structure
-#[path = "../../src/operators/elementwise/silu_mul_zip.rs"]
-mod silu_mul;
-use silu_mul::SiluMulZipMap;
-#[path = "../../src/operators/traits.rs"]
-mod traits;
-use traits::ZipMapTrait;
+fn load_npy_f32<P: AsRef<Path>>(path: P) -> Vec<f32> {
+    let file = std::fs::File::open(path).unwrap();
+    let data: NpyData<f32> = NpyData::from_reader(file).unwrap();
+    data.to_vec()
+}
 
-// Helper to write npy files (simplified version)
-fn write_npy_f32(path: &str, data: &[f32], shape: &[usize]) {
-    use npy::NpyData;
-    
-    // Create npy data
-    let mut file = fs::File::create(path).unwrap();
-    NpyData::from_slice(data).write(&mut file, shape).unwrap();
+fn write_npy_f32<P: AsRef<Path>>(path: P, data: &[f32], shape: &[usize]) {
+    npy::to_file(path, data, shape).unwrap();
 }
 
 fn main() {
-    println!("===== SiLU+Mul Alignment Test =====");
-    
-    // Get dump directory
-    let script_dir = PathBuf::from(file!()).parent().unwrap().to_path_buf();
-    let dump_dir = script_dir.join("dump");
-    fs::create_dir_all(&dump_dir).unwrap();
-    
-    // Test configuration
+    println!("===== SiluMul Alignment Test =====");
+
+    let dump_dir = Path::new("alignment").join("silu_mul").join("dump");
+    std::fs::create_dir_all(&dump_dir).unwrap();
+
+    // Load inputs from NumPy files
+    let x1 = load_npy_f32(dump_dir.join("python_silu_mul_x1.npy"));
+    let x2 = load_npy_f32(dump_dir.join("python_silu_mul_x2.npy"));
+    let python_output = load_npy_f32(dump_dir.join("python_silu_mul_output.npy"));
+
+    // Shape parameters
     let batch_size = 4;
-    let head_num = 32;
-    let head_size = 128;
-    let total_size = batch_size * head_num * head_size;
-    
-    // Test 1: Basic test with sequential values
-    println!("\n--- Test 1: Basic sequential values ---");
-    let mut x1: Vec<f32> = (0..total_size).map(|x| x as f32).collect();
-    let x2: Vec<f32> = vec![1.0; total_size];
-    let mut y: Vec<f32> = vec![0.0; total_size];
-    
+    let hidden_size = 2048;
+    let head_num = 1;
+    let head_size = hidden_size;
+    let prefill_size = batch_size;
+
+    // Initialize output vector
+    let mut output = vec![0.0f32; batch_size * hidden_size];
+
+    // Create operator and run
     let operator = SiluMulZipMap::new(
         x1.as_ptr(),
         x2.as_ptr(),
-        y.as_mut_ptr(),
+        output.as_mut_ptr(),
         head_num,
         head_size,
     );
-    
-    // Run operator with 1 thread
-    operator.run(batch_size, 1, 0);
-    
-    let rust_path = dump_dir.join("rust_silu_mul_basic.npy");
-    write_npy_f32(rust_path.to_str().unwrap(), &y, &[batch_size, head_num, head_size]);
-    println!("Saved to {:?}", rust_path);
-    println!("Output shape: [{:?}, {:?}, {:?}]", batch_size, head_num, head_size);
-    
-    // Test 2: All zeros
-    println!("\n--- Test 2: All zeros ---");
-    let x1_zero: Vec<f32> = vec![0.0; total_size];
-    let x2_zero: Vec<f32> = vec![1.0; total_size];
-    let mut y_zero: Vec<f32> = vec![0.0; total_size];
-    
-    let operator_zero = SiluMulZipMap::new(
-        x1_zero.as_ptr(),
-        x2_zero.as_ptr(),
-        y_zero.as_mut_ptr(),
-        head_num,
-        head_size,
+    operator.run(prefill_size, 1, 0);
+
+    // Write Rust output to NumPy file
+    write_npy_f32(
+        dump_dir.join("rust_silu_mul_output.npy"),
+        &output,
+        &[batch_size, hidden_size],
     );
-    operator_zero.run(batch_size, 1, 0);
-    
-    let rust_zero_path = dump_dir.join("rust_silu_mul_zeros.npy");
-    write_npy_f32(rust_zero_path.to_str().unwrap(), &y_zero, &[batch_size, head_num, head_size]);
-    println!("Saved to {:?}", rust_zero_path);
-    
-    // Test 3: Small random values (we'll use a fixed seed pattern)
-    println!("\n--- Test 3: Small random values ---");
-    let mut x1_rand: Vec<f32> = Vec::with_capacity(total_size);
-    let mut x2_rand: Vec<f32> = Vec::with_capacity(total_size);
-    // Generate simple deterministic "random" values
-    for i in 0..total_size {
-        let val1 = ((i as f32 * 0.1).sin() * 0.01) as f32;
-        let val2 = ((i as f32 * 0.2).cos() * 0.01) as f32;
-        x1_rand.push(val1);
-        x2_rand.push(val2);
+
+    // Compare outputs
+    println!("\n--- Comparing outputs ---");
+    let mut max_abs_error = 0.0f32;
+    let mut mean_abs_error = 0.0f32;
+    let mut cosine_numerator = 0.0f32;
+    let mut norm_rust = 0.0f32;
+    let mut norm_python = 0.0f32;
+
+    for i in 0..batch_size * hidden_size {
+        let diff = (output[i] - python_output[i]).abs();
+        max_abs_error = max_abs_error.max(diff);
+        mean_abs_error += diff;
+
+        cosine_numerator += output[i] * python_output[i];
+        norm_rust += output[i] * output[i];
+        norm_python += python_output[i] * python_output[i];
     }
-    let mut y_rand: Vec<f32> = vec![0.0; total_size];
-    
-    let operator_rand = SiluMulZipMap::new(
-        x1_rand.as_ptr(),
-        x2_rand.as_ptr(),
-        y_rand.as_mut_ptr(),
-        head_num,
-        head_size,
-    );
-    operator_rand.run(batch_size, 1, 0);
-    
-    let rust_rand_path = dump_dir.join("rust_silu_mul_rand.npy");
-    write_npy_f32(rust_rand_path.to_str().unwrap(), &y_rand, &[batch_size, head_num, head_size]);
-    println!("Saved to {:?}", rust_rand_path);
-    
+
+    mean_abs_error /= (batch_size * hidden_size) as f32;
+    let cosine_similarity = cosine_numerator / (norm_rust.sqrt() * norm_python.sqrt());
+
+    println!("max_abs_error: {:.2e}", max_abs_error);
+    println!("mean_abs_error: {:.2e}", mean_abs_error);
+    println!("cosine_similarity: {:.8}", cosine_similarity);
+
+    let passed = max_abs_error < 1e-5 && mean_abs_error < 1e-6 && cosine_similarity > 0.999999;
+    println!("\n{}", if passed { "PASS" } else { "FAIL" });
+
     println!("\n--- Done ---");
 }

@@ -87,6 +87,29 @@ alignment/
 
 To add a new operator, create a directory following the `rope/` pattern.
 
+## Environment Tips
+
+### Windows-Specific Issues
+
+1. **Python Command**: On Windows, use `py` instead of `python` to run Python scripts:
+   ```bash
+   py alignment/[operator]/generate_hf_[operator].py
+   ```
+   This avoids environment/path issues that may occur with `python` command.
+
+2. **Rust Build Cache**: If you encounter build errors like "failed to run custom build command" for dependencies like `serde` or `quote`:
+   ```bash
+   # Clean the target build directory
+   rm -r target
+   # Then rebuild
+   cargo build
+   ```
+
+3. **PyTorch Installation**: Ensure PyTorch is installed in the environment used by the `py` command. Use `py -m pip` to install:
+   ```bash
+   py -m pip install torch numpy
+   ```
+
 ## Reference Material
 
 See [references/alignment-spec.md](references/alignment-spec.md) for the full alignment spec, tensor-shape matrix, thresholds, logging format, bug checklist, and detailed guide for adding new operators.
