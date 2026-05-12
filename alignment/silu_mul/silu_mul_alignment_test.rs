@@ -1,15 +1,19 @@
-use ellm::operators::elementwise::silu_mul_zip::SiluMulZipMap;
-use npy::NpyData;
+use ellm::operators::transform::SiluMulZipMap;
+use std::io::Read;
 use std::path::Path;
 
 fn load_npy_f32<P: AsRef<Path>>(path: P) -> Vec<f32> {
-    let file = std::fs::File::open(path).unwrap();
-    let data: NpyData<f32> = NpyData::from_reader(file).unwrap();
+    let mut buf = vec![];
+    std::fs::File::open(path)
+        .unwrap()
+        .read_to_end(&mut buf)
+        .unwrap();
+    let data: npy::NpyData<f32> = npy::NpyData::from_bytes(&buf).unwrap();
     data.to_vec()
 }
 
-fn write_npy_f32<P: AsRef<Path>>(path: P, data: &[f32], shape: &[usize]) {
-    npy::to_file(path, data, shape).unwrap();
+fn write_npy_f32<P: AsRef<Path>>(path: P, data: &[f32]) {
+    npy::to_file(path.as_ref(), data.iter().copied()).unwrap();
 }
 
 fn main() {
@@ -34,7 +38,7 @@ fn main() {
     let mut output = vec![0.0f32; batch_size * hidden_size];
 
     // Create operator and run
-    let operator = SiluMulZipMap::new(
+    let operator = SiluMulZipMap::<f32>::new(
         x1.as_ptr(),
         x2.as_ptr(),
         output.as_mut_ptr(),
@@ -44,11 +48,7 @@ fn main() {
     operator.run(prefill_size, 1, 0);
 
     // Write Rust output to NumPy file
-    write_npy_f32(
-        dump_dir.join("rust_silu_mul_output.npy"),
-        &output,
-        &[batch_size, hidden_size],
-    );
+    write_npy_f32(dump_dir.join("rust_silu_mul_output.npy"), &output);
 
     // Compare outputs
     println!("\n--- Comparing outputs ---");
