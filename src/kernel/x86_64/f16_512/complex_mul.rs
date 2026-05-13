@@ -25,7 +25,7 @@ pub fn complex_mul(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mem_mgr::allocator::allocate_init;
+    use crate::mem_mgr::allocator::AlignedBox;
     use std::ptr;
 
     #[test]
@@ -40,23 +40,23 @@ mod tests {
         ]; */
 
         let length = 32;
-        let input1 = allocate_init::<f16>(length, 0.0);
+        let mut input1 = AlignedBox::allocate_init(length, 0.0f16);
         for i in 1..=length {
             unsafe {
-                ptr::write(input1.wrapping_add(i - 1), i as f16);
+                ptr::write(input1.as_mut_ptr().wrapping_add(i - 1), i as f16);
             }
         }
 
-        let input2 = allocate_init::<f16>(length, 0.0);
+        let mut input2 = AlignedBox::allocate_init(length, 0.0f16);
         for i in 1..=length {
             unsafe {
-                ptr::write(input2.wrapping_add(i - 1), i as f16);
+                ptr::write(input2.as_mut_ptr().wrapping_add(i - 1), i as f16);
             }
         }
 
-        let output = allocate_init::<f16>(length, 0.0);
+        let mut output = AlignedBox::allocate_init(length, 0.0f16);
 
-        complex_mul(input1, input2, output, length);
+        complex_mul(input1.as_ptr(), input2.as_ptr(), output.as_mut_ptr(), length);
         let expected: Vec<f16> = vec![
             1.0 * 1.0 - 2.0 * 2.0,
             1.0 * 2.0 + 2.0 * 1.0,

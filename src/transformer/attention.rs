@@ -8,6 +8,7 @@ use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::super::common::matmul_params::MatMulParams;
+use super::super::runtime::operator::Operator;
 use super::super::runtime::tensor::{Tensor, TensorCtx};
 
 use super::config::Config;
@@ -194,12 +195,8 @@ mod test {
         let attention_head_size: usize = config.head_dim;
         // config.hidden_size / config.num_attention_heads;
 
-        let mem_pool = Rc::new(RefCell::new(MemPool::new(std::collections::HashMap::<
-            String,
-            Vec<f32>,
-        >::new())));
-        let operator_queue = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
+        let operator_queue = Rc::new(RefCell::new(Vec::<Operator<f32>>::new()));
+        let ctx = Rc::new(TensorCtx::new(operator_queue));
 
         let self_attention = Attention::new(
             &config,
@@ -258,12 +255,8 @@ mod test {
 
         let attention_head_size: usize = config.head_dim;
 
-        let mem_pool = Rc::new(RefCell::new(MemPool::new(std::collections::HashMap::<
-            String,
-            Vec<f16>,
-        >::new())));
-        let operator_queue = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
+        let operator_queue = Rc::new(RefCell::new(Vec::<Operator<f16>>::new()));
+        let ctx = Rc::new(TensorCtx::new(operator_queue));
 
         let self_attention = Attention::new(
             &config,

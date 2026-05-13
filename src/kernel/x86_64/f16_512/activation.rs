@@ -117,7 +117,7 @@ pub unsafe fn sigmoid512(x: __m512h) -> __m512h {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mem_mgr::allocator::allocate_init;
+    use crate::mem_mgr::allocator::AlignedBox;
     use std::arch::x86_64::{_mm512_load_ph, _mm512_store_ph};
     use std::slice;
 
@@ -128,17 +128,17 @@ mod tests {
         let length = 32;
         // Test range from -10 to 10
         let input_vals: Vec<f16> = (0..length).map(|i| ((i as f16 - 16.0) * 0.5)).collect();
-        let mut v = allocate_init::<f16>(length, 0.0);
+        let mut v = AlignedBox::allocate_init(length, 0.0f16);
 
         unsafe {
-            std::ptr::copy_nonoverlapping(input_vals.as_ptr(), v, length);
+            std::ptr::copy_nonoverlapping(input_vals.as_ptr(), v.as_mut_ptr(), length);
 
-            let a = _mm512_load_ph(v);
+            let a = _mm512_load_ph(v.as_ptr());
             let o = tanh512(a);
 
-            let mut res = allocate_init::<f16>(length, 0.0);
-            _mm512_store_ph(res, o);
-            let res_slice = slice::from_raw_parts(res, length);
+            let mut res = AlignedBox::allocate_init(length, 0.0f16);
+            _mm512_store_ph(res.as_mut_ptr(), o);
+            let res_slice = slice::from_raw_parts(res.as_ptr(), length);
 
             for j in 0..length {
                 let expected = input_vals[j].exp();
@@ -168,16 +168,16 @@ mod tests {
     fn test_tanh() {
         let length = 32;
         let input_vals: Vec<f16> = (0..length).map(|i| ((i as f16 - 16.0) * 0.5)).collect();
-        let mut v = allocate_init::<f16>(length, 0.0);
+        let mut v = AlignedBox::allocate_init(length, 0.0f16);
 
         unsafe {
-            std::ptr::copy_nonoverlapping(input_vals.as_ptr(), v, length);
-            let a = _mm512_load_ph(v);
+            std::ptr::copy_nonoverlapping(input_vals.as_ptr(), v.as_mut_ptr(), length);
+            let a = _mm512_load_ph(v.as_ptr());
             let o = tanh512(a);
 
-            let mut res = allocate_init::<f16>(length, 0.0);
-            _mm512_store_ph(res, o);
-            let res_slice = slice::from_raw_parts(res, length);
+            let mut res = AlignedBox::allocate_init(length, 0.0f16);
+            _mm512_store_ph(res.as_mut_ptr(), o);
+            let res_slice = slice::from_raw_parts(res.as_ptr(), length);
 
             for j in 0..length {
                 let expected = input_vals[j].tanh();
@@ -203,16 +203,16 @@ mod tests {
     fn test_sigmoid() {
         let length = 32;
         let input_vals: Vec<f16> = (0..length).map(|i| ((i as f16 - 16.0) * 0.5)).collect();
-        let mut v = allocate_init::<f16>(length, 0.0);
+        let mut v = AlignedBox::allocate_init(length, 0.0f16);
 
         unsafe {
-            std::ptr::copy_nonoverlapping(input_vals.as_ptr(), v, length);
-            let a = _mm512_load_ph(v);
+            std::ptr::copy_nonoverlapping(input_vals.as_ptr(), v.as_mut_ptr(), length);
+            let a = _mm512_load_ph(v.as_ptr());
             let o = sigmoid512(a);
 
-            let mut res = allocate_init::<f16>(length, 0.0);
-            _mm512_store_ph(res, o);
-            let res_slice = slice::from_raw_parts(res, length);
+            let mut res = AlignedBox::allocate_init(length, 0.0f16);
+            _mm512_store_ph(res.as_mut_ptr(), o);
+            let res_slice = slice::from_raw_parts(res.as_ptr(), length);
 
             for j in 0..length {
                 let x = input_vals[j];

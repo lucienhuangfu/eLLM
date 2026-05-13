@@ -63,7 +63,7 @@ fn build_case(
         std::collections::HashMap::new(),
     )));
     let operator_queue = Rc::new(RefCell::new(Vec::<Operator<f16>>::new()));
-    let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
+    let ctx = Rc::new(TensorCtx::new(operator_queue));
 
     let moe = SparseMoe::<f16>::new(
         hidden_size,

@@ -44,15 +44,15 @@ pub fn dot_product(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mem_mgr::allocator::allocate_init;
+    use crate::mem_mgr::allocator::AlignedBox;
 
     #[test]
     fn test_dot_product() {
         let length = 128;
-        let mut x1 = allocate_init::<f16>(length, 1.0);
-        let mut x2 = allocate_init::<f16>(length, 1.0);
+        let mut x1 = AlignedBox::allocate_init(length, 1.0f16);
+        let mut x2 = AlignedBox::allocate_init(length, 1.0f16);
         let mut result: f16 = 0.0;
-        dot_product(x1, x2, &mut result, length);
+        dot_product(x1.as_ptr(), x2.as_ptr(), &mut result, length);
         assert_eq!(result, 128.0);
     }
 }

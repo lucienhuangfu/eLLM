@@ -1018,7 +1018,6 @@ mod test {
         let value_tensor = Tensor::<f32>::from_cache(
             value_shape,
             "model.layers.0.values".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1026,7 +1025,6 @@ mod test {
         let sums_tensor = Tensor::<f32>::from_cache(
             sums_shape,
             "model.layers.0.sums".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1177,7 +1175,6 @@ mod test {
         let value_tensor = Tensor::<f16>::from_cache(
             value_shape,
             "model.layers.0.values".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1185,7 +1182,6 @@ mod test {
         let sums_tensor = Tensor::<f16>::from_cache(
             sums_shape,
             "model.layers.0.sums".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1351,7 +1347,6 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             input_shape.clone(),
             "model.layers.0.input".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1359,26 +1354,22 @@ mod test {
         let q_weight = Tensor::<f16>::from_cache(
             vec![q_dim, hidden_size],
             "q.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
         let k_weight = Tensor::<f16>::from_cache(
             vec![kv_dim, hidden_size],
             "k.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
         let v_weight = Tensor::<f16>::from_cache(
             vec![kv_dim, hidden_size],
             "v.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let position_embedding = Tensor::<f16>::from_cache(
             vec![head_dim],
             "rope.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1509,33 +1500,28 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let q_weight = Tensor::<f16>::from_cache(
             vec![q_dim, hidden_size],
             "q.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
         let k_weight = Tensor::<f16>::from_cache(
             vec![kv_dim, hidden_size],
             "k.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
         let v_weight = Tensor::<f16>::from_cache(
             vec![kv_dim, hidden_size],
             "v.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let position_embedding = Tensor::<f16>::from_cache(
             vec![head_dim],
             "rope.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1675,14 +1661,12 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let weight_tensor = Tensor::<f16>::from_cache(
             vec![intermediate_size, hidden_size],
             "weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1806,16 +1790,11 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, k],
             "model.layers.0.input".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
-        let weight_tensor = Tensor::<f16>::from_cache(
-            vec![n, k],
-            "weight".to_string(),
-            mem_pool.clone(),
-            operator_queue.clone(),
-        );
+        let weight_tensor =
+            Tensor::<f16>::from_cache(vec![n, k], "weight".to_string(), operator_queue.clone());
 
         // A = 1
         let m = batch_size;
@@ -1932,14 +1911,12 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let weight_tensor = Tensor::<f16>::from_cache(
             vec![intermediate_size, hidden_size],
             "weight.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -2034,21 +2011,18 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let weight_tensor = Tensor::<f16>::from_cache(
             vec![intermediate_size, hidden_size],
             "weight.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let bias_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, intermediate_size],
             "bias.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -2252,7 +2226,6 @@ mod test {
         let input = Tensor::<f16>::from_cache(
             vec![batch_size, hidden],
             "model.layers.0.input".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -2260,13 +2233,11 @@ mod test {
         let gate_w = Tensor::<f16>::from_cache(
             vec![num_experts, inter, hidden],
             "gate.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
         let up_w = Tensor::<f16>::from_cache(
             vec![num_experts, inter, hidden],
             "up.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -2426,7 +2397,6 @@ mod test {
         let x = Tensor::<f16>::from_cache(
             vec![num_experts, batch_size, inter],
             "model.layers.0.experts.silu_out".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -2436,7 +2406,6 @@ mod test {
         let down_w = Tensor::<f16>::from_cache(
             vec![num_experts, hidden, inter],
             "model.layers.0.down.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -2604,14 +2573,12 @@ mod test {
         let input = Tensor::<f16>::from_cache(
             vec![batch_size, k, hidden],
             "model.layers.0.moe.down_out".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let residual = Tensor::<f16>::from_cache(
             vec![batch_size, hidden],
             "model.layers.0.residual".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -3046,14 +3013,12 @@ mod tests {
         let input_tensor = Tensor::<f16>::from_cache(
             vec![SEQUENCE_CHUNK_SIZE, BATCH_SIZE, K],
             "perf.matmul.input".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let weight_tensor = Tensor::<f16>::from_cache(
             vec![N, K],
             "perf.matmul.weight".to_string(),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 

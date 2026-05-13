@@ -103,7 +103,7 @@ mod tests {
     use std::slice;
 
     // 你们自己的对齐分配器
-    use crate::mem_mgr::allocator::allocate_init;
+    use crate::mem_mgr::allocator::AlignedBox;
 
     fn approx_eq(a: f16, b: f16, tol: f32) -> bool {
         let da = a as f32;
@@ -150,7 +150,7 @@ mod tests {
         // -------- 构造 A/B/C：一份对齐指针给 AVX，用 Vec 做参考 ----------
 
         // A：对齐版指针
-        let a_ptr = allocate_init::<f16>(3 * LDA, 0.0 as f16);
+        let mut a_box = AlignedBox::allocate_init(3 * LDA, 0.0 as f16);
         // A：标量参考版
         let mut a_ref = vec![0.0 as f16; 3 * LDA];
 
@@ -160,13 +160,13 @@ mod tests {
                 let val = v as f16;
                 a_ref[m * LDA + k] = val;
                 unsafe {
-                    ptr::write(a_ptr.add(m * LDA + k), val);
+                    ptr::write(a_box.as_mut_ptr().add(m * LDA + k), val);
                 }
             }
         }
 
         // B
-        let b_ptr = allocate_init::<f16>(KC * 32, 0.0 as f16);
+        let mut b_box = AlignedBox::allocate_init(KC * 32, 0.0 as f16);
         let mut b_ref = vec![0.0 as f16; KC * 32];
         for k in 0..KC {
             for n in 0..32 {
@@ -174,14 +174,14 @@ mod tests {
                 let val = v as f16;
                 b_ref[k * 32 + n] = val;
                 unsafe {
-                    ptr::write(b_ptr.add(k * 32 + n), val);
+                    ptr::write(b_box.as_mut_ptr().add(k * 32 + n), val);
                 }
             }
         }
 
         // C
         let c_init = 0.5 as f16;
-        let c_ptr = allocate_init::<f16>(3 * LDC, c_init);
+        let mut c_box = AlignedBox::allocate_init(3 * LDC, c_init);
         let mut c_ref = vec![c_init; 3 * LDC];
 
         // 参考计算
@@ -189,11 +189,18 @@ mod tests {
 
         // 调用 AVX 内核
         unsafe {
-            matmul_update_inplace_3x32_accum(a_ptr, b_ptr, c_ptr, LDA, LDC, KC);
+            matmul_update_inplace_3x32_accum(
+                a_box.as_ptr(),
+                b_box.as_ptr(),
+                c_box.as_mut_ptr(),
+                LDA,
+                LDC,
+                KC,
+            );
         }
 
         // 从对齐指针构造 slice 读回结果
-        let c_slice = unsafe { slice::from_raw_parts(c_ptr, 3 * LDC) };
+        let c_slice = c_box.as_slice();
 
         for i in 0..c_slice.len() {
             assert!(
@@ -229,9 +236,9 @@ mod tests {
         // -------- C / rope 全部用 allocate_init，保证传给 AVX 的都是对齐指针 --------
 
         // C：对齐指针，用于被测路径
-        let c_ptr = allocate_init::<f16>(3 * LDC, 0.0 as f16);
+        let mut c_box = AlignedBox::allocate_init(3 * LDC, 0.0 as f16);
         // C_ref：对齐指针，用于“手动调用 rms_norm+complex_mul”的参考路径
-        let c_ref_ptr = allocate_init::<f16>(3 * LDC, 0.0 as f16);
+        let mut c_ref_box = AlignedBox::allocate_init(3 * LDC, 0.0 as f16);
 
         for row in 0..3 {
             for col in 0..LDC {
@@ -239,63 +246,78 @@ mod tests {
                 let val = v as f16;
                 let idx = row * LDC + col;
                 unsafe {
-                    ptr::write(c_ptr.add(idx), val);
-                    ptr::write(c_ref_ptr.add(idx), val);
+                    ptr::write(c_box.as_mut_ptr().add(idx), val);
+                    ptr::write(c_ref_box.as_mut_ptr().add(idx), val);
                 }
             }
         }
 
         // rope：对齐指针
-        let rope_ptr = allocate_init::<f16>(LDC, 0.0 as f16);
+        let mut rope_box = AlignedBox::allocate_init(LDC, 0.0 as f16);
         let num_pairs = LDC / 2;
         for j in 0..num_pairs {
             let theta = 0.01f32 * (j as f32);
             let cos_t = theta.cos();
             let sin_t = theta.sin();
             unsafe {
-                ptr::write(rope_ptr.add(2 * j), cos_t as f16);
-                ptr::write(rope_ptr.add(2 * j + 1), sin_t as f16);
+                ptr::write(rope_box.as_mut_ptr().add(2 * j), cos_t as f16);
+                ptr::write(rope_box.as_mut_ptr().add(2 * j + 1), sin_t as f16);
             }
         }
 
         // 手动参考路径：逐行调用 rms_norm + complex_mul
         unsafe {
             // row 0
-            rms_norm(c_ref_ptr.add(0 * LDC), c_ref_ptr.add(0 * LDC), 128, eps);
+            rms_norm(c_ref_box.as_ptr(), c_ref_box.as_mut_ptr(), 128, eps);
             complex_mul(
-                c_ref_ptr.add(0 * LDC),
-                rope_ptr,
-                c_ref_ptr.add(0 * LDC),
+                c_ref_box.as_ptr(),
+                rope_box.as_ptr(),
+                c_ref_box.as_mut_ptr(),
                 128,
             );
 
             // row 1
-            rms_norm(c_ref_ptr.add(1 * LDC), c_ref_ptr.add(1 * LDC), 128, eps);
+            rms_norm(
+                c_ref_box.as_ptr().add(1 * LDC),
+                c_ref_box.as_mut_ptr().add(1 * LDC),
+                128,
+                eps,
+            );
             complex_mul(
-                c_ref_ptr.add(1 * LDC),
-                rope_ptr,
-                c_ref_ptr.add(1 * LDC),
+                c_ref_box.as_ptr().add(1 * LDC),
+                rope_box.as_ptr(),
+                c_ref_box.as_mut_ptr().add(1 * LDC),
                 128,
             );
 
             // row 2
-            rms_norm(c_ref_ptr.add(2 * LDC), c_ref_ptr.add(2 * LDC), 128, eps);
+            rms_norm(
+                c_ref_box.as_ptr().add(2 * LDC),
+                c_ref_box.as_mut_ptr().add(2 * LDC),
+                128,
+                eps,
+            );
             complex_mul(
-                c_ref_ptr.add(2 * LDC),
-                rope_ptr,
-                c_ref_ptr.add(2 * LDC),
+                c_ref_box.as_ptr().add(2 * LDC),
+                rope_box.as_ptr(),
+                c_ref_box.as_mut_ptr().add(2 * LDC),
                 128,
             );
         }
 
         // 被测路径：调用你的 finalize 包装函数
         unsafe {
-            matmul_finalize_rmsnorm_rope_inplace_3x128(c_ptr, rope_ptr, LDC, eps);
+            matmul_finalize_rmsnorm_rope_inplace_3x128(
+                c_box.as_mut_ptr(),
+                rope_box.as_ptr(),
+                LDC,
+                eps,
+            );
         }
 
         // 读回结果，对齐指针 → slice
-        let c_slice = unsafe { slice::from_raw_parts(c_ptr, 3 * LDC) };
-        let c_ref_slice = unsafe { slice::from_raw_parts(c_ref_ptr, 3 * LDC) };
+        let c_slice = c_box.as_slice();
+        let c_ref_slice = c_ref_box.as_slice();
 
         // 逐元素按 bit 检查完全一致
         for i in 0..c_slice.len() {

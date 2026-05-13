@@ -231,9 +231,8 @@ mod test {
         let max_position_embeddings = config.max_position_embeddings;
         let head_dim = config.head_dim;
 
-        let mem_pool = Rc::new(RefCell::new(MemPool::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
+        let ctx = Rc::new(TensorCtx::new(operator_queue));
 
         let vocab_size = config.vocab_size;
         let word_embedding = Rc::new(ctx.zeros(
@@ -307,7 +306,7 @@ mod test {
         let mem_pool: Rc<RefCell<MemPool<f16>>> =
             Rc::new(RefCell::new(MemPool::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
+        let ctx = Rc::new(TensorCtx::new(operator_queue));
 
         let vocab_size = config.vocab_size;
         let word_embedding = Rc::new(ctx.zeros(

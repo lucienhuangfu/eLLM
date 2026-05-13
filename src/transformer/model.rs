@@ -195,7 +195,7 @@ mod test {
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::common::sequence_slice::SequenceSlice;
-    use crate::mem_mgr::allocator::allocate_init;
+    use crate::mem_mgr::allocator::AlignedBox;
     use crate::runtime::{Phase, SequenceState};
 
     fn build_batch_list(batch_size: usize) -> Vec<SequenceState> {
@@ -275,14 +275,15 @@ mod test {
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
-        let sequences = allocate_init::<usize>((config.max_position_embeddings) * batch_size, 0);
+        let mut sequences_box =
+            AlignedBox::allocate_init((config.max_position_embeddings) * batch_size, 0);
 
         let mut batch_list = build_batch_list(batch_size);
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
         let (_output_indices, _output_tensor) =
-            model.forward(sequences, batch_temperature.as_mut_ptr());
+            model.forward(sequences_box.as_mut_ptr(), batch_temperature.as_mut_ptr());
 
         for thread_id in 0..thread_num {
             for operator in model.ctx.operator_queue.borrow().iter() {
@@ -346,13 +347,14 @@ mod test {
             eos_id,
         );
 
-        let sequences = allocate_init::<usize>((config.max_position_embeddings) * batch_size, 0);
+        let mut sequences_box =
+            AlignedBox::allocate_init((config.max_position_embeddings) * batch_size, 0);
         let mut batch_list = build_batch_list(batch_size);
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
         let (_output_indices, _output_tensor) =
-            model.forward(sequences, batch_temperature.as_mut_ptr());
+            model.forward(sequences_box.as_mut_ptr(), batch_temperature.as_mut_ptr());
 
         for thread_id in 0..thread_num {
             for operator in model.ctx.operator_queue.borrow().iter() {
