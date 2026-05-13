@@ -16,7 +16,7 @@ use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 // use super::super::operators::map::rms_map::RMSMap;
 use super::super::common::matmul_params::MatMulParams;
-use super::super::mem_mgr::cache::Cache;
+use super::super::mem_mgr::mem_pool::MemPool;
 use super::super::runtime::operator::Operator;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
@@ -74,9 +74,9 @@ where
         // let loader = SafeTensorsLoader::new(&torch_file).unwrap();
         // let tensors = loader.load_all_weights_f16().unwrap();
         let parameter_tensors = std::collections::HashMap::new();
-        let cache = Rc::new(RefCell::new(Cache::new(parameter_tensors)));
+        let mem_pool = Rc::new(RefCell::new(MemPool::new(parameter_tensors)));
         let operator_queue: Rc<RefCell<Vec<Operator<T>>>> = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
+        let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
 
         // Create default tensors
         let word_embedding = Rc::new(ctx.zeros(
@@ -280,7 +280,8 @@ mod test {
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
-        let (_output_indices, _output_tensor) = model.forward(sequences, batch_temperature.as_mut_ptr());
+        let (_output_indices, _output_tensor) =
+            model.forward(sequences, batch_temperature.as_mut_ptr());
 
         for thread_id in 0..thread_num {
             for operator in model.ctx.operator_queue.borrow().iter() {
@@ -349,7 +350,8 @@ mod test {
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
-        let (_output_indices, _output_tensor) = model.forward(sequences, batch_temperature.as_mut_ptr());
+        let (_output_indices, _output_tensor) =
+            model.forward(sequences, batch_temperature.as_mut_ptr());
 
         for thread_id in 0..thread_num {
             for operator in model.ctx.operator_queue.borrow().iter() {

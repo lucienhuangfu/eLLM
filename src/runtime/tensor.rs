@@ -8,8 +8,8 @@ use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 use crate::common::matmul_params::MatMulParams;
 use crate::common::tensor_utils::get_strides;
-use crate::mem_mgr::allocator::allocate_init;
-use crate::mem_mgr::cache::Cache;
+use crate::mem_mgr::allocator::AlignedBox;
+use crate::mem_mgr::mem_pool::MemPool;
 
 use crate::operators::movement::LiftVector;
 use crate::operators::routing::ExpertsSoftmaxNorm;
@@ -41,7 +41,7 @@ where
     pub shape: Vec<usize>,
     pub strides: Vec<usize>,
     pub tensor_name: String,
-    pub cache: Rc<RefCell<Cache<T>>>,
+    pub mem_pool: Rc<RefCell<MemPool<T>>>,
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     // pub size: usize,
     // pub is_contiguous: bool,
@@ -52,7 +52,7 @@ pub struct TensorCtx<T>
 where
     T: Copy + PartialOrd,
 {
-    pub cache: Rc<RefCell<Cache<T>>>,
+    pub mem_pool: Rc<RefCell<MemPool<T>>>,
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
 }
 
@@ -61,11 +61,11 @@ where
     T: Copy + PartialOrd,
 {
     pub fn new(
-        cache: Rc<RefCell<Cache<T>>>,
+        mem_pool: Rc<RefCell<MemPool<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         Self {
-            cache,
+            mem_pool,
             operator_queue,
         }
     }
@@ -90,10 +90,10 @@ where
         + AddAssign,
 {
     pub fn tensor(&self, shape: Vec<usize>, tensor_name: String) -> Tensor<T> {
-        Tensor::from_cache(
+        Tensor::from_mem_pool(
             shape,
             tensor_name,
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         )
     }
@@ -108,7 +108,7 @@ where
             shape,
             data,
             tensor_name,
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         )
     }
@@ -117,7 +117,7 @@ where
         Tensor::zeros(
             shape,
             tensor_name,
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         )
     }
@@ -136,7 +136,7 @@ where
             batch_size,
             eps,
             scope_name,
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         )
     }
@@ -155,11 +155,28 @@ where
         + Sqrt
         + AddAssign,
 {
+    pub fn from_cache(
+        shape: Vec<usize>,
+        tensor_name: String,
+        mem_pool: Rc<RefCell<MemPool<T>>>,
+        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
+    ) -> Self {
+        let data = mem_pool.borrow_mut().get(&tensor_name, &shape);
+        let strides = get_strides(&shape);
+        Tensor {
+            data,
+            shape,
+            strides,
+            tensor_name,
+            mem_pool,
+            operator_queue,
+        }
+    }
     pub fn add(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
-        let output_tensor = <Tensor<T>>::from_cache(
+        let output_tensor = <Tensor<T>>::from_mem_pool(
             self.shape.clone(),
             tensor_name,
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
         let operator = Operator::AddZipMap(AddZipMap::new(
@@ -181,10 +198,10 @@ where
         eps: T,
         tensor_name: String,
     ) -> Self {
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = Tensor::from_mem_pool(
             self.shape.clone(),
             tensor_name,
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -202,10 +219,10 @@ where
     }
 
     pub fn sigmoid(&self, tensor_name: String) -> Self {
-        let output_tensor = <Tensor<T>>::from_cache(
+        let output_tensor = <Tensor<T>>::from_mem_pool(
             self.shape.clone(),
             tensor_name,
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
         let operator = Operator::SigmoidMap(SigmoidMap::new(
@@ -227,10 +244,10 @@ where
         scope_name: String,
     ) -> Self {
         let output_shape = self.shape.clone();
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -267,10 +284,10 @@ where
         // output [batch_size, hidden_size]
         let output_shape = vec![self.shape[0], self.shape[2]];
 
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -309,10 +326,10 @@ where
         // output [batch_size, num_experts_per_token, hidden_size]
         let output_shape = vec![self.shape[1], num_experts_per_tok, down_weights.shape[1]];
 
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -354,10 +371,10 @@ where
         // output [num_experts, batch_size, intermediate_size]
         let output_shape = vec![gate_weights.shape[0], self.shape[0], gate_weights.shape[1]];
 
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -397,14 +414,25 @@ where
         // sorted_ids: Vec<(usize, Vec<(usize, T)>)>,
 
         // [expert_num] bool
-        let experts_indicator = unsafe { allocate_init(num_experts, false) };
+        let mut experts_box = AlignedBox::allocate_init(num_experts, false);
+        let experts_indicator = experts_box.as_mut_ptr();
+        std::mem::forget(experts_box);
+
         // [expert_num, batch_size] indice bool vec<bool>
         // [expert_num, batch_size] weight f16
         let length = num_experts * self.shape[0];
-        let indice_ptr = unsafe { allocate_init(length, false) };
-        let weight_ptr = unsafe { allocate_init(length, T::default()) };
-        let mut topk_indices_ptr =
-            unsafe { allocate_init(num_experts_per_tok * self.shape[0], 0usize) };
+        let mut indice_box = AlignedBox::allocate_init(length, false);
+        let indice_ptr = indice_box.as_mut_ptr();
+        std::mem::forget(indice_box);
+
+        let mut weight_box = AlignedBox::allocate_init(length, T::default());
+        let weight_ptr = weight_box.as_mut_ptr();
+        std::mem::forget(weight_box);
+
+        let mut topk_indices_box =
+            AlignedBox::allocate_init(num_experts_per_tok * self.shape[0], 0usize);
+        let topk_indices_ptr = topk_indices_box.as_mut_ptr();
+        std::mem::forget(topk_indices_box);
         // vec![0usize; num_experts * self.shape[0]];
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
@@ -438,10 +466,10 @@ where
         }
 
         let output_shape = vec![self.shape[0], gate_weight.shape[0]];
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -476,12 +504,23 @@ where
         decode_only_flag: bool,
         _scope_name: String,
     ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
-        let experts_indicator = unsafe { allocate_init(num_experts, false) };
+        let mut experts_box = AlignedBox::allocate_init(num_experts, false);
+        let experts_indicator = experts_box.as_mut_ptr();
+        std::mem::forget(experts_box);
+
         let length = num_experts * self.shape[0];
-        let indice_ptr = unsafe { allocate_init(length, false) };
-        let weight_ptr = unsafe { allocate_init(length, T::default()) };
-        let topk_indices_ptr =
-            unsafe { allocate_init(num_experts_per_tok * self.shape[0], 0usize) };
+        let mut indice_box = AlignedBox::allocate_init(length, false);
+        let indice_ptr = indice_box.as_mut_ptr();
+        std::mem::forget(indice_box);
+
+        let mut weight_box = AlignedBox::allocate_init(length, T::default());
+        let weight_ptr = weight_box.as_mut_ptr();
+        std::mem::forget(weight_box);
+
+        let mut topk_indices_box =
+            AlignedBox::allocate_init(num_experts_per_tok * self.shape[0], 0usize);
+        let topk_indices_ptr = topk_indices_box.as_mut_ptr();
+        std::mem::forget(topk_indices_box);
 
         let operator = Operator::ExpertsTopkNorm(ExpertsTopkNorm::new(
             self.data,
@@ -498,21 +537,21 @@ where
         (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr)
     }
 
-    pub fn from_cache(
+    pub fn from_mem_pool(
         shape: Vec<usize>,
         tensor_name: String,
-        cache: Rc<RefCell<Cache<T>>>,
+        mem_pool: Rc<RefCell<MemPool<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let length: usize = shape.iter().product();
-        let data = cache.borrow_mut().get(&tensor_name, length);
+        let data = mem_pool.borrow_mut().get(&tensor_name, &shape);
         let strides = get_strides(&shape);
         Tensor {
             data: data,
             shape: shape.clone(),
             strides: strides,
             tensor_name: tensor_name,
-            cache: cache.clone(),
+            mem_pool: mem_pool.clone(),
             operator_queue: operator_queue.clone(),
         }
     }
@@ -521,7 +560,7 @@ where
         shape: Vec<usize>,
         data: Vec<T>,
         tensor_name: String,
-        cache: Rc<RefCell<Cache<T>>>,
+        mem_pool: Rc<RefCell<MemPool<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let length: usize = shape.iter().product();
@@ -531,7 +570,7 @@ where
             length,
             data.len()
         );
-        let v = Self::from_cache(shape, tensor_name, cache, operator_queue);
+        let v = Self::from_mem_pool(shape, tensor_name, mem_pool, operator_queue);
         unsafe {
             v.data.copy_from_nonoverlapping(data.as_ptr(), data.len());
         }
@@ -553,10 +592,10 @@ where
         } else {
             true
         };
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -591,10 +630,10 @@ where
         let b_row = tensor2.shape[0];
         let column = self.shape[1];
 
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             tensor_name,
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -630,24 +669,24 @@ where
         let col = self.shape[1];
         // let b_row = q_weight.shape[1];
 
-        let q_state = Tensor::from_cache(
+        let q_state = Tensor::from_mem_pool(
             vec![self.shape[0], q_weight.shape[0]],
-            format!("{}.q_state", scope_name),
-            self.cache.clone(),
+            format!("{}.q_proj.output", scope_name),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
-        let k_state = Tensor::from_cache(
+        let k_state = Tensor::from_mem_pool(
             vec![self.shape[0], k_weight.shape[0]],
-            format!("{}.k_state", scope_name),
-            self.cache.clone(),
+            format!("{}.k_proj.output", scope_name),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
-        let v_state = Tensor::from_cache(
+        let v_state = Tensor::from_mem_pool(
             vec![self.shape[0], v_weight.shape[0]],
-            format!("{}.v_state", scope_name),
-            self.cache.clone(),
+            format!("{}.v_proj.output", scope_name),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -694,10 +733,10 @@ where
 
         let output_shape = vec![a_row, b_row];
 
-        let output_tensor = Tensor::from_cache(
+        let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             tensor_name,
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -736,12 +775,14 @@ where
         let k = self.shape[1];
         let output_shape = vec![self.shape[0], thread_num * topk];
 
-        let indice_ptr = unsafe { allocate_init(output_shape.iter().product(), 0usize) };
+        let mut indice_box = AlignedBox::allocate_init(output_shape.iter().product(), 0usize);
+        let indice_ptr = indice_box.as_mut_ptr();
+        std::mem::forget(indice_box);
 
-        let value_tensor = Tensor::<T>::from_cache(
+        let value_tensor = Tensor::<T>::from_mem_pool(
             output_shape.clone(),
             format!("{}.values.output", scope_name),
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -787,7 +828,7 @@ where
             shape: shape,
             strides: strides,
             tensor_name: self.tensor_name.clone(),
-            cache: self.cache.clone(),
+            mem_pool: self.mem_pool.clone(),
             operator_queue: self.operator_queue.clone(),
         }
     }
@@ -803,12 +844,14 @@ where
         scope_name: String,
     ) -> (*const usize, Self) {
         let output_shape = vec![self.shape[0], num_topk];
-        let indice_ptr = allocate_init(output_shape.iter().product(), 0usize);
+        let mut indice_box = AlignedBox::allocate_init(output_shape.iter().product(), 0usize);
+        let indice_ptr = indice_box.as_mut_ptr();
+        std::mem::forget(indice_box);
 
-        let value_tensor = Tensor::from_cache(
+        let value_tensor = Tensor::from_mem_pool(
             vec![self.shape[0], num_topk],
             format!("{}.output_value.output", scope_name),
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -843,11 +886,11 @@ where
     pub fn zeros(
         shape: Vec<usize>,
         tensor_name: String,
-        cache: Rc<RefCell<Cache<T>>>,
+        mem_pool: Rc<RefCell<MemPool<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let length: usize = shape.iter().product();
-        let v = Self::from_cache(shape, tensor_name, cache, operator_queue);
+        let v = Self::from_mem_pool(shape, tensor_name, mem_pool, operator_queue);
         (0..length).for_each(|x| unsafe {
             *v.data.add(x) = T::default();
         });
@@ -861,7 +904,7 @@ where
             shape: shape.clone(),
             strides: strides,
             tensor_name: self.tensor_name.clone(),
-            cache: self.cache.clone(),
+            mem_pool: self.mem_pool.clone(),
             operator_queue: self.operator_queue.clone(),
         }
     }
@@ -872,20 +915,20 @@ where
         batch_size: usize,
         eps: T,
         scope_name: String,
-        cache: Rc<RefCell<Cache<T>>>,
+        mem_pool: Rc<RefCell<MemPool<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> (Self, Self) {
-        let output_hidden_tensor = Tensor::from_cache(
+        let output_hidden_tensor = Tensor::from_mem_pool(
             vec![batch_size, word_embedding.shape[1]],
             format!("{}.output_hidden", scope_name),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
-        let output_normal_tensor = Tensor::from_cache(
+        let output_normal_tensor = Tensor::from_mem_pool(
             vec![batch_size, word_embedding.shape[1]],
             format!("{}.output_normal", scope_name),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -909,10 +952,10 @@ where
     }
 
     pub fn rms(&self, eps: T, decode_only_flag: bool, scope_name: String) -> Self {
-        let output_tensor = Tensor::<T>::from_cache(
+        let output_tensor = Tensor::<T>::from_mem_pool(
             self.shape.clone(),
             format!("{}.output", scope_name),
-            self.cache.clone(),
+            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -1020,7 +1063,8 @@ mod test {
 
     #[test]
     fn test_topk_softmax_f32() {
-        let cache: Rc<RefCell<Cache<f32>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f32>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f32>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 2;
@@ -1035,7 +1079,7 @@ mod test {
         let value_tensor = Tensor::<f32>::from_cache(
             value_shape,
             "model.layers.0.values".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1043,7 +1087,7 @@ mod test {
         let sums_tensor = Tensor::<f32>::from_cache(
             sums_shape,
             "model.layers.0.sums".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1178,7 +1222,8 @@ mod test {
             return;
         }
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 2;
@@ -1193,7 +1238,7 @@ mod test {
         let value_tensor = Tensor::<f16>::from_cache(
             value_shape,
             "model.layers.0.values".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1201,7 +1246,7 @@ mod test {
         let sums_tensor = Tensor::<f16>::from_cache(
             sums_shape,
             "model.layers.0.sums".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1353,7 +1398,8 @@ mod test {
             return;
         }
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 3;
@@ -1366,7 +1412,7 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             input_shape.clone(),
             "model.layers.0.input".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1374,26 +1420,26 @@ mod test {
         let q_weight = Tensor::<f16>::from_cache(
             vec![q_dim, hidden_size],
             "q.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
         let k_weight = Tensor::<f16>::from_cache(
             vec![kv_dim, hidden_size],
             "k.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
         let v_weight = Tensor::<f16>::from_cache(
             vec![kv_dim, hidden_size],
             "v.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let position_embedding = Tensor::<f16>::from_cache(
             vec![head_dim],
             "rope.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1510,7 +1556,8 @@ mod test {
             return;
         }
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 24;
@@ -1523,33 +1570,33 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let q_weight = Tensor::<f16>::from_cache(
             vec![q_dim, hidden_size],
             "q.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
         let k_weight = Tensor::<f16>::from_cache(
             vec![kv_dim, hidden_size],
             "k.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
         let v_weight = Tensor::<f16>::from_cache(
             vec![kv_dim, hidden_size],
             "v.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let position_embedding = Tensor::<f16>::from_cache(
             vec![head_dim],
             "rope.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1675,7 +1722,8 @@ mod test {
             return;
         }
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
@@ -1688,14 +1736,14 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let weight_tensor = Tensor::<f16>::from_cache(
             vec![intermediate_size, hidden_size],
             "weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1805,7 +1853,8 @@ mod test {
             return;
         }
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
@@ -1818,14 +1867,14 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, k],
             "model.layers.0.input".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let weight_tensor = Tensor::<f16>::from_cache(
             vec![n, k],
             "weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -1933,7 +1982,8 @@ mod test {
             return;
         }
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
@@ -1943,14 +1993,14 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let weight_tensor = Tensor::<f16>::from_cache(
             vec![intermediate_size, hidden_size],
             "weight.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -2034,7 +2084,8 @@ mod test {
             return;
         }
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
@@ -2044,21 +2095,21 @@ mod test {
         let input_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, hidden_size],
             "model.layers.0.input".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let weight_tensor = Tensor::<f16>::from_cache(
             vec![intermediate_size, hidden_size],
             "weight.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let bias_tensor = Tensor::<f16>::from_cache(
             vec![batch_size, intermediate_size],
             "bias.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -2250,7 +2301,8 @@ mod test {
             return;
         }
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
@@ -2261,7 +2313,7 @@ mod test {
         let input = Tensor::<f16>::from_cache(
             vec![batch_size, hidden],
             "model.layers.0.input".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -2269,20 +2321,25 @@ mod test {
         let gate_w = Tensor::<f16>::from_cache(
             vec![num_experts, inter, hidden],
             "gate.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
         let up_w = Tensor::<f16>::from_cache(
             vec![num_experts, inter, hidden],
             "up.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let b = batch_size;
 
-        let experts_indicator = unsafe { allocate_init(num_experts, false) };
-        let indice_ptr = unsafe { allocate_init(num_experts * b, false) };
+        let mut experts_box = AlignedBox::allocate_init(num_experts, false);
+        let experts_indicator = experts_box.as_mut_ptr();
+        std::mem::forget(experts_box);
+
+        let mut indice_box = AlignedBox::allocate_init(num_experts * b, false);
+        let indice_ptr = indice_box.as_mut_ptr();
+        std::mem::forget(indice_box);
 
         unsafe {
             *experts_indicator.add(0) = true;
@@ -2413,7 +2470,8 @@ mod test {
             return;
         }
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
@@ -2429,7 +2487,7 @@ mod test {
         let x = Tensor::<f16>::from_cache(
             vec![num_experts, batch_size, inter],
             "model.layers.0.experts.silu_out".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -2439,14 +2497,25 @@ mod test {
         let down_w = Tensor::<f16>::from_cache(
             vec![num_experts, hidden, inter],
             "model.layers.0.down.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
-        let experts_indicator = unsafe { allocate_init(num_experts, false) };
-        let indice_ptr = unsafe { allocate_init(num_experts * b, false) };
-        let weight_ptr = unsafe { allocate_init(num_experts * b, 0.0f16) };
-        let topk_indices_ptr = unsafe { allocate_init(b * num_experts_per_tok, 0usize) };
+        let mut experts_box = AlignedBox::allocate_init(num_experts, false);
+        let experts_indicator = experts_box.as_mut_ptr();
+        std::mem::forget(experts_box);
+
+        let mut indice_box = AlignedBox::allocate_init(num_experts * b, false);
+        let indice_ptr = indice_box.as_mut_ptr();
+        std::mem::forget(indice_box);
+
+        let mut weight_box = AlignedBox::allocate_init(num_experts * b, 0.0f16);
+        let weight_ptr = weight_box.as_mut_ptr();
+        std::mem::forget(weight_box);
+
+        let mut topk_indices_box = AlignedBox::allocate_init(b * num_experts_per_tok, 0usize);
+        let topk_indices_ptr = topk_indices_box.as_mut_ptr();
+        std::mem::forget(topk_indices_box);
 
         unsafe {
             *experts_indicator.add(0) = true;
@@ -2581,7 +2650,8 @@ mod test {
             return;
         }
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
@@ -2595,20 +2665,25 @@ mod test {
         let input = Tensor::<f16>::from_cache(
             vec![batch_size, k, hidden],
             "model.layers.0.moe.down_out".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let residual = Tensor::<f16>::from_cache(
             vec![batch_size, hidden],
             "model.layers.0.residual".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         // routing buffers（reset_gating=false 不会用来选择，只会在 reset_gating=true 时清零）
-        let experts_indicator = unsafe { allocate_init(num_experts, false) };
-        let indice_ptr = unsafe { allocate_init(num_experts * num_tokens, false) };
+        let mut experts_box = AlignedBox::allocate_init(num_experts, false);
+        let experts_indicator = experts_box.as_mut_ptr();
+        std::mem::forget(experts_box);
+
+        let mut indice_box = AlignedBox::allocate_init(num_experts * num_tokens, false);
+        let indice_ptr = indice_box.as_mut_ptr();
+        std::mem::forget(indice_box);
 
         unsafe {
             *experts_indicator.add(0) = true;
@@ -2677,15 +2752,7 @@ mod test {
             .unwrap_or(1);
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(
-                    num_tokens,
-                    1,
-                    thread_num,
-                    tid,
-                    &[],
-                    &[],
-                    &mut Vec::new(),
-                );
+                op.run(num_tokens, 1, thread_num, tid, &[], &[], &mut Vec::new());
             }
         }
 
@@ -3033,20 +3100,21 @@ mod tests {
         const K: usize = 1536;
         const N: usize = 1536;
 
-        let cache: Rc<RefCell<Cache<f16>>> = Rc::new(RefCell::new(Cache::new(HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
         let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let input_tensor = Tensor::<f16>::from_cache(
             vec![SEQUENCE_CHUNK_SIZE, BATCH_SIZE, K],
             "perf.matmul.input".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let weight_tensor = Tensor::<f16>::from_cache(
             vec![N, K],
             "perf.matmul.weight".to_string(),
-            cache.clone(),
+            mem_pool.clone(),
             operator_queue.clone(),
         );
 

@@ -176,7 +176,7 @@ where
                 b_row_step_micro: 32,
             },
             decode_only_flag,
-            format!("{}.gate_up", self.scope_name),
+            format!("{}.gate_up_proj.output", self.scope_name),
         );
 
         let down_product = nonlinear_product.experts_matmul_mul(
@@ -194,7 +194,7 @@ where
                 b_row_step_micro: 32,
             },
             decode_only_flag,
-            format!("{}.down", self.scope_name),
+            format!("{}.down_proj.output", self.scope_name),
         );
 
         down_product.experts_merge_add(
@@ -203,7 +203,7 @@ where
             indice_ptr,
             self.num_experts,
             decode_only_flag,
-            format!("{}.merge", self.scope_name),
+            format!("{}.output", self.scope_name),
         )
     }
 }

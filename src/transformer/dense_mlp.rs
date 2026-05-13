@@ -64,7 +64,7 @@ where
             },
             hidden_states.shape[0],
             false,
-            format!("{}.gate", self.scope_name),
+            format!("{}.gate_proj.output", self.scope_name),
         );
 
         let up_product = hidden_states.matmul(
@@ -78,11 +78,11 @@ where
             },
             hidden_states.shape[0],
             false,
-            format!("{}.up", self.scope_name),
+            format!("{}.up_proj.output", self.scope_name),
         );
 
         let nonlinear_product =
-            gate_product.add(&up_product, format!("{}.nonlinear_part1", self.scope_name));
+            gate_product.add(&up_product, format!("{}.intermediate", self.scope_name));
 
         nonlinear_product.matmul_add(
             &self.down_weight,
@@ -94,7 +94,7 @@ where
                 a_row_step_micro: 8,
                 b_row_step_micro: 8,
             },
-            format!("{}.nonlinear_part2", self.scope_name),
+            format!("{}.output", self.scope_name),
         )
     }
 }

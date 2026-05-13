@@ -5,7 +5,7 @@ use crate::common::num_traits::{exp::Exp, sqrt::Sqrt};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::scalar;
 use crate::kernel::x86_64;
-use crate::mem_mgr::allocator::allocate_init;
+use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::assign::assign;
 use crate::operators::traits::SoftmaxTrait;
 
@@ -42,7 +42,12 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
             ptr1: ConstPtr { ptr: ptr1 },
 
             topk_values_ptr: MutPtr {
-                ptr: unsafe { allocate_init::<T>(length, T::default()) },
+                ptr: {
+                    let mut boxed = AlignedBox::allocate_init(length, T::default());
+                    let ptr = boxed.as_mut_ptr();
+                    std::mem::forget(boxed);
+                    ptr
+                },
             },
             topk_indices_ptr: MutPtr {
                 ptr: topk_indices_ptr,

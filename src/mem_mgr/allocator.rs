@@ -1,44 +1,131 @@
 use std::alloc::{self, Layout};
-use std::{mem, ptr};
+use std::{mem, ops, ptr, slice};
 
-pub fn allocate<T>(length: usize) -> *mut T {
-    //原始版本的 "allocate" "allocate_usize"  "allocate_f16" "allocate_ptr" functions 都被整合到了这个allocate function中 Jason 2024.5.15
-    unsafe {
-        let layout = Layout::from_size_align_unchecked(length * mem::size_of::<T>(), 64);
-        // 分配内存
-        let mut data_ptr: *mut T = alloc::alloc(layout) as *mut T;
-        if data_ptr.is_null() {
-            std::alloc::handle_alloc_error(layout);
-        }
-        data_ptr
-    }
-}
-pub fn allocate_init<T>(length: usize, value: T) -> *mut T
-where
-    T: Copy,
-{
-    let data_ptr: *mut T = allocate(length);
-    for i in 0..length {
-        unsafe {
-            let p = data_ptr.add(i);
-            ptr::write(p, value);
-        }
-    }
-    data_ptr
+/// 对齐内存管理器，64字节对齐，适合SIMD512操作
+#[derive(Debug)]
+pub struct AlignedBox<T> {
+    ptr: *mut T,
+    length: usize,
+    layout: Layout,
 }
 
-/*
-pub fn allocate_init_usize(length: usize, value: usize) -> *mut usize {
-    let data_ptr: *mut usize = allocate(length);
-    for i in 0..length {
+impl<T> AlignedBox<T> {
+    pub fn allocate(length: usize) -> Self {
+        assert!(length > 0, "Length must be greater than 0");
+
         unsafe {
-            let p = data_ptr.add(i);
-            ptr::write(p, value);
+            let layout = Layout::from_size_align_unchecked(length * mem::size_of::<T>(), 64);
+            let ptr = alloc::alloc(layout) as *mut T;
+            if ptr.is_null() {
+                std::alloc::handle_alloc_error(layout);
+            }
+            AlignedBox {
+                ptr,
+                length,
+                layout,
+            }
         }
     }
-    data_ptr
+
+    pub fn allocate_init(length: usize, value: T) -> Self
+    where
+        T: Copy,
+    {
+        let mut boxed = Self::allocate(length);
+        unsafe {
+            let mut p = boxed.ptr;
+            for _ in 0..length {
+                ptr::write(p, value);
+                p = p.add(1);
+            }
+        }
+        boxed
+    }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
+
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.ptr
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { slice::from_raw_parts(self.ptr, self.length) }
+    }
+
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { slice::from_raw_parts_mut(self.ptr, self.length) }
+    }
+
+    #[inline]
+    pub fn as_ptr_offset(&self, offset: usize) -> *const T {
+        assert!(offset < self.length, "Offset out of bounds");
+        unsafe { self.ptr.add(offset) }
+    }
+
+    #[inline]
+    pub fn as_mut_ptr_offset(&mut self, offset: usize) -> *mut T {
+        assert!(offset < self.length, "Offset out of bounds");
+        unsafe { self.ptr.add(offset) }
+    }
 }
-*/
+
+impl<T> ops::Deref for AlignedBox<T> {
+    type Target = [T];
+
+    #[inline]
+    fn deref(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
+impl<T> ops::DerefMut for AlignedBox<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [T] {
+        self.as_mut_slice()
+    }
+}
+
+impl<T> Drop for AlignedBox<T> {
+    fn drop(&mut self) {
+        unsafe {
+            if mem::needs_drop::<T>() {
+                for i in 0..self.length {
+                    ptr::drop_in_place(self.ptr.add(i));
+                }
+            }
+            alloc::dealloc(self.ptr as *mut u8, self.layout);
+        }
+    }
+}
+
+unsafe impl<T: Send> Send for AlignedBox<T> {}
+unsafe impl<T: Sync> Sync for AlignedBox<T> {}
+
+impl<T: Clone> Clone for AlignedBox<T> {
+    fn clone(&self) -> Self {
+        let mut cloned = Self::allocate(self.length);
+        unsafe {
+            ptr::copy_nonoverlapping(self.ptr, cloned.ptr, self.length);
+        }
+        cloned
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -46,118 +133,23 @@ mod test {
     use approx::assert_ulps_eq;
 
     #[test]
-    fn test1() {
+    fn test_aligned_box_allocate() {
         let length = 50;
-        let value: f32 = 1.2;
-        let data_ptr: *mut f32 = allocate_init::<f32>(length, value);
+        let mut boxed = AlignedBox::<f32>::allocate_init(length, 1.2);
+        assert_eq!(boxed.as_ptr() as usize % 64, 0);
         for i in 0..length {
-            unsafe {
-                assert_ulps_eq!(*data_ptr.add(i), value, max_ulps = 4);
-            }
+            assert_ulps_eq!(boxed[i], 1.2, max_ulps = 4);
         }
+        assert_eq!(boxed.len(), length);
     }
-    /*
+
     #[test]
-    fn test2() {
-        let length = 50;
-        let value: usize = 1;
-        let data_ptr: *mut usize = allocate_init_usize(length, value);
+    fn test_aligned_box_clone() {
+        let length = 20;
+        let mut boxed1 = AlignedBox::<usize>::allocate_init(length, 42);
+        let boxed2 = boxed1.clone();
         for i in 0..length {
-            unsafe {
-                // assert_ulps_eq!(*data_ptr.add(i), value, max_ulps=4);
-                assert_eq!(*data_ptr.add(i), value);
-            }
+            assert_eq!(boxed1[i], boxed2[i]);
         }
     }
-
-
-    #[test]
-    fn test2() {
-        let length = 50;
-        let num: f32 =1.2;
-        let data_ptr: *mut f32 = allocate_init::<f32>(length, num);
-        let offset = data_ptr.align_offset(mem_mgr::align_of::<f32>()*16);
-        if offset == 0 {
-        } else if offset < length - 1 {
-            println!("offset {}", offset);
-            unsafe {
-                let _ptr = data_ptr.add(offset).cast::<u16>();
-            }
-            // *u16_ptr = 0;
-        } else {
-            // 虽然指针可以通过 `offset` 对齐，但它会指向分配之外
-        }
-    }
-    #[test]
-    fn test1() {
-        let length = 50;
-        let num: f16 =  1.2);
-        let data_ptr: *mut f16 = allocate_init::<f16>(length,num);
-        let offset = data_ptr.align_offset(mem_mgr::align_of::<f16>()*16);
-        if offset == 0 {
-        } else if offset < length - 1 {
-            println!("offset {}", offset);
-            unsafe {
-                let _ptr = data_ptr.add(offset).cast::<u16>();
-            }
-            // *u16_ptr = 0;
-        } else {
-            // 虽然指针可以通过 `offset` 对齐，但它会指向分配之外
-        }
-    }
-    #[test]
-    fn test3() {
-        let length = 50;
-        let data_ptr: *mut f16 = allocate(length);
-        let offset = data_ptr.align_offset(mem_mgr::align_of::<f16>()*16);
-
-        if offset == 0 {
-
-        } else if offset < length - 1 {
-            println!("offset {}", offset);
-            unsafe {
-                let _ptr = data_ptr.add(offset).cast::<u16>();
-            }
-            // *u16_ptr = 0;
-        } else {
-            // 虽然指针可以通过 `offset` 对齐，但它会指向分配之外
-        }
-    }
-
-    #[test]
-    fn test4() {
-        let length = 50;
-        let data_ptr: *mut u16 = allocate(length);
-        let offset = data_ptr.align_offset(mem_mgr::align_of::<u16>()*16);
-
-        if offset == 0 {
-            println!("offset 0")
-        } else if offset < length - 1 {
-            println!("offset {}", offset);
-            unsafe {
-                let _ptr = data_ptr.add(offset).cast::<u16>();
-            }
-            // *u16_ptr = 0;
-        } else {
-            // 虽然指针可以通过 `offset` 对齐，但它会指向分配之外
-        }
-    }
-
-    #[test]
-    fn test5() {
-        let length = 50;
-        let num = 100;
-        let data_ptr = allocate_usize_init(length,num);
-        let offset = data_ptr.align_offset(mem_mgr::align_of::<usize>()*16);
-        if offset == 0 {
-        } else if offset < length - 1 {
-            println!("offset {}", offset);
-            unsafe {
-                let _ptr = data_ptr.add(offset).cast::<u16>();
-            }
-            // *u16_ptr = 0;
-        } else {
-            // 虽然指针可以通过 `offset` 对齐，但它会指向分配之外
-        }
-    } */
 }

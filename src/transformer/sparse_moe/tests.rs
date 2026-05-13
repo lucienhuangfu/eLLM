@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::mem_mgr::cache::Cache;
+use crate::mem_mgr::mem_pool::MemPool;
 use crate::runtime::operator::Operator;
 use crate::runtime::tensor::{Tensor, TensorCtx};
 use crate::transformer::config::RouterScoringKind;
@@ -44,15 +44,7 @@ fn tensor_to_bits_vec(t: &Tensor<f16>) -> Vec<u16> {
 fn run_queue(output: &Tensor<f16>, batch_size: usize, thread_num: usize) {
     for op in output.operator_queue.borrow().iter() {
         for tid in 0..thread_num {
-            op.run(
-                batch_size,
-                0,
-                thread_num,
-                tid,
-                &[],
-                &[],
-                &mut Vec::new(),
-            );
+            op.run(batch_size, 0, thread_num, tid, &[], &[], &mut Vec::new());
         }
     }
 }
@@ -67,11 +59,11 @@ fn build_case(
     router_scoring: RouterScoringKind,
     use_routing_bias: bool,
 ) -> (SparseMoe<f16>, Tensor<f16>, Tensor<f16>) {
-    let cache = Rc::new(RefCell::new(Cache::<f16>::new(
+    let mem_pool = Rc::new(RefCell::new(MemPool::<f16>::new(
         std::collections::HashMap::new(),
     )));
     let operator_queue = Rc::new(RefCell::new(Vec::<Operator<f16>>::new()));
-    let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
+    let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
 
     let moe = SparseMoe::<f16>::new(
         hidden_size,

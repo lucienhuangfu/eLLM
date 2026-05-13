@@ -3,7 +3,7 @@ use std::ops::{AddAssign, Div};
 
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
-use crate::mem_mgr::allocator::allocate_init;
+use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::assign::assign;
 use crate::operators::traits::ExpertsTopkNormTrait;
 
@@ -36,7 +36,12 @@ impl<T: Copy + Default> ExpertsTopkNorm<T> {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
             topk_values_ptr: MutPtr {
-                ptr: allocate_init::<T>(batch_size * num_topk, T::default()),
+                ptr: {
+                    let mut boxed = AlignedBox::allocate_init(batch_size * num_topk, T::default());
+                    let ptr = boxed.as_mut_ptr();
+                    std::mem::forget(boxed);
+                    ptr
+                },
             },
             topk_indices_ptr: MutPtr {
                 ptr: topk_indices_ptr,

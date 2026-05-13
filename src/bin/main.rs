@@ -1,7 +1,7 @@
 #![feature(f16)]
 
 use ellm::common::send_sync_ptr::SharedMut;
-use ellm::mem_mgr::allocator::allocate_init;
+use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::runtime::batch_sequence::BatchSequence;
 use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
 use ellm::transformer::config::Config;
@@ -30,7 +30,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "The sequence data is hardcoded.",
     ];
 
-    let sequences = allocate_init::<usize>(sequence_capacity * batch_size, 0);
+    let sequences = {
+        let mut boxed = AlignedBox::allocate_init(sequence_capacity * batch_size, 0);
+        let ptr = boxed.as_mut_ptr();
+        std::mem::forget(boxed);
+        ptr
+    };
 
     let mut batch_seq = BatchSequence::<f16>::new(
         sequences,

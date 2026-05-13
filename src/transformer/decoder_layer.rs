@@ -146,7 +146,7 @@ where
             let norm_hidden = hidden_states.rms(
                 self.rms_norm_eps,
                 false,
-                format!("{}.norm_hidden", self.scope_name),
+                format!("{}.input_layernorm", self.scope_name),
             );
             (hidden_states.clone(), norm_hidden)
         } else {
@@ -174,7 +174,7 @@ where
             // self.layernorm_weight.data,
             self.rms_norm_eps,
             decode_only_flag,
-            format!("{}.norm_hidden2", self.scope_name),
+            format!("{}.post_attention_layernorm", self.scope_name),
         );
 
         let output_hidden_states = match &self.ffn_block {
@@ -213,7 +213,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::mem_mgr::cache::Cache;
+    use crate::mem_mgr::mem_pool::MemPool;
     use std::cell::RefCell;
     // use std::slice;
 
@@ -229,9 +229,9 @@ mod test {
         let max_position_embeddings = config.max_position_embeddings;
         let head_dim = config.head_dim;
 
-        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
+        let mem_pool = Rc::new(RefCell::new(MemPool::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
+        let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
 
         let vocab_size = config.vocab_size;
         let word_embedding = Rc::new(ctx.zeros(
@@ -302,10 +302,10 @@ mod test {
         let max_position_embeddings = config.max_position_embeddings;
         let head_dim = config.head_dim;
 
-        let cache: Rc<RefCell<Cache<f16>>> =
-            Rc::new(RefCell::new(Cache::new(std::collections::HashMap::new())));
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(std::collections::HashMap::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
+        let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
 
         let vocab_size = config.vocab_size;
         let word_embedding = Rc::new(ctx.zeros(

@@ -141,7 +141,7 @@ where
                 self.scaling,
                 decode_only_flag,
                 thread_num,
-                format!("{}.attn_output", self.scope_name),
+                format!("{}.output", self.scope_name),
             );
 
             println!("attn_output shape: {:?}", attn_output.shape);
@@ -173,7 +173,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::mem_mgr::cache::Cache;
+    use crate::mem_mgr::mem_pool::MemPool;
     use std::cell::RefCell;
 
     #[test]
@@ -192,12 +192,12 @@ mod test {
         let attention_head_size: usize = config.head_dim;
         // config.hidden_size / config.num_attention_heads;
 
-        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::<
+        let mem_pool = Rc::new(RefCell::new(MemPool::new(std::collections::HashMap::<
             String,
             Vec<f32>,
         >::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
+        let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
 
         let self_attention = Attention::new(
             &config,
@@ -256,12 +256,12 @@ mod test {
 
         let attention_head_size: usize = config.head_dim;
 
-        let cache = Rc::new(RefCell::new(Cache::new(std::collections::HashMap::<
+        let mem_pool = Rc::new(RefCell::new(MemPool::new(std::collections::HashMap::<
             String,
             Vec<f16>,
         >::new())));
         let operator_queue = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
+        let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
 
         let self_attention = Attention::new(
             &config,

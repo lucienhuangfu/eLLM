@@ -1,7 +1,5 @@
 // === alignment/rope_alignment_test.rs ===
-#[path = "../../src/transformer/rope.rs"]
-mod rope;
-use rope::RotaryEmbedding;
+use ellm::transformer::rope::RotaryEmbedding;
 
 fn write_npy(path: &str, data: &[f32]) {
     npy::to_file(path, data.iter().copied()).unwrap();
@@ -36,10 +34,7 @@ fn main() {
         "original_max_position_embeddings".to_string(),
         serde_json::Value::Number(2.into()),
     );
-    rope_scaling.insert(
-        "attention_factor".to_string(),
-        serde_json::Value::Number(1.25.into()),
-    );
+    rope_scaling.insert("attention_factor".to_string(), serde_json::json!(1.25));
 
     let rope_yarn = RotaryEmbedding::new(8, 8, 16, 10000.0, Some(rope_scaling));
     let output_yarn = rope_yarn.forward::<f32>();
