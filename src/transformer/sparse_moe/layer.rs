@@ -5,7 +5,7 @@ use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::runtime::tensor::{GlobalOperatorQueue, Tensor};
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 
 use super::super::names::SparseMoeTensorNames;
 use super::router_sigmoid::SparseMoeSigmoidRouter;

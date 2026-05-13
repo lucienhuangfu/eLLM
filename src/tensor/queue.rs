@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 
-use crate::runtime::operator::Operator;
+use crate::operators::operator::Operator;
 
 static GLOBAL_OPERATOR_QUEUE_F32: Lazy<Mutex<Vec<Operator<f32>>>> =
     Lazy::new(|| Mutex::new(Vec::new()));

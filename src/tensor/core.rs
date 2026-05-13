@@ -3,10 +3,10 @@ use std::ops::{AddAssign, Neg, Sub};
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
-use crate::common::tensor_utils::get_strides;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::runtime::operator::Operator;
+use crate::operators::operator::Operator;
+use crate::tensor::get_strides;
 
 use super::GlobalOperatorQueue;
 
@@ -131,7 +131,6 @@ where
         }
     }
 
-
     pub fn transpose(&mut self, index1: usize, index2: usize) -> Self {
         let mut dims: Vec<usize> = (0..self.shape.len()).collect();
         dims.swap(index1, index2);
@@ -168,7 +167,6 @@ where
             tensor_name: self.tensor_name.clone(),
         }
     }
-
 }
 
 unsafe impl<T: Copy + Default + Send + Sync + PartialOrd> Send for Tensor<T> {}

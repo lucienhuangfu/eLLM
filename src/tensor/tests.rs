@@ -5,7 +5,7 @@ use crate::common::sequence_slice::SequenceSlice;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::MemPool;
 use crate::operators::linear::{MatMul, MatMulAdd};
-use crate::runtime::operator::Operator;
+use crate::operators::operator::Operator;
 use crate::runtime::{Phase, SequenceState};
 
 use super::Tensor;

@@ -6,7 +6,7 @@ use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::routing::{ExpertsSoftmaxNorm, ExpertsTopkNorm, MatMulSigmoid, TopKSoftmax};
-use crate::runtime::operator::Operator;
+use crate::operators::operator::Operator;
 
 use super::core::leaked_aligned_ptr;
 use super::{GlobalOperatorQueue, Tensor};

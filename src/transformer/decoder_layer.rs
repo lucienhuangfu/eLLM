@@ -7,7 +7,7 @@ use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
-use super::super::runtime::tensor::{GlobalOperatorQueue, Tensor};
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 use super::attention::Attention;
 use super::config::{AttentionKind, Config, FfnKind};
 use super::dense_mlp::DenseMlp;

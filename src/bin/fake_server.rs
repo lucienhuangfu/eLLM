@@ -4,7 +4,7 @@ use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::operator::Operator;
+use ellm::operators::operator::Operator;
 use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
 use ellm::serving;
 use std::sync::Arc;

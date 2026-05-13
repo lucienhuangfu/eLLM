@@ -1,5 +1,5 @@
-use crate::runtime::operator::Operator;
-use crate::runtime::tensor::{GlobalOperatorQueue, Tensor};
+use crate::operators::operator::Operator;
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 use crate::transformer::config::RouterScoringKind;
 use crate::transformer::names::SparseMoeTensorNames;
 

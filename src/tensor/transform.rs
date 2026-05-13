@@ -6,7 +6,7 @@ use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::movement::LiftVector;
 use crate::operators::transform::{AddRMSZipMap, AddZipMap, LookupRMSMap, RMSMap, SigmoidMap};
-use crate::runtime::operator::Operator;
+use crate::operators::operator::Operator;
 
 use super::{GlobalOperatorQueue, Tensor};
 

@@ -6,7 +6,7 @@ use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::super::common::matmul_params::MatMulParams;
-use super::super::runtime::tensor::{GlobalOperatorQueue, Tensor};
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 use super::names::DenseMlpTensorNames;
 
 #[derive(Clone)]

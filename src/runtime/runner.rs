@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 
-use crate::runtime::operator::Operator;
+use crate::operators::operator::Operator;
 
 use crate::common::num_traits::{
     exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt,
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn new_preserves_operator_queue_and_scheduler_layout() {
-        let operator_queue = Vec::<crate::runtime::operator::Operator<f32>>::new();
+        let operator_queue = Vec::<crate::operators::operator::Operator<f32>>::new();
         let batch_scheduler = BatchScheduler::new(16, 4, 3);
 
         let runner = ServingRunner::new(operator_queue, batch_scheduler);

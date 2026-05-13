@@ -18,7 +18,7 @@ use super::super::common::matmul_params::MatMulParams;
 use super::super::mem_mgr::mem_pool::GlobalMemPool;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
-use super::super::runtime::tensor::{GlobalOperatorQueue, Tensor};
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 use super::decoder_layer::DecoderLayer;
 // use crate::runtime::inference::state::TokenRecord;
 

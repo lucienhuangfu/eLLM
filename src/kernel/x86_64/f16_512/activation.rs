@@ -17,7 +17,7 @@ pub unsafe fn exp512(x: __m512h) -> __m512h {
     let exp_hi = _mm512_set1_ph(11.088);
     let exp_lo = _mm512_set1_ph(-17.0); // exp(-17) is small enough to be considered 0 in f16
 
-    let cephes_LOG2EF = _mm512_set1_ph(1.44269504088896341);
+    let cephes_log2ef = _mm512_set1_ph(1.44269504088896341);
 
     // Split ln(2) into hi and lo for higher precision range reduction
     // ln2_hi = 0.693115234375 (exactly representable in f16 as 0x398b)
@@ -36,7 +36,7 @@ pub unsafe fn exp512(x: __m512h) -> __m512h {
     x = _mm512_max_ph(x, exp_lo);
 
     /* express exp(x) as exp(g + n*log(2)) */
-    let mut fx = _mm512_mul_ph(x, cephes_LOG2EF);
+    let mut fx = _mm512_mul_ph(x, cephes_log2ef);
     fx = _mm512_roundscale_round_ph::<_MM_FROUND_TO_NEAREST_INT, _MM_FROUND_NO_EXC>(fx);
 
     // Range reduction with higher precision: x = x - fx * ln2_hi - fx * ln2_lo

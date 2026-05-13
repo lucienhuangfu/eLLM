@@ -4,10 +4,10 @@ mod slice_scheduler;
 pub mod batch_sequence;
 pub mod chat_template;
 pub mod model_loader;
-pub mod operator;
 pub mod runner;
-pub mod tensor;
 pub mod tokenizer_loader;
+
+pub use crate::tensor;
 
 pub use crate::common::state::{Phase, SequenceState};
 pub use runner::ServingRunner;
