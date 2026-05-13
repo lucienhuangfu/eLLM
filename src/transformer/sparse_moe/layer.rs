@@ -1,12 +1,11 @@
 use std::ops::{AddAssign, Neg, Sub};
-use std::rc::Rc;
 
 use crate::common::matmul_params::MatMulParams;
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::runtime::tensor::{Tensor, TensorCtx};
+use crate::runtime::tensor::{GlobalOperatorQueue, Tensor};
 
 use super::super::names::SparseMoeTensorNames;
 use super::router_sigmoid::SparseMoeSigmoidRouter;
@@ -34,7 +33,8 @@ where
         + Sigmoid
         + Sqrt
         + AddAssign
-        + GlobalMemPool,
+        + GlobalMemPool
+        + GlobalOperatorQueue,
 {
     fn new(
         hidden_size: usize,
@@ -102,7 +102,8 @@ where
         + Sigmoid
         + Sqrt
         + AddAssign
-        + GlobalMemPool,
+        + GlobalMemPool
+        + GlobalOperatorQueue,
 {
     pub fn new(
         hidden_size: usize,
@@ -113,15 +114,14 @@ where
         router_scoring: RouterScoringKind,
         use_routing_bias: bool,
         names: SparseMoeTensorNames,
-        ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         let scope_name = names.scope.clone();
-        let gate_weight = ctx.zeros(vec![num_experts, hidden_size], names.router_gate);
+        let gate_weight = Tensor::zeros(vec![num_experts, hidden_size], names.router_gate);
         let router_bias = if use_routing_bias {
             let bias_name = names
                 .router_bias
                 .expect("use_routing_bias is true but SparseMoeTensorNames.router_bias is None");
-            Some(ctx.zeros(vec![num_experts], bias_name))
+            Some(Tensor::zeros(vec![num_experts], bias_name))
         } else {
             None
         };
@@ -138,15 +138,15 @@ where
                 router_scoring,
                 scope_name.clone(),
             ),
-            experts_gate_weight: ctx.zeros(
+            experts_gate_weight: Tensor::zeros(
                 vec![num_experts, moe_intermediate_size, hidden_size],
                 names.experts_gate_proj,
             ),
-            experts_up_weight: ctx.zeros(
+            experts_up_weight: Tensor::zeros(
                 vec![num_experts, moe_intermediate_size, hidden_size],
                 names.experts_up_proj,
             ),
-            experts_down_weight: ctx.zeros(
+            experts_down_weight: Tensor::zeros(
                 vec![num_experts, hidden_size, moe_intermediate_size],
                 names.experts_down_proj,
             ),

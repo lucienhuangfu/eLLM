@@ -474,15 +474,7 @@ mod test {
         let batch_size = M;
         let decode_size = 1;
 
-        op1.run(
-            batch_size,
-            decode_size,
-            1,
-            0,
-            &[],
-            &[],
-            &mut Vec::new(),
-        );
+        op1.run(batch_size, decode_size, 1, 0, &[], &[], &mut Vec::new());
 
         // cpu_num = thread_num
         let mut c2 = vec![0.0f16; M * N];
@@ -1571,15 +1563,7 @@ mod test {
             let op = Operator::ExpertsMergeAdd(runner);
 
             for tid in 0..num_threads {
-                op.run(
-                    batch_size,
-                    0,
-                    num_threads,
-                    tid,
-                    &[],
-                    &[],
-                    &mut Vec::new(),
-                );
+                op.run(batch_size, 0, num_threads, tid, &[], &[], &mut Vec::new());
             }
         }
 
@@ -1670,15 +1654,7 @@ mod test {
         let batch_size = M;
         let decode_size = 1;
 
-        op1.run(
-            batch_size,
-            decode_size,
-            1,
-            0,
-            &[],
-            &[],
-            &mut Vec::new(),
-        );
+        op1.run(batch_size, decode_size, 1, 0, &[], &[], &mut Vec::new());
 
         // ===== cpu_num = thread_num =====
         let mut c2 = vec![0.0f16; M * N];

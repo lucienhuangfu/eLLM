@@ -1,5 +1,4 @@
 use std::ops::{AddAssign, Neg, Sub};
-use std::rc::Rc;
 
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
@@ -7,7 +6,7 @@ use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::super::common::matmul_params::MatMulParams;
-use super::super::runtime::tensor::{Tensor, TensorCtx};
+use super::super::runtime::tensor::{GlobalOperatorQueue, Tensor};
 use super::names::DenseMlpTensorNames;
 
 #[derive(Clone)]
@@ -33,18 +32,14 @@ where
         + Sigmoid
         + Sqrt
         + AddAssign
-        + GlobalMemPool,
+        + GlobalMemPool
+        + GlobalOperatorQueue,
 {
-    pub fn new(
-        hidden_size: usize,
-        intermediate_size: usize,
-        names: DenseMlpTensorNames,
-        ctx: Rc<TensorCtx<T>>,
-    ) -> Self {
+    pub fn new(hidden_size: usize, intermediate_size: usize, names: DenseMlpTensorNames) -> Self {
         Self {
-            gate_weight: ctx.zeros(vec![hidden_size, intermediate_size], names.gate_proj),
-            up_weight: ctx.zeros(vec![hidden_size, intermediate_size], names.up_proj),
-            down_weight: ctx.zeros(vec![intermediate_size, hidden_size], names.down_proj),
+            gate_weight: Tensor::zeros(vec![hidden_size, intermediate_size], names.gate_proj),
+            up_weight: Tensor::zeros(vec![hidden_size, intermediate_size], names.up_proj),
+            down_weight: Tensor::zeros(vec![intermediate_size, hidden_size], names.down_proj),
             scope_name: names.scope,
         }
     }

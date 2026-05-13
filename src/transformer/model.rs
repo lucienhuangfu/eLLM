@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
 
@@ -16,11 +15,10 @@ use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 // use super::super::operators::map::rms_map::RMSMap;
 use super::super::common::matmul_params::MatMulParams;
-use super::super::mem_mgr::mem_pool::{GlobalMemPool, MemPool};
-use super::super::runtime::operator::Operator;
+use super::super::mem_mgr::mem_pool::GlobalMemPool;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
-use super::super::runtime::tensor::{Tensor, TensorCtx};
+use super::super::runtime::tensor::{GlobalOperatorQueue, Tensor};
 use super::decoder_layer::DecoderLayer;
 // use crate::runtime::inference::state::TokenRecord;
 
@@ -40,7 +38,6 @@ where
     pub topk_size: usize,
     pub eos_id: usize,
     scope_name: String,
-    pub ctx: Rc<TensorCtx<T>>,
 }
 
 impl<T> Model<T>
@@ -58,7 +55,8 @@ where
         + AddAssign
         + Send
         + Sync
-        + GlobalMemPool,
+        + GlobalMemPool
+        + GlobalOperatorQueue,
 {
     pub fn new(
         config: &Config,
@@ -76,16 +74,15 @@ where
         // let tensors = loader.load_all_weights_f16().unwrap();
         let parameter_tensors = std::collections::HashMap::new();
         T::init_global(parameter_tensors);
-        let operator_queue: Rc<RefCell<Vec<Operator<T>>>> = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(operator_queue));
+        T::init_operator_queue();
 
         // Create default tensors
-        let word_embedding = Rc::new(ctx.zeros(
+        let word_embedding = Rc::new(Tensor::zeros(
             vec![config.vocab_size, config.hidden_size],
             model_names.token_embedding.clone(),
         ));
 
-        let position_embedding = Rc::new(ctx.tensor_from_vec(
+        let position_embedding = Rc::new(Tensor::from_vec(
             vec![config.max_position_embeddings, 1, 1, config.head_dim],
             position_vec,
             model_names.position_embedding.clone(),
@@ -102,12 +99,11 @@ where
                 word_embedding.clone(),
                 position_embedding.clone(),
                 &scope_name.clone(),
-                ctx.clone(),
             ));
         }
 
         Self {
-            lm_head_weight: ctx.zeros(
+            lm_head_weight: Tensor::zeros(
                 vec![config.vocab_size, config.hidden_size],
                 model_names.lm_head.clone(),
             ),
@@ -119,7 +115,6 @@ where
             eos_id: eos_id,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
-            ctx: ctx,
         }
     }
 
@@ -131,7 +126,7 @@ where
         // -> Tensor<T> {
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
-        let mut hidden_state = self.ctx.zeros(
+        let mut hidden_state = Tensor::zeros(
             vec![self.batch_size, self.hidden_size],
             format!("{}.hidden_state.output", self.scope_name),
         );
@@ -285,19 +280,21 @@ mod test {
         let (_output_indices, _output_tensor) =
             model.forward(sequences_box.as_mut_ptr(), batch_temperature.as_mut_ptr());
 
-        for thread_id in 0..thread_num {
-            for operator in model.ctx.operator_queue.borrow().iter() {
-                operator.run(
-                    batch_size,
-                    1,
-                    thread_num,
-                    thread_id,
-                    &prefill_list,
-                    &decode_list,
-                    &mut batch_list,
-                );
+        f32::with_operator_queue(|queue| {
+            for thread_id in 0..thread_num {
+                for operator in queue.iter() {
+                    operator.run(
+                        batch_size,
+                        1,
+                        thread_num,
+                        thread_id,
+                        &prefill_list,
+                        &decode_list,
+                        &mut batch_list,
+                    );
+                }
             }
-        }
+        });
 
         assert_eq!(batch_list.len(), batch_size);
         assert!(batch_list
@@ -356,19 +353,21 @@ mod test {
         let (_output_indices, _output_tensor) =
             model.forward(sequences_box.as_mut_ptr(), batch_temperature.as_mut_ptr());
 
-        for thread_id in 0..thread_num {
-            for operator in model.ctx.operator_queue.borrow().iter() {
-                operator.run(
-                    batch_size,
-                    1,
-                    thread_num,
-                    thread_id,
-                    &prefill_list,
-                    &decode_list,
-                    &mut batch_list,
-                );
+        f16::with_operator_queue(|queue| {
+            for thread_id in 0..thread_num {
+                for operator in queue.iter() {
+                    operator.run(
+                        batch_size,
+                        1,
+                        thread_num,
+                        thread_id,
+                        &prefill_list,
+                        &decode_list,
+                        &mut batch_list,
+                    );
+                }
             }
-        }
+        });
 
         assert_eq!(batch_list.len(), batch_size);
         assert!(batch_list

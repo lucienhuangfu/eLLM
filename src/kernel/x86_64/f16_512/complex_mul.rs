@@ -56,7 +56,12 @@ mod tests {
 
         let mut output = AlignedBox::allocate_init(length, 0.0f16);
 
-        complex_mul(input1.as_ptr(), input2.as_ptr(), output.as_mut_ptr(), length);
+        complex_mul(
+            input1.as_ptr(),
+            input2.as_ptr(),
+            output.as_mut_ptr(),
+            length,
+        );
         let expected: Vec<f16> = vec![
             1.0 * 1.0 - 2.0 * 2.0,
             1.0 * 2.0 + 2.0 * 1.0,

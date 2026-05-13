@@ -5,7 +5,7 @@ use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::runtime::tensor::Tensor;
+use crate::runtime::tensor::{GlobalOperatorQueue, Tensor};
 
 #[derive(Clone)]
 pub(super) struct SparseMoeSoftmaxRouter<T>
@@ -30,7 +30,8 @@ where
         + Sigmoid
         + Sqrt
         + AddAssign
-        + GlobalMemPool,
+        + GlobalMemPool
+        + GlobalOperatorQueue,
 {
     pub(super) fn new(
         hidden_size: usize,

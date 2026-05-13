@@ -147,7 +147,16 @@ mod tests {
         let V = AlignedBox::allocate_init(row_size * length, 1.0f16);
         let mut o = AlignedBox::allocate_init(length, 0.0f16);
         let o_slice = unsafe { slice::from_raw_parts(o.as_ptr(), length) };
-        flash_attention(q.as_ptr(), K.as_ptr(), V.as_ptr(), o.as_mut_ptr(), 1.0, length, length, row_size - 1);
+        flash_attention(
+            q.as_ptr(),
+            K.as_ptr(),
+            V.as_ptr(),
+            o.as_mut_ptr(),
+            1.0,
+            length,
+            length,
+            row_size - 1,
+        );
         println!("Result: {:?}", o);
 
         let expected: Vec<f16> = vec![1.0; length];

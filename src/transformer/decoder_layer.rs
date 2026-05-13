@@ -7,7 +7,7 @@ use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
-use super::super::runtime::tensor::{Tensor, TensorCtx};
+use super::super::runtime::tensor::{GlobalOperatorQueue, Tensor};
 use super::attention::Attention;
 use super::config::{AttentionKind, Config, FfnKind};
 use super::dense_mlp::DenseMlp;
@@ -43,7 +43,6 @@ where
     self_attention: AttentionBlock<T>,
     ffn_block: FfnBlock<T>,
     scope_name: String,
-    ctx: Rc<TensorCtx<T>>,
 }
 
 impl<T> DecoderLayer<T>
@@ -59,7 +58,8 @@ where
         + Sqrt
         + FromNumber
         + AddAssign
-        + GlobalMemPool,
+        + GlobalMemPool
+        + GlobalOperatorQueue,
 {
     pub fn new(
         config: &Config,
@@ -70,20 +70,15 @@ where
         word_embedding: Rc<Tensor<T>>,
         position_embedding: Rc<Tensor<T>>,
         _parent_scope_name: &str,
-        ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         let names = layer_tensor_names(config, layer_idx);
         let self_attention = match config.layers[layer_idx].attention {
-            AttentionKind::Full => AttentionBlock::Full(Attention::<T>::new(
-                config,
-                names.attention.clone(),
-                ctx.clone(),
-            )),
-            AttentionKind::SlidingWindow => AttentionBlock::SlidingWindow(Attention::<T>::new(
-                config,
-                names.attention.clone(),
-                ctx.clone(),
-            )),
+            AttentionKind::Full => {
+                AttentionBlock::Full(Attention::<T>::new(config, names.attention.clone()))
+            }
+            AttentionKind::SlidingWindow => {
+                AttentionBlock::SlidingWindow(Attention::<T>::new(config, names.attention.clone()))
+            }
             AttentionKind::Linear => panic!(
                 "linear attention is not implemented for layer {}",
                 layer_idx
@@ -96,7 +91,6 @@ where
                     config.hidden_size,
                     *intermediate_size,
                     ffn_names,
-                    ctx.clone(),
                 ))
             }
             (
@@ -118,7 +112,6 @@ where
                 router_scoring.clone(),
                 *use_routing_bias,
                 ffn_names,
-                ctx.clone(),
             )),
             _ => unreachable!("ffn plan and names must match"),
         };
@@ -131,7 +124,6 @@ where
             ffn_block,
             word_embedding: word_embedding,
             position_embedding: position_embedding,
-            ctx: ctx,
             scope_name: names.scope,
         }
     }
@@ -152,7 +144,7 @@ where
             );
             (hidden_states.clone(), norm_hidden)
         } else {
-            self.ctx.lookup_rms(
+            Tensor::lookup_rms(
                 input_sequences,
                 &*self.word_embedding,
                 self.batch_size,
@@ -215,8 +207,6 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::mem_mgr::mem_pool::MemPool;
-    use std::cell::RefCell;
     // use std::slice;
 
     #[test]
@@ -231,15 +221,14 @@ mod test {
         let max_position_embeddings = config.max_position_embeddings;
         let head_dim = config.head_dim;
 
-        let operator_queue = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(operator_queue));
+        f32::init_operator_queue();
 
         let vocab_size = config.vocab_size;
-        let word_embedding = Rc::new(ctx.zeros(
+        let word_embedding = Rc::new(Tensor::zeros(
             vec![vocab_size, hidden_size],
             String::from("model.embed_tokens.weight"),
         ));
-        let position_embedding = Rc::new(ctx.zeros(
+        let position_embedding = Rc::new(Tensor::zeros(
             vec![max_position_embeddings, 1, 1, head_dim],
             String::from("model.position_embedding.weight"),
         ));
@@ -253,11 +242,13 @@ mod test {
             word_embedding.clone(),
             position_embedding.clone(),
             "model",
-            ctx.clone(),
         );
 
         let shape = vec![batch_size, hidden_size];
-        let input = ctx.tensor(shape.clone(), String::from("model.layers.1.input_tensor"));
+        let input = Tensor::<f32>::from_mem_pool(
+            shape.clone(),
+            String::from("model.layers.1.input_tensor"),
+        );
 
         for i in 0..input.shape.iter().product() {
             unsafe {
@@ -280,12 +271,14 @@ mod test {
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
-            println!("operator {} in queue", index);
-            for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+        f32::with_operator_queue(|queue| {
+            for (index, operator) in queue.iter().enumerate() {
+                println!("operator {} in queue", index);
+                for i in 0..thread_num {
+                    operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+                }
             }
-        }
+        });
 
         assert_eq!(output_tensor.shape, vec![batch_size, hidden_size]);
     }
@@ -303,17 +296,14 @@ mod test {
         let max_position_embeddings = config.max_position_embeddings;
         let head_dim = config.head_dim;
 
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(std::collections::HashMap::new())));
-        let operator_queue = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(operator_queue));
+        f16::init_operator_queue();
 
         let vocab_size = config.vocab_size;
-        let word_embedding = Rc::new(ctx.zeros(
+        let word_embedding = Rc::new(Tensor::zeros(
             vec![vocab_size, hidden_size],
             String::from("model.embed_tokens.weight"),
         ));
-        let position_embedding = Rc::new(ctx.zeros(
+        let position_embedding = Rc::new(Tensor::zeros(
             vec![max_position_embeddings, 1, 1, head_dim],
             String::from("model.position_embedding.weight"),
         ));
@@ -326,11 +316,13 @@ mod test {
             word_embedding.clone(),
             position_embedding.clone(),
             "model",
-            ctx.clone(),
         );
 
         let shape = vec![position_window_size, batch_size, hidden_size];
-        let input = ctx.tensor(shape.clone(), String::from("model.layers.0.input_tensor"));
+        let input = Tensor::<f16>::from_mem_pool(
+            shape.clone(),
+            String::from("model.layers.0.input_tensor"),
+        );
 
         for i in 0..input.shape.iter().product() {
             unsafe {
@@ -356,20 +348,22 @@ mod test {
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        for (index, operator) in output_tensor.operator_queue.borrow().iter().enumerate() {
-            println!("operator {} in queue", index);
-            for i in 0..thread_num {
-                operator.run(
-                    sequence_chunk_size * batch_size,
-                    sequence_chunk_size,
-                    thread_num,
-                    i,
-                    &[],
-                    &[],
-                    &mut Vec::new(),
-                );
+        f16::with_operator_queue(|queue| {
+            for (index, operator) in queue.iter().enumerate() {
+                println!("operator {} in queue", index);
+                for i in 0..thread_num {
+                    operator.run(
+                        sequence_chunk_size * batch_size,
+                        sequence_chunk_size,
+                        thread_num,
+                        i,
+                        &[],
+                        &[],
+                        &mut Vec::new(),
+                    );
+                }
             }
-        }
+        });
 
         assert_eq!(
             output_tensor.shape,

@@ -3,6 +3,7 @@
 use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::runtime::batch_sequence::BatchSequence;
+use ellm::runtime::tensor::GlobalOperatorQueue;
 use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
 use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
@@ -93,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     batch_scheduler.batch_list = Arc::new(SharedMut::new(batch_list));
 
-    let runner = ServingRunner::new(model.ctx.take_operator_queue(), batch_scheduler);
+    let runner = ServingRunner::new(f16::take_operator_queue(), batch_scheduler);
     runner.start();
     Ok(())
 }

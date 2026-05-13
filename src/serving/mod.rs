@@ -3,8 +3,8 @@ mod handlers;
 mod types;
 
 use axum::{routing::post, Json, Router};
-use std::sync::Arc;
 use std::f16;
+use std::sync::Arc;
 
 use crate::common::send_sync_ptr::SharedMut;
 use crate::runtime::batch_sequence::BatchSequence;

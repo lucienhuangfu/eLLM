@@ -1,5 +1,4 @@
 use std::ops::{AddAssign, Neg, Sub};
-use std::rc::Rc;
 
 use crate::common::num_traits::FromNumber;
 use crate::common::num_traits::Sigmoid;
@@ -8,8 +7,7 @@ use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::super::common::matmul_params::MatMulParams;
-use super::super::runtime::operator::Operator;
-use super::super::runtime::tensor::{Tensor, TensorCtx};
+use super::super::runtime::tensor::{GlobalOperatorQueue, Tensor};
 
 use super::config::Config;
 use super::names::AttentionTensorNames;
@@ -43,9 +41,10 @@ where
         + Sqrt
         + FromNumber
         + AddAssign
-        + GlobalMemPool,
+        + GlobalMemPool
+        + GlobalOperatorQueue,
 {
-    pub fn new(config: &Config, names: AttentionTensorNames, ctx: Rc<TensorCtx<T>>) -> Self {
+    pub fn new(config: &Config, names: AttentionTensorNames) -> Self {
         let head_dim: usize = config.head_dim;
         let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
 
@@ -54,20 +53,20 @@ where
             num_key_value_heads: config.num_key_value_heads,
             head_dim: head_dim,
             scaling: scaling,
-            q_weight: ctx.zeros(
+            q_weight: Tensor::zeros(
                 vec![config.num_attention_heads * head_dim, config.hidden_size],
                 names.q_proj,
             ),
-            k_weight: ctx.zeros(
+            k_weight: Tensor::zeros(
                 vec![config.num_key_value_heads * head_dim, config.hidden_size],
                 names.k_proj,
             ),
-            v_weight: ctx.zeros(
+            v_weight: Tensor::zeros(
                 vec![config.num_key_value_heads * head_dim, config.hidden_size],
                 names.v_proj,
             ),
 
-            o_weight: ctx.zeros(
+            o_weight: Tensor::zeros(
                 vec![config.hidden_size, config.num_attention_heads * head_dim],
                 names.o_proj,
             ),
@@ -195,10 +194,9 @@ mod test {
         let attention_head_size: usize = config.head_dim;
         // config.hidden_size / config.num_attention_heads;
 
-        let operator_queue = Rc::new(RefCell::new(Vec::<Operator<f32>>::new()));
-        let ctx = Rc::new(TensorCtx::new(operator_queue));
+        f32::init_operator_queue();
 
-        let self_attention = Attention::new(
+        let self_attention = Attention::<f32>::new(
             &config,
             crate::transformer::names::AttentionTensorNames {
                 scope: String::from("model.layers.1.self_attn"),
@@ -207,20 +205,19 @@ mod test {
                 v_proj: String::from("model.layers.1.self_attn.v_proj.weight"),
                 o_proj: String::from("model.layers.1.self_attn.o_proj.weight"),
             },
-            ctx.clone(),
         );
 
-        let hidden_states = ctx.zeros(
+        let hidden_states = Tensor::zeros(
             vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
         );
 
-        let residual_tensor = ctx.zeros(
+        let residual_tensor = Tensor::zeros(
             vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
         );
 
-        let position_embedding = ctx.zeros(
+        let position_embedding = Tensor::zeros(
             vec![config.max_position_embeddings, 1, 1, attention_head_size],
             String::from("model.position_embedding.weight"),
         );
@@ -236,11 +233,13 @@ mod test {
 
         // Execute the operator queue
         let thread_num: usize = num_cpus::get();
-        for operator in output.operator_queue.borrow().iter() {
-            for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+        f32::with_operator_queue(|queue| {
+            for operator in queue.iter() {
+                for i in 0..thread_num {
+                    operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+                }
             }
-        }
+        });
 
         // Add more assertions as needed
     }
@@ -255,10 +254,9 @@ mod test {
 
         let attention_head_size: usize = config.head_dim;
 
-        let operator_queue = Rc::new(RefCell::new(Vec::<Operator<f16>>::new()));
-        let ctx = Rc::new(TensorCtx::new(operator_queue));
+        f16::init_operator_queue();
 
-        let self_attention = Attention::new(
+        let self_attention = Attention::<f16>::new(
             &config,
             AttentionTensorNames {
                 scope: String::from("model.layers.1.self_attn"),
@@ -267,20 +265,19 @@ mod test {
                 v_proj: String::from("model.layers.1.self_attn.v_proj.weight"),
                 o_proj: String::from("model.layers.1.self_attn.o_proj.weight"),
             },
-            ctx.clone(),
         );
 
-        let hidden_states = ctx.zeros(
+        let hidden_states = Tensor::zeros(
             vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
         );
 
-        let residual_tensor = ctx.zeros(
+        let residual_tensor = Tensor::zeros(
             vec![sequence_chunk_size, batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
         );
 
-        let position_embedding = ctx.zeros(
+        let position_embedding = Tensor::zeros(
             vec![config.max_position_embeddings, 1, 1, attention_head_size],
             String::from("model.position_embedding.weight"),
         );
@@ -296,10 +293,12 @@ mod test {
 
         // Execute the operator queue
         let thread_num: usize = num_cpus::get();
-        for operator in output.operator_queue.borrow().iter() {
-            for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+        f16::with_operator_queue(|queue| {
+            for operator in queue.iter() {
+                for i in 0..thread_num {
+                    operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+                }
             }
-        }
+        });
     }
 }
