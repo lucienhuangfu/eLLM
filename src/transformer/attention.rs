@@ -1,9 +1,6 @@
 use std::ops::{AddAssign, Neg, Sub};
 
-use crate::common::num_traits::FromNumber;
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::{FromNumber, Exp, Sigmoid, Sqrt, NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::super::common::matmul_params::MatMulParams;

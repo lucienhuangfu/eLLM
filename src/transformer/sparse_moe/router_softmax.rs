@@ -1,9 +1,8 @@
 use std::ops::{AddAssign, Neg, Sub};
 
 use crate::common::matmul_params::MatMulParams;
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+// removed custom Sigmoid/Sqrt traits; use standard numeric ops instead
+use crate::common::num_traits::{Exp, Sigmoid, Sqrt, NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
@@ -25,8 +24,8 @@ where
         + Default
         + Sub<Output = T>
         + Neg<Output = T>
-        + Exp
         + NegInfinity
+        + Exp
         + Sigmoid
         + Sqrt
         + AddAssign

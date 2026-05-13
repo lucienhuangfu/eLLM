@@ -1,8 +1,6 @@
 use std::ops::{AddAssign, Neg, Sub};
 
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::NegInfinity;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::operator::Operator;
@@ -35,10 +33,7 @@ where
         + Default
         + Sub<Output = T>
         + Neg<Output = T>
-        + Exp
         + NegInfinity
-        + Sigmoid
-        + Sqrt
         + AddAssign
         + GlobalMemPool
         + GlobalOperatorQueue,

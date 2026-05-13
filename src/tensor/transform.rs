@@ -1,12 +1,10 @@
-use std::ops::{AddAssign, Neg, Sub};
+use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::movement::LiftVector;
-use crate::operators::transform::{AddRMSZipMap, AddZipMap, LookupRMSMap, RMSMap, SigmoidMap};
 use crate::operators::operator::Operator;
+use crate::operators::transform::{AddRMSZipMap, AddZipMap, LookupRMSMap, RMSMap, SigmoidMap};
 
 use super::{GlobalOperatorQueue, Tensor};
 
@@ -17,6 +15,9 @@ where
         + Default
         + Sub<Output = T>
         + Neg<Output = T>
+        + Add<Output = T>
+        + Mul<Output = T>
+        + Div<Output = T>
         + Exp
         + NegInfinity
         + Sigmoid

@@ -1,6 +1,6 @@
 use std::ops::{Add, Div, Mul, Sub};
 
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::NegInfinity;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 
 #[derive(Clone)]
@@ -127,8 +127,7 @@ where
         + Mul<Output = T>
         + Div<Output = T>
         + PartialOrd
-        + NegInfinity
-        + Exp,
+        + NegInfinity,
 {
     pub fn new(
         q_ptr: *const T,

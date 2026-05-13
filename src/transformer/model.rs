@@ -9,9 +9,9 @@ use std::rc::Rc;
 use super::config::Config;
 use super::names::model_tensor_names;
 use crate::common::num_traits::FromNumber;
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+// removed custom Sigmoid/Sqrt traits; use standard numeric ops instead
+use crate::common::num_traits::NegInfinity;
+use crate::common::num_traits::{Exp, Sigmoid, Sqrt};
 
 // use super::super::operators::map::rms_map::RMSMap;
 use super::super::common::matmul_params::MatMulParams;

@@ -1,6 +1,5 @@
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::NegInfinity;
+use crate::common::num_traits::{Exp, Sigmoid, Sqrt, FromNumber};
 use crate::common::sequence_slice::SequenceSlice;
 use crate::operators::fake_echo::FakeEcho;
 use crate::runtime::SequenceState;
@@ -70,7 +69,11 @@ where
         + NegInfinity
         + Sigmoid
         + Sqrt
-        + AddAssign,
+        + AddAssign
+        + Add<Output = T>
+        + Mul<Output = T>
+        + Div<Output = T>
+        + FromNumber,
 {
     pub fn run(
         &self,

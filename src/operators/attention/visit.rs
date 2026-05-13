@@ -2,7 +2,7 @@ use std::ops::{Add, Div, Mul, Sub};
 
 use super::core::RowVisitPlan;
 use super::Attention;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::NegInfinity;
 use crate::operators::traits::AttentionTrait;
 
 impl<T> Attention<T>
@@ -15,7 +15,7 @@ where
         + Div<Output = T>
         + PartialOrd
         + NegInfinity
-        + Exp,
+        + crate::common::num_traits::Exp,
 {
     #[inline(always)]
     unsafe fn visit_aligned_row_range(

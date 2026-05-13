@@ -2,9 +2,8 @@ use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
 
 use crate::common::num_traits::FromNumber;
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::NegInfinity;
+use crate::common::num_traits::{Exp, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use crate::tensor::{GlobalOperatorQueue, Tensor};
