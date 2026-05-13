@@ -95,12 +95,21 @@ pub struct MemPool<T> {
     parameters: HashMap<String, Vec<T>>,
 }
 
+#[derive(Debug, Default)]
+pub struct ScratchPool<T> {
+    blocks: HashMap<String, AlignedBox<T>>,
+}
+
 unsafe impl<T: Send> Send for MemPool<T> {}
 unsafe impl<T: Sync> Sync for MemPool<T> {}
 
 // 全局单例支持
 static GLOBAL_MEM_POOL_F32: Lazy<Mutex<Option<MemPool<f32>>>> = Lazy::new(|| Mutex::new(None));
 static GLOBAL_MEM_POOL_F16: Lazy<Mutex<Option<MemPool<f16>>>> = Lazy::new(|| Mutex::new(None));
+static GLOBAL_SCRATCH_BOOL: Lazy<Mutex<ScratchPool<bool>>> =
+    Lazy::new(|| Mutex::new(ScratchPool::new()));
+static GLOBAL_SCRATCH_USIZE: Lazy<Mutex<ScratchPool<usize>>> =
+    Lazy::new(|| Mutex::new(ScratchPool::new()));
 
 pub trait GlobalMemPool {
     fn init_global(parameters: HashMap<String, Vec<Self>>)
@@ -110,6 +119,12 @@ pub trait GlobalMemPool {
     where
         Self: Sized + Default + Copy,
         F: FnOnce(&mut MemPool<Self>) -> R;
+}
+
+pub trait GlobalScratchPool: Copy + Default {
+    fn with_scratch_pool<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut ScratchPool<Self>) -> R;
 }
 
 impl GlobalMemPool for f32 {
@@ -145,6 +160,55 @@ impl GlobalMemPool for f16 {
             .as_mut()
             .expect("Global MemPool not initialized for f16");
         f(pool)
+    }
+}
+
+impl GlobalScratchPool for bool {
+    fn with_scratch_pool<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut ScratchPool<bool>) -> R,
+    {
+        let mut pool = GLOBAL_SCRATCH_BOOL.lock().unwrap();
+        f(&mut pool)
+    }
+}
+
+impl GlobalScratchPool for usize {
+    fn with_scratch_pool<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut ScratchPool<usize>) -> R,
+    {
+        let mut pool = GLOBAL_SCRATCH_USIZE.lock().unwrap();
+        f(&mut pool)
+    }
+}
+
+impl<T> ScratchPool<T>
+where
+    T: Copy + Default,
+{
+    pub fn new() -> Self {
+        Self {
+            blocks: HashMap::new(),
+        }
+    }
+
+    pub fn get_init(&mut self, name: &str, len: usize, value: T) -> *mut T {
+        assert!(len > 0, "Scratch allocation length must be greater than 0");
+
+        let needs_alloc = self
+            .blocks
+            .get(name)
+            .map_or(true, |block| block.len() < len);
+
+        if needs_alloc {
+            self.blocks
+                .insert(name.to_string(), AlignedBox::allocate_init(len, value));
+        } else {
+            self.blocks.get_mut(name).unwrap().as_mut_slice()[..len].fill(value);
+        }
+
+        self.blocks.get_mut(name).unwrap().as_mut_ptr()
     }
 }
 
@@ -215,41 +279,72 @@ where
         self.get_block(name, shape).as_mut_ptr()
     }
 
-    pub fn get_block(&mut self, name: &str, shape: &[usize]) -> &mut MemoryBlock<T> {
+    pub fn get_scratch(&mut self, name: &str, len: usize, value: T) -> *mut T {
+        self.get_or_allocate_full(name, len, Some(value)).as_mut_ptr()
+    }
+
+    fn block_has_capacity(block: &MemoryBlock<T>, size: usize) -> bool {
+        match block {
+            MemoryBlock::Full(boxed) => boxed.len() >= size,
+            MemoryBlock::Sub { size: block_size, .. } => *block_size >= size,
+        }
+    }
+
+    fn get_existing_if_valid(&mut self, name: &str, size: usize) -> Option<&mut MemoryBlock<T>> {
+        if self
+            .blocks
+            .get(name)
+            .map_or(false, |block| Self::block_has_capacity(block, size))
+        {
+            self.blocks.get_mut(name)
+        } else {
+            None
+        }
+    }
+
+    fn insert_full_from_vec(&mut self, name: &str, data: Vec<T>) -> &mut MemoryBlock<T> {
+        let len = data.len();
+        let mut boxed = AlignedBox::allocate(len);
+        boxed.as_mut_slice().copy_from_slice(&data);
+        self.blocks
+            .insert(name.to_string(), MemoryBlock::Full(Arc::new(boxed)));
+        self.blocks.get_mut(name).unwrap()
+    }
+
+    fn get_or_allocate_full(
+        &mut self,
+        name: &str,
+        size: usize,
+        init: Option<T>,
+    ) -> &mut MemoryBlock<T> {
+        assert!(size > 0, "Memory pool allocation size must be greater than 0");
+
+        if self.get_existing_if_valid(name, size).is_none() {
+            let boxed = AlignedBox::allocate_init(size, init.unwrap_or_default());
+            self.blocks
+                .insert(name.to_string(), MemoryBlock::Full(Arc::new(boxed)));
+        } else if let Some(value) = init {
+            self.blocks
+                .get_mut(name)
+                .unwrap()
+                .as_mut_slice()[..size]
+                .fill(value);
+        }
+
+        self.blocks.get_mut(name).unwrap()
+    }
+
+    fn get_block(&mut self, name: &str, shape: &[usize]) -> &mut MemoryBlock<T> {
         let size: usize = shape.iter().product();
 
-        let exists_and_valid = self.blocks.get(name).map_or(false, |block| {
-            if let MemoryBlock::Full(boxed) = block {
-                boxed.len() >= size
-            } else {
-                true
-            }
-        });
-
-        if exists_and_valid {
+        if self.get_existing_if_valid(name, size).is_some() {
             return self.blocks.get_mut(name).unwrap();
         }
 
         for m in REGEX_SET.matches(name).iter() {
             match m {
                 0 | 3..=6 => {
-                    let exists_and_valid = self.blocks.get(name).map_or(false, |block| {
-                        if let MemoryBlock::Full(boxed) = block {
-                            boxed.len() >= size
-                        } else {
-                            true
-                        }
-                    });
-
-                    if exists_and_valid {
-                        return self.blocks.get_mut(name).unwrap();
-                    }
-
-                    let boxed = AlignedBox::allocate_init(size, T::default());
-                    let name_clone = name.to_string();
-                    self.blocks
-                        .insert(name.to_string(), MemoryBlock::Full(Arc::new(boxed)));
-                    return self.blocks.get_mut(&name_clone).unwrap();
+                    return self.get_or_allocate_full(name, size, None);
                 }
                 1 => {
                     if self.blocks.contains_key(name) {
@@ -257,56 +352,16 @@ where
                     }
 
                     match self.parameters.remove(name) {
-                        Some(data) => {
-                            let len = data.len();
-                            let mut boxed = AlignedBox::allocate(len);
-                            boxed.as_mut_slice().copy_from_slice(&data);
-                            let name_clone = name.to_string();
-                            self.blocks
-                                .insert(name.to_string(), MemoryBlock::Full(Arc::new(boxed)));
-                            return self.blocks.get_mut(&name_clone).unwrap();
-                        }
+                        Some(data) => return self.insert_full_from_vec(name, data),
                         None => panic!("Parameter {} not found in parameters map", name),
                     }
                 }
                 2 => {
                     if let Some(captures) = LAYER_SHARED_REGEX.captures(name) {
                         let key_name = captures.get(1).unwrap().as_str().to_string();
-                        let exists_and_valid = self.blocks.get(&key_name).map_or(false, |block| {
-                            if let MemoryBlock::Full(boxed) = block {
-                                boxed.len() >= size
-                            } else {
-                                true
-                            }
-                        });
-
-                        if exists_and_valid {
-                            return self.blocks.get_mut(&key_name).unwrap();
-                        }
-
-                        let boxed = AlignedBox::allocate_init(size, T::default());
-                        let name_clone = key_name.clone();
-                        self.blocks
-                            .insert(key_name, MemoryBlock::Full(Arc::new(boxed)));
-                        return self.blocks.get_mut(&name_clone).unwrap();
+                        return self.get_or_allocate_full(&key_name, size, None);
                     } else {
-                        let exists_and_valid = self.blocks.get(name).map_or(false, |block| {
-                            if let MemoryBlock::Full(boxed) = block {
-                                boxed.len() >= size
-                            } else {
-                                true
-                            }
-                        });
-
-                        if exists_and_valid {
-                            return self.blocks.get_mut(name).unwrap();
-                        }
-
-                        let boxed = AlignedBox::allocate_init(size, T::default());
-                        let name_clone = name.to_string();
-                        self.blocks
-                            .insert(name.to_string(), MemoryBlock::Full(Arc::new(boxed)));
-                        return self.blocks.get_mut(&name_clone).unwrap();
+                        return self.get_or_allocate_full(name, size, None);
                     }
                 }
                 _ => panic!(),
