@@ -3,6 +3,7 @@ use std::ops::{AddAssign, Neg, Sub};
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::runtime::tensor::Tensor;
 
 #[derive(Clone)]
@@ -28,7 +29,8 @@ where
         + NegInfinity
         + Sigmoid
         + Sqrt
-        + AddAssign,
+        + AddAssign
+        + GlobalMemPool,
 {
     pub(super) fn new(
         hidden_size: usize,

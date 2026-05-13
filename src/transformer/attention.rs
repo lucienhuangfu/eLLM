@@ -5,6 +5,7 @@ use crate::common::num_traits::FromNumber;
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::super::common::matmul_params::MatMulParams;
 use super::super::runtime::tensor::{Tensor, TensorCtx};
@@ -40,7 +41,8 @@ where
         + Sigmoid
         + Sqrt
         + FromNumber
-        + AddAssign,
+        + AddAssign
+        + GlobalMemPool,
 {
     pub fn new(config: &Config, names: AttentionTensorNames, ctx: Rc<TensorCtx<T>>) -> Self {
         let head_dim: usize = config.head_dim;

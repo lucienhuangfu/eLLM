@@ -16,7 +16,7 @@ use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 // use super::super::operators::map::rms_map::RMSMap;
 use super::super::common::matmul_params::MatMulParams;
-use super::super::mem_mgr::mem_pool::MemPool;
+use super::super::mem_mgr::mem_pool::{GlobalMemPool, MemPool};
 use super::super::runtime::operator::Operator;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
@@ -57,7 +57,8 @@ where
         + FromNumber
         + AddAssign
         + Send
-        + Sync,
+        + Sync
+        + GlobalMemPool,
 {
     pub fn new(
         config: &Config,
@@ -74,9 +75,9 @@ where
         // let loader = SafeTensorsLoader::new(&torch_file).unwrap();
         // let tensors = loader.load_all_weights_f16().unwrap();
         let parameter_tensors = std::collections::HashMap::new();
-        let mem_pool = Rc::new(RefCell::new(MemPool::new(parameter_tensors)));
+        T::init_global(parameter_tensors);
         let operator_queue: Rc<RefCell<Vec<Operator<T>>>> = Rc::new(RefCell::new(Vec::new()));
-        let ctx = Rc::new(TensorCtx::new(mem_pool, operator_queue));
+        let ctx = Rc::new(TensorCtx::new(operator_queue));
 
         // Create default tensors
         let word_embedding = Rc::new(ctx.zeros(

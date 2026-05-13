@@ -9,7 +9,7 @@ use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::common::matmul_params::MatMulParams;
 use crate::common::tensor_utils::get_strides;
 use crate::mem_mgr::allocator::AlignedBox;
-use crate::mem_mgr::mem_pool::MemPool;
+use crate::mem_mgr::mem_pool::{GlobalMemPool, MemPool};
 
 use crate::operators::movement::LiftVector;
 use crate::operators::routing::ExpertsSoftmaxNorm;
@@ -41,10 +41,7 @@ where
     pub shape: Vec<usize>,
     pub strides: Vec<usize>,
     pub tensor_name: String,
-    pub mem_pool: Rc<RefCell<MemPool<T>>>,
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
-    // pub size: usize,
-    // pub is_contiguous: bool,
 }
 
 #[derive(Clone)]
@@ -52,7 +49,6 @@ pub struct TensorCtx<T>
 where
     T: Copy + PartialOrd,
 {
-    pub mem_pool: Rc<RefCell<MemPool<T>>>,
     pub operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
 }
 
@@ -60,14 +56,8 @@ impl<T> TensorCtx<T>
 where
     T: Copy + PartialOrd,
 {
-    pub fn new(
-        mem_pool: Rc<RefCell<MemPool<T>>>,
-        operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
-    ) -> Self {
-        Self {
-            mem_pool,
-            operator_queue,
-        }
+    pub fn new(operator_queue: Rc<RefCell<Vec<Operator<T>>>>) -> Self {
+        Self { operator_queue }
     }
 
     pub fn take_operator_queue(&self) -> Vec<Operator<T>> {
@@ -87,15 +77,11 @@ where
         + NegInfinity
         + Sigmoid
         + Sqrt
-        + AddAssign,
+        + AddAssign
+        + GlobalMemPool,
 {
     pub fn tensor(&self, shape: Vec<usize>, tensor_name: String) -> Tensor<T> {
-        Tensor::from_mem_pool(
-            shape,
-            tensor_name,
-            self.mem_pool.clone(),
-            self.operator_queue.clone(),
-        )
+        Tensor::from_mem_pool(shape, tensor_name, self.operator_queue.clone())
     }
 
     pub fn tensor_from_vec(
@@ -104,22 +90,11 @@ where
         data: Vec<T>,
         tensor_name: String,
     ) -> Tensor<T> {
-        Tensor::from_vec(
-            shape,
-            data,
-            tensor_name,
-            self.mem_pool.clone(),
-            self.operator_queue.clone(),
-        )
+        Tensor::from_vec(shape, data, tensor_name, self.operator_queue.clone())
     }
 
     pub fn zeros(&self, shape: Vec<usize>, tensor_name: String) -> Tensor<T> {
-        Tensor::zeros(
-            shape,
-            tensor_name,
-            self.mem_pool.clone(),
-            self.operator_queue.clone(),
-        )
+        Tensor::zeros(shape, tensor_name, self.operator_queue.clone())
     }
 
     pub fn lookup_rms(
@@ -136,7 +111,6 @@ where
             batch_size,
             eps,
             scope_name,
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         )
     }
@@ -153,22 +127,21 @@ where
         + NegInfinity
         + Sigmoid
         + Sqrt
-        + AddAssign,
+        + AddAssign
+        + GlobalMemPool,
 {
     pub fn from_cache(
         shape: Vec<usize>,
         tensor_name: String,
-        mem_pool: Rc<RefCell<MemPool<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
-        let data = mem_pool.borrow_mut().get(&tensor_name, &shape);
+        let data = T::with_global(|pool| pool.get(&tensor_name, &shape));
         let strides = get_strides(&shape);
         Tensor {
             data,
             shape,
             strides,
             tensor_name,
-            mem_pool,
             operator_queue,
         }
     }
@@ -176,7 +149,6 @@ where
         let output_tensor = <Tensor<T>>::from_mem_pool(
             self.shape.clone(),
             tensor_name,
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
         let operator = Operator::AddZipMap(AddZipMap::new(
@@ -198,12 +170,8 @@ where
         eps: T,
         tensor_name: String,
     ) -> Self {
-        let output_tensor = Tensor::from_mem_pool(
-            self.shape.clone(),
-            tensor_name,
-            self.mem_pool.clone(),
-            self.operator_queue.clone(),
-        );
+        let output_tensor =
+            Tensor::from_mem_pool(self.shape.clone(), tensor_name, self.operator_queue.clone());
 
         let operator = Operator::AddRMSZipMap(AddRMSZipMap::new(
             self.data,
@@ -222,7 +190,6 @@ where
         let output_tensor = <Tensor<T>>::from_mem_pool(
             self.shape.clone(),
             tensor_name,
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
         let operator = Operator::SigmoidMap(SigmoidMap::new(
@@ -247,7 +214,6 @@ where
         let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -287,7 +253,6 @@ where
         let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -329,7 +294,6 @@ where
         let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -374,7 +338,6 @@ where
         let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -469,7 +432,6 @@ where
         let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -540,19 +502,16 @@ where
     pub fn from_mem_pool(
         shape: Vec<usize>,
         tensor_name: String,
-        mem_pool: Rc<RefCell<MemPool<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
-        let length: usize = shape.iter().product();
-        let data = mem_pool.borrow_mut().get(&tensor_name, &shape);
+        let data = T::with_global(|pool| pool.get(&tensor_name, &shape));
         let strides = get_strides(&shape);
         Tensor {
-            data: data,
-            shape: shape.clone(),
-            strides: strides,
-            tensor_name: tensor_name,
-            mem_pool: mem_pool.clone(),
-            operator_queue: operator_queue.clone(),
+            data,
+            shape,
+            strides,
+            tensor_name,
+            operator_queue,
         }
     }
 
@@ -560,7 +519,6 @@ where
         shape: Vec<usize>,
         data: Vec<T>,
         tensor_name: String,
-        mem_pool: Rc<RefCell<MemPool<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let length: usize = shape.iter().product();
@@ -570,7 +528,7 @@ where
             length,
             data.len()
         );
-        let v = Self::from_mem_pool(shape, tensor_name, mem_pool, operator_queue);
+        let v = Self::from_mem_pool(shape, tensor_name, operator_queue);
         unsafe {
             v.data.copy_from_nonoverlapping(data.as_ptr(), data.len());
         }
@@ -595,7 +553,6 @@ where
         let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             format!("{}.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -633,7 +590,6 @@ where
         let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             tensor_name,
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -672,21 +628,18 @@ where
         let q_state = Tensor::from_mem_pool(
             vec![self.shape[0], q_weight.shape[0]],
             format!("{}.q_proj.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
         let k_state = Tensor::from_mem_pool(
             vec![self.shape[0], k_weight.shape[0]],
             format!("{}.k_proj.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
         let v_state = Tensor::from_mem_pool(
             vec![self.shape[0], v_weight.shape[0]],
             format!("{}.v_proj.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -736,7 +689,6 @@ where
         let output_tensor = Tensor::from_mem_pool(
             output_shape.clone(),
             tensor_name,
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -782,7 +734,6 @@ where
         let value_tensor = Tensor::<T>::from_mem_pool(
             output_shape.clone(),
             format!("{}.values.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -820,15 +771,11 @@ where
             .into_iter()
             .map(|index| self.strides[index])
             .collect();
-        // let maximum_shape: Vec<usize> = dims.clone().into_iter().map(|index| self.maximum_shape[index]).collect();
-        // let tensor = self._view(shape, strides, tensor_name);
-        // tensor.set_contiguous(false) ;
         Tensor {
             data: self.data,
             shape: shape,
             strides: strides,
             tensor_name: self.tensor_name.clone(),
-            mem_pool: self.mem_pool.clone(),
             operator_queue: self.operator_queue.clone(),
         }
     }
@@ -851,7 +798,6 @@ where
         let value_tensor = Tensor::from_mem_pool(
             vec![self.shape[0], num_topk],
             format!("{}.output_value.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 
@@ -886,11 +832,10 @@ where
     pub fn zeros(
         shape: Vec<usize>,
         tensor_name: String,
-        mem_pool: Rc<RefCell<MemPool<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> Self {
         let length: usize = shape.iter().product();
-        let v = Self::from_mem_pool(shape, tensor_name, mem_pool, operator_queue);
+        let v = Self::from_mem_pool(shape, tensor_name, operator_queue);
         (0..length).for_each(|x| unsafe {
             *v.data.add(x) = T::default();
         });
@@ -898,13 +843,11 @@ where
     }
 
     fn _view(&self, shape: Vec<usize>, strides: Vec<usize>) -> Self {
-        // let size: usize = shape.iter().product();
         Tensor {
             data: self.data,
             shape: shape.clone(),
             strides: strides,
             tensor_name: self.tensor_name.clone(),
-            mem_pool: self.mem_pool.clone(),
             operator_queue: self.operator_queue.clone(),
         }
     }
@@ -915,20 +858,17 @@ where
         batch_size: usize,
         eps: T,
         scope_name: String,
-        mem_pool: Rc<RefCell<MemPool<T>>>,
         operator_queue: Rc<RefCell<Vec<Operator<T>>>>,
     ) -> (Self, Self) {
         let output_hidden_tensor = Tensor::from_mem_pool(
             vec![batch_size, word_embedding.shape[1]],
             format!("{}.output_hidden", scope_name),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
         let output_normal_tensor = Tensor::from_mem_pool(
             vec![batch_size, word_embedding.shape[1]],
             format!("{}.output_normal", scope_name),
-            mem_pool.clone(),
             operator_queue.clone(),
         );
 
@@ -955,7 +895,6 @@ where
         let output_tensor = Tensor::<T>::from_mem_pool(
             self.shape.clone(),
             format!("{}.output", scope_name),
-            self.mem_pool.clone(),
             self.operator_queue.clone(),
         );
 

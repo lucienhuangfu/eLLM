@@ -1,7 +1,7 @@
 use once_cell::sync::Lazy;
 use regex::{Regex, RegexSet};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::allocator::AlignedBox;
 
@@ -97,6 +97,56 @@ pub struct MemPool<T> {
 
 unsafe impl<T: Send> Send for MemPool<T> {}
 unsafe impl<T: Sync> Sync for MemPool<T> {}
+
+// 全局单例支持
+static GLOBAL_MEM_POOL_F32: Lazy<Mutex<Option<MemPool<f32>>>> = Lazy::new(|| Mutex::new(None));
+static GLOBAL_MEM_POOL_F16: Lazy<Mutex<Option<MemPool<f16>>>> = Lazy::new(|| Mutex::new(None));
+
+pub trait GlobalMemPool {
+    fn init_global(parameters: HashMap<String, Vec<Self>>)
+    where
+        Self: Sized + Default + Copy;
+    fn with_global<F, R>(f: F) -> R
+    where
+        Self: Sized + Default + Copy,
+        F: FnOnce(&mut MemPool<Self>) -> R;
+}
+
+impl GlobalMemPool for f32 {
+    fn init_global(parameters: HashMap<String, Vec<f32>>) {
+        let mut pool = GLOBAL_MEM_POOL_F32.lock().unwrap();
+        *pool = Some(MemPool::new(parameters));
+    }
+
+    fn with_global<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut MemPool<f32>) -> R,
+    {
+        let mut pool = GLOBAL_MEM_POOL_F32.lock().unwrap();
+        let pool = pool
+            .as_mut()
+            .expect("Global MemPool not initialized for f32");
+        f(pool)
+    }
+}
+
+impl GlobalMemPool for f16 {
+    fn init_global(parameters: HashMap<String, Vec<f16>>) {
+        let mut pool = GLOBAL_MEM_POOL_F16.lock().unwrap();
+        *pool = Some(MemPool::new(parameters));
+    }
+
+    fn with_global<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut MemPool<f16>) -> R,
+    {
+        let mut pool = GLOBAL_MEM_POOL_F16.lock().unwrap();
+        let pool = pool
+            .as_mut()
+            .expect("Global MemPool not initialized for f16");
+        f(pool)
+    }
+}
 
 impl<T> MemPool<T>
 where

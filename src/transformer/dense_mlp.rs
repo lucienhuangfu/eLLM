@@ -4,6 +4,7 @@ use std::rc::Rc;
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::super::common::matmul_params::MatMulParams;
 use super::super::runtime::tensor::{Tensor, TensorCtx};
@@ -31,7 +32,8 @@ where
         + NegInfinity
         + Sigmoid
         + Sqrt
-        + AddAssign,
+        + AddAssign
+        + GlobalMemPool,
 {
     pub fn new(
         hidden_size: usize,
