@@ -3,6 +3,7 @@
 debug
 target
 Cargo.lock
+models/
 
 # Local experiment outputs
 experiment/
