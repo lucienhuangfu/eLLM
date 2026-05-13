@@ -48,7 +48,7 @@ impl<T> AlignedBox<T> {
     }
 
     #[inline]
-    pub fn as_mut_ptr(&mut self) -> *mut T {
+    pub fn as_mut_ptr(&self) -> *mut T {
         self.ptr
     }
 
@@ -79,7 +79,7 @@ impl<T> AlignedBox<T> {
     }
 
     #[inline]
-    pub fn as_mut_ptr_offset(&mut self, offset: usize) -> *mut T {
+    pub fn as_mut_ptr_offset(&self, offset: usize) -> *mut T {
         assert!(offset < self.length, "Offset out of bounds");
         unsafe { self.ptr.add(offset) }
     }

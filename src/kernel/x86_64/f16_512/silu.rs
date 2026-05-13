@@ -96,10 +96,10 @@ mod tests {
 
         // let mut output: Vec<f16> = vec![0.0; v1.len()];
         let mut output_box = AlignedBox::allocate_init(v1.len(), 0.0);
-        let output_slice = output_box.as_slice();
         unsafe {
             silu(v1_box.as_ptr(), output_box.as_mut_ptr(), v1.len());
         }
+        let output_slice = output_box.as_slice();
         // println!("{:?}", output);
         let expected: Vec<f16> = vec![
             1.9444659948349,

@@ -3,6 +3,7 @@ mod slice_scheduler;
 
 pub mod batch_sequence;
 pub mod chat_template;
+pub mod model_loader;
 pub mod operator;
 pub mod runner;
 pub mod tensor;
