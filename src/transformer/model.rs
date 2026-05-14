@@ -72,8 +72,6 @@ where
         // let torch_file = String::from("D:/llama-3-chinese-8b-instruct-v3");
         // let loader = SafeTensorsLoader::new(&torch_file).unwrap();
         // let tensors = loader.load_all_weights_f16().unwrap();
-        let parameter_tensors = std::collections::HashMap::new();
-        T::init_global(parameter_tensors);
         T::init_operator_queue();
 
         // Create default tensors
