@@ -930,7 +930,9 @@ mod tests {
         const K: usize = 256;
         const NQ: usize = 256;
         const NKV: usize = 256;
-        const HEAD_DIM: usize = 128;
+        // Keep this test focused on medium-size GEMM. A head_dim larger than N
+        // avoids the Q/K finalize path, which has its own coverage below.
+        const HEAD_DIM: usize = 512;
 
         let thread_num = avail_threads_cap(16);
 
@@ -999,6 +1001,104 @@ mod tests {
             for j in 0..NKV {
                 assert_abs_diff_eq!(ck[i * NKV + j] as f32, ck_ref[i * NKV + j], epsilon = 1.0);
                 assert_abs_diff_eq!(cv[i * NKV + j] as f32, cv_ref[i * NKV + j], epsilon = 1.0);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    fn test_kqv_f16_avx512_finalize_qk_only() {
+        const M: usize = 3;
+        const K: usize = 64;
+        const NQ: usize = 128;
+        const NKV: usize = 128;
+        const HEAD_DIM: usize = 128;
+
+        let thread_num = avail_threads_cap(8);
+
+        let mut a = vec![0.0f16; M * K];
+        let mut wq_nt = vec![0.0f16; NQ * K];
+        let mut wk_nt = vec![0.0f16; NKV * K];
+        let mut wv_nt = vec![0.0f16; NKV * K];
+
+        let mut cq = vec![0.0f16; M * NQ];
+        let mut ck = vec![0.0f16; M * NKV];
+        let mut cv = vec![0.0f16; M * NKV];
+
+        let mut rope = vec![0.0f16; HEAD_DIM];
+        for pair in 0..(HEAD_DIM / 2) {
+            rope[2 * pair] = 1.0;
+            rope[2 * pair + 1] = 0.0;
+        }
+
+        for i in 0..M {
+            for kk in 0..K {
+                a[i * K + kk] = (((i * 5 + kk * 3) % 41) as f32 * 0.01 + 0.01) as f16;
+            }
+        }
+        for j in 0..NQ {
+            for kk in 0..K {
+                wq_nt[j * K + kk] = (((kk * 7 + j * 3) % 43) as f32 * 0.005 + 0.002) as f16;
+            }
+        }
+        for j in 0..NKV {
+            for kk in 0..K {
+                wk_nt[j * K + kk] = (((kk * 11 + j * 5) % 47) as f32 * 0.005 + 0.002) as f16;
+                wv_nt[j * K + kk] = (((kk * 13 + j * 7) % 53) as f32 * 0.005 + 0.002) as f16;
+            }
+        }
+
+        let runner = MatMul3::<f16>::new(
+            a.as_ptr(),
+            wq_nt.as_ptr(),
+            cq.as_mut_ptr(),
+            wk_nt.as_ptr(),
+            ck.as_mut_ptr(),
+            wv_nt.as_ptr(),
+            cv.as_mut_ptr(),
+            rope.as_ptr(),
+            HEAD_DIM,
+            M,
+            K,
+            NQ,
+            NKV,
+            3,
+            128,
+            64,
+            3,
+            32,
+        );
+
+        run_runner(&runner, M, thread_num);
+
+        let mut cv_ref = vec![0.0f32; M * NKV];
+        gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M, K, NKV);
+
+        for i in 0..M {
+            let q_rms = (cq[i * NQ..(i + 1) * NQ]
+                .iter()
+                .map(|&v| {
+                    let v = v as f32;
+                    v * v
+                })
+                .sum::<f32>()
+                / NQ as f32)
+                .sqrt();
+            let k_rms = (ck[i * NKV..(i + 1) * NKV]
+                .iter()
+                .map(|&v| {
+                    let v = v as f32;
+                    v * v
+                })
+                .sum::<f32>()
+                / NKV as f32)
+                .sqrt();
+
+            assert_abs_diff_eq!(q_rms, 1.0, epsilon = 5e-2);
+            assert_abs_diff_eq!(k_rms, 1.0, epsilon = 5e-2);
+
+            for j in 0..NKV {
+                assert_abs_diff_eq!(cv[i * NKV + j] as f32, cv_ref[i * NKV + j], epsilon = 5e-1);
             }
         }
     }

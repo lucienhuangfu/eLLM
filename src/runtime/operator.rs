@@ -1206,6 +1206,7 @@ mod test {
                 h,
                 ktop,
                 params,
+                false,
             );
 
             let op = Operator::ExpertsMatMulDown(runner);
@@ -1311,6 +1312,7 @@ mod test {
                 h,
                 ktop,
                 params,
+                false,
             );
 
             let op = Operator::ExpertsMatMulDown(runner);

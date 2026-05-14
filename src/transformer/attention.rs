@@ -178,7 +178,6 @@ mod test {
 
     #[test]
     fn test_self_attention() {
-        let sequence_chunk_size = 1;
         let batch_size = 3;
         // let hidden_size = 128;
         // let num_attention_heads = 64;
@@ -212,12 +211,12 @@ mod test {
         );
 
         let hidden_states = ctx.zeros(
-            vec![sequence_chunk_size, batch_size, config.hidden_size],
+            vec![batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
         );
 
         let residual_tensor = ctx.zeros(
-            vec![sequence_chunk_size, batch_size, config.hidden_size],
+            vec![batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
         );
 
@@ -232,14 +231,22 @@ mod test {
         // Add assertions to validate the output
         debug_assert_eq!(
             output.shape,
-            vec![sequence_chunk_size, batch_size, config.hidden_size]
+            vec![batch_size, config.hidden_size]
         );
 
         // Execute the operator queue
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+                operator.run(
+                    batch_size,
+                    0,
+                    thread_num,
+                    i,
+                    &[],
+                    &[],
+                    &mut Vec::new(),
+                );
             }
         }
 
@@ -248,7 +255,6 @@ mod test {
 
     #[test]
     fn test_self_attention_f16() {
-        let sequence_chunk_size = 1;
         let batch_size = 3;
 
         let config =
@@ -276,12 +282,12 @@ mod test {
         );
 
         let hidden_states = ctx.zeros(
-            vec![sequence_chunk_size, batch_size, config.hidden_size],
+            vec![batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
         );
 
         let residual_tensor = ctx.zeros(
-            vec![sequence_chunk_size, batch_size, config.hidden_size],
+            vec![batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
         );
 
@@ -296,14 +302,22 @@ mod test {
         // Add assertions to validate the output
         debug_assert_eq!(
             output.shape,
-            vec![sequence_chunk_size, batch_size, config.hidden_size]
+            vec![batch_size, config.hidden_size]
         );
 
         // Execute the operator queue
         let thread_num: usize = num_cpus::get();
         for operator in output.operator_queue.borrow().iter() {
             for i in 0..thread_num {
-                operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+                operator.run(
+                    batch_size,
+                    0,
+                    thread_num,
+                    i,
+                    &[],
+                    &[],
+                    &mut Vec::new(),
+                );
             }
         }
     }

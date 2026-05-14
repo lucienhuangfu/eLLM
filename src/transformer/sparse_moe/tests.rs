@@ -92,7 +92,7 @@ fn build_case(
         ctx.clone(),
     );
 
-    let shape = vec![sequence_chunk_size, batch_size, hidden_size];
+    let shape = vec![sequence_chunk_size * batch_size, hidden_size];
     let input = ctx.tensor(shape.clone(), "model.layers.0.input_tensor".to_string());
     let residual = ctx.tensor(shape.clone(), "model.layers.0.residual_tensor".to_string());
 

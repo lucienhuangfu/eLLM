@@ -344,10 +344,7 @@ mod test {
         );
 
         // Validate output shape
-        debug_assert_eq!(
-            output_tensor.shape,
-            vec![position_window_size, batch_size, hidden_size]
-        );
+        debug_assert_eq!(output_tensor.shape, vec![batch_size, hidden_size]);
 
         // Execute the operator queue
         let thread_num = std::thread::available_parallelism()
@@ -368,9 +365,6 @@ mod test {
             }
         }
 
-        assert_eq!(
-            output_tensor.shape,
-            vec![position_window_size, batch_size, hidden_size]
-        );
+        assert_eq!(output_tensor.shape, vec![batch_size, hidden_size]);
     }
 }

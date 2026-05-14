@@ -44,7 +44,7 @@ impl<T> LiftVector<T> {
                 let source_ptr = ptr.add(source_token_index * self.length);
                 let destination_ptr = ptr.add(destination_index * self.length);
 
-                ptr::copy_nonoverlapping(source_ptr, destination_ptr, self.length);
+                ptr::copy(source_ptr, destination_ptr, self.length);
             }
         }
     }

@@ -124,10 +124,11 @@ unsafe fn softmax_topk_only_inplace(out_values: *mut f16, topk: usize) {
     debug_assert!(!out_values.is_null());
     debug_assert!(topk > 0 && topk <= LANES);
 
-    let max_val = *out_values;
+    let mut max_val = f16::NEG_INFINITY;
     let mut lane_buf = [0.0f16; LANES];
     for i in 0..topk {
         lane_buf[i] = *out_values.add(i);
+        max_val = max_val.max(lane_buf[i]);
     }
 
     let values = _mm512_loadu_ph(lane_buf.as_ptr() as *const _);

@@ -372,9 +372,15 @@ mod test {
                 .fold(f32::NEG_INFINITY, f32::max);
             let denom: f32 = token_input.iter().map(|v| (v - max_val).exp()).sum();
 
+            let mut prob_sum = 0.0;
+            for i in 0..num_topk {
+                let (_, val) = expected[i];
+                prob_sum += (val - max_val).exp() / denom;
+            }
+
             for i in 0..num_topk {
                 let (idx, val) = expected[i];
-                let prob = (val - max_val).exp() / denom;
+                let prob = ((val - max_val).exp() / denom) / prob_sum;
 
                 assert!(
                     experts_indicator[idx],

@@ -1160,6 +1160,7 @@ mod tests {
                 kc,
                 mr,
                 nr,
+                false,
             );
 
             // 注意：最好不要超过 available_parallelism()，避免 scratch 越界
@@ -1169,7 +1170,7 @@ mod tests {
             let used = num_threads.min(threads_cap).max(1);
 
             for tid in 0..used {
-                op.run(0, 0, batch, used, tid);
+                op.run(batch, 0, used, tid);
             }
         }
 
@@ -1322,7 +1323,7 @@ mod tests {
         };
 
         // 单线程即可复现
-        op.run(0, 0, B_RUN, 1, 0);
+        op.run(B_RUN, 0, 1, 0);
 
         // row 7/8 必须仍为 0（没被触碰）
         for b in B_RUN..B_CAP {
@@ -1527,11 +1528,12 @@ mod tests {
                 kc,
                 mr,
                 nr,
+                false,
             );
 
             // 你说固定机器跑，这里就直接用 num_threads（确保不超过你那台机的 threads）
             for tid in 0..num_threads {
-                op.run(0, 0, batch, num_threads, tid);
+                op.run(batch, 0, num_threads, tid);
             }
         }
 
