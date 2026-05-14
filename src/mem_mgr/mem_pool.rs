@@ -43,10 +43,13 @@ impl<T> MemoryBlock<T> {
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
         match self {
-            MemoryBlock::Full(boxed) => Arc::as_ptr(boxed) as *mut T,
-            MemoryBlock::Sub { parent, offset, .. } => {
-                (parent.as_ptr() as *mut T).wrapping_add(*offset)
-            }
+            MemoryBlock::Full(boxed) => Arc::get_mut(boxed)
+                .expect("Multiple strong references to MemoryBlock::Full")
+                .as_mut_ptr(),
+            MemoryBlock::Sub { parent, offset, .. } => Arc::get_mut(parent)
+                .expect("Multiple strong references to MemoryBlock::Sub")
+                .as_mut_ptr()
+                .wrapping_add(*offset),
         }
     }
 
@@ -73,18 +76,19 @@ impl<T> MemoryBlock<T> {
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         match self {
-            MemoryBlock::Full(boxed) => unsafe {
-                std::slice::from_raw_parts_mut(Arc::as_ptr(boxed) as *mut T, boxed.len())
-            },
+            MemoryBlock::Full(boxed) => Arc::get_mut(boxed)
+                .expect("Multiple strong references to MemoryBlock::Full")
+                .as_mut_slice(),
             MemoryBlock::Sub {
                 parent,
                 offset,
                 size,
-            } => unsafe {
-                std::slice::from_raw_parts_mut(parent.as_ptr() as *mut T, parent.len())
-                    .get_mut(*offset..*offset + *size)
-                    .unwrap()
-            },
+            } => {
+                let parent_slice = Arc::get_mut(parent)
+                    .expect("Multiple strong references to MemoryBlock::Sub")
+                    .as_mut_slice();
+                parent_slice.get_mut(*offset..*offset + *size).unwrap()
+            }
         }
     }
 }
@@ -280,13 +284,16 @@ where
     }
 
     pub fn get_scratch(&mut self, name: &str, len: usize, value: T) -> *mut T {
-        self.get_or_allocate_full(name, len, Some(value)).as_mut_ptr()
+        self.get_or_allocate_full(name, len, Some(value))
+            .as_mut_ptr()
     }
 
     fn block_has_capacity(block: &MemoryBlock<T>, size: usize) -> bool {
         match block {
             MemoryBlock::Full(boxed) => boxed.len() >= size,
-            MemoryBlock::Sub { size: block_size, .. } => *block_size >= size,
+            MemoryBlock::Sub {
+                size: block_size, ..
+            } => *block_size >= size,
         }
     }
 
@@ -317,18 +324,17 @@ where
         size: usize,
         init: Option<T>,
     ) -> &mut MemoryBlock<T> {
-        assert!(size > 0, "Memory pool allocation size must be greater than 0");
+        assert!(
+            size > 0,
+            "Memory pool allocation size must be greater than 0"
+        );
 
         if self.get_existing_if_valid(name, size).is_none() {
             let boxed = AlignedBox::allocate_init(size, init.unwrap_or_default());
             self.blocks
                 .insert(name.to_string(), MemoryBlock::Full(Arc::new(boxed)));
         } else if let Some(value) = init {
-            self.blocks
-                .get_mut(name)
-                .unwrap()
-                .as_mut_slice()[..size]
-                .fill(value);
+            self.blocks.get_mut(name).unwrap().as_mut_slice()[..size].fill(value);
         }
 
         self.blocks.get_mut(name).unwrap()
@@ -341,7 +347,7 @@ where
             return self.blocks.get_mut(name).unwrap();
         }
 
-        for m in REGEX_SET.matches(name).iter() {
+        for m in REGEX_SET.matches(name) {
             match m {
                 0 | 3..=6 => {
                     return self.get_or_allocate_full(name, size, None);
@@ -351,9 +357,11 @@ where
                         return self.blocks.get_mut(name).unwrap();
                     }
 
-                    match self.parameters.remove(name) {
-                        Some(data) => return self.insert_full_from_vec(name, data),
-                        None => panic!("Parameter {} not found in parameters map", name),
+                    if let Some(data) = self.parameters.remove(name) {
+                        return self.insert_full_from_vec(name, data);
+                    } else {
+                        // If parameter not found, just allocate a new block instead of panicking
+                        return self.get_or_allocate_full(name, size, None);
                     }
                 }
                 2 => {
@@ -407,6 +415,28 @@ mod test {
         let p1 = pool.get(&layer1, &[2]);
         let p2 = pool.get(&layer2, &[2]);
         assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn test_get_missing_param() {
+        let parameters = HashMap::new();
+        let mut pool: MemPool<f32> = MemPool::new(parameters);
+
+        // Test getting a .weight that's missing from params
+        let name = "model.embed_tokens.weight".to_string();
+        let p = pool.get(&name, &[10, 5]); // 10x5 = 50 elements
+        assert!(!p.is_null());
+
+        // Verify we can write to it without crashing
+        unsafe {
+            for i in 0..50 {
+                *p.add(i) = i as f32;
+            }
+            // Read back to confirm
+            for i in 0..50 {
+                assert_eq!(*p.add(i), i as f32);
+            }
+        }
     }
 
     #[test]

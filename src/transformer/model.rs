@@ -18,8 +18,8 @@ use super::super::common::matmul_params::MatMulParams;
 use super::super::mem_mgr::mem_pool::GlobalMemPool;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
-use crate::tensor::{GlobalOperatorQueue, Tensor};
 use super::decoder_layer::DecoderLayer;
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 // use crate::runtime::inference::state::TokenRecord;
 
 #[cfg(test)]
@@ -61,7 +61,7 @@ where
     pub fn new(
         config: &Config,
         position_vec: Vec<T>,
-        sequence_length: usize,
+        sequence_chunk_size: usize,
         batch_size: usize,
         topk_size: usize,
         eos_id: usize,
@@ -69,9 +69,6 @@ where
         let model_names = model_tensor_names(config);
         let scope_name = model_names.scope.clone();
 
-        // let torch_file = String::from("D:/llama-3-chinese-8b-instruct-v3");
-        // let loader = SafeTensorsLoader::new(&torch_file).unwrap();
-        // let tensors = loader.load_all_weights_f16().unwrap();
         T::init_operator_queue();
 
         // Create default tensors
@@ -91,8 +88,7 @@ where
             layers.push(DecoderLayer::<T>::new(
                 &config,
                 i,
-                sequence_length,
-                // sequence_chunk_size,
+                sequence_chunk_size,
                 batch_size,
                 word_embedding.clone(),
                 position_embedding.clone(),
@@ -108,7 +104,6 @@ where
             layers: layers,
             batch_size: batch_size,
             hidden_size: config.hidden_size,
-            // sequence_chunk_size: sequence_chunk_size,
             topk_size: topk_size,
             eos_id: eos_id,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
@@ -232,8 +227,7 @@ mod test {
     #[test]
     fn test_model_forward() {
         // let cpu_num =  thread::available_parallelism().unwrap().get();
-        let sequence_length = 128;
-        let _sequence_chunk_size = 1;
+        let sequence_chunk_size = 128;
         let batch_size = 3;
         let topk_size = 8;
         let thread_num = std::thread::available_parallelism()
@@ -256,7 +250,7 @@ mod test {
         let mut model = Model::<f32>::new(
             &config,
             position_vec,
-            sequence_length,
+            sequence_chunk_size,
             batch_size,
             topk_size, // word_embedding,
             // position_embedding,
@@ -311,8 +305,7 @@ mod test {
             return;
         }
 
-        let sequence_length = 128;
-        let _sequence_chunk_size = 1;
+        let sequence_chunk_size = 128;
         let batch_size = 3;
         let topk_size = 8;
         let thread_num = std::thread::available_parallelism()
@@ -335,8 +328,7 @@ mod test {
         let mut model = Model::<f16>::new(
             &config,
             position_vec,
-            sequence_length,
-            // sequence_chunk_size,
+            sequence_chunk_size,
             batch_size,
             topk_size,
             eos_id,
@@ -371,5 +363,88 @@ mod test {
         assert!(batch_list
             .iter()
             .all(|record| matches!(record.phase, Phase::Decode)));
+    }
+
+    #[test]
+    fn test_qwen3_06b_creation() {
+        use std::collections::HashMap;
+        let sequence_chunk_size = 128;
+        let batch_size = 1;
+        let topk_size = 8;
+
+        let config = Config::load_from_file(r"models/Qwen3-0.6B/config.json").unwrap();
+
+        let position_vec = RotaryEmbedding::new(
+            config.head_dim,
+            config.rotary_dim,
+            config.max_position_embeddings,
+            config.rope_theta as f32,
+            config.rope_scaling.clone(),
+        )
+        .forward::<f32>();
+
+        let eos_id = config.eos_token_id;
+        // Initialize global mem pool with dummy parameters instead of empty
+        let mut params = HashMap::new();
+        // Just put a dummy small vec for one key so parameters isn't empty
+        params.insert("dummy.key".to_string(), vec![0.0f32; 10]);
+        f32::init_global(params);
+
+        let model = Model::<f32>::new(
+            &config,
+            position_vec,
+            sequence_chunk_size,
+            batch_size,
+            topk_size,
+            eos_id,
+        );
+
+        assert_eq!(model.layers.len(), config.num_hidden_layers);
+        assert_eq!(model.hidden_size, config.hidden_size);
+        assert_eq!(model.batch_size, batch_size);
+        assert_eq!(model.topk_size, topk_size);
+        assert_eq!(model.eos_id, eos_id);
+    }
+
+    #[test]
+    fn test_qwen3_06b_creation_f16() {
+        if !std::arch::is_x86_feature_detected!("avx512fp16") {
+            eprintln!("skip test_qwen3_06b_creation_f16: avx512fp16 not detected");
+            return;
+        }
+        use std::collections::HashMap;
+        let sequence_chunk_size = 128;
+        let batch_size = 1;
+        let topk_size = 8;
+
+        let config = Config::load_from_file(r"models/Qwen3-0.6B/config.json").unwrap();
+
+        let position_vec = RotaryEmbedding::new(
+            config.head_dim,
+            config.rotary_dim,
+            config.max_position_embeddings,
+            config.rope_theta as f32,
+            config.rope_scaling.clone(),
+        )
+        .forward::<f16>();
+
+        let eos_id = config.eos_token_id;
+        // Initialize global mem pool with empty parameters
+        f16::init_global(HashMap::new());
+
+        let model = Model::<f16>::new(
+            &config,
+            position_vec,
+            sequence_chunk_size,
+            batch_size,
+            topk_size,
+            eos_id,
+        );
+
+        assert_eq!(model.layers.len(), config.num_hidden_layers);
+        assert_eq!(model.hidden_size, config.hidden_size);
+        assert_eq!(model.batch_size, batch_size);
+        assert_eq!(model.topk_size, topk_size);
+        assert_eq!(model.eos_id, eos_id);
     }
 }

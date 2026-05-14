@@ -27,9 +27,6 @@ where
         + GlobalOperatorQueue,
 {
     pub fn add(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
-        self.require_min_rank(3, "Tensor::add");
-        self.require_same_shape(b_tensor, "Tensor::add");
-
         let output_tensor = Self::from_mem_pool(self.shape.clone(), tensor_name);
         let operator = Operator::AddZipMap(AddZipMap::new(
             self.data,
@@ -49,9 +46,6 @@ where
         eps: T,
         tensor_name: String,
     ) -> Self {
-        self.require_min_rank(2, "Tensor::add_rms");
-        self.require_same_shape(b_tensor, "Tensor::add_rms");
-
         let output_tensor = Self::from_mem_pool(self.shape.clone(), tensor_name);
 
         let operator = Operator::AddRMSZipMap(AddRMSZipMap::new(
@@ -83,8 +77,6 @@ where
         eps: T,
         scope_name: String,
     ) -> (Self, Self) {
-        word_embedding.require_min_rank(2, "Tensor::lookup_rms word_embedding");
-
         let output_hidden_tensor = Self::from_mem_pool(
             vec![batch_size, word_embedding.shape[1]],
             format!("{}.output_hidden", scope_name),
@@ -110,14 +102,11 @@ where
     }
 
     pub fn lift_vector(&self) {
-        self.require_min_rank(2, "Tensor::lift_vector");
         let operator = Operator::LiftVector(LiftVector::new(self.data, self.shape[1]));
         Self::enqueue(operator);
     }
 
     pub fn rms(&self, eps: T, decode_only_flag: bool, scope_name: String) -> Self {
-        self.require_min_rank(2, "Tensor::rms");
-
         let output_tensor = Self::output_tensor(self.shape.clone(), &scope_name);
 
         let operator = Operator::RMSMap(RMSMap::new(

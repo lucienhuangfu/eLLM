@@ -64,7 +64,7 @@ where
         config: &Config,
         layer_idx: usize,
         // sequences: *mut usize,
-        _sequence_length: usize,
+        _sequence_chunk_size: usize,
         batch_size: usize,
         word_embedding: Rc<Tensor<T>>,
         position_embedding: Rc<Tensor<T>>,

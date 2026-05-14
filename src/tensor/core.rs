@@ -64,30 +64,6 @@ where
         self.shape.iter().product()
     }
 
-    #[inline]
-    pub(super) fn require_min_rank(&self, rank: usize, context: &str) {
-        assert!(
-            self.shape.len() >= rank,
-            "{} expects at least rank {}, got shape {:?}",
-            context,
-            rank,
-            self.shape
-        );
-    }
-
-    #[inline]
-    pub(super) fn require_same_shape(&self, other: &Tensor<T>, context: &str) {
-        assert_eq!(
-            self.shape, other.shape,
-            "{} shape mismatch: left {:?}, right {:?}",
-            context, self.shape, other.shape
-        );
-    }
-
-    pub fn from_cache(shape: Vec<usize>, tensor_name: String) -> Self {
-        Self::from_pool(shape, tensor_name)
-    }
-
     pub fn from_mem_pool(shape: Vec<usize>, tensor_name: String) -> Self {
         Self::from_pool(shape, tensor_name)
     }

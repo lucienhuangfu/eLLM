@@ -22,7 +22,7 @@ fn build_sequence_state(batch_size: usize) -> Vec<SequenceState> {
 }
 
 fn build_fake_runner(
-    sequence_length: usize,
+    sequence_chunk_size: usize,
     batch_size: usize,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
 ) -> ServingRunner<f16> {
@@ -30,7 +30,7 @@ fn build_fake_runner(
         .map(|ids| ids.len())
         .unwrap_or(1);
 
-    let mut batch_scheduler = BatchScheduler::new(sequence_length, batch_size, thread_num);
+    let mut batch_scheduler = BatchScheduler::new(sequence_chunk_size, batch_size, thread_num);
     batch_scheduler.batch_list = batch_states;
 
     let operator_queue = vec![Operator::FakeEcho(FakeEcho)];
@@ -42,10 +42,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting fake server for runtime + serving integration test...");
 
     let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
-    let sequence_length = 256usize;
+    let sequence_chunk_size = 256usize;
     let batch_size = 4usize;
     let sequences = {
-        let mut boxed = AlignedBox::allocate_init(sequence_length * batch_size, 0);
+        let mut boxed = AlignedBox::allocate_init(sequence_chunk_size * batch_size, 0);
         let ptr = boxed.as_mut_ptr();
         std::mem::forget(boxed);
         ptr
@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         BatchSequence::<f16>::new(
             sequences,
             batch_size,
-            sequence_length,
+            sequence_chunk_size,
             tokenizer_path.as_str(),
             tokenizer_config_path.as_str(),
             chat_template_path.as_str(),
@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     let batch_states = Arc::new(SharedMut::new(build_sequence_state(batch_size)));
-    let runner = build_fake_runner(sequence_length, batch_size, batch_states.clone());
+    let runner = build_fake_runner(sequence_chunk_size, batch_size, batch_states.clone());
 
     std::thread::spawn(move || {
         runner.start();

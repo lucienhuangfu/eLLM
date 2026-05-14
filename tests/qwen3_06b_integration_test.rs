@@ -26,7 +26,7 @@ fn test_define_and_load_qwen3_06b() {
     )
     .forward::<f32>();
 
-    let sequence_length = 128;
+    let sequence_chunk_size = 128;
     let batch_size = 1;
     let topk_size = 8;
     let eos_id = config.eos_token_id;
@@ -43,7 +43,7 @@ fn test_define_and_load_qwen3_06b() {
     let model = Model::<f32>::new(
         &config,
         position_vec,
-        sequence_length,
+        sequence_chunk_size,
         batch_size,
         topk_size,
         eos_id,
@@ -84,7 +84,7 @@ fn test_define_and_load_qwen3_06b_f16() {
     )
     .forward::<f16>();
 
-    let sequence_length = 128;
+    let sequence_chunk_size = 128;
     let batch_size = 1;
     let topk_size = 8;
     let eos_id = config.eos_token_id;
@@ -101,7 +101,7 @@ fn test_define_and_load_qwen3_06b_f16() {
     let model = Model::<f16>::new(
         &config,
         position_vec,
-        sequence_length,
+        sequence_chunk_size,
         batch_size,
         topk_size,
         eos_id,

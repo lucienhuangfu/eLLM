@@ -28,7 +28,7 @@ enum BatchPlan {
 }
 
 impl BatchScheduler {
-    fn build(sequence_length: usize, batch_size: usize, thread_num: usize) -> Self {
+    fn build(sequence_chunk_size: usize, batch_size: usize, thread_num: usize) -> Self {
         // The prefill buffers are built once and then cleared/reused every round.
         // Each thread gets a preallocated slice buffer, so the total reserved
         // capacity is thread_num * batch_size.
@@ -42,7 +42,7 @@ impl BatchScheduler {
 
         Self {
             max_decode_size: batch_size,
-            max_prefill_size: sequence_length * batch_size,
+            max_prefill_size: sequence_chunk_size * batch_size,
             batch_list: Arc::new(SharedMut::new(Vec::with_capacity(batch_size))),
             thread_num,
             prefill_scheduler: SliceScheduler::new(batch_size * thread_num),
@@ -101,8 +101,8 @@ impl BatchScheduler {
         })
     }
 
-    pub fn new(sequence_length: usize, batch_size: usize, thread_num: usize) -> Self {
-        Self::build(sequence_length, batch_size, thread_num)
+    pub fn new(sequence_chunk_size: usize, batch_size: usize, thread_num: usize) -> Self {
+        Self::build(sequence_chunk_size, batch_size, thread_num)
     }
 
     fn schedule_decode_round(&mut self, decode_candidates: Vec<(usize, usize)>) -> usize {

@@ -5,8 +5,8 @@ use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::operators::routing::{ExpertsSoftmaxNorm, ExpertsTopkNorm, MatMulSigmoid, TopKSoftmax};
 use crate::operators::operator::Operator;
+use crate::operators::routing::{ExpertsSoftmaxNorm, ExpertsTopkNorm, MatMulSigmoid, TopKSoftmax};
 
 use super::core::leaked_aligned_ptr;
 use super::{GlobalOperatorQueue, Tensor};
@@ -33,8 +33,6 @@ where
         decode_only_flag: bool,
         _scope_name: String,
     ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
-        self.require_min_rank(2, "Tensor::softmax_norm");
-
         let experts_indicator = leaked_aligned_ptr(num_experts, false);
         let length = num_experts * self.shape[0];
         let indice_ptr = leaked_aligned_ptr(length, false);
@@ -63,9 +61,6 @@ where
         _decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
-        self.require_min_rank(2, "Tensor::sigmoid_gate input");
-        gate_weight.require_min_rank(2, "Tensor::sigmoid_gate gate weight");
-
         if let Some(bias_tensor) = bias_tensor {
             assert_eq!(
                 bias_tensor.shape,
@@ -108,8 +103,6 @@ where
         decode_only_flag: bool,
         _scope_name: String,
     ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
-        self.require_min_rank(2, "Tensor::topk_norm");
-
         let experts_indicator = leaked_aligned_ptr(num_experts, false);
         let length = num_experts * self.shape[0];
         let indice_ptr = leaked_aligned_ptr(length, false);
@@ -141,8 +134,6 @@ where
         eos_id: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
-        self.require_min_rank(2, "Tensor::topk_softmax");
-
         let output_shape = vec![self.shape[0], num_topk];
         let indice_ptr = leaked_aligned_ptr(output_shape.iter().product(), 0usize);
 
@@ -164,5 +155,4 @@ where
         Self::enqueue(operator);
         (indice_ptr, value_tensor)
     }
-
 }

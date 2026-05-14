@@ -2,8 +2,8 @@ use std::ops::{AddAssign, Neg, Sub};
 
 use crate::common::matmul_params::MatMulParams;
 use crate::common::num_traits::NegInfinity;
-use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::common::num_traits::{Exp, Sigmoid, Sqrt};
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
 use crate::operators::operator::Operator;
 
@@ -33,9 +33,6 @@ where
         decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
-        self.require_min_rank(3, "Tensor::experts_merge_add input");
-        residual.require_min_rank(2, "Tensor::experts_merge_add residual");
-
         // output [batch_size, hidden_size]
         let output_shape = vec![self.shape[0], self.shape[2]];
 
@@ -72,9 +69,6 @@ where
         decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
-        self.require_min_rank(3, "Tensor::experts_matmul_mul input");
-        down_weights.require_min_rank(3, "Tensor::experts_matmul_mul weights");
-
         // down_weights [num_experts, hidden_size, intermediate_size]
         // output [batch_size, num_experts_per_token, hidden_size]
         let output_shape = vec![self.shape[1], num_experts_per_tok, down_weights.shape[1]];
@@ -115,10 +109,6 @@ where
         decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
-        self.require_min_rank(2, "Tensor::experts_matmul_silu_mul_matmul input");
-        gate_weights.require_min_rank(3, "Tensor::experts_matmul_silu_mul_matmul gate");
-        up_weights.require_min_rank(3, "Tensor::experts_matmul_silu_mul_matmul up");
-
         // gate_weights [num_experts, intermediate_size, hidden_size]
         // output [num_experts, batch_size, intermediate_size]
         let output_shape = vec![gate_weights.shape[0], self.shape[0], gate_weights.shape[1]];

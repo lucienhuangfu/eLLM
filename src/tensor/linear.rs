@@ -1,11 +1,11 @@
 use std::ops::{AddAssign, Neg, Sub};
 
 use crate::common::matmul_params::MatMulParams;
-use crate::common::num_traits::{Exp, Sigmoid, Sqrt, NegInfinity};
+use crate::common::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
-use crate::operators::routing::MatMulTopK;
 use crate::operators::operator::Operator;
+use crate::operators::routing::MatMulTopK;
 
 use super::core::leaked_aligned_ptr;
 use super::{GlobalOperatorQueue, Tensor};
@@ -34,10 +34,6 @@ where
         thread_num: usize,
         scope_name: String,
     ) -> Self {
-        self.require_min_rank(4, "Tensor::attention query");
-        k_tensor.require_min_rank(4, "Tensor::attention key");
-        v_tensor.require_min_rank(4, "Tensor::attention value");
-
         let output_tensor = Self::output_tensor(self.shape.clone(), &scope_name);
 
         let operator = Operator::Attention(Attention::new(
@@ -69,9 +65,6 @@ where
         decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
-        self.require_min_rank(2, "Tensor::matmul input");
-        tensor2.require_min_rank(2, "Tensor::matmul weight");
-
         let output_shape = vec![self.shape[0], tensor2.shape[0]];
 
         let output_to_kv = self.shape[0] > sequence_length;
@@ -102,10 +95,6 @@ where
         params: MatMulParams,
         tensor_name: String,
     ) -> Self {
-        self.require_min_rank(2, "Tensor::matmul_add input");
-        tensor2.require_min_rank(2, "Tensor::matmul_add weight");
-        tensor3.require_min_rank(2, "Tensor::matmul_add residual");
-
         let output_shape = vec![self.shape[0], tensor2.shape[0]];
 
         let a_row = self.shape[0];
@@ -141,12 +130,6 @@ where
         params: MatMulParams,
         scope_name: String,
     ) -> (Self, Self, Self) {
-        self.require_min_rank(2, "Tensor::matmul3 input");
-        q_weight.require_min_rank(2, "Tensor::matmul3 q_weight");
-        k_weight.require_min_rank(2, "Tensor::matmul3 k_weight");
-        v_weight.require_min_rank(2, "Tensor::matmul3 v_weight");
-        position_embedding.require_min_rank(1, "Tensor::matmul3 position_embedding");
-
         let a_h_row = self.shape[0];
         let col = self.shape[1];
 
@@ -197,9 +180,6 @@ where
         topk: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
-        self.require_min_rank(2, "Tensor::matmul_local_topk input");
-        tensor2.require_min_rank(2, "Tensor::matmul_local_topk weight");
-
         let n = tensor2.shape[0];
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
