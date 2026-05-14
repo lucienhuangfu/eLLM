@@ -4,9 +4,8 @@ use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
+use ellm::runtime::{BatchScheduler, Config, GenerationConfig, Phase, SequenceState, ServingRunner};
 use ellm::tensor::GlobalOperatorQueue;
-use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::collections::HashMap;
@@ -17,13 +16,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sequence_chunk_size = 128;
     let batch_size = 3;
+
     let topk_size = 8;
 
     let config =
         Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
+    let generation_config = GenerationConfig::load_from_file(
+        r"models/Qwen3-Coder-30B-A3B-Instruct/generation_config.json",
+    )
+    .ok();
 
-        
+    if let Some(gen_cfg) = &generation_config {
+        println!("Loaded generation config: {:?}", gen_cfg);
+    }
+
     let tokenizer_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
     let tokenizer_config_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer_config.json";
     let chat_template_path = "models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";

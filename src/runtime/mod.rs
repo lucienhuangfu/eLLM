@@ -1,6 +1,9 @@
 mod scheduler;
 mod slice_scheduler;
 
+pub mod huggingface_config;
+pub mod generation_config;
+
 pub mod batch_sequence;
 pub mod chat_template;
 pub mod model_loader;
@@ -8,6 +11,10 @@ pub mod runner;
 pub mod tokenizer_loader;
 
 pub use crate::tensor;
+
+pub use crate::transformer::config::Config;
+pub use generation_config::GenerationConfig;
+pub use huggingface_config::HfConfig;
 
 pub use crate::common::state::{Phase, SequenceState};
 pub use runner::ServingRunner;
