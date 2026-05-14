@@ -3,8 +3,12 @@
 
 use std::f16;
 use std::ops::{Add, Mul};
+use std::sync::atomic::Ordering;
 
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::common::{
+    expert_routing::ExpertRouting,
+    send_sync_ptr::{ConstPtr, MutPtr},
+};
 use crate::kernel;
 use crate::operators::assign::assign;
 use crate::operators::traits::MoeMergeTrait;
@@ -23,9 +27,7 @@ pub struct ExpertsMergeAdd<T> {
     pub residual_ptr: ConstPtr<T>, // [num_tokens, H]
     pub output_ptr: MutPtr<T>,     // [num_tokens, H]
 
-    // reset gate_routing（保持兼容你原来的数据结构）
-    pub experts_indicator: MutPtr<bool>, // [num_experts]
-    pub indice_ptr: MutPtr<bool>,        // [num_experts, num_tokens]
+    pub routing: ExpertRouting<T>,
 
     pub sequence_chunk_size: usize,
     pub batch_size: usize,
@@ -46,8 +48,7 @@ where
     pub fn new(
         input_ptr: *const T,    // [num_tokens, K, H]
         residual_ptr: *const T, // [num_tokens, H]
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
+        routing: ExpertRouting<T>,
         output_ptr: *mut T, // [num_tokens, H]
         sequence_chunk_size: usize,
         batch_size: usize,
@@ -61,10 +62,7 @@ where
             input_ptr: ConstPtr { ptr: input_ptr },
             residual_ptr: ConstPtr { ptr: residual_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
-            experts_indicator: MutPtr {
-                ptr: experts_indicator,
-            },
-            indice_ptr: MutPtr { ptr: indice_ptr },
+            routing,
             sequence_chunk_size,
             batch_size,
             num_experts,
@@ -90,20 +88,9 @@ where
             let K = self.num_experts_per_token;
 
             // ===== (1) 可选 reset gate_routing =====
-            if self.reset_gating {
-                if let Some((begin, end)) = assign(self.num_experts, thread_num, thread_id) {
-                    let experts_indicator_ptr = self.experts_indicator.ptr;
-                    let indices_ptr = self.indice_ptr.ptr;
-
-                    for e in begin..end {
-                        if *experts_indicator_ptr.add(e) {
-                            *experts_indicator_ptr.add(e) = false;
-
-                            // reset indices_ptr[e, :] 为 0（false）
-                            let p = indices_ptr.add(e * num_tokens);
-                            std::ptr::write_bytes(p, 0, num_tokens); // bool=1 byte
-                        }
-                    }
+            if let Some((begin, end)) = assign(self.num_experts, thread_num, thread_id) {
+                for e in begin..end {
+                    (&*self.routing.expert_counts.ptr.add(e)).store(0, Ordering::Release);
                 }
             }
 
@@ -191,6 +178,16 @@ mod tests {
         }
     }
 
+    fn test_routing(num_experts: usize, num_tokens: usize, num_topk: usize) -> ExpertRouting<f16> {
+        unsafe { crate::common::expert_routing::empty_routing(num_experts, num_tokens, num_topk) }
+    }
+
+    unsafe fn set_all_counts(routing: ExpertRouting<f16>, count: usize) {
+        for e in 0..routing.num_experts {
+            (&*routing.expert_counts.ptr.add(e)).store(count, Ordering::Release);
+        }
+    }
+
     #[test]
     fn test_merge_add_k1_basic() {
         if !is_x86_feature_detected!("avx512fp16") {
@@ -211,9 +208,6 @@ mod tests {
         let mut residual = vec![0.0 as f16; num_tokens * H];
         let mut out = vec![0.0 as f16; num_tokens * H];
 
-        let mut experts_indicator = vec![false; num_experts];
-        let mut indice = vec![false; num_experts * num_tokens];
-
         let mut out_ref = vec![0.0f32; num_tokens * H];
 
         for t in 0..num_tokens {
@@ -229,8 +223,7 @@ mod tests {
         let runner = ExpertsMergeAdd::<f16>::new(
             input.as_ptr(),
             residual.as_ptr(),
-            experts_indicator.as_mut_ptr(),
-            indice.as_mut_ptr(),
+            test_routing(num_experts, num_tokens, K),
             out.as_mut_ptr(),
             seq,
             batch,
@@ -262,9 +255,6 @@ mod tests {
         let mut residual = vec![0.0 as f16; num_tokens * H];
         let mut out = vec![0.0 as f16; num_tokens * H];
 
-        let mut experts_indicator = vec![false; num_experts];
-        let mut indice = vec![false; num_experts * num_tokens];
-
         let mut out_ref = vec![0.0f32; num_tokens * H];
 
         for t in 0..num_tokens {
@@ -285,8 +275,7 @@ mod tests {
         let runner = ExpertsMergeAdd::<f16>::new(
             input.as_ptr(),
             residual.as_ptr(),
-            experts_indicator.as_mut_ptr(),
-            indice.as_mut_ptr(),
+            test_routing(num_experts, num_tokens, K),
             out.as_mut_ptr(),
             1,
             num_tokens,
@@ -318,9 +307,6 @@ mod tests {
         let mut residual = vec![0.0 as f16; num_tokens * H];
         let mut out = vec![0.0 as f16; num_tokens * H];
 
-        let mut experts_indicator = vec![false; num_experts];
-        let mut indice = vec![false; num_experts * num_tokens];
-
         let mut out_ref = vec![0.0f32; num_tokens * H];
 
         for t in 0..num_tokens {
@@ -341,8 +327,7 @@ mod tests {
         let runner = ExpertsMergeAdd::<f16>::new(
             input.as_ptr(),
             residual.as_ptr(),
-            experts_indicator.as_mut_ptr(),
-            indice.as_mut_ptr(),
+            test_routing(num_experts, num_tokens, K),
             out.as_mut_ptr(),
             1,
             num_tokens,
@@ -372,14 +357,15 @@ mod tests {
         let residual = vec![0.0 as f16; num_tokens * H];
         let mut out = vec![0.0 as f16; num_tokens * H];
 
-        let mut experts_indicator = vec![true; num_experts];
-        let mut indice = vec![true; num_experts * num_tokens];
+        let routing = test_routing(num_experts, num_tokens, K);
+        unsafe {
+            set_all_counts(routing, num_tokens);
+        }
 
         let runner = ExpertsMergeAdd::<f16>::new(
             input.as_ptr(),
             residual.as_ptr(),
-            experts_indicator.as_mut_ptr(),
-            indice.as_mut_ptr(),
+            routing,
             out.as_mut_ptr(),
             seq,
             batch,
@@ -394,20 +380,8 @@ mod tests {
         runner.run(batch, 0, 2, 1);
 
         for e in 0..num_experts {
-            assert_eq!(
-                experts_indicator[e], false,
-                "experts_indicator not cleared at e={}",
-                e
-            );
-            for t in 0..num_tokens {
-                assert_eq!(
-                    indice[e * num_tokens + t],
-                    false,
-                    "indice not cleared at e={}, t={}",
-                    e,
-                    t
-                );
-            }
+            let count = unsafe { (&*routing.expert_counts.ptr.add(e)).load(Ordering::Acquire) };
+            assert_eq!(count, 0, "expert count not cleared at e={}", e);
         }
     }
 
@@ -446,15 +420,16 @@ mod tests {
             }
         }
 
-        let mut experts_indicator = vec![true; num_experts];
-        let mut indice_ptr = vec![true; num_experts * num_tokens];
+        let routing = test_routing(num_experts, num_tokens, k);
+        unsafe {
+            set_all_counts(routing, num_tokens);
+        }
 
         unsafe {
             let op = ExpertsMergeAdd::new(
                 input.as_ptr(),
                 residual.as_ptr(),
-                experts_indicator.as_mut_ptr(),
-                indice_ptr.as_mut_ptr(),
+                routing,
                 output.as_mut_ptr(),
                 sequence_chunk_size,
                 batch_size,
@@ -472,11 +447,9 @@ mod tests {
 
         verify_output(&output, &out_ref, 5e-2, "multithreaded");
 
-        for (i, &val) in experts_indicator.iter().enumerate() {
-            assert!(!val, "experts_indicator[{}] was not reset to false", i);
-        }
-        for (i, &val) in indice_ptr.iter().enumerate() {
-            assert!(!val, "indice_ptr[{}] was not reset to false", i);
+        for e in 0..num_experts {
+            let count = unsafe { (&*routing.expert_counts.ptr.add(e)).load(Ordering::Acquire) };
+            assert_eq!(count, 0, "expert_counts[{}] was not reset", e);
         }
     }
     #[test]
@@ -530,16 +503,12 @@ mod tests {
             }
         }
 
-        // gating 相关这里无所谓（merge_add 本身不依赖），随便给点空间
         let num_experts = 4usize;
-        let mut experts_indicator = vec![false; num_experts];
-        let mut indice = vec![false; num_experts * num_tokens_cap];
 
         let op = ExpertsMergeAdd::<f16>::new(
             input.as_ptr(),
             residual.as_ptr(),
-            experts_indicator.as_mut_ptr(),
-            indice.as_mut_ptr(),
+            test_routing(num_experts, num_tokens_cap, k),
             output.as_mut_ptr(),
             seq,
             batch_cap, // capacity batch

@@ -2,6 +2,7 @@
 #![allow(non_snake_case)]
 
 use crate::common::{
+    expert_routing::ExpertRouting,
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
@@ -11,6 +12,7 @@ use crate::operators::traits::ExpertsDownTrait;
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
+use std::sync::atomic::Ordering;
 
 #[derive(Clone, Copy, Debug)]
 struct ExpertTaskMeta {
@@ -25,21 +27,15 @@ struct ExpertTaskMeta {
 ///   NONLIN[e, b, Hmid]   ×  W_down[e, Hmid, H]   → OUT[b, slot(b,e), H]
 ///
 /// 其中：
-/// - routing 使用 experts_indicator / indice_ptr / weight_ptr（expert-major）
-/// - 写出 slot 使用 experts_topk_ptr（token-major, 每 token 升序 expert id 列表）
+/// - routing 使用 compact expert queue
+/// - 写出 slot 使用 token-major top-k expert 列表
 /// - 不做 residual
 #[derive(Clone)]
 pub struct ExpertsMatMulDown<T> {
     pub nonlin_ptr: ConstPtr<T>,   // [E, B, Hmid]
     pub wdown_nt_ptr: ConstPtr<T>, // [E, H, Hmid] (转置后，每行 stride=Hmid)
 
-    pub experts_indicator: ConstPtr<bool>, // [E]
-    pub indice_ptr: ConstPtr<bool>,        // [E, B]
-    pub weight_ptr: ConstPtr<T>,           // [E, B]
-
-    // 每个 token 的 top-k expert 列表（升序 expert id）：
-    // shape = [B, Ktop]
-    pub experts_topk_ptr: ConstPtr<usize>,
+    pub routing: ExpertRouting<T>,
 
     pub output_ptr: MutPtr<T>, // [B, Ktop, H]
 
@@ -85,13 +81,10 @@ where
     }
 
     pub unsafe fn new(
-        nonlin_ptr: *const T,           // [E,B,Hmid]
-        wdown_nt_ptr: *const T,         // [E,Hmid,H]（行主，stride=H）
-        experts_indicator: *const bool, // [E]
-        indice_ptr: *const bool,        // [E,B]
-        weight_ptr: *const T,           // [E,B]
-        experts_topk_ptr: *const usize, // [B,Ktop]
-        output_ptr: *mut T,             // [B,Ktop,H]
+        nonlin_ptr: *const T,   // [E,B,Hmid]
+        wdown_nt_ptr: *const T, // [E,Hmid,H]（行主，stride=H）
+        routing: ExpertRouting<T>,
+        output_ptr: *mut T, // [B,Ktop,H]
 
         num_experts: usize,
         num_token: usize,
@@ -133,14 +126,7 @@ where
             nonlin_ptr: ConstPtr { ptr: nonlin_ptr },
             wdown_nt_ptr: ConstPtr { ptr: wdown_nt_ptr },
 
-            experts_indicator: ConstPtr {
-                ptr: experts_indicator,
-            },
-            indice_ptr: ConstPtr { ptr: indice_ptr },
-            weight_ptr: ConstPtr { ptr: weight_ptr },
-            experts_topk_ptr: ConstPtr {
-                ptr: experts_topk_ptr,
-            },
+            routing,
 
             output_ptr: MutPtr { ptr: output_ptr },
 
@@ -272,26 +258,26 @@ where
         batch_size: usize,
         mb: usize,
         tiles_n: usize,
-    ) -> (Vec<ExpertTaskMeta>, Vec<usize>, Vec<usize>, usize) {
+    ) -> (Vec<ExpertTaskMeta>, Vec<usize>, Vec<usize>, Vec<T>, usize) {
         let mut expert_tasks = Vec::new();
         let mut routed_tokens = Vec::new();
         let mut routed_slots = Vec::new();
+        let mut routed_scores = Vec::new();
         let mut total_tasks = 0usize;
 
         unsafe {
             for e in 0..self.num_experts {
-                if !*self.experts_indicator.ptr.add(e) {
+                let count = (&*self.routing.expert_counts.ptr.add(e)).load(Ordering::Acquire);
+                if count == 0 {
                     continue;
                 }
 
                 let token_begin = routed_tokens.len();
-                let idx_base = self.indice_ptr.ptr.add(e * self.num_token);
-                for b in 0..batch_size {
-                    if !*idx_base.add(b) {
-                        continue;
-                    }
-
-                    let topk_row = self.experts_topk_ptr.ptr.add(b * self.num_topk);
+                let count = count.min(batch_size);
+                for pos in 0..count {
+                    let route_offset = self.routing.expert_offset(e, pos);
+                    let b = *self.routing.index_tensor.ptr.add(route_offset);
+                    let topk_row = self.routing.topk_indices.ptr.add(b * self.num_topk);
                     let mut slot = 0usize;
                     for s in 0..self.num_topk {
                         if *topk_row.add(s) == e {
@@ -302,12 +288,14 @@ where
 
                     routed_tokens.push(b);
                     routed_slots.push(slot);
+                    routed_scores.push(*self.routing.score_tensor.ptr.add(route_offset));
                 }
 
                 let token_count = routed_tokens.len() - token_begin;
                 if token_count == 0 {
                     routed_tokens.truncate(token_begin);
                     routed_slots.truncate(token_begin);
+                    routed_scores.truncate(token_begin);
                     continue;
                 }
 
@@ -324,7 +312,13 @@ where
             }
         }
 
-        (expert_tasks, routed_tokens, routed_slots, total_tasks)
+        (
+            expert_tasks,
+            routed_tokens,
+            routed_slots,
+            routed_scores,
+            total_tasks,
+        )
     }
 
     #[inline(always)]
@@ -359,7 +353,7 @@ where
             let nr = self.params.b_row_step_micro.max(1);
 
             let tiles_n = (n + nb - 1) / nb;
-            let (expert_tasks, routed_tokens, routed_slots, total_tasks) =
+            let (expert_tasks, routed_tokens, routed_slots, routed_scores, total_tasks) =
                 self.build_task_space(m, mb, tiles_n);
 
             // thread-private slices
@@ -422,7 +416,7 @@ where
                             // scatter：对 valid_rows 行做 out_row += acc_row * weight
                             for r in 0..valid_rows {
                                 let b = *idx_buf.add(off + r);
-                                let factor = *self.weight_ptr.ptr.add(e * self.num_token + b);
+                                let factor = routed_scores[token_begin + off + r];
                                 let slot = routed_slots[token_begin + off + r];
 
                                 let out_row = self
@@ -526,6 +520,26 @@ mod tests {
     // ========================================================================
     // Helpers
     // ========================================================================
+
+    fn test_routing_from_dense(
+        num_experts: usize,
+        num_token: usize,
+        num_topk: usize,
+        indice: &[bool],
+        weight: &[f16],
+        topk: &[usize],
+    ) -> ExpertRouting<f16> {
+        unsafe {
+            crate::common::expert_routing::routing_from_dense(
+                num_experts,
+                num_token,
+                num_topk,
+                indice.as_ptr(),
+                weight.as_ptr(),
+                topk.as_ptr(),
+            )
+        }
+    }
 
     #[inline]
     fn f16_from_f32(x: f32) -> f16 {
@@ -650,10 +664,7 @@ mod tests {
             ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                weight.as_ptr(),
-                topk.as_ptr(),
+                test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
                 out.as_mut_ptr(),
                 num_experts,
                 num_token,
@@ -741,10 +752,7 @@ mod tests {
             ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                weight.as_ptr(),
-                topk.as_ptr(),
+                test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
                 out.as_mut_ptr(),
                 num_experts,
                 num_token,
@@ -847,10 +855,7 @@ mod tests {
             ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                weight.as_ptr(),
-                topk.as_ptr(),
+                test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
                 out.as_mut_ptr(),
                 num_experts,
                 num_token,
@@ -960,10 +965,7 @@ mod tests {
             ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                weight.as_ptr(),
-                topk.as_ptr(),
+                test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
                 out.as_mut_ptr(),
                 num_experts,
                 num_token,
@@ -1129,10 +1131,7 @@ mod tests {
             ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(), // 如果你的 new() 现在接受的是 wdown_nt_ptr(已经转置)，那这里要传入转置后的；但你这份代码仍按 K×N 传进来更合理
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                weight.as_ptr(),
-                topk.as_ptr(),
+                test_routing_from_dense(E, B_CAP, KTOP, &indice, &weight, &topk),
                 out.as_mut_ptr(),
                 E,
                 B_CAP,
@@ -1255,10 +1254,7 @@ mod tests {
             ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown_nt.as_ptr(), // ✅ 直接传 NT
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                weight.as_ptr(),
-                topk.as_ptr(),
+                test_routing_from_dense(E, B_CAP, KTOP, &indice, &weight, &topk),
                 out.as_mut_ptr(),
                 E,
                 B_CAP,
@@ -1376,10 +1372,7 @@ mod tests {
             ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                weight.as_ptr(),
-                topk.as_ptr(),
+                test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
                 out.as_mut_ptr(),
                 num_experts,
                 num_token,
@@ -1472,10 +1465,7 @@ mod tests {
             ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                weight.as_ptr(),
-                topk.as_ptr(),
+                test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
                 out.as_mut_ptr(),
                 num_experts,
                 num_token,
@@ -1568,10 +1558,7 @@ mod tests {
             ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                weight.as_ptr(),
-                topk.as_ptr(),
+                test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
                 out.as_mut_ptr(),
                 num_experts,
                 num_token,

@@ -4,8 +4,10 @@
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
+use std::sync::atomic::Ordering;
 
 use crate::common::{
+    expert_routing::ExpertRouting,
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
@@ -30,8 +32,7 @@ pub struct ExpertsMatMulSilu<T> {
     pub gate_nt_ptr: ConstPtr<T>, // [E, I×H]  (N×K), row_stride=H
     pub up_nt_ptr: ConstPtr<T>,   // [E, I×H]
 
-    pub experts_indicator: ConstPtr<bool>, // [E]
-    pub indice_ptr: ConstPtr<bool>,        // [E,B]
+    pub routing: ExpertRouting<T>,
 
     pub output_ptr: MutPtr<T>, // NONLIN[E,B,I]
 
@@ -69,12 +70,11 @@ where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     pub unsafe fn new(
-        input_ptr: *const T,            // A[B,H]
-        gate_nt_ptr: *const T,          // ✅ W_gate_nt[E, I×H]（每 expert: [I×H] 行主）
-        up_nt_ptr: *const T,            // ✅ W_up_nt  [E, I×H]
-        experts_indicator: *const bool, // [E]
-        indice_ptr: *const bool,        // [E,B]
-        output_ptr: *mut T,             // NONLIN[E,B,I]
+        input_ptr: *const T,   // A[B,H]
+        gate_nt_ptr: *const T, // ✅ W_gate_nt[E, I×H]（每 expert: [I×H] 行主）
+        up_nt_ptr: *const T,   // ✅ W_up_nt  [E, I×H]
+        routing: ExpertRouting<T>,
+        output_ptr: *mut T, // NONLIN[E,B,I]
         batch: usize,
         inter: usize,
         hidden: usize,
@@ -115,10 +115,7 @@ where
             gate_nt_ptr: ConstPtr { ptr: gate_nt_ptr },
             up_nt_ptr: ConstPtr { ptr: up_nt_ptr },
 
-            experts_indicator: ConstPtr {
-                ptr: experts_indicator,
-            },
-            indice_ptr: ConstPtr { ptr: indice_ptr },
+            routing,
             output_ptr: MutPtr { ptr: output_ptr },
 
             params: MatMulParams {
@@ -257,30 +254,23 @@ where
 
         unsafe {
             for e in 0..self.num_experts {
-                if !*self.experts_indicator.ptr.add(e) {
-                    continue;
-                }
-
-                let token_begin = routed_tokens.len();
-                let idx_base = self.indice_ptr.ptr.add(e * self.batch);
-                for b_idx in 0..batch_size {
-                    if *idx_base.add(b_idx) {
-                        routed_tokens.push(b_idx);
-                    }
-                }
-
-                let token_count = routed_tokens.len() - token_begin;
+                let token_count = (&*self.routing.expert_counts.ptr.add(e)).load(Ordering::Acquire);
                 if token_count == 0 {
-                    routed_tokens.truncate(token_begin);
                     continue;
                 }
+                let token_begin = routed_tokens.len();
+                let count = token_count.min(batch_size);
+                for pos in 0..count {
+                    let offset = self.routing.expert_offset(e, pos);
+                    routed_tokens.push(*self.routing.index_tensor.ptr.add(offset));
+                }
 
-                let tiles_m_e = token_count.div_ceil(mb);
+                let tiles_m_e = count.div_ceil(mb);
                 let task_count = tiles_m_e * tiles_n;
                 expert_tasks.push(ExpertTaskMeta {
                     expert_id: e,
                     token_begin,
-                    token_count,
+                    token_count: count,
                     task_begin: total_tasks,
                     task_end: total_tasks + task_count,
                 });
@@ -496,6 +486,25 @@ mod tests {
     use rand::prelude::*;
     use std::collections::HashSet;
 
+    fn test_routing_from_indice(
+        num_experts: usize,
+        batch: usize,
+        indice: &[bool],
+    ) -> ExpertRouting<f16> {
+        let scores = vec![1.0f16; num_experts * batch];
+        let topk = vec![0usize; batch];
+        unsafe {
+            crate::common::expert_routing::routing_from_dense(
+                num_experts,
+                batch,
+                1,
+                indice.as_ptr(),
+                scores.as_ptr(),
+                topk.as_ptr(),
+            )
+        }
+    }
+
     #[inline]
     fn silu_f32(x: f32) -> f32 {
         x / (1.0 + (-x).exp())
@@ -608,8 +617,7 @@ mod tests {
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
+                test_routing_from_indice(E, B, &indice),
                 out.as_mut_ptr(),
                 B,
                 I,
@@ -700,8 +708,7 @@ mod tests {
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
+                test_routing_from_indice(E, B, &indice),
                 out.as_mut_ptr(),
                 B,
                 I,
@@ -790,8 +797,7 @@ mod tests {
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
+                test_routing_from_indice(E, B, &indice),
                 out.as_mut_ptr(),
                 B,
                 I,
@@ -884,8 +890,7 @@ mod tests {
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
+                test_routing_from_indice(E, B, &indice),
                 out.as_mut_ptr(),
                 B,
                 I,
@@ -978,8 +983,7 @@ mod tests {
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
+                test_routing_from_indice(E, B, &indice),
                 out.as_mut_ptr(),
                 B,
                 I,
@@ -1064,8 +1068,7 @@ mod tests {
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
+                test_routing_from_indice(E, B, &indice),
                 out.as_mut_ptr(),
                 B,
                 I,
@@ -1148,8 +1151,7 @@ mod tests {
                 input.as_ptr(),
                 gate_weights_nt.as_ptr(),
                 up_weights_nt.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice_ptr.as_ptr(),
+                test_routing_from_indice(num_experts, batch, &indice_ptr),
                 output.as_mut_ptr(),
                 batch,
                 inter,
@@ -1306,8 +1308,7 @@ mod tests {
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
+                test_routing_from_indice(E, B_CAP, &indice),
                 out.as_mut_ptr(),
                 B_CAP, // capacity
                 I,
@@ -1405,8 +1406,7 @@ mod tests {
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
+                test_routing_from_indice(E, B_CAP, &indice),
                 out.as_mut_ptr(),
                 B_CAP, // batch capacity
                 I,
@@ -1516,8 +1516,7 @@ mod tests {
                 input.as_ptr(),
                 gate_weights_nt.as_ptr(),
                 up_weights_nt.as_ptr(),
-                experts_indicator.as_ptr(),
-                indice_ptr.as_ptr(),
+                test_routing_from_indice(num_experts, batch, &indice_ptr),
                 output.as_mut_ptr(),
                 batch,
                 inter,

@@ -28,10 +28,7 @@ impl DecodeList {
         // overwrite existing slots instead of growing the Vec.
         let mut slices = Vec::with_capacity(capacity);
         slices.resize(capacity, SequenceSlice::default());
-        Self {
-            slices,
-            len: 0,
-        }
+        Self { slices, len: 0 }
     }
 
     pub fn push(&mut self, slice: SequenceSlice) {
@@ -49,13 +46,16 @@ impl DecodeList {
     }
 
     pub fn total_token_count(&self) -> usize {
-        self.slices[..self.len].iter().map(|slice| slice.length).sum()
+        self.slices[..self.len]
+            .iter()
+            .map(|slice| slice.length)
+            .sum()
     }
 
     pub fn lookup_global_index(&self, global_index: usize) -> Option<DecodeLookupResult> {
         let slices = self.as_slice();
-        let slice_index = slices
-            .partition_point(|slice| slice.token_start_index + slice.length <= global_index);
+        let slice_index =
+            slices.partition_point(|slice| slice.token_start_index + slice.length <= global_index);
         let slice = slices.get(slice_index)?;
         if global_index < slice.token_start_index {
             return None;

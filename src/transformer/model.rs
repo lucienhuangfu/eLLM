@@ -280,7 +280,8 @@ mod test {
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
-        let (_output_indices, _output_tensor) = model.forward(sequences, batch_temperature.as_mut_ptr());
+        let (_output_indices, _output_tensor) =
+            model.forward(sequences, batch_temperature.as_mut_ptr());
 
         for thread_id in 0..thread_num {
             for operator in model.ctx.operator_queue.borrow().iter() {
@@ -349,7 +350,8 @@ mod test {
         let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
-        let (_output_indices, _output_tensor) = model.forward(sequences, batch_temperature.as_mut_ptr());
+        let (_output_indices, _output_tensor) =
+            model.forward(sequences, batch_temperature.as_mut_ptr());
 
         for thread_id in 0..thread_num {
             for operator in model.ctx.operator_queue.borrow().iter() {

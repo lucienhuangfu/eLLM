@@ -1,11 +1,13 @@
 use std::cell::RefCell;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::rc::Rc;
+use std::sync::atomic::AtomicUsize;
 
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
+use crate::common::expert_routing::ExpertRouting;
 use crate::common::matmul_params::MatMulParams;
 use crate::common::tensor_utils::get_strides;
 use crate::mem_mgr::allocator::allocate_init;
@@ -258,9 +260,7 @@ where
     pub fn experts_merge_add(
         &self,
         residual: &Tensor<T>,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        num_experts: usize,
+        routing: ExpertRouting<T>,
         decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
@@ -277,11 +277,10 @@ where
         let operator = Operator::ExpertsMergeAdd(ExpertsMergeAdd::new(
             self.data,
             residual.data,
-            experts_indicator,
-            indice_ptr,
+            routing,
             output_tensor.data,
             1,
-            num_experts,
+            routing.num_experts,
             self.shape[0],
             self.shape[1],
             self.shape[2],
@@ -296,10 +295,7 @@ where
     pub fn experts_matmul_mul(
         &self,
         down_weights: &Tensor<T>,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        weight_ptr: *mut T,
-        topk_indices_ptr: *mut usize,
+        routing: ExpertRouting<T>,
         num_experts_per_tok: usize,
         params: MatMulParams,
         decode_only_flag: bool,
@@ -320,10 +316,7 @@ where
             ExpertsMatMulDown::new(
                 self.data,
                 down_weights.data,
-                experts_indicator,
-                indice_ptr,
-                weight_ptr,
-                topk_indices_ptr,
+                routing,
                 output_tensor.data,
                 down_weights.shape[0],
                 self.shape[1],
@@ -343,9 +336,7 @@ where
         &self,
         gate_weights: &Tensor<T>,
         up_weights: &Tensor<T>,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        // weight_ptr: *mut T,
+        routing: ExpertRouting<T>,
         params: MatMulParams,
         decode_only_flag: bool,
         scope_name: String,
@@ -366,8 +357,7 @@ where
                 self.data,
                 gate_weights.data,
                 up_weights.data,
-                experts_indicator,
-                indice_ptr,
+                routing,
                 output_tensor.data,
                 self.shape[0],
                 gate_weights.shape[1],
@@ -392,34 +382,21 @@ where
         num_experts_per_tok: usize,
         decode_only_flag: bool,
         scope_name: String,
-    ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
-        // [(experts_id, [(token_id, weight)])]
-        // sorted_ids: Vec<(usize, Vec<(usize, T)>)>,
-
-        // [expert_num] bool
-        let experts_indicator = unsafe { allocate_init(num_experts, false) };
-        // [expert_num, batch_size] indice bool vec<bool>
-        // [expert_num, batch_size] weight f16
-        let length = num_experts * self.shape[0];
-        let indice_ptr = unsafe { allocate_init(length, false) };
-        let weight_ptr = unsafe { allocate_init(length, T::default()) };
-        let mut topk_indices_ptr =
-            unsafe { allocate_init(num_experts_per_tok * self.shape[0], 0usize) };
-        // vec![0usize; num_experts * self.shape[0]];
+    ) -> ExpertRouting<T> {
+        let num_tokens = self.shape[0];
+        let routing =
+            unsafe { Self::allocate_expert_routing(num_experts, num_tokens, num_experts_per_tok) };
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
             self.data,
-            experts_indicator,
-            indice_ptr,
-            weight_ptr,
-            topk_indices_ptr,
+            routing,
             self.shape[0],
             num_experts,
             num_experts_per_tok,
             decode_only_flag,
         ));
         self.operator_queue.borrow_mut().push(operator);
-        (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr)
+        routing
     }
 
     pub fn sigmoid_gate(
@@ -475,27 +452,48 @@ where
         num_experts_per_tok: usize,
         decode_only_flag: bool,
         _scope_name: String,
-    ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
-        let experts_indicator = unsafe { allocate_init(num_experts, false) };
-        let length = num_experts * self.shape[0];
-        let indice_ptr = unsafe { allocate_init(length, false) };
-        let weight_ptr = unsafe { allocate_init(length, T::default()) };
-        let topk_indices_ptr =
-            unsafe { allocate_init(num_experts_per_tok * self.shape[0], 0usize) };
+    ) -> ExpertRouting<T> {
+        let num_tokens = self.shape[0];
+        let routing =
+            unsafe { Self::allocate_expert_routing(num_experts, num_tokens, num_experts_per_tok) };
 
         let operator = Operator::ExpertsTopkNorm(ExpertsTopkNorm::new(
             self.data,
-            experts_indicator,
-            indice_ptr,
-            weight_ptr,
-            topk_indices_ptr,
+            routing,
             self.shape[0],
             num_experts,
             num_experts_per_tok,
             decode_only_flag,
         ));
         self.operator_queue.borrow_mut().push(operator);
-        (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr)
+        routing
+    }
+
+    unsafe fn allocate_expert_routing(
+        num_experts: usize,
+        num_tokens: usize,
+        num_topk: usize,
+    ) -> ExpertRouting<T> {
+        let expert_counts = crate::mem_mgr::allocator::allocate::<AtomicUsize>(num_experts);
+        for e in 0..num_experts {
+            std::ptr::write(expert_counts.add(e), AtomicUsize::new(0));
+        }
+
+        let capacity_per_expert = num_tokens;
+        let index_tensor = allocate_init(num_experts * capacity_per_expert, 0usize);
+        let score_tensor = allocate_init(num_experts * capacity_per_expert, T::default());
+        let topk_indices = allocate_init(num_tokens * num_topk, 0usize);
+
+        ExpertRouting {
+            expert_counts: crate::common::send_sync_ptr::MutPtr { ptr: expert_counts },
+            index_tensor: crate::common::send_sync_ptr::MutPtr { ptr: index_tensor },
+            score_tensor: crate::common::send_sync_ptr::MutPtr { ptr: score_tensor },
+            topk_indices: crate::common::send_sync_ptr::MutPtr { ptr: topk_indices },
+            num_experts,
+            num_tokens,
+            num_topk,
+            capacity_per_expert,
+        }
     }
 
     pub fn from_cache(
@@ -948,6 +946,40 @@ mod test {
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
+    }
+
+    fn empty_routing<T: Copy + Default>(
+        num_experts: usize,
+        num_tokens: usize,
+        num_topk: usize,
+    ) -> ExpertRouting<T> {
+        unsafe { crate::common::expert_routing::empty_routing(num_experts, num_tokens, num_topk) }
+    }
+
+    fn dense_routing(
+        num_experts: usize,
+        num_tokens: usize,
+        num_topk: usize,
+        indice: &[bool],
+        score: &[f16],
+        topk: &[usize],
+    ) -> ExpertRouting<f16> {
+        unsafe {
+            crate::common::expert_routing::routing_from_dense(
+                num_experts,
+                num_tokens,
+                num_topk,
+                indice.as_ptr(),
+                score.as_ptr(),
+                topk.as_ptr(),
+            )
+        }
+    }
+
+    fn silu_routing(num_experts: usize, num_tokens: usize, indice: &[bool]) -> ExpertRouting<f16> {
+        let score = vec![1.0f16; num_experts * num_tokens];
+        let topk = vec![0usize; num_tokens];
+        dense_routing(num_experts, num_tokens, 1, indice, &score, &topk)
     }
 
     #[inline]
@@ -2340,8 +2372,9 @@ mod test {
         let out = input.experts_matmul_silu_mul_matmul(
             &gate_w,
             &up_w,
-            experts_indicator,
-            indice_ptr,
+            silu_routing(num_experts, b, unsafe {
+                std::slice::from_raw_parts(indice_ptr, num_experts * b)
+            }),
             params,
             false,
             "model.layers.0.experts_silu".to_string(),
@@ -2515,10 +2548,14 @@ mod test {
 
         let out = x.experts_matmul_mul(
             &down_w,
-            experts_indicator,
-            indice_ptr,
-            weight_ptr,
-            topk_indices_ptr,
+            dense_routing(
+                num_experts,
+                b,
+                num_experts_per_tok,
+                unsafe { std::slice::from_raw_parts(indice_ptr, num_experts * b) },
+                unsafe { std::slice::from_raw_parts(weight_ptr, num_experts * b) },
+                unsafe { std::slice::from_raw_parts(topk_indices_ptr, b * num_experts_per_tok) },
+            ),
             num_experts_per_tok,
             params,
             false,
@@ -2657,9 +2694,7 @@ mod test {
         // build via Tensor API
         let out = input.experts_merge_add(
             &residual,
-            experts_indicator,
-            indice_ptr,
-            num_experts,
+            empty_routing::<f16>(num_experts, num_tokens, k),
             false,
             "model.layers.0.experts_merge_add".to_string(),
         );
@@ -2677,15 +2712,7 @@ mod test {
             .unwrap_or(1);
         for op in operator_queue.borrow_mut().iter() {
             for tid in 0..thread_num {
-                op.run(
-                    num_tokens,
-                    1,
-                    thread_num,
-                    tid,
-                    &[],
-                    &[],
-                    &mut Vec::new(),
-                );
+                op.run(num_tokens, 1, thread_num, tid, &[], &[], &mut Vec::new());
             }
         }
 
