@@ -1,6 +1,6 @@
 use std::ops::{Add, Div, Mul, Sub};
 
-use super::core::RowVisitPlan;
+use super::plan::RowVisitPlan;
 use super::split_sequence::split_sequence_by_triangle;
 use super::Attention;
 use crate::common::num_traits::NegInfinity;

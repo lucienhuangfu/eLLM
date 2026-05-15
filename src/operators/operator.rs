@@ -1,5 +1,5 @@
 use crate::common::num_traits::NegInfinity;
-use crate::common::num_traits::{Exp, Sigmoid, Sqrt, FromNumber};
+use crate::common::num_traits::{Exp, FromNumber, Sigmoid, Sqrt};
 use crate::common::sequence_slice::SequenceSlice;
 use crate::operators::fake_echo::FakeEcho;
 use crate::runtime::SequenceState;
@@ -213,13 +213,13 @@ mod test {
             return;
         }
 
-        let sequence_chunk_size = 1;
+        let sequence_length = 1;
         let batch_size = 2;
         let num_experts = 16;
         let num_topk = 4;
-        let num_tokens = sequence_chunk_size * batch_size;
+        let num_tokens = sequence_length * batch_size;
         let prefill_size = num_tokens;
-        let decode_size = sequence_chunk_size;
+        let decode_size = sequence_length;
 
         let input_data1: Vec<f32> = vec![
             0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
@@ -1515,9 +1515,9 @@ mod test {
         }
         use std::f16;
 
-        let sequence_chunk_size = 16usize;
+        let sequence_length = 16usize;
         let batch_size = 4usize;
-        let num_tokens = sequence_chunk_size * batch_size;
+        let num_tokens = sequence_length * batch_size;
 
         let k = 2usize;
         let h = 64usize;
@@ -1554,7 +1554,7 @@ mod test {
                 experts_indicator.as_mut_ptr(),
                 indice_ptr.as_mut_ptr(),
                 output.as_mut_ptr(),
-                sequence_chunk_size,
+                sequence_length,
                 batch_size,
                 num_experts,
                 k,
@@ -1716,15 +1716,15 @@ mod test {
 /*
  #[test]
     fn test_rms() {
-        let sequence_chunk_size = 1;
+        let sequence_length = 1;
         let batch_size = 10;
         let hidden_size = 18;
         let cpu_num = num_cpus::get();
 
-        let prefill_size = sequence_chunk_size * batch_size;
-        let decode_size = sequence_chunk_size;
+        let prefill_size = sequence_length * batch_size;
+        let decode_size = sequence_length;
 
-        let shapes = vec![sequence_chunk_size, batch_size, hidden_size];
+        let shapes = vec![sequence_length, batch_size, hidden_size];
         let length = shapes.iter().product();
         let input_data: Vec<f32> = (1..=hidden_size)
             .cycle()
@@ -1774,15 +1774,15 @@ mod test {
 
 #[test]
     fn test_add_zip() {
-        let sequence_chunk_size = 1;
+        let sequence_length = 1;
         let batch_size = 10;
         let head_num = 3;
         let head_size = 6;
 
-        let prefill_size = sequence_chunk_size * batch_size;
-        let decode_size = sequence_chunk_size;
+        let prefill_size = sequence_length * batch_size;
+        let decode_size = sequence_length;
 
-        let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
+        let shapes = vec![sequence_length, batch_size, head_num, head_size];
         let length = shapes.iter().product();
 
         let input_data1: Vec<f32> = (0..=17).cycle().take(length).map(|x| x as f32).collect();
@@ -1810,15 +1810,15 @@ mod test {
 #[test]
     fn test_complexmul() {
         let sequence_length = 10;
-        let sequence_chunk_size = 8;
+        let sequence_length_chunk = 8;
         let batch_size = 10;
         let head_num = 10;
         let head_size = 34;
 
-        let prefill_size = sequence_chunk_size * batch_size;
-        let decode_size = sequence_chunk_size;
+        let prefill_size = sequence_length_chunk * batch_size;
+        let decode_size = sequence_length_chunk;
 
-        let shape1 = vec![sequence_chunk_size, batch_size, head_num, head_size];
+        let shape1 = vec![sequence_length_chunk, batch_size, head_num, head_size];
         let shape2 = vec![sequence_length, head_size];
 
         let length1: usize = shape1.iter().product();
@@ -1847,7 +1847,7 @@ mod test {
             input_data1.as_ptr(),
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
-            // sequence_chunk_size,
+            // sequence_length,
             batch_size,
             head_num,
             head_size,
@@ -1863,16 +1863,16 @@ mod test {
 
     #[test]
     fn test_silu() {
-        let sequence_chunk_size = 8;
+        let sequence_length = 8;
         let batch_size = 10;
         // let hidden_size = 19;
         let head_num = 1;
         let head_size = 19;
 
-        let prefill_size = sequence_chunk_size * batch_size;
-        let decode_size = sequence_chunk_size;
+        let prefill_size = sequence_length * batch_size;
+        let decode_size = sequence_length;
 
-        let shapes = vec![sequence_chunk_size, batch_size, head_num, head_size];
+        let shapes = vec![sequence_length, batch_size, head_num, head_size];
 
         let length = shapes.iter().product();
         let input_data1: Vec<f32> = vec![
@@ -1896,7 +1896,7 @@ mod test {
             0.5145581364631653,
             0.6260590553283691,
         ]
-        .repeat(sequence_chunk_size * batch_size);
+        .repeat(sequence_length * batch_size);
         // let input_data2: [f32; 190] = [1.0; 190];
 
         let mut input_data2: Vec<f32> = vec![1.0; length];
@@ -1936,7 +1936,7 @@ mod test {
             0.32204875349998474,
             0.4079371392726898,
         ]
-        .repeat(sequence_chunk_size * batch_size);
+        .repeat(sequence_length * batch_size);
         assert_ulps_eq!(output_data[..], result, max_ulps = 4);
     }
 

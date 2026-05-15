@@ -4,7 +4,9 @@ use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::{BatchScheduler, Config, GenerationConfig, Phase, SequenceState, ServingRunner};
+use ellm::runtime::{
+    BatchScheduler, Config, GenerationConfig, Phase, SequenceState, ServingRunner,
+};
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
@@ -14,16 +16,15 @@ use std::sync::Arc;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Initializing...");
 
-    let sequence_chunk_size = 128;
     let batch_size = 3;
+    let chunk_size = 64;
 
-    let topk_size = 8;
 
+    let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
     let config =
-        Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
-
+        Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
     let generation_config = GenerationConfig::load_from_file(
-        r"models/Qwen3-Coder-30B-A3B-Instruct/generation_config.json",
+        format!("{}/generation_config.json", model_dir),
     )
     .ok();
 
@@ -31,15 +32,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Loaded generation config: {:?}", gen_cfg);
     }
 
-    let tokenizer_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
-    let tokenizer_config_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer_config.json";
-    let chat_template_path = "models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
+    let tokenizer_path = format!("{}/tokenizer.json", model_dir);
+    let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);
+    let chat_template_path = format!("{}/chat_template.jinja", model_dir);
+    
+    
+    let sequence_length = 128;
+    let top_k = 8;
+
 
     let fixed_prompts = [
         "Hello from a fixed runner.",
         "This path does not use server input.",
         "The sequence data is hardcoded.",
     ];
+    // 载入模型参数
+    let params = ellm::transformer::safetensor_loader::load_safetensors(model_dir)
+        .map_err(|e| format!("failed to load model parameters: {}", e))?;
+    println!("Loaded {} parameter tensors", params.len());
 
     // Initialize global memory pool
     let mut params = HashMap::new();
@@ -54,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut batch_seq = BatchSequence::<f16>::new(
         sequences_ptr,
         batch_size,
-        config.max_position_embeddings,
+        sequence_length,
         tokenizer_path,
         tokenizer_config_path,
         chat_template_path,
@@ -86,9 +96,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut model = Model::<f16>::new(
         &config,
         position_vec,
-        sequence_chunk_size,
+        sequence_length,
+        chunk_size,
         batch_size,
-        topk_size,
+        top_k,
         eos_id,
     );
 
@@ -99,14 +110,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let thread_num = core_ids.len().max(1);
     let mut batch_scheduler: BatchScheduler =
-        BatchScheduler::new(sequence_chunk_size, batch_size, thread_num);
+        BatchScheduler::new(sequence_length, batch_size, thread_num);
     let mut batch_list = Vec::with_capacity(batch_size);
     batch_list.extend(
         written_lengths
             .iter()
             .enumerate()
             .map(|(i, &len)| SequenceState {
-                filling_length: len.min(sequence_chunk_size),
+                filling_length: len.min(sequence_length),
                 sequence_index: i,
                 kv_index: i,
                 phase: Phase::Prefill,

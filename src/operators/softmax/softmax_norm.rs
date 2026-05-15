@@ -315,11 +315,11 @@ mod test {
             return;
         }
 
-        let sequence_chunk_size = 1;
+        let sequence_length = 1;
         let batch_size = 6;
         let num_experts = 128;
         let num_topk = 8;
-        let num_tokens = sequence_chunk_size * batch_size;
+        let num_tokens = sequence_length * batch_size;
 
         // Generate input data for batch_size tokens * num_experts
         let mut input_vals: Vec<f32> = Vec::with_capacity((num_tokens * num_experts));

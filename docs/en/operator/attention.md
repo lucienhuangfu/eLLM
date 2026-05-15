@@ -32,13 +32,13 @@ The focus here is on scheduling structure, tensor organization, and parallel spl
 | `head_dim` / `head_size` | Dimensionality of each head |
 | `row_step` | Block granularity in the row direction, currently passed as 1 by `Tensor::attention` |
 | `col_step` | Block granularity in the column direction, currently passed as 8 by `Tensor::attention` |
-| `sequence_chunk_size` | Sequence length of the current chunk in the forward path |
+| `sequence_length` | Sequence length of the current chunk in the forward path |
 
 Notes:
 
 * GQA is expressed through the mapping `num_attention_heads / num_key_value_heads`, without introducing a separate `group` tensor dimension.
 * `batch_size` is still the batch dimension in tensor semantics, but task input is not expanded directly by batch dimension; it is passed in through an external slice structure.
-* In the forward layer, `head_dim` and `sequence_chunk_size` are more common; in the lower-level attention kernel, the corresponding names are `head_size` and `seq_len`.
+* In the forward layer, `head_dim` and `sequence_length` are more common; in the lower-level attention kernel, the corresponding names are `head_size` and `seq_len`.
 * `decode_only_flag` is stored in the `Attention` struct, but the current attention scheduling and compute path do not branch on it.
 
 ---
@@ -56,8 +56,8 @@ The attention forward tensor layout can be summarized as:
 
 Semantically:
 
-* The logical shape of Q is `[sequence_chunk_size, batch_size, num_attention_heads, head_dim]`
-* The logical shape of K / V is `[batch_size, num_key_value_heads, sequence_chunk_size, head_dim]`
+* The logical shape of Q is `[sequence_length, batch_size, num_attention_heads, head_dim]`
+* The logical shape of K / V is `[batch_size, num_key_value_heads, sequence_length, head_dim]`
 
 This follows the typical GQA design:
 

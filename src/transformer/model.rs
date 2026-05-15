@@ -33,6 +33,8 @@ where
     lm_head_weight: Tensor<T>,
     pub layers: Vec<DecoderLayer<T>>,
     rms_norm_eps: T,
+    pub chunk_size: usize,
+    pub sequence_length: usize,
     pub batch_size: usize,
     pub hidden_size: usize,
     pub topk_size: usize,
@@ -61,7 +63,8 @@ where
     pub fn new(
         config: &Config,
         position_vec: Vec<T>,
-        sequence_chunk_size: usize,
+        chunk_size: usize,
+        sequence_length: usize,
         batch_size: usize,
         topk_size: usize,
         eos_id: usize,
@@ -88,7 +91,8 @@ where
             layers.push(DecoderLayer::<T>::new(
                 &config,
                 i,
-                sequence_chunk_size,
+                chunk_size,
+                sequence_length,
                 batch_size,
                 word_embedding.clone(),
                 position_embedding.clone(),
@@ -120,7 +124,7 @@ where
         // let sequences = vec![0; (self.config.max_position_embeddings + 1) * self.config.batch_size].into_boxed_slice();
 
         let mut hidden_state = Tensor::zeros(
-            vec![self.batch_size, self.hidden_size],
+            vec![self.chunk_size, self.hidden_size],
             format!("{}.hidden_state.output", self.scope_name),
         );
 
@@ -227,7 +231,7 @@ mod test {
     #[test]
     fn test_model_forward() {
         // let cpu_num =  thread::available_parallelism().unwrap().get();
-        let sequence_chunk_size = 128;
+        let sequence_length = 128;
         let batch_size = 3;
         let topk_size = 8;
         let thread_num = std::thread::available_parallelism()
@@ -250,7 +254,7 @@ mod test {
         let mut model = Model::<f32>::new(
             &config,
             position_vec,
-            sequence_chunk_size,
+            sequence_length,
             batch_size,
             topk_size, // word_embedding,
             // position_embedding,
@@ -305,7 +309,7 @@ mod test {
             return;
         }
 
-        let sequence_chunk_size = 128;
+        let sequence_length = 128;
         let batch_size = 3;
         let topk_size = 8;
         let thread_num = std::thread::available_parallelism()
@@ -328,7 +332,7 @@ mod test {
         let mut model = Model::<f16>::new(
             &config,
             position_vec,
-            sequence_chunk_size,
+            sequence_length,
             batch_size,
             topk_size,
             eos_id,
@@ -368,7 +372,7 @@ mod test {
     #[test]
     fn test_qwen3_06b_creation() {
         use std::collections::HashMap;
-        let sequence_chunk_size = 128;
+        let sequence_length = 128;
         let batch_size = 1;
         let topk_size = 8;
 
@@ -393,7 +397,7 @@ mod test {
         let model = Model::<f32>::new(
             &config,
             position_vec,
-            sequence_chunk_size,
+            sequence_length,
             batch_size,
             topk_size,
             eos_id,
@@ -413,7 +417,7 @@ mod test {
             return;
         }
         use std::collections::HashMap;
-        let sequence_chunk_size = 128;
+        let sequence_length = 128;
         let batch_size = 1;
         let topk_size = 8;
 
@@ -435,7 +439,7 @@ mod test {
         let model = Model::<f16>::new(
             &config,
             position_vec,
-            sequence_chunk_size,
+            sequence_length,
             batch_size,
             topk_size,
             eos_id,

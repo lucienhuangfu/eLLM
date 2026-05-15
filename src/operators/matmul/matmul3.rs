@@ -5,10 +5,14 @@ use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
+
+
 use crate::common::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
+
+use crate::common::sequence_slice::SequenceSlice;
 use crate::operators::assign::{assign, KqvPath};
 use crate::operators::traits::MatMulkqvTrait;
 
@@ -70,6 +74,18 @@ where
         v_weight_ptr_nt: *const T, // ✅ Wv_nt[Nkv×K]
         v_state_ptr: *mut T,
         rope_ptr: *const T,
+        sequence_length: usize,
+        batch_size: usize,
+        // Grouped Query Attention (GQA) 维度信息
+        // num_query_heads: Q的总头数（例：32）
+        // 与 b_q_row = num_query_heads × head_dim 对应
+        head_num: usize,
+        // GQA 分组系数：多少个Q头共享一个KV头
+        // 关系：num_key_value_heads = num_query_heads / group_num
+        // 例：head_num=32, group_num=8 => 4个KV头服务32个Q头
+        group_num: usize,
+        // 每个Head的隐藏维度（通常为128、256等）
+        // Nq = num_query_heads × head_dim，Nkv = num_key_value_heads × head_dim
         head_dim: usize,
         m_row: usize,
         col: usize,
@@ -282,8 +298,14 @@ where
     }
 
     /// 入口：不再有 S 维度，只针对当前 A[M×K] 做一次 K/Q/V。
-    pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize)
-    where
+    pub fn run(
+        &self,
+        prefill_size: usize,
+        _decode_size: usize,
+        attention_list: &[SequenceSlice],
+        thread_num: usize,
+        thread_id: usize,
+    ) where
         Self: MatMulkqvTrait<T>,
     {
         unsafe {

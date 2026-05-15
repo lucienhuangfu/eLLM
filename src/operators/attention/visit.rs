@@ -1,6 +1,6 @@
 use std::ops::{Add, Div, Mul, Sub};
 
-use super::core::RowVisitPlan;
+use super::plan::RowVisitPlan;
 use super::Attention;
 use crate::common::num_traits::NegInfinity;
 use crate::operators::traits::AttentionTrait;

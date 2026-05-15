@@ -1,6 +1,6 @@
 use std::ops::{AddAssign, Neg, Sub};
 
-use crate::common::num_traits::{FromNumber, Exp, Sigmoid, Sqrt, NegInfinity};
+use crate::common::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::super::common::matmul_params::MatMulParams;
@@ -14,6 +14,7 @@ pub struct Attention<T>
 where
     T: Copy + PartialOrd,
 {
+    batch_size: usize,
     num_attention_heads: usize,
     num_key_value_heads: usize,
     head_dim: usize,
@@ -41,11 +42,12 @@ where
         + GlobalMemPool
         + GlobalOperatorQueue,
 {
-    pub fn new(config: &Config, names: AttentionTensorNames) -> Self {
+    pub fn new(config: &Config, batch_size: usize, names: AttentionTensorNames) -> Self {
         let head_dim: usize = config.head_dim;
         let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
 
         Self {
+            batch_size: batch_size,
             num_attention_heads: config.num_attention_heads,
             num_key_value_heads: config.num_key_value_heads,
             head_dim: head_dim,
@@ -83,8 +85,9 @@ where
             //println!("hidden_states shape: {:?}", hidden_states.shape);
 
             // mul_rms_complex 合并operators
-            // [sequence_chunk_size, batch_size, hidden_size]
-            // [sequence_chunk_size, batch_size, kv_hidden_size]
+            // q [chunk_size, hidden_size]
+            // k [batch_size, head_num, sequence_length, head_dim]
+            // v [batch_size, head_num, sequence_length, head_dim]
             let (query_states, key_states, value_states) = hidden_states.matmul3(
                 &self.q_weight,
                 &self.k_weight,
@@ -105,13 +108,14 @@ where
                 hidden_states.lift_vector();
             }
 
+            // q [chunk_size, head_num, group_num, head_dim] <- [chunk_size, hidden_size] 
             let view_query_states = query_states.view(vec![
                 query_states.shape[0],
                 query_states.shape[1],
                 self.num_attention_heads,
                 self.head_dim,
             ]);
-
+            /* 
             let view_key_states = key_states.view(vec![
                 key_states.shape[0],
                 key_states.shape[1],
@@ -130,13 +134,16 @@ where
             ]);
 
             let view_value_states2 = view_value_states.permute(vec![1, 2, 0, 3]);
-
+            */
             let thread_num = num_cpus::get().max(1);
 
             // [position_window_size, batch_size, head_num, head_size] <- [position_window_size, batch_size, head_num, head_size] [batch_size, head_num, sequence_num, head_size] [batch_size, head_num, sequence_num, head_size]
             let attn_output = view_query_states.attention(
-                &view_key_position_tensor,
-                &view_value_states2,
+                &key_states,
+                &value_states,
+                self.sequence_length,
+                self.batch_size,
+                self.,
                 self.scaling,
                 decode_only_flag,
                 thread_num,
@@ -150,7 +157,7 @@ where
                 attn_output.shape[2] * attn_output.shape[3],
             ]);
 
-            // [sequence_chunk_size, batch_size, hidden_size]
+            // [sequence_length, batch_size, hidden_size]
             // matmul + add
             let output_tensor = view_context_tensor.matmul_add(
                 &self.o_weight,
@@ -177,7 +184,7 @@ mod test {
 
     #[test]
     fn test_self_attention() {
-        let sequence_chunk_size = 1;
+        let sequence_length = 1;
         let batch_size = 3;
         // let hidden_size = 128;
         // let num_attention_heads = 64;
@@ -205,12 +212,12 @@ mod test {
         );
 
         let hidden_states = Tensor::zeros(
-            vec![sequence_chunk_size, batch_size, config.hidden_size],
+            vec![sequence_length, batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
         );
 
         let residual_tensor = Tensor::zeros(
-            vec![sequence_chunk_size, batch_size, config.hidden_size],
+            vec![sequence_length, batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
         );
 
@@ -225,7 +232,7 @@ mod test {
         // Add assertions to validate the output
         debug_assert_eq!(
             output.shape,
-            vec![sequence_chunk_size, batch_size, config.hidden_size]
+            vec![sequence_length, batch_size, config.hidden_size]
         );
 
         // Execute the operator queue
@@ -243,7 +250,7 @@ mod test {
 
     #[test]
     fn test_self_attention_f16() {
-        let sequence_chunk_size = 1;
+        let sequence_length = 1;
         let batch_size = 3;
 
         let config =
@@ -265,12 +272,12 @@ mod test {
         );
 
         let hidden_states = Tensor::zeros(
-            vec![sequence_chunk_size, batch_size, config.hidden_size],
+            vec![sequence_length, batch_size, config.hidden_size],
             String::from("model.layers.1.hidden_tensor"),
         );
 
         let residual_tensor = Tensor::zeros(
-            vec![sequence_chunk_size, batch_size, config.hidden_size],
+            vec![sequence_length, batch_size, config.hidden_size],
             String::from("model.layers.1.residual_tensor"),
         );
 
@@ -285,7 +292,7 @@ mod test {
         // Add assertions to validate the output
         debug_assert_eq!(
             output.shape,
-            vec![sequence_chunk_size, batch_size, config.hidden_size]
+            vec![sequence_length, batch_size, config.hidden_size]
         );
 
         // Execute the operator queue

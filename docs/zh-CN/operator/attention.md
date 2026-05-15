@@ -32,13 +32,13 @@
 | `head_dim` / `head_size` | 每个 head 的维度 |
 | `row_step` | 行方向 block 粒度，当前 `Tensor::attention` 调用传入为 1 |
 | `col_step` | 列方向 block 粒度，当前 `Tensor::attention` 调用传入为 8 |
-| `sequence_chunk_size` | 前向路径中当前 chunk 的序列长度 |
+| `sequence_length` | 前向路径中当前 chunk 的序列长度 |
 
 说明：
 
 * GQA 通过 `num_attention_heads / num_key_value_heads` 的映射关系表达，不额外引入独立的 `group` 张量维度。
 * `batch_size` 仍然是张量语义中的 batch 维，但任务输入不是直接按 batch 维展开，而是通过外部切片结构传入。
-* 在前向层里更常见的是 `head_dim` 和 `sequence_chunk_size`；在底层 attention kernel 里对应的是 `head_size` 和 `seq_len`。
+* 在前向层里更常见的是 `head_dim` 和 `sequence_length`；在底层 attention kernel 里对应的是 `head_size` 和 `seq_len`。
 * `decode_only_flag` 会被保存在 `Attention` 结构体中，但当前 attention 调度与计算路径并未使用它参与分支判断。
 
 ---
@@ -56,8 +56,8 @@ attention 前向路径的张量组织可以概括为：
 
 从语义上看：
 
-* Q 的逻辑形状是 `[sequence_chunk_size, batch_size, num_attention_heads, head_dim]`
-* K / V 的逻辑形状是 `[batch_size, num_key_value_heads, sequence_chunk_size, head_dim]`
+* Q 的逻辑形状是 `[sequence_length, batch_size, num_attention_heads, head_dim]`
+* K / V 的逻辑形状是 `[batch_size, num_key_value_heads, sequence_length, head_dim]`
 
 这表示整体结构遵循典型的 GQA 设计：
 

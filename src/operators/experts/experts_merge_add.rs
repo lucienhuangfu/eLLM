@@ -27,7 +27,7 @@ pub struct ExpertsMergeAdd<T> {
     pub experts_indicator: MutPtr<bool>, // [num_experts]
     pub indice_ptr: MutPtr<bool>,        // [num_experts, num_tokens]
 
-    pub sequence_chunk_size: usize,
+    pub sequence_length: usize,
     pub batch_size: usize,
     pub num_experts: usize,
     pub num_experts_per_token: usize, // K
@@ -49,7 +49,7 @@ where
         experts_indicator: *mut bool,
         indice_ptr: *mut bool,
         output_ptr: *mut T, // [num_tokens, H]
-        sequence_chunk_size: usize,
+        sequence_length: usize,
         batch_size: usize,
         num_experts: usize,
         num_experts_per_token: usize,
@@ -65,7 +65,7 @@ where
                 ptr: experts_indicator,
             },
             indice_ptr: MutPtr { ptr: indice_ptr },
-            sequence_chunk_size,
+            sequence_length,
             batch_size,
             num_experts,
             num_experts_per_token,
@@ -85,7 +85,7 @@ where
         unsafe {
             let thread_num = thread_num.max(1);
 
-            let num_tokens = self.sequence_chunk_size * prefill_size;
+            let num_tokens = self.sequence_length * prefill_size;
             let H = self.hidden_size;
             let K = self.num_experts_per_token;
 
@@ -418,9 +418,9 @@ mod tests {
             return;
         }
 
-        let sequence_chunk_size = 16;
+        let sequence_length = 16;
         let batch_size = 4;
-        let num_tokens = sequence_chunk_size * batch_size;
+        let num_tokens = sequence_length * batch_size;
         let hidden = 64;
         let num_experts = 8;
         let k = 2;
@@ -456,7 +456,7 @@ mod tests {
                 experts_indicator.as_mut_ptr(),
                 indice_ptr.as_mut_ptr(),
                 output.as_mut_ptr(),
-                sequence_chunk_size,
+                sequence_length,
                 batch_size,
                 num_experts,
                 k,

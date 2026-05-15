@@ -6,12 +6,12 @@ use crate::common::num_traits::NegInfinity;
 use crate::common::num_traits::{Exp, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
-use crate::tensor::{GlobalOperatorQueue, Tensor};
 use super::attention::Attention;
 use super::config::{AttentionKind, Config, FfnKind};
 use super::dense_mlp::DenseMlp;
 use super::names::{layer_tensor_names, FfnTensorNames};
 use super::sparse_moe::SparseMoe;
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 
 pub enum AttentionBlock<T>
 where
@@ -34,6 +34,8 @@ pub struct DecoderLayer<T>
 where
     T: Copy + PartialOrd,
 {
+    
+    chunk_size: usize,
     batch_size: usize,
     rms_norm_eps: T,
     layer_idx: usize,
@@ -63,8 +65,8 @@ where
     pub fn new(
         config: &Config,
         layer_idx: usize,
-        // sequences: *mut usize,
-        _sequence_chunk_size: usize,
+        chunk_size: usize,
+        _sequence_length: usize,
         batch_size: usize,
         word_embedding: Rc<Tensor<T>>,
         position_embedding: Rc<Tensor<T>>,
@@ -210,7 +212,7 @@ mod test {
 
     #[test]
     fn test_decoder_layer_f32() {
-        let sequence_chunk_size = 1;
+        let sequence_length = 1;
         let batch_size = 6;
 
         let config =
@@ -236,7 +238,7 @@ mod test {
             &config,
             1,
             max_position_embeddings,
-            // sequence_chunk_size,
+            // sequence_length,
             batch_size,
             word_embedding.clone(),
             position_embedding.clone(),
@@ -255,7 +257,7 @@ mod test {
             }
         }
 
-        let mut sequences = vec![0; sequence_chunk_size * batch_size];
+        let mut sequences = vec![0; sequence_length * batch_size];
         let output_tensor = layer.forward(
             &input,
             sequences.as_mut_ptr(),
@@ -290,7 +292,7 @@ mod test {
         let config =
             Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
-        let sequence_chunk_size = position_window_size;
+        let sequence_length = position_window_size;
         let hidden_size = config.hidden_size;
         let max_position_embeddings = config.max_position_embeddings;
         let head_dim = config.head_dim;
@@ -329,7 +331,7 @@ mod test {
             }
         }
 
-        let mut sequences = vec![0; sequence_chunk_size * batch_size];
+        let mut sequences = vec![0; sequence_length * batch_size];
         let output_tensor = layer.forward(
             &input,
             sequences.as_mut_ptr(),
@@ -352,8 +354,8 @@ mod test {
                 println!("operator {} in queue", index);
                 for i in 0..thread_num {
                     operator.run(
-                        sequence_chunk_size * batch_size,
-                        sequence_chunk_size,
+                        sequence_length * batch_size,
+                        sequence_length,
                         thread_num,
                         i,
                         &[],
