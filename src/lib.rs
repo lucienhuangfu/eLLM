@@ -1,5 +1,6 @@
 #![feature(f16)]
 #![feature(stdarch_x86_avx512_f16)]
+#![feature(x86_amx_intrinsics)]
 #![feature(min_specialization)]
 #![feature(sync_unsafe_cell)]
 
