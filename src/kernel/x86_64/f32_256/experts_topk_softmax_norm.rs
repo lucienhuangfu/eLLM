@@ -8,13 +8,6 @@ pub fn experts_topk_softmax_norm(
     input_ptr: *const f32,
     topk_values_ptr: *mut f32,
     topk_indices_ptr: *mut usize,
-    // [num_experts]
-    experts_indicator_ptr: *mut bool,
-    // [num_experts, batch_size]
-    indices_ptr: *mut bool,
-    value_ptr: *mut f32,
-    index_token: usize,
-    num_token: usize,
     num_experts: usize,
     num_topk: usize,
     norm_topk_prob: bool,
@@ -33,16 +26,6 @@ pub fn experts_topk_softmax_norm(
             let (max_val, denom) = softmax_stats_avx(input_ptr, num_experts);
             softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
         }
-
-        for i in 0..num_topk {
-            let expert_idx = *topk_indices_ptr.add(i);
-            *experts_indicator_ptr.add(expert_idx) = true;
-            let offset = (expert_idx) * (num_token) + (index_token);
-            *indices_ptr.add(offset) = true;
-            *value_ptr.add(offset) = *topk_values_ptr.add(i);
-        }
-
-        std::slice::from_raw_parts_mut(topk_indices_ptr, num_topk).sort_unstable();
     }
 }
 
@@ -272,20 +255,11 @@ mod tests {
         ];
         let mut topk_vals = [0.0f32; NUM_TOPK];
         let mut topk_idx = [0; NUM_TOPK];
-        let mut expert_flags = [false; NUM_EXPERTS];
-        let mut indices = [false; (NUM_EXPERTS * NUM_TOKEN)];
-        let mut values = [0.0f32; (NUM_EXPERTS * NUM_TOKEN)];
-
         unsafe {
             experts_topk_softmax_norm(
                 data.as_ptr(),
                 topk_vals.as_mut_ptr(),
                 topk_idx.as_mut_ptr(),
-                expert_flags.as_mut_ptr(),
-                indices.as_mut_ptr(),
-                values.as_mut_ptr(),
-                INDEX_TOKEN,
-                NUM_TOKEN,
                 NUM_EXPERTS,
                 NUM_TOPK,
                 true,
@@ -306,40 +280,11 @@ mod tests {
             .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
         let denom_k: f32 = expected_topk_vals.iter().map(|v| (v - max_k).exp()).sum();
 
-        let mut is_topk = [false; NUM_EXPERTS];
-
-        // Verify indices are sorted
-        let mut expected_indices: Vec<usize> =
-            expected.iter().take(NUM_TOPK).map(|x| x.0).collect();
-        expected_indices.sort_unstable();
-        for i in 0..(NUM_TOPK) {
-            assert_eq!(topk_idx[i], expected_indices[i]);
-        }
-
         for i in 0..(NUM_TOPK) {
             let idx = expected[i].0;
             let prob = ((expected[i].1 - max_k).exp()) / denom_k;
-
-            // Check sparse outputs
-            assert!(expert_flags[idx]);
-            let offset = (idx * NUM_TOKEN + INDEX_TOKEN);
-            assert!(indices[offset]);
-            assert_relative_eq!(values[offset], prob, epsilon = 1e-3);
-            is_topk[idx] = true;
-        }
-
-        for expert in 0..(NUM_EXPERTS) {
-            if !is_topk[expert] {
-                assert!(!expert_flags[expert]);
-            }
-            for token in 0..(NUM_TOKEN) {
-                let offset = expert * (NUM_TOKEN) + token;
-                if is_topk[expert] && token == (INDEX_TOKEN) {
-                    continue;
-                }
-                assert!(!indices[offset]);
-                assert_relative_eq!(values[offset], 0.0, epsilon = 1e-6);
-            }
+            assert_eq!(topk_idx[i], idx);
+            assert_relative_eq!(topk_vals[i], prob, epsilon = 1e-3);
         }
     }
 }

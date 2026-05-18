@@ -172,11 +172,6 @@ pub fn experts_topk_softmax_norm(
     input_ptr: *const f16,
     topk_values_ptr: *mut f16,
     topk_indices_ptr: *mut usize,
-    experts_indicator_ptr: *mut bool,
-    indices_ptr: *mut bool,
-    value_ptr: *mut f16,
-    index_token: usize,
-    num_token: usize,
     num_experts: usize,
     num_topk: usize,
     norm_topk_prob: bool,
@@ -184,11 +179,7 @@ pub fn experts_topk_softmax_norm(
     debug_assert!(!input_ptr.is_null());
     debug_assert!(!topk_values_ptr.is_null());
     debug_assert!(!topk_indices_ptr.is_null());
-    debug_assert!(!experts_indicator_ptr.is_null());
-    debug_assert!(!indices_ptr.is_null());
-    debug_assert!(!value_ptr.is_null());
     debug_assert!(num_topk > 0 && num_topk <= num_experts);
-    debug_assert!(index_token < num_token);
 
     unsafe {
         get_topk(
@@ -204,15 +195,6 @@ pub fn experts_topk_softmax_norm(
             let (max_val, denom) = softmax_stats_avx512_fp16(input_ptr, num_experts);
             softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
         }
-
-        for i in 0..num_topk {
-            let expert_idx = *topk_indices_ptr.add(i);
-            *experts_indicator_ptr.add(expert_idx) = true;
-            let offset = expert_idx * num_token + index_token;
-            *indices_ptr.add(offset) = true;
-            *value_ptr.add(offset) = *topk_values_ptr.add(i);
-        }
-        std::slice::from_raw_parts_mut(topk_indices_ptr, num_topk).sort_unstable();
     }
 }
 
@@ -329,20 +311,11 @@ mod tests {
 
         let mut topk_vals = [0.0; NUM_TOPK];
         let mut topk_idx = [0usize; NUM_TOPK];
-        let mut expert_flags = [false; NUM_EXPERTS];
-        let mut indices = [false; NUM_EXPERTS * NUM_TOKEN];
-        let mut values = [0.0; NUM_EXPERTS * NUM_TOKEN];
-
         unsafe {
             experts_topk_softmax_norm(
                 data.as_ptr(),
                 topk_vals.as_mut_ptr(),
                 topk_idx.as_mut_ptr(),
-                expert_flags.as_mut_ptr(),
-                indices.as_mut_ptr(),
-                values.as_mut_ptr(),
-                INDEX_TOKEN,
-                NUM_TOKEN,
                 NUM_EXPERTS,
                 NUM_TOPK,
                 true,
@@ -374,21 +347,10 @@ mod tests {
             *p /= sum_probs;
         }
 
-        let mut result_indices = Vec::new();
-        for i in 0..NUM_TOPK {
-            result_indices.push(topk_idx[i]);
-        }
-        let mut expected_indices: Vec<usize> =
-            expected.iter().take(NUM_TOPK).map(|x| x.0).collect();
-        expected_indices.sort_unstable();
-        assert_eq!(result_indices, expected_indices);
-
         for (rank, (expert_idx, _)) in expected.iter().take(NUM_TOPK).enumerate() {
             let expected_prob = top_k_probs[rank];
-            assert!(expert_flags[*expert_idx]);
-            let offset = expert_idx * NUM_TOKEN + INDEX_TOKEN;
-            assert!(indices[offset]);
-            let actual_val = (values[offset] as f32);
+            assert_eq!(topk_idx[rank], *expert_idx);
+            let actual_val = topk_vals[rank] as f32;
             assert_relative_eq!(actual_val, expected_prob, epsilon = 1e-2);
         }
     }

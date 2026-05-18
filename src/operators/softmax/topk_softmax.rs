@@ -7,8 +7,8 @@ use crate::common::num_traits::FromNumber;
 use crate::common::num_traits::Sqrt;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::common::sequence_slice::SequenceSlice;
-use crate::operators::assign::assign;
 use crate::kernel;
+use crate::operators::assign::assign;
 use crate::operators::traits::TopKSoftmaxTrait;
 use crate::runtime::{Phase, SequenceState};
 
@@ -406,21 +406,10 @@ mod test {
             eos_id,
         );
 
-        operator.run(
-            1,
-            1,
-            thread_num,
-            0,
-            &[],
-            &decode_list,
-            &mut batch_list,
-        );
+        operator.run(1, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
 
         let max_val = 8.0f32;
-        let expected: Vec<f32> = input_values
-            .iter()
-            .map(|&v| (v - max_val).exp())
-            .collect();
+        let expected: Vec<f32> = input_values.iter().map(|&v| (v - max_val).exp()).collect();
         let denom: f32 = expected.iter().sum();
         let expected: Vec<f32> = expected.into_iter().map(|v| v / denom).collect();
 
@@ -472,15 +461,7 @@ mod test {
             eos_id,
         );
 
-        operator.run(
-            3,
-            1,
-            thread_num,
-            0,
-            &[],
-            &decode_list,
-            &mut batch_list,
-        );
+        operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[0].sequence_index, 6);
@@ -537,15 +518,7 @@ mod test {
             eos_id,
         );
 
-        operator.run(
-            0,
-            1,
-            thread_num,
-            0,
-            &[],
-            &decode_list,
-            &mut batch_list,
-        );
+        operator.run(0, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[0].sequence_index, 3);
@@ -609,15 +582,7 @@ mod test {
             eos_id,
         );
 
-        operator.run(
-            3,
-            1,
-            thread_num,
-            0,
-            &[],
-            &decode_list,
-            &mut batch_list,
-        );
+        operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[0].sequence_index, 6);
@@ -670,15 +635,7 @@ mod test {
             eos_id,
         );
 
-        operator.run(
-            2,
-            0,
-            thread_num,
-            0,
-            &[],
-            &decode_list,
-            &mut batch_list,
-        );
+        operator.run(2, 0, thread_num, 0, &[], &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Prefill);
         assert_eq!(batch_list[0].sequence_index, 4);

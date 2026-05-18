@@ -1,6 +1,8 @@
 use std::f16;
 use std::ops::{AddAssign, Div};
+use std::sync::atomic::Ordering;
 
+use crate::common::expert_routing::ExpertRouting;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::mem_mgr::allocator::allocate_init;
@@ -11,11 +13,7 @@ use crate::operators::traits::ExpertsTopkNormTrait;
 pub struct ExpertsTopkNorm<T> {
     ptr1: ConstPtr<T>,
     topk_values_ptr: MutPtr<T>,
-    topk_indices_ptr: MutPtr<usize>,
-    experts_indicator: MutPtr<bool>,
-    indice_ptr: MutPtr<bool>,
-    value_ptr: MutPtr<T>,
-    batch_size: usize,
+    routing: ExpertRouting<T>,
     num_experts: usize,
     num_topk: usize,
     decode_only_flag: bool,
@@ -24,10 +22,7 @@ pub struct ExpertsTopkNorm<T> {
 impl<T: Copy + Default> ExpertsTopkNorm<T> {
     pub fn new(
         ptr1: *const T,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        value_ptr: *mut T,
-        topk_indices_ptr: *mut usize,
+        routing: ExpertRouting<T>,
         batch_size: usize,
         num_experts: usize,
         num_topk: usize,
@@ -38,15 +33,7 @@ impl<T: Copy + Default> ExpertsTopkNorm<T> {
             topk_values_ptr: MutPtr {
                 ptr: allocate_init::<T>(batch_size * num_topk, T::default()),
             },
-            topk_indices_ptr: MutPtr {
-                ptr: topk_indices_ptr,
-            },
-            experts_indicator: MutPtr {
-                ptr: experts_indicator,
-            },
-            indice_ptr: MutPtr { ptr: indice_ptr },
-            value_ptr: MutPtr { ptr: value_ptr },
-            batch_size,
+            routing,
             num_experts,
             num_topk,
             decode_only_flag,
@@ -72,21 +59,53 @@ where
         };
 
         if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
+            let assigned_tokens = end - begin;
+            let mini_capacity = (assigned_tokens * self.num_topk).max(1);
+            let mut mini_counts = vec![0usize; self.num_experts];
+            let mut mini_indices = vec![0usize; self.num_experts * mini_capacity];
+            let mut mini_scores = vec![T::default(); self.num_experts * mini_capacity];
+
             for token_index in begin..end {
                 unsafe {
                     let input_offset = token_index * self.num_experts;
+                    let topk_offset = token_index * self.num_topk;
                     self.compute(
                         self.ptr1.ptr.add(input_offset),
-                        self.topk_values_ptr.ptr.add(token_index * self.num_topk),
-                        self.experts_indicator.ptr,
-                        self.indice_ptr.ptr,
-                        self.value_ptr.ptr,
-                        self.topk_indices_ptr.ptr.add(token_index * self.num_topk),
-                        token_index,
-                        self.batch_size,
+                        self.topk_values_ptr.ptr.add(topk_offset),
+                        self.routing.topk_indices.ptr.add(topk_offset),
                         self.num_experts,
                         self.num_topk,
                     );
+
+                    for slot in 0..self.num_topk {
+                        let expert_idx = *self.routing.topk_indices.ptr.add(topk_offset + slot);
+                        let local_pos = mini_counts[expert_idx];
+                        let mini_offset = expert_idx * mini_capacity + local_pos;
+                        mini_indices[mini_offset] = token_index;
+                        mini_scores[mini_offset] =
+                            *self.topk_values_ptr.ptr.add(topk_offset + slot);
+                        mini_counts[expert_idx] += 1;
+                    }
+                }
+            }
+
+            unsafe {
+                for e in 0..self.num_experts {
+                    let count = mini_counts[e];
+                    if count == 0 {
+                        continue;
+                    }
+
+                    let base = (&*self.routing.expert_counts.ptr.add(e))
+                        .fetch_add(count, Ordering::AcqRel);
+                    debug_assert!(base + count <= self.routing.capacity_per_expert);
+
+                    for i in 0..count {
+                        let src = e * mini_capacity + i;
+                        let dst = self.routing.expert_offset(e, base + i);
+                        *self.routing.index_tensor.ptr.add(dst) = mini_indices[src];
+                        *self.routing.score_tensor.ptr.add(dst) = mini_scores[src];
+                    }
                 }
             }
         }
@@ -101,24 +120,14 @@ where
         &self,
         ptr1: *const T,
         topk_values_ptr: *mut T,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        value_ptr: *mut T,
         topk_indices_ptr: *mut usize,
-        token_index: usize,
-        batch_size: usize,
         input_length: usize,
         output_length: usize,
     ) {
         kernel::scalar::experts_topk_norm::experts_topk_norm(
             ptr1,
             topk_values_ptr,
-            experts_indicator,
-            indice_ptr,
-            value_ptr,
             topk_indices_ptr,
-            token_index,
-            batch_size,
             input_length,
             output_length,
         );
@@ -130,24 +139,14 @@ impl ExpertsTopkNormTrait<f16> for ExpertsTopkNorm<f16> {
         &self,
         ptr1: *const f16,
         topk_values_ptr: *mut f16,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        value_ptr: *mut f16,
         topk_indices_ptr: *mut usize,
-        token_index: usize,
-        batch_size: usize,
         input_length: usize,
         output_length: usize,
     ) {
         kernel::scalar::experts_topk_norm::experts_topk_norm(
             ptr1,
             topk_values_ptr,
-            experts_indicator,
-            indice_ptr,
-            value_ptr,
             topk_indices_ptr,
-            token_index,
-            batch_size,
             input_length,
             output_length,
         );
@@ -159,24 +158,14 @@ impl ExpertsTopkNormTrait<f32> for ExpertsTopkNorm<f32> {
         &self,
         ptr1: *const f32,
         topk_values_ptr: *mut f32,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        value_ptr: *mut f32,
         topk_indices_ptr: *mut usize,
-        token_index: usize,
-        batch_size: usize,
         input_length: usize,
         output_length: usize,
     ) {
         kernel::scalar::experts_topk_norm::experts_topk_norm(
             ptr1,
             topk_values_ptr,
-            experts_indicator,
-            indice_ptr,
-            value_ptr,
             topk_indices_ptr,
-            token_index,
-            batch_size,
             input_length,
             output_length,
         );

@@ -32,9 +32,9 @@ pub(super) async fn chat_completions(
 
     let (slot_index, notifier) =
         match assign_slot_with_messages(&state, &request.messages, request.temperature).await {
-        Ok(slot) => slot,
-        Err(response) => return response,
-    };
+            Ok(slot) => slot,
+            Err(response) => return response,
+        };
 
     #[cfg(debug_assertions)]
     println!(

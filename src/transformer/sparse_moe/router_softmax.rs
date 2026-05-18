@@ -1,5 +1,6 @@
 use std::ops::{AddAssign, Neg, Sub};
 
+use crate::common::expert_routing::ExpertRouting;
 use crate::common::matmul_params::MatMulParams;
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
@@ -55,7 +56,7 @@ where
         &self,
         hidden_states: &Tensor<T>,
         decode_only_flag: bool,
-    ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
+    ) -> ExpertRouting<T> {
         let gate_output = hidden_states.matmul(
             &self.gate_weight,
             MatMulParams {

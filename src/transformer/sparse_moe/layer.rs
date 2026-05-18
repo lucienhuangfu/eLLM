@@ -1,6 +1,7 @@
 use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
 
+use crate::common::expert_routing::ExpertRouting;
 use crate::common::matmul_params::MatMulParams;
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
@@ -62,11 +63,7 @@ where
         }
     }
 
-    fn forward(
-        &self,
-        hidden_states: &Tensor<T>,
-        decode_only_flag: bool,
-    ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
+    fn forward(&self, hidden_states: &Tensor<T>, decode_only_flag: bool) -> ExpertRouting<T> {
         match self {
             Self::Softmax(router) => router.forward(hidden_states, decode_only_flag),
             Self::Sigmoid(router) => router.forward(hidden_states, decode_only_flag),
@@ -164,14 +161,12 @@ where
         tensor_name: String,
     ) -> Tensor<T> {
         println!("Entering SparseMoe forward: {}", tensor_name);
-        let (experts_indicator, indice_ptr, weight_ptr, topk_indices_ptr) =
-            self.router.forward(hidden_states, decode_only_flag);
+        let routing = self.router.forward(hidden_states, decode_only_flag);
 
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
             &self.experts_gate_weight,
             &self.experts_up_weight,
-            experts_indicator,
-            indice_ptr,
+            routing,
             MatMulParams {
                 a_row_step_macro: 3,
                 b_row_step_macro: 128,
@@ -185,10 +180,7 @@ where
 
         let down_product = nonlinear_product.experts_matmul_mul(
             &self.experts_down_weight,
-            experts_indicator,
-            indice_ptr,
-            weight_ptr,
-            topk_indices_ptr,
+            routing,
             self.num_topk,
             MatMulParams {
                 a_row_step_macro: 3,
@@ -203,9 +195,7 @@ where
 
         down_product.experts_merge_add(
             residual,
-            experts_indicator,
-            indice_ptr,
-            self.num_experts,
+            routing,
             decode_only_flag,
             format!("{}.merge", self.scope_name),
         )

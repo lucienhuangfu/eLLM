@@ -1,5 +1,6 @@
 use std::ops::{AddAssign, Neg, Sub};
 
+use crate::common::expert_routing::ExpertRouting;
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;
 use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
@@ -57,7 +58,7 @@ where
         &self,
         hidden_states: &Tensor<T>,
         decode_only_flag: bool,
-    ) -> (*mut bool, *mut bool, *mut T, *mut usize) {
+    ) -> ExpertRouting<T> {
         let gate_output = hidden_states.sigmoid_gate(
             &self.gate_weight,
             self.gate_bias.as_ref(),

@@ -21,10 +21,6 @@ pub trait SoftmaxTrait<T> {
         ptr1: *const T,
         topk_values_ptr: *mut T,
         topk_indices_ptr: *mut usize,
-        experts_indicator_ptr: *mut bool,
-        indice_ptr: *mut bool,
-        weight_ptr: *mut T,
-        token_index: usize,
         input_length: usize,
         output_length: usize,
     );
@@ -35,12 +31,7 @@ pub trait ExpertsTopkNormTrait<T> {
         &self,
         ptr1: *const T,
         topk_values_ptr: *mut T,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        value_ptr: *mut T,
         topk_indices_ptr: *mut usize,
-        token_index: usize,
-        batch_size: usize,
         input_length: usize,
         output_length: usize,
     );

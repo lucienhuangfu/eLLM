@@ -196,12 +196,63 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::common::expert_routing::ExpertRouting;
     use crate::common::sequence_slice::SequenceSlice;
     use crate::runtime::{Phase, SequenceState};
     use approx::assert_ulps_eq;
+    use std::sync::atomic::Ordering;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use std::sync::{Arc, Barrier};
     // use std::thread;
+
+    fn empty_routing<T: Copy + Default>(
+        num_experts: usize,
+        num_tokens: usize,
+        num_topk: usize,
+    ) -> ExpertRouting<T> {
+        unsafe { crate::common::expert_routing::empty_routing(num_experts, num_tokens, num_topk) }
+    }
+
+    fn dense_routing(
+        num_experts: usize,
+        num_tokens: usize,
+        num_topk: usize,
+        indice: &[bool],
+        score: &[f16],
+        topk: &[usize],
+    ) -> ExpertRouting<f16> {
+        unsafe {
+            crate::common::expert_routing::routing_from_dense(
+                num_experts,
+                num_tokens,
+                num_topk,
+                indice.as_ptr(),
+                score.as_ptr(),
+                topk.as_ptr(),
+            )
+        }
+    }
+
+    fn silu_routing(num_experts: usize, num_tokens: usize, indice: &[bool]) -> ExpertRouting<f16> {
+        let score = vec![1.0f16; num_experts * num_tokens];
+        let topk = vec![0usize; num_tokens];
+        dense_routing(num_experts, num_tokens, 1, indice, &score, &topk)
+    }
+
+    unsafe fn compact_score<T: Copy>(
+        routing: ExpertRouting<T>,
+        expert: usize,
+        token: usize,
+    ) -> Option<T> {
+        let count = (&*routing.expert_counts.ptr.add(expert)).load(Ordering::Acquire);
+        for pos in 0..count {
+            let offset = routing.expert_offset(expert, pos);
+            if *routing.index_tensor.ptr.add(offset) == token {
+                return Some(*routing.score_tensor.ptr.add(offset));
+            }
+        }
+        None
+    }
 
     #[test]
     fn test_softmax_norm() {
@@ -229,17 +280,11 @@ mod test {
         input_data.extend_from_slice(&input_data1);
         input_data.extend_from_slice(&input_data2);
 
-        let mut experts_indicator = vec![false; num_experts];
-        let mut indice_ptr = vec![false; num_experts * num_tokens];
-        let mut weight_ptr = vec![0.0f32; num_experts * num_tokens];
-        let mut topk_indices_ptr = vec![0usize; num_topk * num_tokens];
+        let routing = empty_routing::<f32>(num_experts, num_tokens, num_topk);
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::<f32>::new(
             input_data.as_ptr(),
-            experts_indicator.as_mut_ptr(),
-            indice_ptr.as_mut_ptr(),
-            weight_ptr.as_mut_ptr(),
-            topk_indices_ptr.as_mut_ptr(),
+            routing,
             batch_size,
             num_experts,
             num_topk,
@@ -271,10 +316,8 @@ mod test {
         for i in 0..num_topk {
             let (idx, val) = expected1[i];
             let prob = val.exp() / denom1;
-            assert!(experts_indicator[idx]);
-            let offset = idx * num_tokens + 0;
-            assert!(indice_ptr[offset]);
-            assert_ulps_eq!(weight_ptr[offset], prob, max_ulps = 4);
+            let score = unsafe { compact_score(routing, idx, 0).unwrap() };
+            assert_ulps_eq!(score, prob, max_ulps = 4);
         }
 
         // Verification for token 1
@@ -290,10 +333,8 @@ mod test {
         for i in 0..num_topk {
             let (idx, val) = expected2[i];
             let prob = val.exp() / denom2;
-            assert!(experts_indicator[idx]);
-            let offset = idx * num_tokens + 1;
-            assert!(indice_ptr[offset]);
-            assert_ulps_eq!(weight_ptr[offset], prob, max_ulps = 4);
+            let score = unsafe { compact_score(routing, idx, 1).unwrap() };
+            assert_ulps_eq!(score, prob, max_ulps = 4);
         }
     }
 
@@ -474,15 +515,7 @@ mod test {
         let batch_size = M;
         let decode_size = 1;
 
-        op1.run(
-            batch_size,
-            decode_size,
-            1,
-            0,
-            &[],
-            &[],
-            &mut Vec::new(),
-        );
+        op1.run(batch_size, decode_size, 1, 0, &[], &[], &mut Vec::new());
 
         // cpu_num = thread_num
         let mut c2 = vec![0.0f16; M * N];
@@ -851,8 +884,7 @@ mod test {
                 a.as_ptr(),
                 w_gate_nt.as_ptr(), // ✅ 传 NT
                 w_up_nt.as_ptr(),   // ✅ 传 NT
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
+                silu_routing(E, B, &indice),
                 out.as_mut_ptr(),
                 B,
                 I,
@@ -961,8 +993,7 @@ mod test {
                 a.as_ptr(),
                 w_gate_nt.as_ptr(), // ✅ NT
                 w_up_nt.as_ptr(),   // ✅ NT
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
+                silu_routing(E, B, &indice),
                 out.as_mut_ptr(),
                 B,
                 I,
@@ -1195,10 +1226,7 @@ mod test {
             let runner = crate::operators::expert::ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown_nt.as_ptr(), // ✅ NT
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                weight.as_ptr(),
-                topk.as_ptr(),
+                dense_routing(e, b, ktop, &indice, &weight, &topk),
                 out.as_mut_ptr(),
                 e,
                 b,
@@ -1301,10 +1329,7 @@ mod test {
             let runner = crate::operators::expert::ExpertsMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown_nt.as_ptr(), // ✅ NT
-                experts_indicator.as_ptr(),
-                indice.as_ptr(),
-                weight.as_ptr(),
-                topk.as_ptr(),
+                dense_routing(e, b, ktop, &indice, &weight, &topk),
                 out.as_mut_ptr(),
                 e,
                 b,
@@ -1401,9 +1426,6 @@ mod test {
         let mut residual = vec![0.0f16; num_tokens * h];
         let mut out = vec![0.0f16; num_tokens * h];
 
-        let mut experts_indicator = vec![false; num_experts];
-        let mut indice_ptr = vec![false; num_experts * num_tokens];
-
         for t in 0..num_tokens {
             for hh in 0..h {
                 let r_val = 0.1f32 * (t as f32) + 0.001f32 * (hh as f32);
@@ -1417,8 +1439,7 @@ mod test {
             let runner = crate::operators::expert::ExpertsMergeAdd::<f16>::new(
                 input.as_ptr(),
                 residual.as_ptr(),
-                experts_indicator.as_mut_ptr(),
-                indice_ptr.as_mut_ptr(),
+                empty_routing::<f16>(num_experts, num_tokens, k),
                 out.as_mut_ptr(),
                 seq,
                 batch,
@@ -1465,9 +1486,6 @@ mod test {
         let mut residual = vec![0.0f16; num_tokens * h];
         let mut out = vec![0.0f16; num_tokens * h];
 
-        let mut experts_indicator = vec![false; num_experts];
-        let mut indice_ptr = vec![false; num_experts * num_tokens];
-
         for t in 0..num_tokens {
             for hh in 0..h {
                 let r_val = 0.03f32 * (t as f32) + 0.0009f32 * (hh as f32);
@@ -1486,8 +1504,7 @@ mod test {
             let runner = crate::operators::expert::ExpertsMergeAdd::<f16>::new(
                 input.as_ptr(),
                 residual.as_ptr(),
-                experts_indicator.as_mut_ptr(),
-                indice_ptr.as_mut_ptr(),
+                empty_routing::<f16>(num_experts, num_tokens, k),
                 out.as_mut_ptr(),
                 seq,
                 batch,
@@ -1551,15 +1568,18 @@ mod test {
         }
         ref_merge_add_f32(&input, &residual, &mut out_ref, num_tokens, k, h);
 
-        let mut experts_indicator = vec![true; num_experts];
-        let mut indice_ptr = vec![true; num_experts * num_tokens];
+        let routing = empty_routing::<f16>(num_experts, num_tokens, k);
+        unsafe {
+            for e in 0..num_experts {
+                (&*routing.expert_counts.ptr.add(e)).store(num_tokens, Ordering::Release);
+            }
+        }
 
         unsafe {
             let runner = crate::operators::expert::ExpertsMergeAdd::<f16>::new(
                 input.as_ptr(),
                 residual.as_ptr(),
-                experts_indicator.as_mut_ptr(),
-                indice_ptr.as_mut_ptr(),
+                routing,
                 output.as_mut_ptr(),
                 sequence_chunk_size,
                 batch_size,
@@ -1573,15 +1593,7 @@ mod test {
             let op = Operator::ExpertsMergeAdd(runner);
 
             for tid in 0..num_threads {
-                op.run(
-                    batch_size,
-                    0,
-                    num_threads,
-                    tid,
-                    &[],
-                    &[],
-                    &mut Vec::new(),
-                );
+                op.run(batch_size, 0, num_threads, tid, &[], &[], &mut Vec::new());
             }
         }
 
@@ -1592,15 +1604,9 @@ mod test {
             assert_close(got, exp, tol, "multithreaded_merge");
         }
 
-        for (i, &v) in experts_indicator.iter().enumerate() {
-            if v {
-                panic!("experts_indicator[{}] not reset to false", i);
-            }
-        }
-        for (i, &v) in indice_ptr.iter().enumerate() {
-            if v {
-                panic!("indice_ptr[{}] not reset to false", i);
-            }
+        for e in 0..num_experts {
+            let count = unsafe { (&*routing.expert_counts.ptr.add(e)).load(Ordering::Acquire) };
+            assert_eq!(count, 0, "expert_counts[{}] not reset", e);
         }
     }
     #[test]
@@ -1672,15 +1678,7 @@ mod test {
         let batch_size = M;
         let decode_size = 1;
 
-        op1.run(
-            batch_size,
-            decode_size,
-            1,
-            0,
-            &[],
-            &[],
-            &mut Vec::new(),
-        );
+        op1.run(batch_size, decode_size, 1, 0, &[], &[], &mut Vec::new());
 
         // ===== cpu_num = thread_num =====
         let mut c2 = vec![0.0f16; M * N];

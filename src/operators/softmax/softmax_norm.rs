@@ -1,6 +1,8 @@
 use std::f16;
 use std::ops::{AddAssign, Sub};
+use std::sync::atomic::Ordering;
 
+use crate::common::expert_routing::ExpertRouting;
 use crate::common::num_traits::{exp::Exp, sqrt::Sqrt};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::scalar;
@@ -14,12 +16,7 @@ pub struct ExpertsSoftmaxNorm<T> {
     // [prefill_size, num_experts]
     ptr1: ConstPtr<T>,
     topk_values_ptr: MutPtr<T>,
-    topk_indices_ptr: MutPtr<usize>,
-    // Expert routing information
-    experts_indicator: MutPtr<bool>,
-    indice_ptr: MutPtr<bool>,
-    weight_ptr: MutPtr<T>,
-    batch_size: usize,
+    routing: ExpertRouting<T>,
     num_experts: usize,
     num_topk: usize,
     decode_only_flag: bool,
@@ -28,10 +25,7 @@ pub struct ExpertsSoftmaxNorm<T> {
 impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
     pub fn new(
         ptr1: *const T,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        weight_ptr: *mut T,
-        topk_indices_ptr: *mut usize,
+        routing: ExpertRouting<T>,
         batch_size: usize,
         num_experts: usize,
         num_topk: usize,
@@ -44,17 +38,7 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
             topk_values_ptr: MutPtr {
                 ptr: unsafe { allocate_init::<T>(length, T::default()) },
             },
-            topk_indices_ptr: MutPtr {
-                ptr: topk_indices_ptr,
-            },
-
-            experts_indicator: MutPtr {
-                ptr: experts_indicator,
-            },
-            indice_ptr: MutPtr { ptr: indice_ptr },
-            weight_ptr: MutPtr { ptr: weight_ptr },
-            // num_tokens: batch_size,
-            batch_size,
+            routing,
             num_experts,
             num_topk,
             decode_only_flag,
@@ -78,25 +62,56 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
 
         if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
             let ptr1 = self.ptr1.ptr;
-            let topk_indices_ptr = self.topk_indices_ptr.ptr;
+            let topk_indices_ptr = self.routing.topk_indices.ptr;
             let topk_values_ptr = self.topk_values_ptr.ptr;
+            let assigned_tokens = end - begin;
+            let mini_capacity = (assigned_tokens * self.num_topk).max(1);
+            let mut mini_counts = vec![0usize; self.num_experts];
+            let mut mini_indices = vec![0usize; self.num_experts * mini_capacity];
+            let mut mini_scores = vec![T::default(); self.num_experts * mini_capacity];
 
             for i in begin..end {
                 unsafe {
                     let p1 = i * (self.num_experts);
                     let p2 = i * (self.num_topk);
-                    let token_index = i;
                     self.compute(
                         ptr1.add(p1),
                         topk_values_ptr.add(p2),
                         topk_indices_ptr.add(p2),
-                        self.experts_indicator.ptr,
-                        self.indice_ptr.ptr,
-                        self.weight_ptr.ptr,
-                        token_index,
                         self.num_experts,
                         self.num_topk,
                     );
+
+                    for slot in 0..self.num_topk {
+                        let expert_idx = *topk_indices_ptr.add(p2 + slot);
+                        let local_pos = mini_counts[expert_idx];
+                        let mini_offset = expert_idx * mini_capacity + local_pos;
+                        mini_indices[mini_offset] = i;
+                        mini_scores[mini_offset] = *topk_values_ptr.add(p2 + slot);
+                        mini_counts[expert_idx] += 1;
+                    }
+                }
+            }
+
+            unsafe {
+                for e in 0..self.num_experts {
+                    let count = mini_counts[e];
+                    if count == 0 {
+                        continue;
+                    }
+
+                    let base = (&*self.routing.expert_counts.ptr.add(e))
+                        .fetch_add(count, Ordering::AcqRel);
+                    debug_assert!(base + count <= self.routing.capacity_per_expert);
+
+                    for i in 0..count {
+                        let src = e * mini_capacity + i;
+                        let dst = self.routing.expert_offset(e, base + i);
+                        let token = mini_indices[src];
+                        let score = mini_scores[src];
+                        *self.routing.index_tensor.ptr.add(dst) = token;
+                        *self.routing.score_tensor.ptr.add(dst) = score;
+                    }
                 }
             }
         }
@@ -111,10 +126,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<
         input_ptr: *const T,
         topk_values_ptr: *mut T,
         topk_indices_ptr: *mut usize,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        weight_ptr: *mut T,
-        token_index: usize,
         input_length: usize,
         output_length: usize,
     ) {
@@ -122,11 +133,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<
             input_ptr,
             topk_values_ptr,
             topk_indices_ptr,
-            experts_indicator,
-            indice_ptr,
-            weight_ptr,
-            token_index,
-            self.batch_size,
             input_length,
             output_length,
             true,
@@ -140,10 +146,6 @@ impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
         input_ptr: *const f16,
         topk_values_ptr: *mut f16,
         topk_indices_ptr: *mut usize,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        weight_ptr: *mut f16,
-        token_index: usize,
         input_length: usize,
         output_length: usize,
     ) {
@@ -152,11 +154,6 @@ impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
             input_ptr,
             topk_values_ptr,
             topk_indices_ptr,
-            experts_indicator,
-            indice_ptr,
-            weight_ptr,
-            token_index,
-            self.batch_size,
             input_length,
             output_length,
             true,
@@ -170,10 +167,6 @@ impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
         input_ptr: *const f32,
         topk_values_ptr: *mut f32,
         topk_indices_ptr: *mut usize,
-        experts_indicator: *mut bool,
-        indice_ptr: *mut bool,
-        weight_ptr: *mut f32,
-        token_index: usize,
         input_length: usize,
         output_length: usize,
     ) {
@@ -181,11 +174,6 @@ impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
             input_ptr,
             topk_values_ptr,
             topk_indices_ptr,
-            experts_indicator,
-            indice_ptr,
-            weight_ptr,
-            token_index,
-            self.batch_size,
             input_length,
             output_length,
             true,
@@ -197,6 +185,30 @@ impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
 mod test {
     use super::*;
     use approx::assert_ulps_eq;
+    use std::sync::atomic::Ordering;
+
+    fn test_routing<T: Copy + Default>(
+        num_experts: usize,
+        num_tokens: usize,
+        num_topk: usize,
+    ) -> ExpertRouting<T> {
+        unsafe { crate::common::expert_routing::empty_routing(num_experts, num_tokens, num_topk) }
+    }
+
+    unsafe fn compact_score<T: Copy>(
+        routing: ExpertRouting<T>,
+        expert: usize,
+        token: usize,
+    ) -> Option<T> {
+        let count = (&*routing.expert_counts.ptr.add(expert)).load(Ordering::Acquire);
+        for pos in 0..count {
+            let offset = routing.expert_offset(expert, pos);
+            if *routing.index_tensor.ptr.add(offset) == token {
+                return Some(*routing.score_tensor.ptr.add(offset));
+            }
+        }
+        None
+    }
 
     #[test]
     fn test_experts_softmax_norm_f32() {
@@ -221,18 +233,11 @@ mod test {
         input_data.extend_from_slice(&input_data1);
         input_data.extend_from_slice(&input_data2);
 
-        let mut experts_indicator = vec![false; num_experts];
-        let mut indice_ptr = vec![false; (num_experts * num_tokens)];
-        let mut weight_ptr = vec![0.0f32; (num_experts * num_tokens)];
-
-        let mut topk_indices_ptr = vec![0; (num_topk * num_tokens)];
+        let routing = test_routing::<f32>(num_experts, num_tokens, num_topk);
 
         let operator = ExpertsSoftmaxNorm::<f32>::new(
             input_data.as_ptr(),
-            experts_indicator.as_mut_ptr(),
-            indice_ptr.as_mut_ptr(),
-            weight_ptr.as_mut_ptr(),
-            topk_indices_ptr.as_mut_ptr(),
+            routing,
             batch_size,
             num_experts,
             num_topk,
@@ -266,10 +271,8 @@ mod test {
             let prob = (val - max_val1).exp() / denom1;
             let normalized_prob = prob / prob_sum1;
 
-            assert!(experts_indicator[idx]);
-            let offset = idx * (num_tokens) + 0;
-            assert!(indice_ptr[offset]);
-            assert_ulps_eq!(weight_ptr[offset], normalized_prob, epsilon = 1e-4);
+            let score = unsafe { compact_score(routing, idx, 0).unwrap() };
+            assert_ulps_eq!(score, normalized_prob, epsilon = 1e-4);
         }
 
         // Verification for token 1
@@ -295,10 +298,8 @@ mod test {
             let prob = (val - max_val2).exp() / denom2;
             let normalized_prob = prob / prob_sum2;
 
-            assert!(experts_indicator[idx]);
-            let offset = idx * (num_tokens) + 1;
-            assert!(indice_ptr[offset]);
-            assert_ulps_eq!(weight_ptr[offset], normalized_prob, epsilon = 1e-4);
+            let score = unsafe { compact_score(routing, idx, 1).unwrap() };
+            assert_ulps_eq!(score, normalized_prob, epsilon = 1e-4);
         }
     }
 
@@ -334,17 +335,11 @@ mod test {
 
         let input_data: Vec<f16> = input_vals.iter().map(|&x| (x as f16)).collect();
 
-        let mut experts_indicator = vec![false; num_experts];
-        let mut indice_ptr = vec![false; (num_experts * num_tokens)];
-        let mut weight_ptr = vec![(0.0f16); (num_experts * num_tokens)];
-        let mut topk_indices_ptr = vec![0; (num_topk * num_tokens)];
+        let routing = test_routing::<f16>(num_experts, num_tokens, num_topk);
 
         let operator = ExpertsSoftmaxNorm::<f16>::new(
             input_data.as_ptr(),
-            experts_indicator.as_mut_ptr(),
-            indice_ptr.as_mut_ptr(),
-            weight_ptr.as_mut_ptr(),
-            topk_indices_ptr.as_mut_ptr(),
+            routing,
             batch_size,
             num_experts,
             num_topk,
@@ -382,21 +377,8 @@ mod test {
                 let (idx, val) = expected[i];
                 let prob = ((val - max_val).exp() / denom) / prob_sum;
 
-                assert!(
-                    experts_indicator[idx],
-                    "Expert {} should be selected (token {})",
-                    idx, t
-                );
-
-                let offset = idx * (num_tokens) + (t);
-                assert!(
-                    indice_ptr[offset],
-                    "Index ptr for expert {} token {} should be true",
-                    idx, t
-                );
-
                 let prob_f16 = (prob as f16);
-                let weight = weight_ptr[offset];
+                let weight = unsafe { compact_score(routing, idx, t).unwrap() };
 
                 assert!(
                     (weight - prob_f16).abs() < (1e-3f16),

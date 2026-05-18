@@ -92,12 +92,7 @@ fn value_to_usize(value: &Value) -> Option<usize> {
     }
 }
 
-fn apply_yarn_scaling(
-    inv_freqs: &mut [f32],
-    rotary_dim: usize,
-    theta: f32,
-    yarn: &YarnScaling,
-) {
+fn apply_yarn_scaling(inv_freqs: &mut [f32], rotary_dim: usize, theta: f32, yarn: &YarnScaling) {
     if yarn.factor <= 1.0 {
         return;
     }
@@ -212,12 +207,7 @@ impl RotaryEmbedding {
         let rotary_pairs = self.rotary_dim / 2;
         let mut inv = inv_freqs(self.rotary_dim, self.theta);
         if let Some(yarn) = &self.yarn_scaling {
-            apply_yarn_scaling(
-                &mut inv,
-                self.rotary_dim,
-                self.theta,
-                &yarn,
-            );
+            apply_yarn_scaling(&mut inv, self.rotary_dim, self.theta, &yarn);
         }
         let mut out = Vec::with_capacity(self.max_sequence_length * self.head_dim);
 
