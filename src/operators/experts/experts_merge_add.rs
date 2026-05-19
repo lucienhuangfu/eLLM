@@ -392,9 +392,9 @@ mod tests {
             return;
         }
 
-        let sequence_chunk_size = 16;
+        let sequence_length = 16;
         let batch_size = 4;
-        let num_tokens = sequence_chunk_size * batch_size;
+        let num_tokens = sequence_length * batch_size;
         let hidden = 64;
         let num_experts = 8;
         let k = 2;
@@ -431,7 +431,7 @@ mod tests {
                 residual.as_ptr(),
                 routing,
                 output.as_mut_ptr(),
-                sequence_chunk_size,
+                sequence_length,
                 batch_size,
                 num_experts,
                 k,

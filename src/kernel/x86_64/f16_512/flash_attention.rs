@@ -95,7 +95,7 @@ mod tests {
     use super::*;
     use std::slice;
     // use std::f16;
-    use crate::mem_mgr::allocator::allocate_init;
+    use crate::mem_mgr::allocator::AlignedBox;
 
     #[test]
     fn test_scalar_vector_mul_and_acc() {
@@ -103,7 +103,7 @@ mod tests {
         let scalar2 = 2.0;
         // let v: Vec<f16> = vec![2.0; 128];
         let length = 128;
-        let v = allocate_init::<f16>(length, 2.0);
+        let v = AlignedBox::allocate_init(length, 2.0f16);
         let mut o = unsafe {
             [
                 _mm512_set1_ph(1.0),
@@ -113,14 +113,14 @@ mod tests {
             ]
         };
         unsafe {
-            scalar_vector_mul_and_acc(scalar1, &mut o, scalar2, v);
+            scalar_vector_mul_and_acc(scalar1, &mut o, scalar2, v.as_ptr());
         }
         for i in 0..4 {
             // let mut res: Vec<f16> = [0.0; 32].into_iter().map(|x| x).collect();
-            let res = allocate_init::<f16>(length, 0.0);
-            let res_slice = unsafe { slice::from_raw_parts(res, 32) };
+            let mut res = AlignedBox::allocate_init(length, 0.0f16);
+            let res_slice = unsafe { slice::from_raw_parts(res.as_ptr(), 32) };
             unsafe {
-                _mm512_store_ph(res, o[i]);
+                _mm512_store_ph(res.as_mut_ptr(), o[i]);
             }
             let mut exp: Vec<f16> = vec![5.0; 32];
             // unsafe {
@@ -142,12 +142,21 @@ mod tests {
         // let V: Vec<f16> = vec![1.0; row_size * length];
         // let mut o: Vec<f16> = vec![0.0; length];
 
-        let q = allocate_init::<f16>(length, 1.0);
-        let K = allocate_init::<f16>(row_size * length, 1.0);
-        let V = allocate_init::<f16>(row_size * length, 1.0);
-        let o = allocate_init::<f16>(length, 0.0);
-        let o_slice = unsafe { slice::from_raw_parts(o, length) };
-        flash_attention(q, K, V, o, 1.0, length, length, row_size - 1);
+        let q = AlignedBox::allocate_init(length, 1.0f16);
+        let K = AlignedBox::allocate_init(row_size * length, 1.0f16);
+        let V = AlignedBox::allocate_init(row_size * length, 1.0f16);
+        let mut o = AlignedBox::allocate_init(length, 0.0f16);
+        let o_slice = unsafe { slice::from_raw_parts(o.as_ptr(), length) };
+        flash_attention(
+            q.as_ptr(),
+            K.as_ptr(),
+            V.as_ptr(),
+            o.as_mut_ptr(),
+            1.0,
+            length,
+            length,
+            row_size - 1,
+        );
         println!("Result: {:?}", o);
 
         let expected: Vec<f16> = vec![1.0; length];

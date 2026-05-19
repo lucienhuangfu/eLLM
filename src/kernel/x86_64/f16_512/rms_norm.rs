@@ -62,7 +62,8 @@ pub fn norm(input_ptr: *const f16, output_ptr: *mut f16, length: usize, denomina
 pub fn rms_norm(input_ptr: *const f16, output_ptr: *mut f16, length: usize, eps: f16) {
     let sum = sum_square(input_ptr, length);
     let variance = sum / length as f16;
-    let denominator = f16::sqrt(variance + eps).recip();
+    let square_root = f16::sqrt(variance + eps);
+    let denominator = square_root.recip();
     norm(input_ptr, output_ptr, length, denominator);
 }
 
@@ -75,7 +76,8 @@ pub fn add_rms_norm(
 ) {
     let sum = add_sum_square(input_ptr1, input_ptr2, output_ptr, length);
     let variance = sum / length as f16;
-    let denominator = f16::sqrt(variance + eps).recip();
+    let square_root = f16::sqrt(variance + eps);
+    let denominator = square_root.recip();
     norm(output_ptr, output_ptr, length, denominator);
 }
 #[cfg(test)]
@@ -86,7 +88,7 @@ mod tests {
 
     use super::*;
     use crate::kernel;
-    use crate::mem_mgr::allocator::allocate_init;
+    use crate::mem_mgr::allocator::AlignedBox;
 
     #[test]
     fn test_rms_norm() {
@@ -94,24 +96,33 @@ mod tests {
         // let v1: Vec<f16> = (0..length).into_iter().map(|x| x as f16).collect();
         // let weight: Vec<f16> = vec![1.0; length];
         // let mut output: Vec<f16> = vec![0.0; length];
-        let v1 = allocate_init::<f16>(length, 0.0);
+        let mut v1_box = AlignedBox::allocate_init(length, 0.0);
         for i in 0..length {
             unsafe {
-                ptr::write(v1.wrapping_add(i), i as f16);
+                ptr::write(v1_box.as_mut_ptr().wrapping_add(i), i as f16);
             }
         }
-        let weight = allocate_init::<f16>(length, 1.0);
-        let output = allocate_init::<f16>(length, 0.0);
-        let output_slice = unsafe { slice::from_raw_parts(output, length) };
+        let weight_box = AlignedBox::allocate_init(length, 1.0);
+        let mut output_box = AlignedBox::allocate_init(length, 0.0);
 
-        rms_norm(v1, output, length, 1e-6);
-        println!("{:?}", output);
+        unsafe {
+            rms_norm(v1_box.as_ptr(), output_box.as_mut_ptr(), length, 1e-6);
+        }
+        let output_slice = output_box.as_slice();
+        println!("{:?}", output_slice);
 
         // let mut expected: Vec<f16> = vec![0.0; 64];
-        let expected = allocate_init::<f16>(length, 0.0);
-        let expected_slice = unsafe { slice::from_raw_parts(expected, length) };
+        let mut expected_box = AlignedBox::allocate_init(length, 0.0);
 
-        kernel::scalar::rms_norm::rms_norm(v1, expected, length, 1e-6);
+        unsafe {
+            kernel::scalar::rms_norm::rms_norm(
+                v1_box.as_ptr(),
+                expected_box.as_mut_ptr(),
+                length,
+                1e-6,
+            );
+        }
+        let expected_slice = expected_box.as_slice();
 
         for j in 0..length {
             assert!(f16::abs(output_slice[j] - expected_slice[j]) < 1e-6);
@@ -126,25 +137,41 @@ mod tests {
         // let weight: Vec<f16> = vec![1.0; length];
         // let mut output: Vec<f16> = vec![0.0; length];
 
-        let v1 = allocate_init::<f16>(length, 0.0);
+        let mut v1_box = AlignedBox::allocate_init(length, 0.0);
         for i in 0..length {
             unsafe {
-                ptr::write(v1.wrapping_add(i), i as f16);
+                ptr::write(v1_box.as_mut_ptr().wrapping_add(i), i as f16);
             }
         }
-        let v2 = allocate_init::<f16>(length, 1.0);
-        let weight = allocate_init::<f16>(length, 1.0);
-        let output = allocate_init::<f16>(length, 0.0);
-        let output_slice = unsafe { slice::from_raw_parts(output, length) };
+        let v2_box = AlignedBox::allocate_init(length, 1.0);
+        let weight_box = AlignedBox::allocate_init(length, 1.0);
+        let mut output_box = AlignedBox::allocate_init(length, 0.0);
 
-        add_rms_norm(v1, v2, output, length, 1e-6);
-        println!("{:?}", output);
+        unsafe {
+            add_rms_norm(
+                v1_box.as_ptr(),
+                v2_box.as_ptr(),
+                output_box.as_mut_ptr(),
+                length,
+                1e-6,
+            );
+        }
+        let output_slice = output_box.as_slice();
+        println!("{:?}", output_slice);
 
         // let mut expected: Vec<f16> = vec![0.0; 64];
-        let expected = allocate_init::<f16>(length, 0.0);
-        let expected_slice = unsafe { slice::from_raw_parts(expected, length) };
+        let mut expected_box = AlignedBox::allocate_init(length, 0.0);
 
-        kernel::scalar::rms_norm::add_rms_norm(v1, v2, expected, length, 1e-6);
+        unsafe {
+            kernel::scalar::rms_norm::add_rms_norm(
+                v1_box.as_ptr(),
+                v2_box.as_ptr(),
+                expected_box.as_mut_ptr(),
+                length,
+                1e-6,
+            );
+        }
+        let expected_slice = expected_box.as_slice();
 
         for j in 0..length {
             assert!(f16::abs(output_slice[j] - expected_slice[j]) < 1e-6);

@@ -6,8 +6,8 @@ pub unsafe fn exp256(x: __m256) -> __m256 {
     let exp_hi = _mm256_set1_ps(88.3762626647949f32);
     let exp_lo = _mm256_set1_ps(-88.3762626647949f32);
 
-    let cephes_LOG2EF = _mm256_set1_ps(1.44269504088896341f32);
-    let inv_LOG2EF = _mm256_set1_ps(0.693147180559945f32);
+    let cephes_log2ef = _mm256_set1_ps(1.44269504088896341f32);
+    let inv_log2ef = _mm256_set1_ps(0.693147180559945f32);
 
     let cephes_exp_p0 = _mm256_set1_ps(1.9875691500E-4);
     let cephes_exp_p1 = _mm256_set1_ps(1.3981999507E-3);
@@ -21,9 +21,9 @@ pub unsafe fn exp256(x: __m256) -> __m256 {
     x = _mm256_max_ps(x, exp_lo);
 
     /* express exp(x) as exp(g + n*log(2)) */
-    let mut fx = _mm256_mul_ps(x, cephes_LOG2EF);
+    let mut fx = _mm256_mul_ps(x, cephes_log2ef);
     fx = _mm256_round_ps(fx, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
-    let mut z = _mm256_mul_ps(fx, inv_LOG2EF);
+    let mut z = _mm256_mul_ps(fx, inv_log2ef);
     x = _mm256_sub_ps(x, z);
     z = _mm256_mul_ps(x, x);
 

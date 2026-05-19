@@ -1,10 +1,14 @@
 #![feature(f16)]
 
 use ellm::common::send_sync_ptr::SharedMut;
-use ellm::mem_mgr::allocator::allocate_init;
+use ellm::mem_mgr::allocator::AlignedBox;
+use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
-use ellm::transformer::config::Config;
+use ellm::runtime::{
+    BatchScheduler, Config, GenerationConfig, Phase, SequenceState, ServingRunner,
+};
+use ellm::runtime::model_loader::SafeTensorsLoader;
+use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::sync::Arc;
@@ -12,37 +16,61 @@ use std::sync::Arc;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Initializing...");
 
-    let sequence_length = 128;
     let batch_size = 3;
-    let topk_size = 8;
-    let sequence_capacity = sequence_length;
+    let chunk_size = 64;
 
+
+    let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
     let config =
-        Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+        Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
+    let generation_config = GenerationConfig::load_from_file(
+        format!("{}/generation_config.json", model_dir),
+    )
+    .ok();
 
-    let tokenizer_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
-    let tokenizer_config_path = "models/Qwen3-Coder-30B-A3B-Instruct/tokenizer_config.json";
-    let chat_template_path = "models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
+    if let Some(gen_cfg) = &generation_config {
+        println!("Loaded generation config: {:?}", gen_cfg);
+    }
+
+    let tokenizer_path = format!("{}/tokenizer.json", model_dir);
+    let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);
+    let chat_template_path = format!("{}/chat_template.jinja", model_dir);
+    
+    
+    let sequence_length = 128;
+    let top_k = 8;
+
 
     let fixed_prompts = [
         "Hello from a fixed runner.",
         "This path does not use server input.",
         "The sequence data is hardcoded.",
     ];
+    // 载入模型参数
+    let params = SafeTensorsLoader::new(model_dir)
+        .and_then(|loader| loader.load_all_weights_f16())
+        .map_err(|e| format!("failed to load model parameters: {}", e))?;
+    println!("Loaded {} parameter tensors", params.len());
 
-    let sequences = allocate_init::<usize>(sequence_capacity * batch_size, 0);
+    // Initialize global memory pool
+    f16::init_global(params);
+
+    // Allocate sequences buffer with sufficient size
+    let sequences_capacity = config.max_position_embeddings * batch_size;
+    let sequences_box = AlignedBox::allocate_init(sequences_capacity, 0);
+    let sequences_ptr = sequences_box.as_mut_ptr();
 
     let mut batch_seq = BatchSequence::<f16>::new(
-        sequences,
+        sequences_ptr,
         batch_size,
-        sequence_capacity,
-        tokenizer_path,
-        tokenizer_config_path,
-        chat_template_path,
+        sequence_length,
+        &tokenizer_path,
+        &tokenizer_config_path,
+        &chat_template_path,
     )
     .map_err(|e| format!("failed to create batch sequence: {}", e))?;
 
-    // write fixed prompts into each slot using BatchSequence
+    // Write fixed prompts into each slot using BatchSequence
     let mut written_lengths = Vec::with_capacity(batch_size);
     for (slot, prompt) in fixed_prompts.iter().enumerate().take(batch_size) {
         let messages: [(&str, &str); 1] = [("user", prompt)];
@@ -60,35 +88,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.rope_scaling.clone(),
     )
     .forward::<f16>();
-    // use eos id from model config
+
+    // Use eos id from model config or default to known value
     let eos_id = config.eos_token_id;
 
     let mut model = Model::<f16>::new(
         &config,
         position_vec,
+        chunk_size,
         sequence_length,
         batch_size,
-        topk_size,
+        top_k,
         eos_id,
     );
 
+    // Run the model forward pass to populate the operator queue
     let (_output_indices, _output_tensor) =
-        model.forward(sequences, batch_seq.batch_temperature.as_mut_ptr());
+        model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
 
-    let thread_num = core_affinity::get_core_ids().unwrap().len();
+    let core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    let thread_num = core_ids.len().max(1);
     let mut batch_scheduler: BatchScheduler =
         BatchScheduler::new(sequence_length, batch_size, thread_num);
     let mut batch_list = Vec::with_capacity(batch_size);
-    batch_list.extend(written_lengths.iter().map(|&len| SequenceState {
-        filling_length: len.min(sequence_length),
-        sequence_index: 0,
-        kv_index: 0,
-        phase: Phase::Prefill,
-        notify: Arc::new(tokio::sync::Notify::new()),
-    }));
+    batch_list.extend(
+        written_lengths
+            .iter()
+            .enumerate()
+            .map(|(i, &len)| SequenceState {
+                filling_length: len.min(sequence_length),
+                sequence_index: i,
+                kv_index: i,
+                phase: Phase::Prefill,
+                notify: Arc::new(tokio::sync::Notify::new()),
+            }),
+    );
     batch_scheduler.batch_list = Arc::new(SharedMut::new(batch_list));
 
-    let runner = ServingRunner::new(model.ctx.take_operator_queue(), batch_scheduler);
+    println!("Starting serving runner...");
+    let runner = ServingRunner::new(f16::take_operator_queue(), batch_scheduler);
     runner.start();
     Ok(())
 }

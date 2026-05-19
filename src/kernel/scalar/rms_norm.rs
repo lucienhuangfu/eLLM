@@ -1,4 +1,4 @@
-// use crate::common::num_traits::FromNumber;
+use crate::common::num_traits::FromNumber;
 use crate::common::num_traits::Sqrt;
 // use std::ops::{Add, Div, Mul};
 use std::ptr;

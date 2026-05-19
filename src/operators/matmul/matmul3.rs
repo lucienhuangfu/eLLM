@@ -5,10 +5,14 @@ use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
+
+
 use crate::common::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
+
+use crate::common::sequence_slice::SequenceSlice;
 use crate::operators::assign::{assign, KqvPath};
 use crate::operators::traits::MatMulkqvTrait;
 
@@ -282,8 +286,13 @@ where
     }
 
     /// 入口：不再有 S 维度，只针对当前 A[M×K] 做一次 K/Q/V。
-    pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize)
-    where
+    pub fn run(
+        &self,
+        prefill_size: usize,
+        _decode_size: usize,
+        thread_num: usize,
+        thread_id: usize,
+    ) where
         Self: MatMulkqvTrait<T>,
     {
         unsafe {

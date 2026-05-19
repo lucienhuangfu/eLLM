@@ -1,6 +1,7 @@
 use std::f16;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
+// removed custom Sigmoid trait; use kernel implementations directly
 use crate::common::num_traits::Sigmoid;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
@@ -138,7 +139,7 @@ mod test {
 
     use super::*;
     // use super::super::chunk_zipmap::chunk_zipmap;
-    use crate::common::tensor_utils::get_strides;
+    use crate::tensor::get_strides;
     use approx::assert_ulps_eq;
     // use rand::seq;
     #[test]

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operator Alignment"
+  short_description: "Align FP32 operators"
+  default_prompt: "Use $align-operators to compare a Rust eLLM operator against HuggingFace FP32 outputs with synthetic tensors."

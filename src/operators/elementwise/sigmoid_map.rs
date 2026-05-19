@@ -1,6 +1,7 @@
 use std::f16;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
+// removed custom Sigmoid trait; kernel provides per-type implementations
 use crate::common::num_traits::Sigmoid;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;

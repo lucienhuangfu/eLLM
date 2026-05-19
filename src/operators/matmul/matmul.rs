@@ -279,15 +279,6 @@ impl MatMulTrait<f16> for MatMul<f16> {
     }
 }
 
-impl MatMulTrait<f32> for MatMul<f32> {
-    fn compute(&self, _a: *const f32, _b: *const f32, _c: *mut f32) {
-        /* TODO */
-    }
-    fn compute2(&self, _a: *const f32, _b: *const f32, _c: *mut f32, _length: usize) {
-        /* TODO */
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +502,78 @@ mod tests {
 
         // 额外：确认 MR 固定=3 的前提没被破坏
         assert_eq!(MR, 3);
+    }
+
+    #[test]
+    fn test_matmul_runner_f32_alignment_fp32_small_qwen_style() {
+        use approx::assert_abs_diff_eq;
+
+        const M_RUN: usize = 4;
+        const M_MAX: usize = 6; // pad to MR=3
+        const K: usize = 64;
+        const N: usize = 32;
+
+        let thread_num = 1;
+
+        let mut a = vec![0.0f32; M_MAX * K];
+        let mut b_nt = vec![0.0f32; N * K];
+        let mut c = vec![0.0f32; M_MAX * N];
+
+        // Synthetic deterministic inputs: easy to debug and stable across runs.
+        for i in 0..M_RUN {
+            for kk in 0..K {
+                a[i * K + kk] = 0.01f32 * (i as f32) + 0.001f32 * (kk as f32);
+            }
+        }
+
+        for j in 0..N {
+            for kk in 0..K {
+                b_nt[j * K + kk] = 0.02f32 * (kk as f32) + 0.003f32 * (j as f32);
+            }
+        }
+
+        let params = MatMulParams {
+            a_row_step_macro: 6,
+            b_row_step_macro: 32,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+
+        let matmul = unsafe {
+            MatMul::<f32>::new(
+                a.as_ptr(),
+                b_nt.as_ptr(),
+                c.as_mut_ptr(),
+                false,
+                params,
+                M_MAX,
+                N,
+                K,
+                false,
+            )
+        };
+
+        for tid in 0..thread_num {
+            matmul.run(M_RUN, 0, thread_num, tid);
+        }
+
+        for i in 0..M_RUN {
+            for j in 0..N {
+                let mut sum = 0.0f32;
+                for kk in 0..K {
+                    sum += a[i * K + kk] * b_nt[j * K + kk];
+                }
+
+                let got = c[i * N + j];
+                assert_abs_diff_eq!(got, sum, epsilon = 1e-5);
+            }
+        }
+
+        for i in M_RUN..M_MAX {
+            for j in 0..N {
+                assert_abs_diff_eq!(c[i * N + j], 0.0f32, epsilon = 1e-5);
+            }
+        }
     }
 }
