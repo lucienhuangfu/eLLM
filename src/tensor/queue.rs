@@ -19,36 +19,54 @@ pub trait GlobalOperatorQueue: Copy + PartialOrd {
 
 impl GlobalOperatorQueue for f32 {
     fn init_operator_queue() {
-        GLOBAL_OPERATOR_QUEUE_F32.lock().unwrap().clear();
+        GLOBAL_OPERATOR_QUEUE_F32
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
     }
 
     fn take_operator_queue() -> Vec<Operator<f32>> {
-        std::mem::take(&mut *GLOBAL_OPERATOR_QUEUE_F32.lock().unwrap())
+        std::mem::take(
+            &mut *GLOBAL_OPERATOR_QUEUE_F32
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
     fn with_operator_queue<F, R>(f: F) -> R
     where
         F: FnOnce(&mut Vec<Operator<f32>>) -> R,
     {
-        let mut queue = GLOBAL_OPERATOR_QUEUE_F32.lock().unwrap();
+        let mut queue = GLOBAL_OPERATOR_QUEUE_F32
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         f(&mut queue)
     }
 }
 
 impl GlobalOperatorQueue for f16 {
     fn init_operator_queue() {
-        GLOBAL_OPERATOR_QUEUE_F16.lock().unwrap().clear();
+        GLOBAL_OPERATOR_QUEUE_F16
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
     }
 
     fn take_operator_queue() -> Vec<Operator<f16>> {
-        std::mem::take(&mut *GLOBAL_OPERATOR_QUEUE_F16.lock().unwrap())
+        std::mem::take(
+            &mut *GLOBAL_OPERATOR_QUEUE_F16
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
     fn with_operator_queue<F, R>(f: F) -> R
     where
         F: FnOnce(&mut Vec<Operator<f16>>) -> R,
     {
-        let mut queue = GLOBAL_OPERATOR_QUEUE_F16.lock().unwrap();
+        let mut queue = GLOBAL_OPERATOR_QUEUE_F16
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         f(&mut queue)
     }
 }

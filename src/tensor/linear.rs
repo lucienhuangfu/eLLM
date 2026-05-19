@@ -46,6 +46,12 @@ where
             batch_size,
             self.shape[2],
             k_tensor.shape[1],
+            k_tensor.strides[0],
+            k_tensor.strides[1],
+            k_tensor.strides[2],
+            v_tensor.strides[0],
+            v_tensor.strides[1],
+            v_tensor.strides[2],
             1,
             8,
             self.shape[3],
@@ -136,7 +142,6 @@ where
         } else {
             (self.shape[0], 1, self.shape[1])
         };
-
 
         let output_rows = self.shape[0] * batch_size;
         let q_state = Self::from_mem_pool(

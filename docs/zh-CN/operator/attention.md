@@ -162,7 +162,7 @@ use_head_split = slice.length > 0
 aligned_len = floor(slice.length / row_step) * row_step
 ```
 
-然后只对 `aligned_len` 这一段调用按三角工作量的 sequence split。代码里虽然构造了 `tail = (aligned_len, slice.length)` 这一尾段计划，但当前 `visit_blocks_for_head` 只消费 `row_plan.main`，并不会执行 `row_plan.tail`。因此按现状实现，sequence split 路径真正参与计算的是 `main` 对应的对齐区间。
+然后对 `aligned_len` 这一段调用按三角工作量的 sequence split。代码里也会构造 `tail = (aligned_len, slice.length)` 这一尾段计划，并由最后一个线程执行尾段 block attention 计算。因此 sequence split 路径会覆盖 `main` 对应的对齐区间和末尾不足 `row_step` 的行区间。
 
 这一模式的优先目标是：
 
@@ -379,7 +379,7 @@ row_col_end = min(col_end, visible_col_end)
 * slice 足够长时，内部线程划分按三角工作量静态分段，而不是按行数平均分配。
 * slice 较短、无法用行块覆盖所有线程时，内部改为按 `kv_head` 波次静态推进：每一波只激活尽量少的连续 `kv_head`，再把当前波次展平后的 attention-head 槽位连续分给线程。
 * 内部遍历采用二维 block 结构，当前调用参数为 `row_step=1`、`col_step=8`。
-* 当前数值路径已经通过 scalar `block_flash_attention` 实现逐行 causal 截断；不过 `RowVisitPlan.tail` 目前尚未在访问路径中执行。
+* 当前数值路径已经通过 scalar `block_flash_attention` 实现逐行 causal 截断，`RowVisitPlan.tail` 也会在访问路径中执行。
 
 ---
 

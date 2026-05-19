@@ -30,7 +30,8 @@ where
         aligned_len: usize,
         thread_num: usize,
         thread_id: usize,
-        kv_head_stride: usize,
+        k_head_stride: usize,
+        v_head_stride: usize,
         attention_heads_per_kv: usize,
     ) {
         let row_plan = RowVisitPlan {
@@ -43,9 +44,8 @@ where
         };
 
         for kv_head in 0..self.kv_head_num {
-            let kv_head_offset = kv_head * kv_head_stride;
-            let k_head_ptr = k_batch_ptr.add(kv_head_offset);
-            let v_head_ptr = v_batch_ptr.add(kv_head_offset);
+            let k_head_ptr = k_batch_ptr.add(kv_head * k_head_stride);
+            let v_head_ptr = v_batch_ptr.add(kv_head * v_head_stride);
 
             for local_head in 0..attention_heads_per_kv {
                 let attention_head = kv_head * attention_heads_per_kv + local_head;
@@ -80,7 +80,8 @@ where
         thread_num: usize,
         thread_id: usize,
         attention_heads_per_kv: usize,
-        kv_head_stride: usize,
+        k_head_stride: usize,
+        v_head_stride: usize,
     ) {
         if thread_num == 0 || thread_id >= thread_num || attention_heads_per_kv == 0 {
             return;
@@ -119,9 +120,8 @@ where
             for slot in slot_begin..slot_end {
                 let kv_head = kv_head_begin + slot / attention_heads_per_kv;
                 let local_head = slot % attention_heads_per_kv;
-                let kv_head_offset = kv_head * kv_head_stride;
-                let k_head_ptr = k_batch_ptr.add(kv_head_offset);
-                let v_head_ptr = v_batch_ptr.add(kv_head_offset);
+                let k_head_ptr = k_batch_ptr.add(kv_head * k_head_stride);
+                let v_head_ptr = v_batch_ptr.add(kv_head * v_head_stride);
                 let attention_head = kv_head * attention_heads_per_kv + local_head;
                 let q_head_offset = attention_head * self.head_size;
                 let q_head_ptr = q_slice_ptr.add(q_head_offset);
@@ -154,10 +154,8 @@ where
             let v_ptr = self.v_ptr.ptr;
             let output_ptr = self.output_ptr.ptr;
             let q_ptr = self.q_ptr.ptr;
-            let kv_batch_stride = self.kv_head_num * self.seq_len * self.head_size;
             let q_token_stride = self.attention_head_num * self.head_size;
             let attention_heads_per_kv = self.attention_head_num / self.kv_head_num;
-            let kv_head_stride = self.seq_len * self.head_size;
 
             for slice in attention_list {
                 if slice.batch_index >= self.batch_size {
@@ -166,8 +164,8 @@ where
 
                 let q_slice_ptr = q_ptr.add(slice.token_start_index * q_token_stride);
                 let output_slice_ptr = output_ptr.add(slice.token_start_index * q_token_stride);
-                let k_batch_ptr = k_ptr.add(slice.batch_index * kv_batch_stride);
-                let v_batch_ptr = v_ptr.add(slice.batch_index * kv_batch_stride);
+                let k_batch_ptr = k_ptr.add(slice.batch_index * self.k_batch_stride);
+                let v_batch_ptr = v_ptr.add(slice.batch_index * self.v_batch_stride);
                 let col_end = slice.sequence_index + slice.length;
                 let aligned_len = slice.length / self.row_step * self.row_step;
                 let use_head_split = slice.length > 0
@@ -187,7 +185,8 @@ where
                         thread_num,
                         thread_id,
                         attention_heads_per_kv,
-                        kv_head_stride,
+                        self.k_head_stride,
+                        self.v_head_stride,
                     );
                 } else {
                     self.run_sequence_split(
@@ -201,7 +200,8 @@ where
                         aligned_len,
                         thread_num,
                         thread_id,
-                        kv_head_stride,
+                        self.k_head_stride,
+                        self.v_head_stride,
                         attention_heads_per_kv,
                     );
                 }
@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn sequence_split_leaves_tail_rows_empty() {
+    fn sequence_split_computes_tail_rows() {
         let head_size = 2;
         let inverse_sqrt_head = 1.0;
         let q = vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
@@ -275,10 +275,16 @@ mod tests {
             k.as_ptr(),
             v.as_ptr(),
             output.as_mut_ptr(),
-            1,
-            1,
-            1,
             3,
+            1,
+            1,
+            1,
+            3 * head_size,
+            3 * head_size,
+            head_size,
+            3 * head_size,
+            3 * head_size,
+            head_size,
             2,
             2,
             head_size,
@@ -297,7 +303,7 @@ mod tests {
 
         attention.run(0, 0, &slices, 1, 0);
 
-        for row in 0..2 {
+        for row in 0..3 {
             let expected = naive_attention_row(
                 &q[row * head_size..(row + 1) * head_size],
                 &k,
@@ -309,7 +315,92 @@ mod tests {
             let actual = &output[row * head_size..(row + 1) * head_size];
             assert_close(actual, &expected);
         }
+    }
 
-        assert_close(&output[2 * head_size..3 * head_size], &[0.0, 0.0]);
+    #[test]
+    fn attention_reads_permuted_kv_with_strides() {
+        let head_size = 2;
+        let batch_size = 2;
+        let seq_len = 3;
+        let kv_heads = 1;
+        let inverse_sqrt_head = 1.0;
+        let q = vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let mut k = vec![0.0; seq_len * batch_size * kv_heads * head_size];
+        let mut v = vec![0.0; k.len()];
+
+        for seq in 0..seq_len {
+            for batch in 0..batch_size {
+                let base = ((seq * batch_size + batch) * kv_heads) * head_size;
+                k[base] = 10.0 * batch as f32 + seq as f32 + 1.0;
+                k[base + 1] = 10.0 * batch as f32 + seq as f32 + 2.0;
+                v[base] = 100.0 * batch as f32 + 10.0 * seq as f32 + 1.0;
+                v[base + 1] = 100.0 * batch as f32 + 10.0 * seq as f32 + 2.0;
+            }
+        }
+
+        let mut output = vec![-1.0; q.len()];
+        let attention = Attention::new(
+            q.as_ptr(),
+            k.as_ptr(),
+            v.as_ptr(),
+            output.as_mut_ptr(),
+            seq_len,
+            batch_size,
+            1,
+            kv_heads,
+            kv_heads * head_size,
+            head_size,
+            batch_size * kv_heads * head_size,
+            kv_heads * head_size,
+            head_size,
+            batch_size * kv_heads * head_size,
+            1,
+            2,
+            head_size,
+            inverse_sqrt_head,
+            false,
+            1,
+        );
+
+        let slice = [SequenceSlice {
+            token_start_index: 0,
+            batch_index: 1,
+            sequence_index: 0,
+            length: seq_len,
+            last_token_flag: false,
+        }];
+
+        attention.run(0, 0, &slice, 1, 0);
+
+        let batch1_k_base = kv_heads * head_size;
+        let batch1_k = [
+            k[batch1_k_base],
+            k[batch1_k_base + 1],
+            k[batch1_k_base + batch_size * kv_heads * head_size],
+            k[batch1_k_base + batch_size * kv_heads * head_size + 1],
+            k[batch1_k_base + 2 * batch_size * kv_heads * head_size],
+            k[batch1_k_base + 2 * batch_size * kv_heads * head_size + 1],
+        ];
+        let batch1_v = [
+            v[batch1_k_base],
+            v[batch1_k_base + 1],
+            v[batch1_k_base + batch_size * kv_heads * head_size],
+            v[batch1_k_base + batch_size * kv_heads * head_size + 1],
+            v[batch1_k_base + 2 * batch_size * kv_heads * head_size],
+            v[batch1_k_base + 2 * batch_size * kv_heads * head_size + 1],
+        ];
+
+        for row in 0..seq_len {
+            let expected = naive_attention_row(
+                &q[row * head_size..(row + 1) * head_size],
+                &batch1_k,
+                &batch1_v,
+                head_size,
+                row + 1,
+                inverse_sqrt_head,
+            );
+            let actual = &output[row * head_size..(row + 1) * head_size];
+            assert_close(actual, &expected);
+        }
     }
 }

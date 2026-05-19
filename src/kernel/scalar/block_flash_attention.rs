@@ -12,6 +12,8 @@ pub fn block_flash_attention<T>(
     total_col_end: usize,
     k_head_ptr: *const T,
     v_head_ptr: *const T,
+    k_seq_stride: usize,
+    v_seq_stride: usize,
     head_size: usize,
     inverse_sqrt_head: T,
     sequence_index: usize,
@@ -45,7 +47,7 @@ pub fn block_flash_attention<T>(
 
             for offset in 0..block_len {
                 let col = col_begin + offset;
-                let key_row_ptr = k_head_ptr.add(col * head_size);
+                let key_row_ptr = k_head_ptr.add(col * k_seq_stride);
 
                 let mut score = T::default();
                 for index in 0..head_size {
@@ -77,7 +79,7 @@ pub fn block_flash_attention<T>(
 
             for offset in 0..block_len {
                 let col = col_begin + offset;
-                let value_row_ptr = v_head_ptr.add(col * head_size);
+                let value_row_ptr = v_head_ptr.add(col * v_seq_stride);
                 let weight = (scores[offset] - next_max).exp() / next_denom;
                 for index in 0..head_size {
                     *output_row_ptr.add(index) =
@@ -179,6 +181,8 @@ mod tests {
                 k.as_ptr(),
                 v.as_ptr(),
                 head_size,
+                head_size,
+                head_size,
                 inverse_sqrt_head,
                 0,
                 &mut running_max,
@@ -242,6 +246,8 @@ mod tests {
                 col_end,
                 k.as_ptr(),
                 v.as_ptr(),
+                head_size,
+                head_size,
                 head_size,
                 inverse_sqrt_head,
                 sequence_index,

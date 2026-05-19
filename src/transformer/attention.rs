@@ -108,7 +108,7 @@ where
                 hidden_states.lift_vector();
             }
 
-            // q [chunk_size, head_num, group_num, head_dim] <- [chunk_size, hidden_size] 
+            // q [chunk_size, head_num, group_num, head_dim] <- [chunk_size, hidden_size]
             let view_query_states = query_states.view(vec![
                 query_states.shape[0],
                 query_states.shape[1],
@@ -146,18 +146,19 @@ where
                 format!("{}.attn_output", self.scope_name),
             );
 
-            println!("attn_output shape: {:?}", attn_output.shape);
-            let view_context_tensor = attn_output.view(vec![
-                attn_output.shape[0],
-                attn_output.shape[1],
-                attn_output.shape[2] * attn_output.shape[3],
-            ]);
+            let output_sequence_length = attn_output.shape[0];
+            let output_batch_size = attn_output.shape[1];
+            let output_hidden_size = attn_output.shape[2] * attn_output.shape[3];
+            let output_rows = output_sequence_length * output_batch_size;
+
+            let view_context_tensor = attn_output.view(vec![output_rows, output_hidden_size]);
+            let view_residual_tensor = residual.view(vec![output_rows, residual.shape[2]]);
 
             // [sequence_length, batch_size, hidden_size]
             // matmul + add
-            let output_tensor = view_context_tensor.matmul_add(
+            let output_tensor_2d = view_context_tensor.matmul_add(
                 &self.o_weight,
-                &residual,
+                &view_residual_tensor,
                 MatMulParams {
                     a_row_step_macro: 3,
                     b_row_step_macro: 256,
@@ -167,7 +168,11 @@ where
                 },
                 self.scope_name.clone(),
             );
-            output_tensor
+            output_tensor_2d.view(vec![
+                output_sequence_length,
+                output_batch_size,
+                self.o_weight.shape[0],
+            ])
         }
     }
 }
@@ -175,8 +180,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::mem_mgr::mem_pool::MemPool;
-    use std::cell::RefCell;
+    use crate::mem_mgr::mem_pool::GlobalMemPool;
+    use std::collections::HashMap;
 
     #[test]
     fn test_self_attention() {
@@ -194,6 +199,7 @@ mod test {
         let attention_head_size: usize = config.head_dim;
         // config.hidden_size / config.num_attention_heads;
 
+        f32::init_global(HashMap::new());
         f32::init_operator_queue();
 
         let self_attention = Attention::<f32>::new(
@@ -255,6 +261,7 @@ mod test {
 
         let attention_head_size: usize = config.head_dim;
 
+        f16::init_global(HashMap::new());
         f16::init_operator_queue();
 
         let self_attention = Attention::<f16>::new(

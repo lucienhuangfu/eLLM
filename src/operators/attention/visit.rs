@@ -65,6 +65,8 @@ where
                     col_chunk_end,
                     col_end,
                     sequence_index,
+                    self.k_seq_stride,
+                    self.v_seq_stride,
                     scratch.running_max,
                     scratch.running_denom,
                     scratch.scores,
@@ -76,11 +78,11 @@ where
     #[inline(always)]
     unsafe fn visit_tail_row_range(
         &self,
-        _q_head_ptr: *const T,
+        q_head_ptr: *const T,
         output_head_ptr: *mut T,
-        _k_head_ptr: *const T,
-        _v_head_ptr: *const T,
-        _thread_id: usize,
+        k_head_ptr: *const T,
+        v_head_ptr: *const T,
+        thread_id: usize,
         sequence_index: usize,
         col_end: usize,
         row_begin: usize,
@@ -91,12 +93,38 @@ where
             return;
         }
 
-        // The trailing partial block cannot use the current compute kernel yet, so leave it zeroed.
         for row in row_begin..visible_row_end {
             let row_offset = row * self.head_size;
             for index in 0..self.head_size {
                 *output_head_ptr.add(row_offset + index) = T::default();
             }
+        }
+
+        let row_count = visible_row_end - row_begin;
+        let col_step = self.col_step.max(1);
+        let mut scratch = self.thread_buffers(thread_id, row_count, col_step);
+        scratch.clear();
+
+        for col_begin in (0..col_end).step_by(col_step) {
+            let col_chunk_end = (col_begin + col_step).min(col_end);
+            AttentionTrait::compute(
+                self,
+                q_head_ptr,
+                k_head_ptr,
+                v_head_ptr,
+                output_head_ptr,
+                row_begin,
+                visible_row_end,
+                col_begin,
+                col_chunk_end,
+                col_end,
+                sequence_index,
+                self.k_seq_stride,
+                self.v_seq_stride,
+                scratch.running_max,
+                scratch.running_denom,
+                scratch.scores,
+            );
         }
     }
 

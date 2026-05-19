@@ -133,7 +133,9 @@ pub trait GlobalScratchPool: Copy + Default {
 
 impl GlobalMemPool for f32 {
     fn init_global(parameters: HashMap<String, Vec<f32>>) {
-        let mut pool = GLOBAL_MEM_POOL_F32.lock().unwrap();
+        let mut pool = GLOBAL_MEM_POOL_F32
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *pool = Some(MemPool::new(parameters));
     }
 
@@ -141,7 +143,9 @@ impl GlobalMemPool for f32 {
     where
         F: FnOnce(&mut MemPool<f32>) -> R,
     {
-        let mut pool = GLOBAL_MEM_POOL_F32.lock().unwrap();
+        let mut pool = GLOBAL_MEM_POOL_F32
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let pool = pool
             .as_mut()
             .expect("Global MemPool not initialized for f32");
@@ -151,7 +155,9 @@ impl GlobalMemPool for f32 {
 
 impl GlobalMemPool for f16 {
     fn init_global(parameters: HashMap<String, Vec<f16>>) {
-        let mut pool = GLOBAL_MEM_POOL_F16.lock().unwrap();
+        let mut pool = GLOBAL_MEM_POOL_F16
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *pool = Some(MemPool::new(parameters));
     }
 
@@ -159,7 +165,9 @@ impl GlobalMemPool for f16 {
     where
         F: FnOnce(&mut MemPool<f16>) -> R,
     {
-        let mut pool = GLOBAL_MEM_POOL_F16.lock().unwrap();
+        let mut pool = GLOBAL_MEM_POOL_F16
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let pool = pool
             .as_mut()
             .expect("Global MemPool not initialized for f16");
