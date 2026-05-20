@@ -34,7 +34,6 @@ pub struct DecoderLayer<T>
 where
     T: Copy + PartialOrd,
 {
-    
     chunk_size: usize,
     batch_size: usize,
     rms_norm_eps: T,
@@ -74,12 +73,18 @@ where
     ) -> Self {
         let names = layer_tensor_names(config, layer_idx);
         let self_attention = match config.layers[layer_idx].attention {
-            AttentionKind::Full => {
-                AttentionBlock::Full(Attention::<T>::new(config, names.attention.clone()))
-            }
-            AttentionKind::SlidingWindow => {
-                AttentionBlock::SlidingWindow(Attention::<T>::new(config, names.attention.clone()))
-            }
+            AttentionKind::Full => AttentionBlock::Full(Attention::<T>::new(
+                config,
+                chunk_size,
+                batch_size,
+                names.attention.clone(),
+            )),
+            AttentionKind::SlidingWindow => AttentionBlock::SlidingWindow(Attention::<T>::new(
+                config,
+                chunk_size,
+                batch_size,
+                names.attention.clone(),
+            )),
             AttentionKind::Linear => panic!(
                 "linear attention is not implemented for layer {}",
                 layer_idx
@@ -118,6 +123,7 @@ where
         };
 
         Self {
+            chunk_size: chunk_size,
             batch_size: batch_size,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             layer_idx: layer_idx,
@@ -162,6 +168,7 @@ where
                     hidden_states,
                     &*self.position_embedding,
                     decode_only_flag,
+                    _tensor_name,
                 ),
         };
 
@@ -238,7 +245,7 @@ mod test {
             &config,
             1,
             max_position_embeddings,
-            // sequence_length,
+            sequence_length,
             batch_size,
             word_embedding.clone(),
             position_embedding.clone(),
@@ -313,6 +320,7 @@ mod test {
             &config,
             0,
             max_position_embeddings,
+            sequence_length,
             batch_size,
             word_embedding.clone(),
             position_embedding.clone(),

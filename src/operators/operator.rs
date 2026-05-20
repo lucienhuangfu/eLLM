@@ -139,7 +139,7 @@ where
             }
 
             Self::MatMul3(operator) => {
-                run_simple!(operator);
+                operator.run(prefill_size, decode_size, decode_list, cpu_num, thread_id);
             }
             Self::MatMulAdd(operator) => {
                 run_simple!(operator);

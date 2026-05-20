@@ -29,6 +29,7 @@ where
         &self,
         k_tensor: &Tensor<T>,
         v_tensor: &Tensor<T>,
+        sequence_length: usize,
         batch_size: usize,
         inverse_sqrt_head: T,
         decode_only_flag: bool,
@@ -42,14 +43,14 @@ where
             k_tensor.data,
             v_tensor.data,
             output_tensor.data,
-           batch_size,
+            sequence_length,
+            batch_size,
             self.shape[1],
             k_tensor.shape[1],
             k_tensor.shape[2],
+            inverse_sqrt_head,
             1,
             8,
-            self.shape[2],
-            inverse_sqrt_head,
             decode_only_flag,
             thread_num,
         ));
@@ -135,8 +136,6 @@ where
         params: MatMulParams,
         scope_name: String,
     ) -> (Self, Self, Self) {
-
-
         let q_state = Self::from_mem_pool(
             vec![self.shape[0], q_weight.shape[0]],
             format!("{}.q_proj.output", scope_name),
@@ -161,7 +160,7 @@ where
             v_weight.data,
             v_state.data,
             position_embedding.data,
-                       sequence_length,
+            sequence_length,
             batch_size,
             kv_head_num,
             group_num,

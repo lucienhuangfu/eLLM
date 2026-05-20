@@ -15,8 +15,9 @@ pub struct Attention<T>
 where
     T: Copy + PartialOrd,
 {
-    batch_size: usize,
+    chunk_size: usize,
     sequence_length: usize,
+    batch_size: usize,
     num_attention_heads: usize,
     num_key_value_heads: usize,
     head_dim: usize,
@@ -44,12 +45,18 @@ where
         + GlobalMemPool
         + GlobalOperatorQueue,
 {
-    pub fn new(config: &Config, batch_size: usize, names: AttentionTensorNames) -> Self {
+    pub fn new(
+        config: &Config,
+        chunk_size: usize,
+        batch_size: usize,
+        names: AttentionTensorNames,
+    ) -> Self {
         let head_dim: usize = config.head_dim;
         let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
 
         Self {
-            sequence_length: sequence_length,
+            chunk_size,
+            sequence_length: config.max_position_embeddings,
             batch_size: batch_size,
             num_attention_heads: config.num_attention_heads,
             num_key_value_heads: config.num_key_value_heads,
@@ -82,7 +89,7 @@ where
         residual: &Tensor<T>,
         position_embedding: &Tensor<T>,
         decode_only_flag: bool,
-        // tensor_name: String,
+        _tensor_name: String,
     ) -> Tensor<T> {
         {
             //println!("hidden_states shape: {:?}", hidden_states.shape);
@@ -115,14 +122,14 @@ where
                 hidden_states.lift_vector();
             }
 
-            // q [chunk_size, head_num, group_num, head_dim] <- [chunk_size, hidden_size] 
+            // q [chunk_size, head_num, group_num, head_dim] <- [chunk_size, hidden_size]
             let view_query_states = query_states.view(vec![
                 query_states.shape[0],
                 query_states.shape[1],
                 self.num_attention_heads,
                 self.head_dim,
             ]);
-            /* 
+            /*
             let view_key_states = key_states.view(vec![
                 key_states.shape[0],
                 key_states.shape[1],
@@ -150,7 +157,6 @@ where
                 &value_states,
                 self.sequence_length,
                 self.batch_size,
-                self.,
                 self.scaling,
                 decode_only_flag,
                 thread_num,
@@ -209,6 +215,8 @@ mod test {
 
         let self_attention = Attention::<f32>::new(
             &config,
+            sequence_length,
+            batch_size,
             crate::transformer::names::AttentionTensorNames {
                 scope: String::from("model.layers.1.self_attn"),
                 q_proj: String::from("model.layers.1.self_attn.q_proj.weight"),
@@ -233,8 +241,13 @@ mod test {
             String::from("model.position_embedding.weight"),
         );
 
-        let output =
-            self_attention.forward(&hidden_states, &residual_tensor, &position_embedding, false);
+        let output = self_attention.forward(
+            &hidden_states,
+            &residual_tensor,
+            &position_embedding,
+            false,
+            String::from("test_output"),
+        );
 
         // Add assertions to validate the output
         debug_assert_eq!(
@@ -269,6 +282,8 @@ mod test {
 
         let self_attention = Attention::<f16>::new(
             &config,
+            sequence_length,
+            batch_size,
             AttentionTensorNames {
                 scope: String::from("model.layers.1.self_attn"),
                 q_proj: String::from("model.layers.1.self_attn.q_proj.weight"),
@@ -293,8 +308,13 @@ mod test {
             String::from("model.position_embedding.weight"),
         );
 
-        let output =
-            self_attention.forward(&hidden_states, &residual_tensor, &position_embedding, false);
+        let output = self_attention.forward(
+            &hidden_states,
+            &residual_tensor,
+            &position_embedding,
+            false,
+            String::from("test_output"),
+        );
 
         // Add assertions to validate the output
         debug_assert_eq!(

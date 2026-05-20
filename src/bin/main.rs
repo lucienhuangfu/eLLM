@@ -4,6 +4,7 @@ use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::runtime::batch_sequence::BatchSequence;
+use ellm::runtime::model_loader::SafeTensorsLoader;
 use ellm::runtime::{
     BatchScheduler, Config, GenerationConfig, Phase, SequenceState, ServingRunner,
 };
@@ -19,14 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_size = 3;
     let chunk_size = 64;
 
-
     let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
-    let config =
-        Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
-    let generation_config = GenerationConfig::load_from_file(
-        format!("{}/generation_config.json", model_dir),
-    )
-    .ok();
+    let config = Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
+    let generation_config =
+        GenerationConfig::load_from_file(format!("{}/generation_config.json", model_dir)).ok();
 
     if let Some(gen_cfg) = &generation_config {
         println!("Loaded generation config: {:?}", gen_cfg);
@@ -35,23 +32,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tokenizer_path = format!("{}/tokenizer.json", model_dir);
     let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);
     let chat_template_path = format!("{}/chat_template.jinja", model_dir);
-    
-    
+
     let sequence_length = 128;
     let top_k = 8;
-
 
     let fixed_prompts = [
         "Hello from a fixed runner.",
         "This path does not use server input.",
         "The sequence data is hardcoded.",
     ];
-    // 载入模型参数
-    let params = ellm::transformer::safetensor_loader::load_safetensors(model_dir)
-        .map_err(|e| format!("failed to load model parameters: {}", e))?;
-    println!("Loaded {} parameter tensors", params.len());
-
-    // Initialize global memory pool
+    // Initialize global memory pool with dummy parameters for now
     let mut params = HashMap::new();
     params.insert("dummy.key".to_string(), vec![0.0f16; 10]);
     f16::init_global(params);
@@ -65,9 +55,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sequences_ptr,
         batch_size,
         sequence_length,
-        tokenizer_path,
-        tokenizer_config_path,
-        chat_template_path,
+        &tokenizer_path,
+        &tokenizer_config_path,
+        &chat_template_path,
     )
     .map_err(|e| format!("failed to create batch sequence: {}", e))?;
 

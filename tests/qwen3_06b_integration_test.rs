@@ -42,7 +42,8 @@ fn test_define_and_load_qwen3_06b() {
     let model = Model::<f32>::new(
         &config,
         position_vec,
-        sequence_length,
+        sequence_length, // chunk_size
+        sequence_length, // sequence_length
         batch_size,
         topk_size,
         eos_id,
@@ -100,7 +101,8 @@ fn test_define_and_load_qwen3_06b_f16() {
     let model = Model::<f16>::new(
         &config,
         position_vec,
-        sequence_length,
+        sequence_length, // chunk_size
+        sequence_length, // sequence_length
         batch_size,
         topk_size,
         eos_id,
