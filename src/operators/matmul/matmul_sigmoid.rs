@@ -23,6 +23,7 @@ pub struct MatMulSigmoid<T> {
     acc_stride_elems: usize,
     bias_ptr: Option<ConstPtr<T>>,
     use_routing_bias: bool,
+    decode_only_flag: bool,
 }
 
 impl<T> MatMulSigmoid<T>
@@ -39,6 +40,7 @@ where
         n_max: usize,
         k_max: usize,
         use_routing_bias: bool,
+        decode_only_flag: bool,
     ) -> Self {
         let kc = params.kc();
         let nr = params.nr();
@@ -72,6 +74,7 @@ where
             acc_stride_elems,
             bias_ptr: bias_ptr.map(|ptr| ConstPtr { ptr }),
             use_routing_bias,
+            decode_only_flag,
         }
     }
 }
@@ -83,12 +86,16 @@ where
     pub fn run(
         &self,
         prefill_size: usize,
-        _decode_size: usize,
+        decode_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
-            let m_run = prefill_size;
+            let m_run = if self.decode_only_flag {
+                decode_size
+            } else {
+                prefill_size
+            };
             let n = self.n_max;
             let k = self.k_max;
             let mb = self.params.mb();
@@ -207,6 +214,7 @@ mod tests {
                 N,
                 K,
                 true,
+                false,
             )
         };
 

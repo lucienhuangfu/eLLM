@@ -552,8 +552,17 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        {
-            // TODO: fallback
+        unsafe {
+            let nr = self.params.b_row_step_micro;
+            for m in 0..self.params.a_row_step_micro {
+                for n in 0..nr {
+                    let mut sum = *c.add(m * ldc + n) as f32;
+                    for k in 0..kc {
+                        sum += (*a.add(m * lda + k) as f32) * (*b_panel.add(k * nr + n) as f32);
+                    }
+                    *c.add(m * ldc + n) = sum as f16;
+                }
+            }
         }
     }
 
@@ -570,8 +579,13 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        {
-            // TODO: fallback
+        unsafe {
+            let eps = 1e-6f32 as f16;
+            for r in 0..self.params.a_row_step_micro {
+                let row_ptr = c_head.add(r * ldc);
+                rms_norm(row_ptr, row_ptr, self.head_dim, eps);
+                complex_mul(row_ptr, rope_head, row_ptr, self.head_dim);
+            }
         }
     }
 }

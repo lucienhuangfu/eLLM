@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|loader| loader.load_all_weights_f16())
         .map_err(|e| format!("failed to load model parameters: {}", e))?;
     println!("Loaded {} parameter tensors", params.len());
-    f16::init_global(params);
+    f16::init_global_strict(params);
 
     // Allocate sequences buffer with sufficient size
     let sequences_capacity = config.max_position_embeddings * batch_size;
@@ -106,10 +106,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         written_lengths
             .iter()
             .enumerate()
-            .map(|(i, &len)| SequenceState {
+            .map(|(_, &len)| SequenceState {
                 filling_length: len.min(sequence_length),
-                sequence_index: i,
-                kv_index: i,
+                sequence_index: 0,
+                kv_index: 0,
                 phase: Phase::Prefill,
                 notify: Arc::new(tokio::sync::Notify::new()),
             }),

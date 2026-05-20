@@ -76,14 +76,19 @@ where
     pub fn run(
         &self,
         prefill_size: usize,
-        _decode_size: usize,
+        decode_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
             let thread_num = thread_num.max(1);
 
-            let num_tokens = self.sequence_chunk_size * prefill_size;
+            let active_size = if self.decode_only_flag {
+                decode_size
+            } else {
+                prefill_size
+            };
+            let num_tokens = self.sequence_chunk_size * active_size;
             let H = self.hidden_size;
             let K = self.num_experts_per_token;
 
@@ -147,8 +152,10 @@ impl MoeMergeTrait<f16> for ExpertsMergeAdd<f16> {
             kernel::x86_64::f16_512::moe_merge::moe_merge_add(out_row, add_row, len);
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        {
-            unreachable!("avx512fp16 required for MoeMergeTrait<f16>::merge_add");
+        unsafe {
+            for i in 0..len {
+                *out_row.add(i) = ((*out_row.add(i) as f32) + (*add_row.add(i) as f32)) as f16;
+            }
         }
     }
 }

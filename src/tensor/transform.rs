@@ -103,7 +103,8 @@ where
     }
 
     pub fn lift_vector(&self) {
-        let operator = Operator::LiftVector(LiftVector::new(self.data, self.shape[1]));
+        let row_len = self.shape.iter().skip(1).product();
+        let operator = Operator::LiftVector(LiftVector::new(self.data, row_len));
         Self::enqueue(operator);
     }
 

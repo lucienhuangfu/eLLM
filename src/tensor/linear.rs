@@ -101,6 +101,7 @@ where
         tensor2: &Tensor<T>,
         tensor3: &Tensor<T>,
         params: MatMulParams,
+        decode_only_flag: bool,
         tensor_name: String,
     ) -> Self {
         let output_shape = vec![self.shape[0], tensor2.shape[0]];
@@ -121,6 +122,7 @@ where
                 a_row,
                 b_row,
                 column,
+                decode_only_flag,
             )
         });
 

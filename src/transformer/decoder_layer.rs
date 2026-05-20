@@ -186,6 +186,7 @@ where
             FfnBlock::Dense(dense_mlp) => dense_mlp.forward(
                 &norm_hidden_states,
                 &attention_hidden_states,
+                decode_only_flag,
                 format!("{}.attention_hidden3", self.scope_name),
             ),
             FfnBlock::SparseMoe(sparse_moe) => sparse_moe.forward(

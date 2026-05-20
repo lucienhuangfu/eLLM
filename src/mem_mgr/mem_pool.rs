@@ -89,6 +89,7 @@ impl<T> MemoryBlock<T> {
 pub struct MemPool<T> {
     blocks: HashMap<String, MemoryBlock<T>>,
     parameters: HashMap<String, Vec<T>>,
+    strict_weights: bool,
 }
 
 #[derive(Debug, Default)]
@@ -111,6 +112,9 @@ pub trait GlobalMemPool {
     fn init_global(parameters: HashMap<String, Vec<Self>>)
     where
         Self: Sized + Default + Copy;
+    fn init_global_strict(parameters: HashMap<String, Vec<Self>>)
+    where
+        Self: Sized + Default + Copy;
     fn with_global<F, R>(f: F) -> R
     where
         Self: Sized + Default + Copy,
@@ -129,6 +133,13 @@ impl GlobalMemPool for f32 {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *pool = Some(MemPool::new(parameters));
+    }
+
+    fn init_global_strict(parameters: HashMap<String, Vec<f32>>) {
+        let mut pool = GLOBAL_MEM_POOL_F32
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *pool = Some(MemPool::new_strict(parameters));
     }
 
     fn with_global<F, R>(f: F) -> R
@@ -151,6 +162,13 @@ impl GlobalMemPool for f16 {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *pool = Some(MemPool::new(parameters));
+    }
+
+    fn init_global_strict(parameters: HashMap<String, Vec<f16>>) {
+        let mut pool = GLOBAL_MEM_POOL_F16
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *pool = Some(MemPool::new_strict(parameters));
     }
 
     fn with_global<F, R>(f: F) -> R
@@ -221,9 +239,18 @@ where
     T: Copy + Default,
 {
     pub fn new(parameters: HashMap<String, Vec<T>>) -> Self {
+        Self::build(parameters, false)
+    }
+
+    pub fn new_strict(parameters: HashMap<String, Vec<T>>) -> Self {
+        Self::build(parameters, true)
+    }
+
+    fn build(parameters: HashMap<String, Vec<T>>, strict_weights: bool) -> Self {
         let mut pool = Self {
             blocks: HashMap::new(),
             parameters,
+            strict_weights,
         };
 
         let mut expert_groups: HashMap<String, Vec<(usize, String)>> = HashMap::new();
@@ -358,9 +385,24 @@ where
                     }
 
                     if let Some(data) = self.parameters.remove(name) {
+                        if self.strict_weights {
+                            assert_eq!(
+                                data.len(),
+                                size,
+                                "Strict weight shape mismatch for {name}: expected {size} values for shape {:?}, got {}",
+                                shape,
+                                data.len()
+                            );
+                        }
                         return self.insert_full_from_vec(name, data);
                     } else {
-                        // If parameter not found, just allocate a new block instead of panicking
+                        if self.strict_weights {
+                            panic!(
+                                "Strict weight loading failed: missing parameter {name} for shape {:?} ({size} values)",
+                                shape
+                            );
+                        }
+                        // Non-strict mode keeps unit tests and synthetic operators lightweight.
                         return self.get_or_allocate_full(name, size, None);
                     }
                 }
@@ -437,6 +479,27 @@ mod test {
                 assert_eq!(*p.add(i), i as f32);
             }
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "Strict weight loading failed")]
+    fn test_strict_get_missing_param_panics() {
+        let parameters = HashMap::new();
+        let mut pool: MemPool<f32> = MemPool::new_strict(parameters);
+
+        let name = "model.embed_tokens.weight".to_string();
+        let _ = pool.get(&name, &[10, 5]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Strict weight shape mismatch")]
+    fn test_strict_get_wrong_sized_param_panics() {
+        let mut parameters = HashMap::new();
+        parameters.insert("model.embed_tokens.weight".to_string(), vec![1.0f32, 2.0]);
+        let mut pool: MemPool<f32> = MemPool::new_strict(parameters);
+
+        let name = "model.embed_tokens.weight".to_string();
+        let _ = pool.get(&name, &[10, 5]);
     }
 
     #[test]

@@ -1150,6 +1150,7 @@ mod test {
             &weight_tensor,
             &bias_tensor,
             params,
+            false,
             "model.layers.0.matmul_add".to_string(),
         );
 
@@ -1969,6 +1970,7 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 
@@ -2016,6 +2018,7 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 

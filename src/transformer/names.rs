@@ -56,13 +56,22 @@ pub fn model_tensor_names(config: &Config) -> ModelTensorNames {
         | ModelFamily::Mixtral
         | ModelFamily::MiniMax
         | ModelFamily::MiniMaxM2
-        | ModelFamily::Unknown(_) => ModelTensorNames {
-            scope: String::from("model"),
-            token_embedding: String::from("model.embed_tokens.weight"),
-            position_embedding: String::from("model.position_embedding.weight"),
-            lm_head: String::from("lm_head.weight"),
-            norm_weight: String::from("model.norm.weight"),
-        },
+        | ModelFamily::Unknown(_) => {
+            let token_embedding = String::from("model.embed_tokens.weight");
+            let lm_head = if config.tie_word_embeddings {
+                token_embedding.clone()
+            } else {
+                String::from("lm_head.weight")
+            };
+
+            ModelTensorNames {
+                scope: String::from("model"),
+                token_embedding,
+                position_embedding: String::from("model.position_embedding.weight"),
+                lm_head,
+                norm_weight: String::from("model.norm.weight"),
+            }
+        }
     }
 }
 

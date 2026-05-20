@@ -2650,6 +2650,7 @@ mod test {
                 M,
                 N,
                 K,
+                false,
             )
         };
         let op1 = super::Operator::MatMulAdd(runner1.clone());
@@ -2671,6 +2672,7 @@ mod test {
                 M,
                 N,
                 K,
+                false,
             )
         };
         let op2 = super::Operator::MatMulAdd(runner2.clone());

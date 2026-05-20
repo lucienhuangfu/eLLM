@@ -56,7 +56,7 @@ where
         &self,
         gate_weight: &Tensor<T>,
         bias_tensor: Option<&Tensor<T>>,
-        _decode_only_flag: bool,
+        decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
         if let Some(bias_tensor) = bias_tensor {
@@ -88,6 +88,7 @@ where
                 gate_weight.shape[0],
                 self.shape[1],
                 bias_tensor.is_some(),
+                decode_only_flag,
             )
         });
         Self::enqueue(operator);

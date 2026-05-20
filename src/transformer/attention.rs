@@ -166,6 +166,9 @@ where
             let output_rows = output_sequence_length * output_batch_size;
 
             let view_context_tensor = attn_output.view(vec![output_rows, output_hidden_size]);
+            if decode_only_flag {
+                view_context_tensor.lift_vector();
+            }
             let residual_hidden_size = *residual
                 .shape
                 .last()
@@ -184,6 +187,7 @@ where
                     a_row_step_micro: 3,
                     b_row_step_micro: 32,
                 },
+                decode_only_flag,
                 self.scope_name.clone(),
             );
             output_tensor_2d.view(vec![

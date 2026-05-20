@@ -47,6 +47,7 @@ where
         &self,
         hidden_states: &Tensor<T>,
         residual: &Tensor<T>,
+        decode_only_flag: bool,
         _tensor_name: String,
     ) -> Tensor<T> {
         let gate_product = hidden_states.matmul(
@@ -59,7 +60,7 @@ where
                 b_row_step_micro: 8,
             },
             hidden_states.shape[0],
-            false,
+            decode_only_flag,
             format!("{}.gate_proj.output", self.scope_name),
         );
 
@@ -73,7 +74,7 @@ where
                 b_row_step_micro: 8,
             },
             hidden_states.shape[0],
-            false,
+            decode_only_flag,
             format!("{}.up_proj.output", self.scope_name),
         );
 
@@ -90,6 +91,7 @@ where
                 a_row_step_micro: 8,
                 b_row_step_micro: 8,
             },
+            decode_only_flag,
             format!("{}.output", self.scope_name),
         )
     }
