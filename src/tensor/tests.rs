@@ -14,6 +14,8 @@ use super::Tensor;
 mod test {
     use super::*;
     use crate::common::expert_routing::routing_from_dense;
+    use crate::mem_mgr::mem_pool::GlobalMemPool;
+    use crate::tensor::GlobalOperatorQueue;
     use approx::{assert_abs_diff_eq, assert_ulps_eq};
     use std::collections::HashMap;
     use std::f16;
@@ -99,9 +101,8 @@ mod test {
 
     #[test]
     fn test_topk_softmax_f32() {
-        let mem_pool: Rc<RefCell<MemPool<f32>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f32>>>> = Rc::new(RefCell::new(Vec::new()));
+        f32::init_global(HashMap::new());
+        f32::init_operator_queue();
 
         let batch_size = 2;
         let num_topk = 8;
@@ -178,13 +179,15 @@ mod test {
             indices_ptr,
             output_sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
+            1,
             num_topk,
             eos_id,
             "model.layers.0.topk_softmax".to_string(),
         );
 
+        let operator_queue = f32::take_operator_queue();
         for i in 0..thread_num {
-            for op in operator_queue.borrow_mut().iter() {
+            for op in operator_queue.iter() {
                 if let Operator::TopKSoftmax(operator) = op {
                     operator.run(
                         batch_size,
@@ -250,9 +253,8 @@ mod test {
             return;
         }
 
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
+        f16::init_global(HashMap::new());
+        f16::init_operator_queue();
 
         let batch_size = 2;
         let num_topk = 8;
@@ -330,13 +332,15 @@ mod test {
             indices_ptr,
             output_sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
+            1,
             num_topk,
             eos_id,
             "model.layers.0.topk_softmax".to_string(),
         );
 
+        let operator_queue = f16::take_operator_queue();
         for i in 0..thread_num {
-            for op in operator_queue.borrow_mut().iter() {
+            for op in operator_queue.iter() {
                 if let Operator::TopKSoftmax(operator) = op {
                     operator.run(
                         batch_size,

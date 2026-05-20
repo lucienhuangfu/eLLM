@@ -3,10 +3,11 @@
 
 use std::f16;
 use std::marker::PhantomData;
-use std::ops::{Add, Mul};
+use std::ops::{Add, Mul, Sub};
 
 use crate::common::{
     matmul_params::MatMulParams,
+    num_traits::{FromNumber, Sqrt},
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 
@@ -63,7 +64,7 @@ pub struct MatMul3<T> {
 
 impl<T> MatMul3<T>
 where
-    T: Copy + Add<Output = T> + Mul<Output = T> + Default,
+    T: Copy + Add<Output = T> + Mul<Output = T> + Sub<Output = T> + Default + Sqrt + FromNumber,
 {
     #[inline]
     pub fn new(
@@ -304,32 +305,137 @@ where
         Some((KqvPath::Q, task_id - k_tiles))
     }
 
+    #[inline(always)]
+    fn build_row_map(
+        &self,
+        prefill_size: usize,
+        decode_size: usize,
+        attention_list: &[SequenceSlice],
+    ) -> Vec<(usize, usize, usize)> {
+        if attention_list.is_empty() {
+            let fallback_len = prefill_size.max(decode_size).min(self.m_row);
+            return (0..fallback_len)
+                .map(|row| (row, 0usize, row.min(self.sequence_length.saturating_sub(1))))
+                .collect();
+        }
+
+        let mut rows = Vec::with_capacity(attention_list.iter().map(|slice| slice.length).sum());
+        for slice in attention_list {
+            if slice.batch_index >= self.batch_size {
+                continue;
+            }
+
+            for offset in 0..slice.length {
+                let token_index = slice.token_start_index + offset;
+                let sequence_index = slice.sequence_index + offset;
+                if token_index >= self.m_row || sequence_index >= self.sequence_length {
+                    continue;
+                }
+                rows.push((token_index, slice.batch_index, sequence_index));
+            }
+        }
+        rows
+    }
+
+    #[inline(always)]
+    unsafe fn compute_head_from_packed(
+        &self,
+        a_row: *const T,
+        dst_head: *mut T,
+        packed_b: &[T],
+        n_total: usize,
+        head_index: usize,
+        apply_rope: bool,
+        sequence_index: usize,
+    ) {
+        let k = self.col;
+        let kc_block = self.params.column_step_macro.max(1);
+        let nr = self.params.b_row_step_micro.max(1);
+        debug_assert_eq!(nr, 32);
+        debug_assert_eq!(self.head_dim % nr, 0);
+
+        for head_col in 0..self.head_dim {
+            *dst_head.add(head_col) = T::default();
+        }
+
+        let head_col0 = head_index * self.head_dim;
+        for head_col in (0..self.head_dim).step_by(nr) {
+            let global_col = head_col0 + head_col;
+
+            let mut k0 = 0usize;
+            while k0 < k {
+                let kc_cur = kc_block.min(k - k0);
+                let b_panel = self.packed_panel_ptr(packed_b, n_total, global_col, k0);
+
+                for kk in 0..kc_cur {
+                    let a_value = *a_row.add(k0 + kk);
+                    for lane in 0..nr {
+                        let dst = dst_head.add(head_col + lane);
+                        *dst = *dst + a_value * *b_panel.add(kk * nr + lane);
+                    }
+                }
+
+                k0 += kc_cur;
+            }
+        }
+
+        if apply_rope {
+            let eps = T::from_f32(1e-6);
+            rms_norm(dst_head, dst_head, self.head_dim, eps);
+            let rope_ptr = self.rope_ptr.ptr.add(sequence_index * self.head_dim);
+            complex_mul(dst_head, rope_ptr, dst_head, self.head_dim);
+        }
+    }
+
+    #[inline(always)]
+    fn path_task(
+        row_count: usize,
+        kv_head_num: usize,
+        q_head_num: usize,
+        task_id: usize,
+    ) -> Option<(KqvPath, usize, usize)> {
+        let v_tasks = row_count * kv_head_num;
+        let k_tasks = v_tasks;
+        let q_tasks = row_count * q_head_num;
+        let total = v_tasks + k_tasks + q_tasks;
+        if task_id >= total {
+            return None;
+        }
+
+        if task_id < v_tasks {
+            return Some((KqvPath::V, task_id / kv_head_num, task_id % kv_head_num));
+        }
+
+        let task_id = task_id - v_tasks;
+        if task_id < k_tasks {
+            return Some((KqvPath::K, task_id / kv_head_num, task_id % kv_head_num));
+        }
+
+        let task_id = task_id - k_tasks;
+        Some((KqvPath::Q, task_id / q_head_num, task_id % q_head_num))
+    }
+
     /// 入口：不再有 S 维度，只针对当前 A[M×K] 做一次 K/Q/V。
     pub fn run(
         &self,
         prefill_size: usize,
-        _decode_size: usize,
-        _attention_list: &[SequenceSlice],
+        decode_size: usize,
+        attention_list: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
     ) where
         Self: MatMulkqvTrait<T>,
     {
         unsafe {
-            let m_run = prefill_size;
-
             let k = self.col;
             let n_q = self.kv_head_num * self.group_num * self.head_dim;
             let n_kv = self.kv_head_num * self.head_dim;
-
-            let mr = self.params.a_row_step_micro.max(1); // 期望=3
-            debug_assert_eq!(mr, 3);
-
-            // === 关键：向上 pad 到 3 的倍数，用于固定 3×32 微核 ===
-            let m_pad = ((m_run + mr - 1) / mr) * mr;
-
-            // self.m_row 在你们“new 预留更大”语义下，应当视为 capacity（m_max）
-            debug_assert!(m_pad <= self.m_row);
+            let q_head_num = self.kv_head_num * self.group_num;
+            let row_map = self.build_row_map(prefill_size, decode_size, attention_list);
+            let row_count = row_map.len();
+            if row_count == 0 || thread_id >= thread_num || thread_num == 0 {
+                return;
+            }
 
             let a_base = self.hidden_ptr.ptr;
             let cq_base = self.q_state_ptr.ptr;
@@ -339,63 +445,64 @@ where
             let ldq = n_q;
             let ldk = n_kv;
             let ldv = n_kv;
-
-            let rope_base = self.rope_ptr.ptr;
-            let mb = self.params.a_row_step_macro;
-            let nb = self.params.b_row_step_macro;
-            let tiles_m = (m_pad + mb - 1) / mb;
-            let v_tiles = tiles_m * ((n_kv + nb - 1) / nb);
-            let k_tiles = v_tiles;
-            let q_tiles = tiles_m * ((n_q + nb - 1) / nb);
-
-            let total_tasks = v_tiles + k_tiles + q_tiles;
+            let total_tasks = row_count * (self.kv_head_num * 2 + q_head_num);
             if let Some((tb, te)) = assign(total_tasks, thread_num, thread_id) {
                 for task_id in tb..te {
-                    let Some((path, local_tile)) =
-                        Self::decode_task(v_tiles, k_tiles, q_tiles, task_id)
+                    let Some((path, row_idx, head_index)) =
+                        Self::path_task(row_count, self.kv_head_num, q_head_num, task_id)
                     else {
                         continue;
                     };
+
+                    let (token_index, batch_index, sequence_index) = row_map[row_idx];
+                    let a_row = a_base.add(token_index * k);
+
+                    let rope_sequence_index = if attention_list.is_empty() {
+                        0
+                    } else {
+                        sequence_index
+                    };
+
                     match path {
-                        KqvPath::V => self.gemm_one_path_tiles(
-                            a_base,
-                            cv_base,
-                            &self.packed_v,
-                            m_pad,
-                            n_kv,
-                            k,
-                            ldv,
-                            rope_base,
-                            local_tile,
-                            local_tile + 1,
-                            false,
-                        ),
-                        KqvPath::K => self.gemm_one_path_tiles(
-                            a_base,
-                            ck_base,
-                            &self.packed_k,
-                            m_pad,
-                            n_kv,
-                            k,
-                            ldk,
-                            rope_base,
-                            local_tile,
-                            local_tile + 1,
-                            true,
-                        ),
-                        KqvPath::Q => self.gemm_one_path_tiles(
-                            a_base,
-                            cq_base,
-                            &self.packed_q,
-                            m_pad,
-                            n_q,
-                            k,
-                            ldq,
-                            rope_base,
-                            local_tile,
-                            local_tile + 1,
-                            true,
-                        ),
+                        KqvPath::V => {
+                            let cache_row = (sequence_index * self.batch_size + batch_index) * ldv;
+                            let dst_head = cv_base.add(cache_row + head_index * self.head_dim);
+                            self.compute_head_from_packed(
+                                a_row,
+                                dst_head,
+                                &self.packed_v,
+                                n_kv,
+                                head_index,
+                                false,
+                                rope_sequence_index,
+                            );
+                        }
+                        KqvPath::K => {
+                            let cache_row = (sequence_index * self.batch_size + batch_index) * ldk;
+                            let dst_head = ck_base.add(cache_row + head_index * self.head_dim);
+                            self.compute_head_from_packed(
+                                a_row,
+                                dst_head,
+                                &self.packed_k,
+                                n_kv,
+                                head_index,
+                                true,
+                                rope_sequence_index,
+                            );
+                        }
+                        KqvPath::Q => {
+                            let dst_head =
+                                cq_base.add(token_index * ldq + head_index * self.head_dim);
+                            self.compute_head_from_packed(
+                                a_row,
+                                dst_head,
+                                &self.packed_q,
+                                n_q,
+                                head_index,
+                                true,
+                                rope_sequence_index,
+                            );
+                        }
                     }
                 }
             }

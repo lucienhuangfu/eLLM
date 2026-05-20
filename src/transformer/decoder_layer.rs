@@ -35,6 +35,7 @@ where
     T: Copy + PartialOrd,
 {
     chunk_size: usize,
+    sequence_length: usize,
     batch_size: usize,
     rms_norm_eps: T,
     layer_idx: usize,
@@ -124,6 +125,7 @@ where
 
         Self {
             chunk_size: chunk_size,
+            sequence_length: _sequence_length,
             batch_size: batch_size,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             layer_idx: layer_idx,
@@ -154,7 +156,8 @@ where
             Tensor::lookup_rms(
                 input_sequences,
                 &*self.word_embedding,
-                self.batch_size,
+                self.chunk_size,
+                self.sequence_length,
                 self.rms_norm_eps,
                 self.scope_name.clone(),
             )

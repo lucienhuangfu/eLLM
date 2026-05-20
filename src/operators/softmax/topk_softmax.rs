@@ -20,7 +20,7 @@ pub struct TopKSoftmax<T> {
     output_values_ptr: MutPtr<T>,
     output_sequences: MutPtr<usize>,
     batch_temperature: MutPtr<T>,
-    batch_size: usize,
+    sequence_stride: usize,
     topk_size: usize,
     eos_id: usize,
 }
@@ -33,7 +33,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
         output_values_ptr: *mut T,
         output_sequences: *mut usize,
         batch_temperature: *mut T,
-        batch_size: usize,
+        sequence_stride: usize,
         topk_size: usize,
         eos_id: usize,
     ) -> Self {
@@ -56,7 +56,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
             batch_temperature: MutPtr {
                 ptr: batch_temperature,
             },
-            batch_size,
+            sequence_stride,
             topk_size,
             eos_id,
         }
@@ -87,7 +87,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
             let output_values_ptr = self.output_values_ptr.ptr;
             let output_sequences_ptr = self.output_sequences.ptr;
 
-            for slice in &decode_list[begin..end] {
+            for (row_index, slice) in decode_list.iter().enumerate().take(end).skip(begin) {
                 let batch_index = slice.batch_index;
                 let slice_length = slice.length;
                 if slice_length == 0 || batch_index >= batch_list.len() {
@@ -112,11 +112,15 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
                     continue;
                 }
 
-                let last_token_offset = slice_length - 1;
-                let sequence_index = slice.sequence_index + last_token_offset;
-                let token_index = slice.token_start_index + last_token_offset;
-                let input_stride = token_index * self.topk_size * thread_num;
-                let output_stride = token_index * self.topk_size;
+                let write_sequence_index = record.kv_index;
+                if write_sequence_index >= self.sequence_stride {
+                    record.phase = Phase::Eos;
+                    record.notify.notify_one();
+                    continue;
+                }
+
+                let input_stride = row_index * self.topk_size * thread_num;
+                let output_stride = row_index * self.topk_size;
                 let batch_temperature = *self.batch_temperature.ptr.add(batch_index);
 
                 self.compute(
@@ -130,7 +134,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
                 );
 
                 let predict_token = *output_indices_ptr.add(output_stride);
-                let out_offset = sequence_index * self.batch_size + batch_index;
+                let out_offset = batch_index * self.sequence_stride + write_sequence_index;
                 ptr::write(output_sequences_ptr.add(out_offset), predict_token);
 
                 record.kv_index = record.kv_index.saturating_add(1);
@@ -302,7 +306,7 @@ mod test {
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
-            batch_size,
+            sequence_length,
             topk_size,
             eos_id,
         );
@@ -401,7 +405,7 @@ mod test {
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
-            batch_size,
+            sequence_length,
             topk_size,
             eos_id,
         );
@@ -456,7 +460,7 @@ mod test {
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
-            batch_size,
+            sequence_length,
             topk_size,
             eos_id,
         );
@@ -513,7 +517,7 @@ mod test {
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
-            batch_size,
+            sequence_length,
             topk_size,
             eos_id,
         );
@@ -540,19 +544,17 @@ mod test {
         let eos_id = 100;
 
         let total_candidates_per_item = topk_size * thread_num;
-        let token_index = 2usize;
         let total_candidate_count = sequence_length * total_candidates_per_item;
         let mut input_indices = vec![0usize; total_candidate_count];
         let mut input_values = vec![0.0f32; total_candidate_count];
-        let token_offset = token_index * total_candidates_per_item;
         for index in 0..total_candidates_per_item {
-            input_indices[token_offset + index] = 10usize + index;
-            input_values[token_offset + index] = 5.0f32 - index as f32 * 0.1;
+            input_indices[index] = 10usize + index;
+            input_values[index] = 5.0f32 - index as f32 * 0.1;
         }
         let mut batch_list = vec![SequenceState {
             filling_length: 3,
-            sequence_index: 3,
-            kv_index: 3,
+            sequence_index: 0,
+            kv_index: 0,
             phase: Phase::Prefill,
             notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         }];
@@ -577,7 +579,7 @@ mod test {
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
-            batch_size,
+            sequence_length,
             topk_size,
             eos_id,
         );
@@ -585,11 +587,11 @@ mod test {
         operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
-        assert_eq!(batch_list[0].sequence_index, 6);
+        assert_eq!(batch_list[0].sequence_index, 3);
         assert_eq!(batch_list[0].filling_length, 0);
-        assert_eq!(batch_list[0].kv_index, 7);
-        assert_eq!(output_indices[token_index * topk_size], 10);
-        assert_eq!(output_sequences[2], 10);
+        assert_eq!(batch_list[0].kv_index, 4);
+        assert_eq!(output_indices[0], 10);
+        assert_eq!(output_sequences[3], 10);
     }
 
     #[test]
@@ -630,7 +632,7 @@ mod test {
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
-            batch_size,
+            sequence_length,
             topk_size,
             eos_id,
         );
@@ -718,7 +720,7 @@ mod test {
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
-            batch_size,
+            sequence_length,
             topk_size,
             eos_id,
         );

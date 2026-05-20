@@ -17,7 +17,7 @@ pub struct LookupRMSMap<T> {
     word_embedding: ConstPtr<T>,
     output_hidden_ptr: MutPtr<T>,
     output_normal_ptr: MutPtr<T>,
-    batch_size: usize,
+    sequence_stride: usize,
     hidden_size: usize,
     eps: T,
 }
@@ -29,7 +29,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
         word_embedding: *const T,
         output_hidden_ptr: *mut T,
         output_normal_ptr: *mut T,
-        batch_size: usize,
+        sequence_stride: usize,
         hidden_size: usize,
         eps: T,
     ) -> Self {
@@ -41,7 +41,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
             output_normal_ptr: MutPtr {
                 ptr: output_normal_ptr,
             },
-            batch_size,
+            sequence_stride,
             hidden_size,
             word_embedding: ConstPtr {
                 ptr: word_embedding,
@@ -125,7 +125,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
         position_index: usize,
         token_index: usize,
     ) {
-        let token_id = *sequences_ptr.add(position_index * self.batch_size + batch_index);
+        let token_id = *sequences_ptr.add(batch_index * self.sequence_stride + position_index);
         let embedding_ptr = self.word_embedding.ptr.add(token_id * self.hidden_size);
         let offset = token_index * self.hidden_size;
 
@@ -316,7 +316,7 @@ mod test {
             word_embedding.as_ptr(),
             output_hidden_data.as_mut_ptr(),
             output_normal_data.as_mut_ptr(),
-            batch_size,
+            1,
             hidden_size,
             eps,
         );
@@ -333,6 +333,63 @@ mod test {
         }
 
         let expected_hidden = word_embedding[..vocab_size * hidden_size].to_vec();
+        assert_ulps_eq!(
+            output_hidden_data.as_slice(),
+            expected_hidden.as_slice(),
+            max_ulps = 1
+        );
+        assert!(output_normal_data.iter().all(|value| *value > 0.0));
+    }
+
+    #[test]
+    fn test_lookup_prefill_reads_row_major_batch_sequence_storage() {
+        let batch_size = 2;
+        let sequence_stride = 5;
+        let hidden_size = 2;
+        let eps = 1e-6f32;
+
+        let sequences = vec![
+            0, 1, 2, 3, 0, // slot 0
+            3, 2, 1, 0, 0, // slot 1
+        ];
+        let word_embedding: Vec<f32> = vec![
+            1.0, 10.0, // token 0
+            2.0, 20.0, // token 1
+            3.0, 30.0, // token 2
+            4.0, 40.0, // token 3
+        ];
+        let mut output_hidden_data = vec![0.0f32; 4 * hidden_size];
+        let mut output_normal_data = vec![0.0f32; 4 * hidden_size];
+        let prefill_list = vec![vec![
+            SequenceSlice {
+                batch_index: 0,
+                sequence_index: 1,
+                token_start_index: 0,
+                length: 2,
+                last_token_flag: false,
+            },
+            SequenceSlice {
+                batch_index: 1,
+                sequence_index: 0,
+                token_start_index: 2,
+                length: 2,
+                last_token_flag: false,
+            },
+        ]];
+
+        let operator = LookupRMSMap::new(
+            sequences.as_ptr(),
+            word_embedding.as_ptr(),
+            output_hidden_data.as_mut_ptr(),
+            output_normal_data.as_mut_ptr(),
+            sequence_stride,
+            hidden_size,
+            eps,
+        );
+
+        operator.run(4, 0, 1, 0, &prefill_list, &[]);
+
+        let expected_hidden = [2.0, 20.0, 3.0, 30.0, 4.0, 40.0, 3.0, 30.0];
         assert_ulps_eq!(
             output_hidden_data.as_slice(),
             expected_hidden.as_slice(),

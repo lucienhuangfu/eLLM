@@ -167,6 +167,7 @@ where
         // sums_tensor: &Tensor<T>,
         output_sequences: *mut usize,
         batch_temperature: *mut T,
+        sequence_stride: usize,
         num_topk: usize,
         eos_id: usize,
         scope_name: String,
@@ -184,7 +185,7 @@ where
             value_tensor.data,
             output_sequences,
             batch_temperature,
-            self.shape[0],
+            sequence_stride,
             num_topk,
             eos_id,
         ));

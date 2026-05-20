@@ -169,6 +169,7 @@ where
             indices_ptr,
             input_sequences,
             batch_temperature,
+            self.sequence_length,
             self.topk_size,
             self.eos_id,
             format!("{}.softmax", self.scope_name),

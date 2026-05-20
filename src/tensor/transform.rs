@@ -73,17 +73,18 @@ where
     pub fn lookup_rms(
         sequences_ptr: *const usize,
         word_embedding: &Tensor<T>,
-        batch_size: usize,
+        token_capacity: usize,
+        sequence_stride: usize,
         eps: T,
         scope_name: String,
     ) -> (Self, Self) {
         let output_hidden_tensor = Self::from_mem_pool(
-            vec![batch_size, word_embedding.shape[1]],
+            vec![token_capacity, word_embedding.shape[1]],
             format!("{}.output_hidden", scope_name),
         );
 
         let output_normal_tensor = Self::from_mem_pool(
-            vec![batch_size, word_embedding.shape[1]],
+            vec![token_capacity, word_embedding.shape[1]],
             format!("{}.output_normal", scope_name),
         );
 
@@ -92,7 +93,7 @@ where
             word_embedding.data,
             output_hidden_tensor.data,
             output_normal_tensor.data,
-            batch_size,
+            sequence_stride,
             word_embedding.shape[1],
             eps,
         ));

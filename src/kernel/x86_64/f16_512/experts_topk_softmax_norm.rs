@@ -67,16 +67,7 @@ pub unsafe fn get_topk(
         chunk_start += LANES;
     }
 
-    /*
-    // Sort the result in descending order of values
-    let mut pairs: Vec<(f16, usize)> = (0..topk)
-        .map(|i| (*out_values.add(i), *out_indices.add(i)))
-        .collect();
-    pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-    for i in 0..topk {
-        *out_values.add(i) = pairs[i].0;
-        *out_indices.add(i) = pairs[i].1;
-    }*/
+    heap.sort_desc();
 }
 
 #[inline(always)]
