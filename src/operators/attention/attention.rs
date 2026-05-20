@@ -606,4 +606,91 @@ mod tests {
             assert_close(actual, &expected);
         }
     }
+
+    #[test]
+    fn attention_reads_permuted_kv_with_strides() {
+        let head_size = 2;
+        let batch_size = 2;
+        let seq_len = 3;
+        let kv_heads = 1;
+        let inverse_sqrt_head = 1.0;
+        let q = vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let mut k = vec![0.0; seq_len * batch_size * kv_heads * head_size];
+        let mut v = vec![0.0; k.len()];
+
+        for seq in 0..seq_len {
+            for batch in 0..batch_size {
+                let base = ((seq * batch_size + batch) * kv_heads) * head_size;
+                k[base] = 10.0 * batch as f32 + seq as f32 + 1.0;
+                k[base + 1] = 10.0 * batch as f32 + seq as f32 + 2.0;
+                v[base] = 100.0 * batch as f32 + 10.0 * seq as f32 + 1.0;
+                v[base + 1] = 100.0 * batch as f32 + 10.0 * seq as f32 + 2.0;
+            }
+        }
+
+        let mut output = vec![-1.0; q.len()];
+        let attention = Attention::new(
+            q.as_ptr(),
+            k.as_ptr(),
+            v.as_ptr(),
+            output.as_mut_ptr(),
+            seq_len,
+            batch_size,
+            1,
+            kv_heads,
+            kv_heads * head_size,
+            head_size,
+            batch_size * kv_heads * head_size,
+            kv_heads * head_size,
+            head_size,
+            batch_size * kv_heads * head_size,
+            1,
+            2,
+            head_size,
+            inverse_sqrt_head,
+            false,
+            1,
+        );
+
+        let slice = [SequenceSlice {
+            token_start_index: 0,
+            batch_index: 1,
+            sequence_index: 0,
+            length: seq_len,
+            last_token_flag: false,
+        }];
+
+        attention.run(0, 0, &slice, 1, 0);
+
+        let batch1_k_base = kv_heads * head_size;
+        let batch1_k = [
+            k[batch1_k_base],
+            k[batch1_k_base + 1],
+            k[batch1_k_base + batch_size * kv_heads * head_size],
+            k[batch1_k_base + batch_size * kv_heads * head_size + 1],
+            k[batch1_k_base + 2 * batch_size * kv_heads * head_size],
+            k[batch1_k_base + 2 * batch_size * kv_heads * head_size + 1],
+        ];
+        let batch1_v = [
+            v[batch1_k_base],
+            v[batch1_k_base + 1],
+            v[batch1_k_base + batch_size * kv_heads * head_size],
+            v[batch1_k_base + batch_size * kv_heads * head_size + 1],
+            v[batch1_k_base + 2 * batch_size * kv_heads * head_size],
+            v[batch1_k_base + 2 * batch_size * kv_heads * head_size + 1],
+        ];
+
+        for row in 0..seq_len {
+            let expected = naive_attention_row(
+                &q[row * head_size..(row + 1) * head_size],
+                &batch1_k,
+                &batch1_v,
+                head_size,
+                row + 1,
+                inverse_sqrt_head,
+            );
+            let actual = &output[row * head_size..(row + 1) * head_size];
+            assert_close(actual, &expected);
+        }
+    }
 }

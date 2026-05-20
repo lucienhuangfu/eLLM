@@ -32,13 +32,13 @@
 | `head_dim` / `head_size` | 每个 head 的维度 |
 | `row_step` | 行方向 block 粒度，当前 `Tensor::attention` 调用传入为 1 |
 | `col_step` | 列方向 block 粒度，当前 `Tensor::attention` 调用传入为 8 |
-| `sequence_length` | 前向路径中当前 chunk 的序列长度 |
+| `sequence_length` | K/V cache 的序列容量或布局上限；当前参与计算的 token 范围由 `SequenceSlice` 决定 |
 
 说明：
 
 * GQA 通过 `num_attention_heads / num_key_value_heads` 的映射关系表达，不额外引入独立的 `group` 张量维度。
 * `batch_size` 仍然是张量语义中的 batch 维，但任务输入不是直接按 batch 维展开，而是通过外部切片结构传入。
-* 在前向层里更常见的是 `head_dim` 和 `sequence_length`；在底层 attention kernel 里对应的是 `head_size` 和 `seq_len`。
+* 在前向层里更常见的是 `head_dim`、`chunk_size` 和 K/V cache 的 `sequence_length`；在底层 attention kernel 里对应的是 `head_size`、stride 信息和 slice 的有效 token 范围。
 * `decode_only_flag` 会被保存在 `Attention` 结构体中，但当前 attention 调度与计算路径并未使用它参与分支判断。
 
 ---
@@ -57,7 +57,7 @@ attention 前向路径的张量组织可以概括为：
 从语义上看：
 
 * Q 的逻辑形状是 `[sequence_length, batch_size, num_attention_heads, head_dim]`
-* K / V 的逻辑形状是 `[batch_size, num_key_value_heads, sequence_length, head_dim]`
+* K / V 在前向路径中先按 `[sequence_length, batch_size, num_key_value_heads, head_dim]` 生成，再通过 view/permute 形成 `[batch_size, num_key_value_heads, sequence_length, head_dim]` 的逻辑访问；底层 kernel 依赖传入的 K/V stride 做真实寻址。
 
 这表示整体结构遵循典型的 GQA 设计：
 
@@ -75,7 +75,7 @@ attention kernel 处理的最小外部任务单元不是单独某一行，也不
 * 它对应哪段 sequence/token 区间
 * 这段区间的长度
 
-当前 attention 实现实际会读取 `token_start_index`、`batch_index`、`sequence_index` 和 `length` 来定位 Q/K/V/O 指针；`lift_index` 目前不参与该算子的调度。
+当前 attention 实现实际会读取 `token_start_index`、`batch_index`、`sequence_index` 和 `length` 来定位 Q/K/V/O 指针；`last_token_flag` 目前不参与该算子的调度。
 
 因此，最小调度单元可以理解为：
 

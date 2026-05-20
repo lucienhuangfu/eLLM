@@ -13,6 +13,7 @@ use super::Tensor;
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::common::expert_routing::routing_from_dense;
     use approx::{assert_abs_diff_eq, assert_ulps_eq};
     use std::collections::HashMap;
     use std::f16;
@@ -1308,6 +1309,22 @@ mod test {
                 *indice_ptr.add(b + bb) = false;
             }
         }
+        let mut routing_scores = vec![0.0f16; num_experts * b];
+        let mut topk_indices = vec![0usize; b];
+        for bb in 0..b {
+            routing_scores[bb] = 1.0f16;
+            topk_indices[bb] = 0;
+        }
+        let routing = unsafe {
+            routing_from_dense(
+                num_experts,
+                b,
+                1,
+                indice_ptr,
+                routing_scores.as_ptr(),
+                topk_indices.as_ptr(),
+            )
+        };
 
         // input init
         let mut a = vec![0.0f16; b * hidden];
@@ -1355,8 +1372,7 @@ mod test {
         let out = input.experts_matmul_silu_mul_matmul(
             &gate_w,
             &up_w,
-            experts_indicator,
-            indice_ptr,
+            routing,
             params,
             false,
             "model.layers.0.experts_silu".to_string(),
@@ -1538,10 +1554,16 @@ mod test {
 
         let out = x.experts_matmul_mul(
             &down_w,
-            experts_indicator,
-            indice_ptr,
-            weight_ptr,
-            topk_indices_ptr,
+            unsafe {
+                routing_from_dense(
+                    num_experts,
+                    b,
+                    num_experts_per_tok,
+                    indice_ptr,
+                    weight_ptr,
+                    topk_indices_ptr,
+                )
+            },
             num_experts_per_tok,
             params,
             false,
@@ -1643,6 +1665,24 @@ mod test {
                 *indice_ptr.add(num_tokens + t) = true;
             }
         }
+        let mut routing_scores = vec![0.0f16; num_experts * num_tokens];
+        let mut topk_indices = vec![0usize; num_tokens * k];
+        for t in 0..num_tokens {
+            routing_scores[t] = 1.0f16;
+            routing_scores[num_tokens + t] = 1.0f16;
+            topk_indices[t * k] = 0;
+            topk_indices[t * k + 1] = 1;
+        }
+        let routing = unsafe {
+            routing_from_dense(
+                num_experts,
+                num_tokens,
+                k,
+                indice_ptr,
+                routing_scores.as_ptr(),
+                topk_indices.as_ptr(),
+            )
+        };
 
         // init residual
         let mut r = vec![0.0f16; num_tokens * hidden];
@@ -1682,9 +1722,7 @@ mod test {
         // build via Tensor API
         let out = input.experts_merge_add(
             &residual,
-            experts_indicator,
-            indice_ptr,
-            num_experts,
+            routing,
             false,
             "model.layers.0.experts_merge_add".to_string(),
         );

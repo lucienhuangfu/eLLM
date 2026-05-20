@@ -32,13 +32,13 @@ The focus here is on scheduling structure, tensor organization, and parallel spl
 | `head_dim` / `head_size` | Dimensionality of each head |
 | `row_step` | Block granularity in the row direction, currently passed as 1 by `Tensor::attention` |
 | `col_step` | Block granularity in the column direction, currently passed as 8 by `Tensor::attention` |
-| `sequence_length` | Sequence length of the current chunk in the forward path |
+| `sequence_length` | Sequence capacity or layout limit of the K/V cache; the token range that participates in the current computation is determined by `SequenceSlice` |
 
 Notes:
 
 * GQA is expressed through the mapping `num_attention_heads / num_key_value_heads`, without introducing a separate `group` tensor dimension.
 * `batch_size` is still the batch dimension in tensor semantics, but task input is not expanded directly by batch dimension; it is passed in through an external slice structure.
-* In the forward layer, `head_dim` and `sequence_length` are more common; in the lower-level attention kernel, the corresponding names are `head_size` and `seq_len`.
+* In the forward layer, `head_dim`, `chunk_size`, and the K/V cache `sequence_length` are more common; in the lower-level attention kernel, the corresponding concepts are `head_size`, stride metadata, and the effective token range from the slice.
 * `decode_only_flag` is stored in the `Attention` struct, but the current attention scheduling and compute path do not branch on it.
 
 ---
@@ -57,7 +57,7 @@ The attention forward tensor layout can be summarized as:
 Semantically:
 
 * The logical shape of Q is `[sequence_length, batch_size, num_attention_heads, head_dim]`
-* The logical shape of K / V is `[batch_size, num_key_value_heads, sequence_length, head_dim]`
+* K / V are first produced in the forward path as `[sequence_length, batch_size, num_key_value_heads, head_dim]`, then viewed/permuted into the logical access shape `[batch_size, num_key_value_heads, sequence_length, head_dim]`; the lower-level kernel performs real addressing through the provided K/V strides.
 
 This follows the typical GQA design:
 
@@ -75,7 +75,7 @@ A slice carries:
 * Which sequence/token range it corresponds to
 * The length of that range
 
-The current attention implementation actually reads `token_start_index`, `batch_index`, `sequence_index`, and `length` to locate Q/K/V/O pointers; `lift_index` does not participate in scheduling for this operator at present.
+The current attention implementation actually reads `token_start_index`, `batch_index`, `sequence_index`, and `length` to locate Q/K/V/O pointers; `last_token_flag` does not participate in scheduling for this operator at present.
 
 So the smallest scheduling unit can be understood as:
 
@@ -162,7 +162,7 @@ Implementation-wise, the current code first computes:
 aligned_len = floor(slice.length / row_step) * row_step
 ```
 
-Then it only sends the `aligned_len` segment to the triangular-work sequence split. Although the code constructs a tail plan `tail = (aligned_len, slice.length)`, the current `visit_blocks_for_head` only consumes `row_plan.main` and does not execute `row_plan.tail`. So under the current implementation, the actual sequence-split path only computes the aligned `main` range.
+Then it sends the `aligned_len` segment to the triangular-work sequence split. The code also constructs a tail plan `tail = (aligned_len, slice.length)`, and the last thread executes block attention computation for that tail segment. Therefore, the sequence-split path covers both the aligned `main` range and the final row range that is shorter than `row_step`.
 
 The priority here is:
 
@@ -380,7 +380,7 @@ This static attention parallelization scheme can be summarized as:
 * When a slice is long enough, the inner thread split uses triangular work to split row intervals statically, rather than distributing rows evenly.
 * When a slice is short and cannot cover all threads with row blocks, the inner split switches to `kv_head` waves: each wave activates as few contiguous `kv_head`s as possible, then assigns the flattened attention-head slots of that wave contiguously to threads.
 * Internal traversal uses a two-dimensional block structure, with current parameters `row_step=1` and `col_step=8`.
-* The current numerical path already performs row-by-row causal truncation through scalar `block_flash_attention`; however, `RowVisitPlan.tail` is not yet executed in the access path.
+* The current numerical path already performs row-by-row causal truncation through scalar `block_flash_attention`, and `RowVisitPlan.tail` is also executed in the access path.
 
 ---
 

@@ -512,6 +512,7 @@ impl MatMulkqvTrait<f32> for MatMul3<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     // ========================================================================
     // Helpers for f32 tests
