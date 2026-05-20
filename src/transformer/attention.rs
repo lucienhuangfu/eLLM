@@ -1,6 +1,7 @@
 use std::ops::{AddAssign, Neg, Sub};
 
 use crate::common::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
+use crate::common::sequence_slice;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::super::common::matmul_params::MatMulParams;
@@ -15,6 +16,7 @@ where
     T: Copy + PartialOrd,
 {
     batch_size: usize,
+    sequence_length: usize,
     num_attention_heads: usize,
     num_key_value_heads: usize,
     head_dim: usize,
@@ -47,6 +49,7 @@ where
         let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
 
         Self {
+            sequence_length: sequence_length,
             batch_size: batch_size,
             num_attention_heads: config.num_attention_heads,
             num_key_value_heads: config.num_key_value_heads,
@@ -93,6 +96,10 @@ where
                 &self.k_weight,
                 &self.v_weight,
                 position_embedding,
+                self.sequence_length,
+                self.batch_size,
+                self.num_key_value_heads,
+                self.num_attention_heads / self.num_key_value_heads,
                 self.head_dim,
                 MatMulParams {
                     a_row_step_macro: 3,
@@ -137,7 +144,7 @@ where
             */
             let thread_num = num_cpus::get().max(1);
 
-            // [position_window_size, batch_size, head_num, head_size] <- [position_window_size, batch_size, head_num, head_size] [batch_size, head_num, sequence_num, head_size] [batch_size, head_num, sequence_num, head_size]
+            // [chunk_size, head_num, head_size] <- [chunk_size, head_num, group_num, head_dim] [batch_size, head_num, sequence_length, head_dim] [batch_size, head_num, sequence_length, head_dim]
             let attn_output = view_query_states.attention(
                 &key_states,
                 &value_states,
