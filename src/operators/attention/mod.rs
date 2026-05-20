@@ -1,9 +1,10 @@
-mod core;
-mod dispatch;
-mod plan;
-mod schedule;
+// Core attention structure and implementation
+mod attention;
+// AttentionTrait implementations for different data types
+mod compute;
+// Scratch buffers for thread-local computation
 mod scratch;
-mod split_sequence;
-mod visit;
+// Utility functions for sequence splitting
+mod utils;
 
-pub use core::Attention;
+pub use attention::Attention;

@@ -47,7 +47,8 @@ pub unsafe fn routing_from_dense<T: Copy + Default>(
     let index_tensor_box = AlignedBox::allocate_init(num_experts * capacity_per_expert, 0usize);
     let index_tensor = index_tensor_box.as_mut_ptr();
     std::mem::forget(index_tensor_box);
-    let score_tensor_box = AlignedBox::allocate_init(num_experts * capacity_per_expert, T::default());
+    let score_tensor_box =
+        AlignedBox::allocate_init(num_experts * capacity_per_expert, T::default());
     let score_tensor = score_tensor_box.as_mut_ptr();
     std::mem::forget(score_tensor_box);
     let topk_indices_box = AlignedBox::allocate_init(num_tokens * num_topk, 0usize);
@@ -107,7 +108,8 @@ pub unsafe fn empty_routing<T: Copy + Default>(
     let index_tensor_box = AlignedBox::allocate_init(num_experts * capacity_per_expert, 0usize);
     let index_tensor = index_tensor_box.as_mut_ptr();
     std::mem::forget(index_tensor_box);
-    let score_tensor_box = AlignedBox::allocate_init(num_experts * capacity_per_expert, T::default());
+    let score_tensor_box =
+        AlignedBox::allocate_init(num_experts * capacity_per_expert, T::default());
     let score_tensor = score_tensor_box.as_mut_ptr();
     std::mem::forget(score_tensor_box);
     let topk_indices_box = AlignedBox::allocate_init(num_tokens * num_topk, 0usize);

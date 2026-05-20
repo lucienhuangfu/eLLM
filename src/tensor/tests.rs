@@ -1,26 +1,22 @@
+use std::{cell::RefCell, rc::Rc};
+
 use crate::common::matmul_params::MatMulParams;
 use crate::common::sequence_slice::SequenceSlice;
 use crate::mem_mgr::allocator::AlignedBox;
-use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::mem_mgr::mem_pool::MemPool;
 use crate::operators::linear::{MatMul, MatMulAdd};
 use crate::operators::operator::Operator;
 use crate::runtime::{Phase, SequenceState};
-use crate::tensor::GlobalOperatorQueue;
 
 use super::Tensor;
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::common::expert_routing::routing_from_dense;
     use approx::{assert_abs_diff_eq, assert_ulps_eq};
-    use once_cell::sync::Lazy;
     use std::collections::HashMap;
     use std::f16;
     use std::mem;
-    use std::sync::{Mutex, MutexGuard};
-
-    static TEST_RUNTIME_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     // ============================================================
     // helpers
@@ -30,24 +26,6 @@ mod test {
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
-    }
-
-    fn reset_f32_runtime() -> MutexGuard<'static, ()> {
-        let guard = TEST_RUNTIME_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        f32::init_global(HashMap::new());
-        f32::init_operator_queue();
-        guard
-    }
-
-    fn reset_f16_runtime() -> MutexGuard<'static, ()> {
-        let guard = TEST_RUNTIME_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        f16::init_global(HashMap::new());
-        f16::init_operator_queue();
-        guard
     }
 
     #[inline]
@@ -120,7 +98,9 @@ mod test {
 
     #[test]
     fn test_topk_softmax_f32() {
-        let _runtime = reset_f32_runtime();
+        let mem_pool: Rc<RefCell<MemPool<f32>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f32>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 2;
         let num_topk = 8;
@@ -202,25 +182,23 @@ mod test {
             "model.layers.0.topk_softmax".to_string(),
         );
 
-        f32::with_operator_queue(|queue| {
-            for i in 0..thread_num {
-                for op in queue.iter() {
-                    if let Operator::TopKSoftmax(operator) = op {
-                        operator.run(
-                            batch_size,
-                            1,
-                            thread_num,
-                            i,
-                            &[],
-                            &decode_list,
-                            &mut batch_list,
-                        );
-                    } else {
-                        op.run(batch_size, 1, thread_num, i, &[], &[], &mut Vec::new());
-                    }
+        for i in 0..thread_num {
+            for op in operator_queue.borrow_mut().iter() {
+                if let Operator::TopKSoftmax(operator) = op {
+                    operator.run(
+                        batch_size,
+                        1,
+                        thread_num,
+                        i,
+                        &[],
+                        &decode_list,
+                        &mut batch_list,
+                    );
+                } else {
+                    op.run(batch_size, 1, thread_num, i, &[], &[], &mut Vec::new());
                 }
             }
-        });
+        }
 
         let num_tokens = batch_size;
         let output_indices =
@@ -270,7 +248,10 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
-        let _runtime = reset_f16_runtime();
+
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 2;
         let num_topk = 8;
@@ -353,25 +334,23 @@ mod test {
             "model.layers.0.topk_softmax".to_string(),
         );
 
-        f16::with_operator_queue(|queue| {
-            for i in 0..thread_num {
-                for op in queue.iter() {
-                    if let Operator::TopKSoftmax(operator) = op {
-                        operator.run(
-                            batch_size,
-                            1,
-                            thread_num,
-                            i,
-                            &[],
-                            &decode_list,
-                            &mut batch_list,
-                        );
-                    } else {
-                        op.run(batch_size, 1, thread_num, i, &[], &[], &mut Vec::new());
-                    }
+        for i in 0..thread_num {
+            for op in operator_queue.borrow_mut().iter() {
+                if let Operator::TopKSoftmax(operator) = op {
+                    operator.run(
+                        batch_size,
+                        1,
+                        thread_num,
+                        i,
+                        &[],
+                        &decode_list,
+                        &mut batch_list,
+                    );
+                } else {
+                    op.run(batch_size, 1, thread_num, i, &[], &[], &mut Vec::new());
                 }
             }
-        });
+        }
 
         let num_tokens = batch_size;
         let output_indices =
@@ -437,7 +416,10 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
-        let _runtime = reset_f16_runtime();
+
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 3;
         let hidden_size = 64;
@@ -524,16 +506,18 @@ mod test {
             &k_weight,
             &v_weight,
             &position_embedding,
+            batch_size, // sequence_length
+            batch_size, // batch_size
+            1,          // kv_head_num
+            1,          // group_num
             head_dim,
             params,
             "model.layers.0.matmul3".to_string(),
         );
 
-        f16::with_operator_queue(|queue| {
-            for op in queue.iter() {
-                op.run(batch_size, 1, 1, 0, &[], &[], &mut Vec::new());
-            }
-        });
+        for op in operator_queue.borrow_mut().iter() {
+            op.run(batch_size, 1, 1, 0, &[], &[], &mut Vec::new());
+        }
 
         let verify_matmul_nt =
             |output_tensor: &Tensor<f16>, w_nt: &[f16], n_dim: usize, name: &str| {
@@ -574,7 +558,10 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
-        let _runtime = reset_f16_runtime();
+
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 24;
         let hidden_size = 64;
@@ -661,24 +648,24 @@ mod test {
             &k_weight,
             &v_weight,
             &position_embedding,
+            batch_size, // sequence_length
+            batch_size, // batch_size
+            1,          // kv_head_num
+            1,          // group_num
             head_dim,
             params,
             "model.layers.0.matmul3".to_string(),
         );
 
-        assert_eq!(q_out.shape, vec![batch_size, 1, q_dim]);
-        assert_eq!(k_out.shape, vec![batch_size, 1, kv_dim]);
-        assert_eq!(v_out.shape, vec![batch_size, 1, kv_dim]);
-        f16::with_operator_queue(|queue| {
-            assert_eq!(queue.len(), 1);
-            assert!(matches!(&queue[0], Operator::MatMul3(_)));
-        });
+        assert_eq!(q_out.shape, vec![batch_size, q_dim]);
+        assert_eq!(k_out.shape, vec![batch_size, kv_dim]);
+        assert_eq!(v_out.shape, vec![batch_size, kv_dim]);
+        assert_eq!(operator_queue.borrow().len(), 1);
+        assert!(matches!(&operator_queue.borrow()[0], Operator::MatMul3(_)));
 
-        f16::with_operator_queue(|queue| {
-            for op in queue.iter() {
-                op.run(batch_size, 1, 1, 0, &[], &[], &mut Vec::new());
-            }
-        });
+        for op in operator_queue.borrow_mut().iter() {
+            op.run(batch_size, 1, 1, 0, &[], &[], &mut Vec::new());
+        }
 
         let q_len = m * q_dim;
         let kv_len = m * kv_dim;
@@ -723,7 +710,10 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
-        let _runtime = reset_f16_runtime();
+
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
         let hidden_size = 64; // K
@@ -739,7 +729,7 @@ mod test {
 
         let weight_tensor = Tensor::<f16>::from_mem_pool(
             vec![intermediate_size, hidden_size],
-            "weight.weight".to_string(),
+            "weight".to_string(),
         );
 
         let m = batch_size;
@@ -788,13 +778,11 @@ mod test {
             "model.layers.0.matmul_local_topk".to_string(),
         );
 
-        f16::with_operator_queue(|queue| {
-            for op in queue.iter() {
-                for i in 0..thread_num {
-                    op.run(m, 1, thread_num, i, &[], &[], &mut Vec::new());
-                }
+        for op in operator_queue.borrow_mut().iter() {
+            for i in 0..thread_num {
+                op.run(m, 1, thread_num, i, &[], &[], &mut Vec::new());
             }
-        });
+        }
 
         let out_len = m * thread_num * topk;
         let indices = unsafe { std::slice::from_raw_parts(indice_ptr, out_len) };
@@ -849,7 +837,10 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
-        let _runtime = reset_f16_runtime();
+
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
         let k = 64;
@@ -861,7 +852,7 @@ mod test {
         let input_tensor =
             Tensor::<f16>::from_mem_pool(vec![batch_size, k], "model.layers.0.input".to_string());
 
-        let weight_tensor = Tensor::<f16>::from_mem_pool(vec![n, k], "weight.weight".to_string());
+        let weight_tensor = Tensor::<f16>::from_mem_pool(vec![n, k], "weight".to_string());
 
         // A = 1
         let m = batch_size;
@@ -904,13 +895,11 @@ mod test {
             "model.layers.0.matmul_local_topk".to_string(),
         );
 
-        f16::with_operator_queue(|queue| {
-            for op in queue.iter() {
-                for tid in 0..thread_num {
-                    op.run(m, 1, thread_num, tid, &[], &[], &mut Vec::new());
-                }
+        for op in operator_queue.borrow_mut().iter() {
+            for tid in 0..thread_num {
+                op.run(m, 1, thread_num, tid, &[], &[], &mut Vec::new());
             }
-        });
+        }
 
         let out_len = m * thread_num * topk;
         let indices = unsafe { std::slice::from_raw_parts(indice_ptr, out_len) };
@@ -968,7 +957,10 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
-        let _runtime = reset_f16_runtime();
+
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
         let hidden_size = 64; // K
@@ -1029,11 +1021,9 @@ mod test {
             "model.layers.0.matmul".to_string(),
         );
 
-        f16::with_operator_queue(|queue| {
-            for op in queue.iter() {
-                op.run(m, 1, 1, 0, &[], &[], &mut Vec::new());
-            }
-        });
+        for op in operator_queue.borrow_mut().iter() {
+            op.run(m, 1, 1, 0, &[], &[], &mut Vec::new());
+        }
 
         let out_len = m * n;
         let output_data = unsafe { std::slice::from_raw_parts(output_tensor.data, out_len) };
@@ -1065,7 +1055,10 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
-        let _runtime = reset_f16_runtime();
+
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
         let hidden_size = 64; // K
@@ -1144,11 +1137,9 @@ mod test {
             "model.layers.0.matmul_add".to_string(),
         );
 
-        f16::with_operator_queue(|queue| {
-            for op in queue.iter() {
-                op.run(m, 1, 1, 0, &[], &[], &mut Vec::new());
-            }
-        });
+        for op in operator_queue.borrow_mut().iter() {
+            op.run(m, 1, 1, 0, &[], &[], &mut Vec::new());
+        }
 
         let out_len = m * n;
         let output_data = unsafe { std::slice::from_raw_parts(output_tensor.data, out_len) };
@@ -1275,7 +1266,10 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
-        let _runtime = reset_f16_runtime();
+
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
         let hidden = 64; // H
@@ -1314,18 +1308,6 @@ mod test {
                 *indice_ptr.add(b + bb) = false;
             }
         }
-        let score = vec![1.0f16; num_experts * b];
-        let topk_indices = vec![0usize; b];
-        let routing = unsafe {
-            routing_from_dense(
-                num_experts,
-                b,
-                1,
-                indice_ptr,
-                score.as_ptr(),
-                topk_indices.as_ptr(),
-            )
-        };
 
         // input init
         let mut a = vec![0.0f16; b * hidden];
@@ -1373,27 +1355,27 @@ mod test {
         let out = input.experts_matmul_silu_mul_matmul(
             &gate_w,
             &up_w,
-            routing,
+            experts_indicator,
+            indice_ptr,
             params,
             false,
             "model.layers.0.experts_silu".to_string(),
         );
 
         assert_eq!(out.shape, vec![num_experts, batch_size, inter]);
-        f16::with_operator_queue(|queue| {
-            assert_eq!(queue.len(), 1);
-            assert!(matches!(&queue[0], Operator::ExpertsMatMulSilu(_)));
-        });
+        assert_eq!(operator_queue.borrow().len(), 1);
+        assert!(matches!(
+            &operator_queue.borrow()[0],
+            Operator::ExpertsMatMulSilu(_)
+        ));
 
         let thread_num = avail_threads();
 
-        f16::with_operator_queue(|queue| {
-            for op in queue.iter() {
-                for tid in 0..thread_num {
-                    op.run(b, 1, thread_num, tid, &[], &[], &mut Vec::new());
-                }
+        for op in operator_queue.borrow_mut().iter() {
+            for tid in 0..thread_num {
+                op.run(b, 1, thread_num, tid, &[], &[], &mut Vec::new());
             }
-        });
+        }
 
         let out_len = num_experts * b * inter;
         let out_got = unsafe { std::slice::from_raw_parts(out.data, out_len) };
@@ -1445,7 +1427,10 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
-        let _runtime = reset_f16_runtime();
+
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
         let num_experts = 2;
@@ -1500,16 +1485,6 @@ mod test {
                 *topk_indices_ptr.add(t) = 0usize;
             }
         }
-        let routing = unsafe {
-            routing_from_dense(
-                num_experts,
-                b,
-                num_experts_per_tok,
-                indice_ptr,
-                weight_ptr,
-                topk_indices_ptr,
-            )
-        };
 
         // init X: expert0 pattern, expert1 zeros
         let mut x_e0 = vec![0.0f16; b * inter];
@@ -1563,7 +1538,10 @@ mod test {
 
         let out = x.experts_matmul_mul(
             &down_w,
-            routing,
+            experts_indicator,
+            indice_ptr,
+            weight_ptr,
+            topk_indices_ptr,
             num_experts_per_tok,
             params,
             false,
@@ -1571,10 +1549,11 @@ mod test {
         );
 
         assert_eq!(out.shape, vec![batch_size, num_experts_per_tok, hidden]);
-        f16::with_operator_queue(|queue| {
-            assert_eq!(queue.len(), 1);
-            assert!(matches!(&queue[0], Operator::ExpertsMatMulDown(_)));
-        });
+        assert_eq!(operator_queue.borrow().len(), 1);
+        assert!(matches!(
+            &operator_queue.borrow()[0],
+            Operator::ExpertsMatMulDown(_)
+        ));
 
         // ✅ IMPORTANT: down does out += acc * factor, so zero out first
         let out_len = b * num_experts_per_tok * hidden;
@@ -1588,13 +1567,11 @@ mod test {
             .map(|n| n.get())
             .unwrap_or(1);
 
-        f16::with_operator_queue(|queue| {
-            for op in queue.iter() {
-                for tid in 0..thread_num {
-                    op.run(b, 1, thread_num, tid, &[], &[], &mut Vec::new());
-                }
+        for op in operator_queue.borrow_mut().iter() {
+            for tid in 0..thread_num {
+                op.run(b, 1, thread_num, tid, &[], &[], &mut Vec::new());
             }
-        });
+        }
 
         // verify reference:
         // out[t, 0, j] = sum_k x_e0[t,k] * w_e0_nt[j,k]
@@ -1626,7 +1603,10 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
-        let _runtime = reset_f16_runtime();
+
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
         let num_tokens = batch_size;
@@ -1663,18 +1643,6 @@ mod test {
                 *indice_ptr.add(num_tokens + t) = true;
             }
         }
-        let score = vec![1.0f16; num_experts * num_tokens];
-        let topk_indices: Vec<usize> = (0..num_tokens).flat_map(|_| 0..k).collect();
-        let routing = unsafe {
-            routing_from_dense(
-                num_experts,
-                num_tokens,
-                k,
-                indice_ptr,
-                score.as_ptr(),
-                topk_indices.as_ptr(),
-            )
-        };
 
         // init residual
         let mut r = vec![0.0f16; num_tokens * hidden];
@@ -1714,28 +1682,29 @@ mod test {
         // build via Tensor API
         let out = input.experts_merge_add(
             &residual,
-            routing,
+            experts_indicator,
+            indice_ptr,
+            num_experts,
             false,
             "model.layers.0.experts_merge_add".to_string(),
         );
 
         assert_eq!(out.shape, vec![batch_size, hidden]);
-        f16::with_operator_queue(|queue| {
-            assert_eq!(queue.len(), 1);
-            assert!(matches!(&queue[0], Operator::ExpertsMergeAdd(_)));
-        });
+        assert_eq!(operator_queue.borrow().len(), 1);
+        assert!(matches!(
+            &operator_queue.borrow()[0],
+            Operator::ExpertsMergeAdd(_)
+        ));
 
         // run
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        f16::with_operator_queue(|queue| {
-            for op in queue.iter() {
-                for tid in 0..thread_num {
-                    op.run(num_tokens, 1, thread_num, tid, &[], &[], &mut Vec::new());
-                }
+        for op in operator_queue.borrow_mut().iter() {
+            for tid in 0..thread_num {
+                op.run(num_tokens, 1, thread_num, tid, &[], &[], &mut Vec::new());
             }
-        });
+        }
 
         // verify: out = residual + slot0 + slot1(0)
         let out_len = num_tokens * hidden;
@@ -1761,28 +1730,16 @@ mod test {
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
-    use once_cell::sync::Lazy;
     use std::collections::HashMap;
     use std::f16;
-    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::sync::Arc;
     use std::thread;
     use std::time::Instant;
-
-    static TEST_RUNTIME_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     fn avail_threads() -> usize {
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
-    }
-
-    fn reset_f16_runtime() -> MutexGuard<'static, ()> {
-        let guard = TEST_RUNTIME_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        f16::init_global(HashMap::new());
-        f16::init_operator_queue();
-        guard
     }
 
     fn run_operator_parallel_once(op: Arc<Operator<f16>>, batch: usize, cpu_num: usize) {
@@ -2092,7 +2049,10 @@ mod tests {
         const BATCH_SIZE: usize = 384;
         const K: usize = 1536;
         const N: usize = 1536;
-        let _runtime = reset_f16_runtime();
+
+        let mem_pool: Rc<RefCell<MemPool<f16>>> =
+            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
+        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let input_tensor = Tensor::<f16>::from_mem_pool(
             vec![SEQUENCE_CHUNK_SIZE, BATCH_SIZE, K],
@@ -2136,14 +2096,15 @@ mod tests {
             "perf.matmul".to_string(),
         );
 
-        let operator = f16::with_operator_queue(|queue| {
+        let operator = {
+            let queue = operator_queue.borrow();
             assert_eq!(
                 queue.len(),
                 1,
                 "expected exactly one operator from tensor.matmul"
             );
             Arc::new(queue[0].clone())
-        });
+        };
 
         let panel_threads = match operator.as_ref() {
             Operator::MatMul(runner) => runner.panel_threads(),

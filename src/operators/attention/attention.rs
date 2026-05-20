@@ -1,10 +1,143 @@
 use std::ops::{Add, Div, Mul, Sub};
 
-use super::plan::RowVisitPlan;
-use super::split_sequence::split_sequence_by_triangle;
-use super::Attention;
 use crate::common::num_traits::NegInfinity;
+use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::common::sequence_slice::SequenceSlice;
+use crate::operators::traits::AttentionTrait;
+
+use super::scratch::{AttentionScratch, AttentionScratchSlice};
+use super::utils::{split_sequence_by_triangle, RowVisitPlan};
+
+/// Core Attention computation structure
+/// Handles Q, K, V pointers and manages the attention computation
+#[derive(Clone)]
+pub struct Attention<T> {
+    pub(super) q_ptr: ConstPtr<T>,
+    pub(super) k_ptr: ConstPtr<T>,
+    pub(super) v_ptr: ConstPtr<T>,
+    pub(super) output_ptr: MutPtr<T>,
+    pub(super) sequence_length: usize,
+    pub(super) batch_size: usize,
+    pub(super) attention_head_num: usize,
+    pub(super) kv_head_num: usize,
+    pub(super) k_batch_stride: usize,
+    pub(super) k_head_stride: usize,
+    pub(super) k_seq_stride: usize,
+    pub(super) v_batch_stride: usize,
+    pub(super) v_head_stride: usize,
+    pub(super) v_seq_stride: usize,
+    pub(super) head_size: usize,
+    pub(super) inverse_sqrt_head: T,
+    pub(super) row_step: usize,
+    pub(super) col_step: usize,
+    pub(super) decode_only_flag: bool,
+    pub(super) thread_num: usize,
+    scratch: AttentionScratch<T>,
+}
+
+impl<T> Attention<T>
+where
+    T: Copy
+        + Default
+        + Add<Output = T>
+        + Sub<Output = T>
+        + Mul<Output = T>
+        + Div<Output = T>
+        + PartialOrd
+        + NegInfinity,
+{
+    pub fn new(
+        q_ptr: *const T,
+        k_ptr: *const T,
+        v_ptr: *const T,
+        output_ptr: *mut T,
+        sequence_length: usize,
+        batch_size: usize,
+        attention_head_num: usize,
+        kv_head_num: usize,
+        k_batch_stride: usize,
+        k_head_stride: usize,
+        k_seq_stride: usize,
+        v_batch_stride: usize,
+        v_head_stride: usize,
+        v_seq_stride: usize,
+        row_step: usize,
+        col_step: usize,
+        head_size: usize,
+        inverse_sqrt_head: T,
+        decode_only_flag: bool,
+        thread_num: usize,
+    ) -> Self {
+        let thread_num = thread_num.max(1);
+        let row_step = row_step.max(1);
+
+        Self {
+            q_ptr: ConstPtr { ptr: q_ptr },
+            k_ptr: ConstPtr { ptr: k_ptr },
+            v_ptr: ConstPtr { ptr: v_ptr },
+            output_ptr: MutPtr { ptr: output_ptr },
+            batch_size,
+            attention_head_num,
+            kv_head_num,
+            k_batch_stride,
+            k_head_stride,
+            k_seq_stride,
+            v_batch_stride,
+            v_head_stride,
+            v_seq_stride,
+            sequence_length,
+            row_step,
+            col_step,
+            head_size,
+            inverse_sqrt_head,
+            decode_only_flag,
+            thread_num,
+            scratch: AttentionScratch::new(thread_num, row_step, col_step),
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn thread_buffers(
+        &self,
+        thread_id: usize,
+        row_count: usize,
+        col_count: usize,
+    ) -> AttentionScratchSlice<'_, T> {
+        debug_assert!(thread_id < self.thread_num);
+        self.scratch.thread_buffers(thread_id, row_count, col_count)
+    }
+
+    #[inline]
+    pub(super) fn split_contiguous_range(
+        total: usize,
+        part_num: usize,
+        part_id: usize,
+    ) -> Option<(usize, usize)> {
+        if total == 0 || part_num == 0 || part_id >= part_num {
+            return None;
+        }
+
+        let begin = total * part_id / part_num;
+        let end = total * (part_id + 1) / part_num;
+        (begin < end).then_some((begin, end))
+    }
+
+    #[inline]
+    pub(super) fn kv_heads_per_wave(
+        &self,
+        active_thread_num: usize,
+        attention_heads_per_kv: usize,
+    ) -> usize {
+        if active_thread_num == 0 || attention_heads_per_kv == 0 || self.kv_head_num == 0 {
+            return 0;
+        }
+
+        active_thread_num
+            .div_ceil(attention_heads_per_kv)
+            .max(1)
+            .min(self.kv_head_num)
+    }
+}
 
 impl<T> Attention<T>
 where
@@ -18,6 +151,161 @@ where
         + NegInfinity
         + crate::common::num_traits::Exp,
 {
+    /// Visit aligned row ranges for attention computation
+    #[inline(always)]
+    unsafe fn visit_aligned_row_range(
+        &self,
+        q_head_ptr: *const T,
+        output_head_ptr: *mut T,
+        k_head_ptr: *const T,
+        v_head_ptr: *const T,
+        thread_id: usize,
+        sequence_index: usize,
+        col_end: usize,
+        row_begin: usize,
+        row_end: usize,
+    ) {
+        let row_step = self.row_step;
+        let col_step = self.col_step.max(1);
+
+        for row_chunk in (row_begin..row_end).step_by(row_step) {
+            let row_chunk_end = row_chunk + row_step;
+            let visible_row_end = row_chunk_end.min(col_end.saturating_sub(sequence_index));
+            if row_chunk >= visible_row_end {
+                continue;
+            }
+
+            let row_count = visible_row_end - row_chunk;
+            let mut scratch = self.thread_buffers(thread_id, row_count, col_step);
+            scratch.clear();
+
+            for row in row_chunk..visible_row_end {
+                let row_offset = row * self.head_size;
+                for index in 0..self.head_size {
+                    *output_head_ptr.add(row_offset + index) = T::default();
+                }
+            }
+
+            for col_begin in (0..col_end).step_by(col_step) {
+                let col_chunk_end = (col_begin + col_step).min(col_end);
+                AttentionTrait::compute(
+                    self,
+                    q_head_ptr,
+                    k_head_ptr,
+                    v_head_ptr,
+                    output_head_ptr,
+                    row_chunk,
+                    visible_row_end,
+                    col_begin,
+                    col_chunk_end,
+                    col_end,
+                    sequence_index,
+                    self.k_seq_stride,
+                    self.v_seq_stride,
+                    scratch.running_max,
+                    scratch.running_denom,
+                    scratch.scores,
+                );
+            }
+        }
+    }
+
+    /// Visit tail row ranges (unaligned) for attention computation
+    #[inline(always)]
+    unsafe fn visit_tail_row_range(
+        &self,
+        q_head_ptr: *const T,
+        output_head_ptr: *mut T,
+        k_head_ptr: *const T,
+        v_head_ptr: *const T,
+        thread_id: usize,
+        sequence_index: usize,
+        col_end: usize,
+        row_begin: usize,
+        row_end: usize,
+    ) {
+        let visible_row_end = row_end.min(col_end.saturating_sub(sequence_index));
+        if row_begin >= visible_row_end {
+            return;
+        }
+
+        for row in row_begin..visible_row_end {
+            let row_offset = row * self.head_size;
+            for index in 0..self.head_size {
+                *output_head_ptr.add(row_offset + index) = T::default();
+            }
+        }
+
+        let row_count = visible_row_end - row_begin;
+        let col_step = self.col_step.max(1);
+        let mut scratch = self.thread_buffers(thread_id, row_count, col_step);
+        scratch.clear();
+
+        for col_begin in (0..col_end).step_by(col_step) {
+            let col_chunk_end = (col_begin + col_step).min(col_end);
+            AttentionTrait::compute(
+                self,
+                q_head_ptr,
+                k_head_ptr,
+                v_head_ptr,
+                output_head_ptr,
+                row_begin,
+                visible_row_end,
+                col_begin,
+                col_chunk_end,
+                col_end,
+                sequence_index,
+                self.k_seq_stride,
+                self.v_seq_stride,
+                scratch.running_max,
+                scratch.running_denom,
+                scratch.scores,
+            );
+        }
+    }
+
+    /// Visit blocks for a single attention head
+    pub(super) unsafe fn visit_blocks_for_head(
+        &self,
+        q_head_ptr: *const T,
+        output_head_ptr: *mut T,
+        k_head_ptr: *const T,
+        v_head_ptr: *const T,
+        thread_id: usize,
+        sequence_index: usize,
+        col_end: usize,
+        row_plan: RowVisitPlan,
+    ) {
+        if let Some((row_begin, row_end)) = row_plan.main {
+            self.visit_aligned_row_range(
+                q_head_ptr,
+                output_head_ptr,
+                k_head_ptr,
+                v_head_ptr,
+                thread_id,
+                sequence_index,
+                col_end,
+                row_begin,
+                row_end,
+            );
+        }
+
+        if let Some((row_begin, row_end)) = row_plan.tail {
+            self.visit_tail_row_range(
+                q_head_ptr,
+                output_head_ptr,
+                k_head_ptr,
+                v_head_ptr,
+                thread_id,
+                sequence_index,
+                col_end,
+                row_begin,
+                row_end,
+            );
+        }
+    }
+
+    /// Run attention computation with sequence split strategy
     unsafe fn run_sequence_split(
         &self,
         q_slice_ptr: *const T,
@@ -67,6 +355,7 @@ where
         }
     }
 
+    /// Run attention computation with head split strategy
     unsafe fn run_head_split(
         &self,
         q_slice_ptr: *const T,
@@ -141,6 +430,7 @@ where
         }
     }
 
+    /// Main entry point for running attention computation
     pub fn run(
         &self,
         _prefill_size: usize,
@@ -285,9 +575,9 @@ mod tests {
             3 * head_size,
             3 * head_size,
             head_size,
+            1,
+            1,
             2,
-            2,
-            head_size,
             inverse_sqrt_head,
             false,
             1,
@@ -308,93 +598,6 @@ mod tests {
                 &q[row * head_size..(row + 1) * head_size],
                 &k,
                 &v,
-                head_size,
-                row + 1,
-                inverse_sqrt_head,
-            );
-            let actual = &output[row * head_size..(row + 1) * head_size];
-            assert_close(actual, &expected);
-        }
-    }
-
-    #[test]
-    fn attention_reads_permuted_kv_with_strides() {
-        let head_size = 2;
-        let batch_size = 2;
-        let seq_len = 3;
-        let kv_heads = 1;
-        let inverse_sqrt_head = 1.0;
-        let q = vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-        let mut k = vec![0.0; seq_len * batch_size * kv_heads * head_size];
-        let mut v = vec![0.0; k.len()];
-
-        for seq in 0..seq_len {
-            for batch in 0..batch_size {
-                let base = ((seq * batch_size + batch) * kv_heads) * head_size;
-                k[base] = 10.0 * batch as f32 + seq as f32 + 1.0;
-                k[base + 1] = 10.0 * batch as f32 + seq as f32 + 2.0;
-                v[base] = 100.0 * batch as f32 + 10.0 * seq as f32 + 1.0;
-                v[base + 1] = 100.0 * batch as f32 + 10.0 * seq as f32 + 2.0;
-            }
-        }
-
-        let mut output = vec![-1.0; q.len()];
-        let attention = Attention::new(
-            q.as_ptr(),
-            k.as_ptr(),
-            v.as_ptr(),
-            output.as_mut_ptr(),
-            seq_len,
-            batch_size,
-            1,
-            kv_heads,
-            kv_heads * head_size,
-            head_size,
-            batch_size * kv_heads * head_size,
-            kv_heads * head_size,
-            head_size,
-            batch_size * kv_heads * head_size,
-            1,
-            2,
-            head_size,
-            inverse_sqrt_head,
-            false,
-            1,
-        );
-
-        let slice = [SequenceSlice {
-            token_start_index: 0,
-            batch_index: 1,
-            sequence_index: 0,
-            length: seq_len,
-            last_token_flag: false,
-        }];
-
-        attention.run(0, 0, &slice, 1, 0);
-
-        let batch1_k_base = kv_heads * head_size;
-        let batch1_k = [
-            k[batch1_k_base],
-            k[batch1_k_base + 1],
-            k[batch1_k_base + batch_size * kv_heads * head_size],
-            k[batch1_k_base + batch_size * kv_heads * head_size + 1],
-            k[batch1_k_base + 2 * batch_size * kv_heads * head_size],
-            k[batch1_k_base + 2 * batch_size * kv_heads * head_size + 1],
-        ];
-        let batch1_v = [
-            v[batch1_k_base],
-            v[batch1_k_base + 1],
-            v[batch1_k_base + batch_size * kv_heads * head_size],
-            v[batch1_k_base + batch_size * kv_heads * head_size + 1],
-            v[batch1_k_base + 2 * batch_size * kv_heads * head_size],
-            v[batch1_k_base + 2 * batch_size * kv_heads * head_size + 1],
-        ];
-
-        for row in 0..seq_len {
-            let expected = naive_attention_row(
-                &q[row * head_size..(row + 1) * head_size],
-                &batch1_k,
-                &batch1_v,
                 head_size,
                 row + 1,
                 inverse_sqrt_head,

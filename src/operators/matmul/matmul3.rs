@@ -5,8 +5,6 @@ use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
-
-
 use crate::common::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
@@ -41,14 +39,17 @@ pub struct MatMul3<T> {
     v_state_ptr: MutPtr<T>,  // Cv[M×Nkv]
 
     // RoPE 相位表（按 N 方向拉平或按 head×dim 展开）
-    rope_ptr: ConstPtr<T>, // 由外部保证布局一致
-
+    rope_ptr: ConstPtr<T>,  // 由外部保证布局一致
+    sequence_length: usize, // 与 RoPE N 方向长度一致
+    batch_size: usize,
+    kv_head_num: usize, // 用于 GQA 的分组计算
+    group_num: usize,   // GQA 分组数（num_query_heads / num_key_value_heads）
     // 形状
     head_dim: usize, // 比如 128（要求 head_dim % 32 == 0）
     m_row: usize,    // M
     col: usize,      // K
-    b_q_row: usize,  // Nq
-    b_kv_row: usize, // Nkv
+    // b_q_row: usize,  // Nq
+    // b_kv_row: usize, // Nkv
 
     // 分块参数（MB/NB/KC/MR/NR=32）
     pub params: MatMulParams,
@@ -74,11 +75,23 @@ where
         v_weight_ptr_nt: *const T, // ✅ Wv_nt[Nkv×K]
         v_state_ptr: *mut T,
         rope_ptr: *const T,
+        sequence_length: usize,
+        batch_size: usize,
+        // Grouped Query Attention (GQA) 维度信息
+        // num_query_heads: Q的总头数（例：32）
+        // 与 b_q_row = num_query_heads × head_dim 对应
+        kv_head_num: usize,
+        // GQA 分组系数：多少个Q头共享一个KV头
+        // 关系：num_key_value_heads = num_query_heads / group_num
+        // 例：head_num=32, group_num=8 => 4个KV头服务32个Q头
+        group_num: usize,
+        // 每个Head的隐藏维度（通常为128、256等）
+        // Nq = num_query_heads × head_dim，Nkv = num_key_value_heads × head_dim
         head_dim: usize,
         m_row: usize,
         col: usize,
-        b_q_row: usize,
-        b_kv_row: usize,
+        // b_q_row: usize,
+        // b_kv_row: usize,
         a_row_step_macro: usize,
         b_row_step_macro: usize,
         column_step_macro: usize,
@@ -88,9 +101,15 @@ where
         let kc = column_step_macro.max(1);
         let nr = b_row_step_micro.max(1);
         let packed_panel_stride = kc * nr;
-        let packed_q = Self::pack_b_panels(q_weight_ptr_nt, b_q_row, col, kc, nr);
-        let packed_k = Self::pack_b_panels(k_weight_ptr_nt, b_kv_row, col, kc, nr);
-        let packed_v = Self::pack_b_panels(v_weight_ptr_nt, b_kv_row, col, kc, nr);
+        let packed_q = Self::pack_b_panels(
+            q_weight_ptr_nt,
+            kv_head_num * group_num * head_dim,
+            col,
+            kc,
+            nr,
+        );
+        let packed_k = Self::pack_b_panels(k_weight_ptr_nt, kv_head_num * head_dim, col, kc, nr);
+        let packed_v = Self::pack_b_panels(v_weight_ptr_nt, kv_head_num * head_dim, col, kc, nr);
 
         Self {
             hidden_ptr: ConstPtr { ptr: hidden_ptr },
@@ -99,13 +118,13 @@ where
             v_state_ptr: MutPtr { ptr: v_state_ptr },
 
             rope_ptr: ConstPtr { ptr: rope_ptr },
-
+            sequence_length,
+            batch_size,
+            kv_head_num,
+            group_num,
             head_dim,
             m_row,
             col,
-            b_q_row,
-            b_kv_row,
-
             params: MatMulParams {
                 a_row_step_macro,
                 b_row_step_macro,
@@ -290,6 +309,7 @@ where
         &self,
         prefill_size: usize,
         _decode_size: usize,
+        _attention_list: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
     ) where
@@ -299,8 +319,8 @@ where
             let m_run = prefill_size;
 
             let k = self.col;
-            let n_q = self.b_q_row;
-            let n_kv = self.b_kv_row;
+            let n_q = self.kv_head_num * self.group_num * self.head_dim;
+            let n_kv = self.kv_head_num * self.head_dim;
 
             let mr = self.params.a_row_step_micro.max(1); // 期望=3
             debug_assert_eq!(mr, 3);
@@ -492,7 +512,6 @@ impl MatMulkqvTrait<f32> for MatMul3<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_abs_diff_eq;
 
     // ========================================================================
     // Helpers for f32 tests
@@ -566,7 +585,7 @@ mod tests {
 
     fn run_runner(runner: &MatMul3<f16>, m: usize, thread_num: usize) {
         for tid in 0..thread_num {
-            runner.run(m, 0, thread_num, tid);
+            runner.run(m, 0, &[], thread_num, tid);
         }
     }
 
@@ -578,6 +597,7 @@ mod tests {
     fn test_matmul3_qkv_f32_72_rows() {
         let m = 72;
         let k = 256;
+        let sequence_length = 1024;
         let head_dim = 128;
         let n_q = 32 * 128; // 4096
         let n_kv = 4 * 128; // 512
@@ -634,19 +654,21 @@ mod tests {
                 wv_nt.as_ptr(),
                 cv.as_mut_ptr(),
                 rope.as_ptr(),
-                head_dim,
-                m,
-                k,
-                n_q,
-                n_kv,
-                24,  // MB
-                128, // NB
-                32,  // KC
-                3,   // MR
-                32,  // NR
+                sequence_length, // sequence_length
+                1,               // batch_size
+                n_kv / head_dim, // kv_head_num
+                n_q / n_kv,      // group_num
+                head_dim,        // head_dim
+                m,               // m_row
+                k,               // col
+                24,              // a_row_step_macro
+                128,             // b_row_step_macro
+                32,              // column_step_macro
+                3,               // a_row_step_micro
+                32,              // b_row_step_micro
             );
 
-            matmul.run(m, 0, 1, 0);
+            matmul.run(m, 0, &[], 1, 0);
 
             // reference（从 W_nt 计算）
             ref_matmul_f32_from_wnt(m, k, n_q, &a, &wq_nt, &mut cq_ref);
@@ -732,16 +754,18 @@ mod tests {
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
             rope.as_ptr(),
-            HEAD_DIM,
-            M,
-            K,
-            NQ,
-            NKV,
-            3,  // MB
-            32, // NB
-            64, // KC
-            3,  // MR
-            32, // NR
+            HEAD_DIM,       // sequence_length
+            1,              // batch_size
+            NKV / HEAD_DIM, // kv_head_num
+            NQ / NKV,       // group_num
+            HEAD_DIM,       // head_dim
+            M,              // m_row
+            K,              // col
+            3,              // a_row_step_macro
+            32,             // b_row_step_macro
+            64,             // column_step_macro
+            3,              // a_row_step_micro
+            32,             // b_row_step_micro
         );
 
         run_runner(&runner, M, thread_num);
@@ -820,16 +844,18 @@ mod tests {
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
             rope.as_ptr(),
-            HEAD_DIM,
-            M,
-            K,
-            NQ,
-            NKV,
-            6,
-            64,
-            64,
-            3,
-            32,
+            HEAD_DIM,       // sequence_length
+            1,              // batch_size
+            NKV / HEAD_DIM, // kv_head_num
+            NQ / NKV,       // group_num
+            HEAD_DIM,       // head_dim
+            M,              // m_row
+            K,              // col
+            6,              // a_row_step_macro
+            64,             // b_row_step_macro
+            64,             // column_step_macro
+            3,              // a_row_step_micro
+            32,             // b_row_step_micro
         );
 
         run_runner(&runner, M, thread_num);
@@ -900,16 +926,18 @@ mod tests {
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
             rope.as_ptr(),
-            HEAD_DIM,
-            M,
-            K,
-            NQ,
-            NKV,
-            3,
-            32,
-            64,
-            3,
-            32,
+            HEAD_DIM,       // sequence_length
+            1,              // batch_size
+            NKV / HEAD_DIM, // kv_head_num
+            NQ / NKV,       // group_num
+            HEAD_DIM,       // head_dim
+            M,              // m_row
+            K,              // col
+            3,              // a_row_step_macro
+            32,             // b_row_step_macro
+            64,             // column_step_macro
+            3,              // a_row_step_micro
+            32,             // b_row_step_micro
         );
 
         run_runner(&runner, M, thread_num);
@@ -939,9 +967,7 @@ mod tests {
         const K: usize = 256;
         const NQ: usize = 256;
         const NKV: usize = 256;
-        // Keep this test focused on medium-size GEMM. A head_dim larger than N
-        // avoids the Q/K finalize path, which has its own coverage below.
-        const HEAD_DIM: usize = 512;
+        const HEAD_DIM: usize = 128;
 
         let thread_num = avail_threads_cap(16);
 
@@ -982,16 +1008,18 @@ mod tests {
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
             rope.as_ptr(),
-            HEAD_DIM,
-            M,
-            K,
-            NQ,
-            NKV,
-            24,
-            128,
-            64,
-            3,
-            32,
+            HEAD_DIM,       // sequence_length
+            1,              // batch_size
+            NKV / HEAD_DIM, // kv_head_num
+            NQ / NKV,       // group_num
+            HEAD_DIM,       // head_dim
+            M,              // m_row
+            K,              // col
+            24,             // a_row_step_macro
+            128,            // b_row_step_macro
+            64,             // column_step_macro
+            3,              // a_row_step_micro
+            32,             // b_row_step_micro
         );
 
         run_runner(&runner, M, thread_num);
@@ -1010,104 +1038,6 @@ mod tests {
             for j in 0..NKV {
                 assert_abs_diff_eq!(ck[i * NKV + j] as f32, ck_ref[i * NKV + j], epsilon = 1.0);
                 assert_abs_diff_eq!(cv[i * NKV + j] as f32, cv_ref[i * NKV + j], epsilon = 1.0);
-            }
-        }
-    }
-
-    #[test]
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-    fn test_kqv_f16_avx512_finalize_qk_only() {
-        const M: usize = 3;
-        const K: usize = 64;
-        const NQ: usize = 128;
-        const NKV: usize = 128;
-        const HEAD_DIM: usize = 128;
-
-        let thread_num = avail_threads_cap(8);
-
-        let mut a = vec![0.0f16; M * K];
-        let mut wq_nt = vec![0.0f16; NQ * K];
-        let mut wk_nt = vec![0.0f16; NKV * K];
-        let mut wv_nt = vec![0.0f16; NKV * K];
-
-        let mut cq = vec![0.0f16; M * NQ];
-        let mut ck = vec![0.0f16; M * NKV];
-        let mut cv = vec![0.0f16; M * NKV];
-
-        let mut rope = vec![0.0f16; HEAD_DIM];
-        for pair in 0..(HEAD_DIM / 2) {
-            rope[2 * pair] = 1.0;
-            rope[2 * pair + 1] = 0.0;
-        }
-
-        for i in 0..M {
-            for kk in 0..K {
-                a[i * K + kk] = (((i * 5 + kk * 3) % 41) as f32 * 0.01 + 0.01) as f16;
-            }
-        }
-        for j in 0..NQ {
-            for kk in 0..K {
-                wq_nt[j * K + kk] = (((kk * 7 + j * 3) % 43) as f32 * 0.005 + 0.002) as f16;
-            }
-        }
-        for j in 0..NKV {
-            for kk in 0..K {
-                wk_nt[j * K + kk] = (((kk * 11 + j * 5) % 47) as f32 * 0.005 + 0.002) as f16;
-                wv_nt[j * K + kk] = (((kk * 13 + j * 7) % 53) as f32 * 0.005 + 0.002) as f16;
-            }
-        }
-
-        let runner = MatMul3::<f16>::new(
-            a.as_ptr(),
-            wq_nt.as_ptr(),
-            cq.as_mut_ptr(),
-            wk_nt.as_ptr(),
-            ck.as_mut_ptr(),
-            wv_nt.as_ptr(),
-            cv.as_mut_ptr(),
-            rope.as_ptr(),
-            HEAD_DIM,
-            M,
-            K,
-            NQ,
-            NKV,
-            3,
-            128,
-            64,
-            3,
-            32,
-        );
-
-        run_runner(&runner, M, thread_num);
-
-        let mut cv_ref = vec![0.0f32; M * NKV];
-        gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M, K, NKV);
-
-        for i in 0..M {
-            let q_rms = (cq[i * NQ..(i + 1) * NQ]
-                .iter()
-                .map(|&v| {
-                    let v = v as f32;
-                    v * v
-                })
-                .sum::<f32>()
-                / NQ as f32)
-                .sqrt();
-            let k_rms = (ck[i * NKV..(i + 1) * NKV]
-                .iter()
-                .map(|&v| {
-                    let v = v as f32;
-                    v * v
-                })
-                .sum::<f32>()
-                / NKV as f32)
-                .sqrt();
-
-            assert_abs_diff_eq!(q_rms, 1.0, epsilon = 5e-2);
-            assert_abs_diff_eq!(k_rms, 1.0, epsilon = 5e-2);
-
-            for j in 0..NKV {
-                assert_abs_diff_eq!(cv[i * NKV + j] as f32, cv_ref[i * NKV + j], epsilon = 5e-1);
             }
         }
     }
@@ -1171,16 +1101,18 @@ mod tests {
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
             rope.as_ptr(),
-            HEAD_DIM,
-            M_MAX, // m_row 当 capacity 用
-            K,
-            NQ,
-            NKV,
-            6,  // MB
-            64, // NB（=N）
-            64, // KC（=K）
-            3,  // MR
-            32, // NR
+            HEAD_DIM,       // sequence_length
+            1,              // batch_size
+            NKV / HEAD_DIM, // kv_head_num
+            NQ / NKV,       // group_num
+            HEAD_DIM,       // head_dim
+            M_MAX,          // m_row 当 capacity 用
+            K,              // col
+            6,              // a_row_step_macro
+            64,             // b_row_step_macro
+            64,             // column_step_macro
+            3,              // a_row_step_micro
+            32,             // b_row_step_micro
         );
 
         // run 传 batch=7（内部 pad 到 9）

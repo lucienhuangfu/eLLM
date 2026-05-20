@@ -1,3 +1,13 @@
+/// Row visit plan for attention computation
+/// Defines main aligned rows and tail unaligned rows to process
+#[derive(Copy, Clone)]
+pub(super) struct RowVisitPlan {
+    pub(super) main: Option<(usize, usize)>,
+    pub(super) tail: Option<(usize, usize)>,
+}
+
+/// Split a range based on triangle number distribution.
+/// Used for load balancing triangular computation across threads.
 #[inline]
 fn triangle_prefix(rows: usize) -> u128 {
     let r = rows as u128;

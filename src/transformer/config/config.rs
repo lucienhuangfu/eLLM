@@ -51,8 +51,7 @@ impl Config {
         let num_experts = hf.num_experts.unwrap_or(0);
         let num_experts_per_tok = hf.num_experts_per_tok.unwrap_or(0);
         let max_window_layers = hf.max_window_layers.unwrap_or(hf.num_hidden_layers);
-        let router_scoring =
-            RouterScoringKind::from_hf(hf.scoring_func.as_deref(), family.clone());
+        let router_scoring = RouterScoringKind::from_hf(hf.scoring_func.as_deref(), family.clone());
         let use_routing_bias = hf
             .use_routing_bias
             .unwrap_or(matches!(family, ModelFamily::MiniMaxM2));

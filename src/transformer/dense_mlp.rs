@@ -5,8 +5,8 @@ use crate::common::num_traits::{Exp, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::super::common::matmul_params::MatMulParams;
-use crate::tensor::{GlobalOperatorQueue, Tensor};
 use super::names::DenseMlpTensorNames;
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 
 #[derive(Clone)]
 pub struct DenseMlp<T>

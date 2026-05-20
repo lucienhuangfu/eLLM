@@ -106,8 +106,8 @@ where
                 model_names.lm_head.clone(),
             ),
             layers: layers,
-            chunk_size,
-            sequence_length,
+            chunk_size: chunk_size,
+            sequence_length: sequence_length,
             batch_size: batch_size,
             hidden_size: config.hidden_size,
             topk_size: topk_size,
@@ -256,15 +256,10 @@ mod test {
         let mut model = Model::<f32>::new(
             &config,
             position_vec,
-            sequence_length,
-            sequence_length,
+            sequence_length, // chunk_size
+            sequence_length, // sequence_length
             batch_size,
-            topk_size, // word_embedding,
-            // position_embedding,
-            // norm_weight,
-            // cpu_num,
-            // cache.clone(),
-            // operator_queue.clone(),
+            topk_size,
             eos_id,
         );
 
@@ -335,8 +330,8 @@ mod test {
         let mut model = Model::<f16>::new(
             &config,
             position_vec,
-            sequence_length,
-            sequence_length,
+            sequence_length, // chunk_size
+            sequence_length, // sequence_length
             batch_size,
             topk_size,
             eos_id,
@@ -401,8 +396,8 @@ mod test {
         let model = Model::<f32>::new(
             &config,
             position_vec,
-            sequence_length,
-            sequence_length,
+            sequence_length, // chunk_size
+            sequence_length, // sequence_length
             batch_size,
             topk_size,
             eos_id,
@@ -444,8 +439,8 @@ mod test {
         let model = Model::<f16>::new(
             &config,
             position_vec,
-            sequence_length,
-            sequence_length,
+            sequence_length, // chunk_size
+            sequence_length, // sequence_length
             batch_size,
             topk_size,
             eos_id,

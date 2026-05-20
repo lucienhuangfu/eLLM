@@ -34,7 +34,6 @@ pub struct DecoderLayer<T>
 where
     T: Copy + PartialOrd,
 {
-    
     chunk_size: usize,
     batch_size: usize,
     rms_norm_eps: T,
@@ -74,12 +73,18 @@ where
     ) -> Self {
         let names = layer_tensor_names(config, layer_idx);
         let self_attention = match config.layers[layer_idx].attention {
-            AttentionKind::Full => {
-                AttentionBlock::Full(Attention::<T>::new(config, batch_size, names.attention.clone()))
-            }
-            AttentionKind::SlidingWindow => {
-                AttentionBlock::SlidingWindow(Attention::<T>::new(config, batch_size, names.attention.clone()))
-            }
+            AttentionKind::Full => AttentionBlock::Full(Attention::<T>::new(
+                config,
+                chunk_size,
+                batch_size,
+                names.attention.clone(),
+            )),
+            AttentionKind::SlidingWindow => AttentionBlock::SlidingWindow(Attention::<T>::new(
+                config,
+                chunk_size,
+                batch_size,
+                names.attention.clone(),
+            )),
             AttentionKind::Linear => panic!(
                 "linear attention is not implemented for layer {}",
                 layer_idx
@@ -118,7 +123,7 @@ where
         };
 
         Self {
-            chunk_size,
+            chunk_size: chunk_size,
             batch_size: batch_size,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             layer_idx: layer_idx,
@@ -163,6 +168,7 @@ where
                     hidden_states,
                     &*self.position_embedding,
                     decode_only_flag,
+                    _tensor_name,
                 ),
         };
 
@@ -342,7 +348,10 @@ mod test {
         );
 
         // Validate output shape
-        debug_assert_eq!(output_tensor.shape, vec![batch_size, hidden_size]);
+        debug_assert_eq!(
+            output_tensor.shape,
+            vec![position_window_size, batch_size, hidden_size]
+        );
 
         // Execute the operator queue
         let thread_num = std::thread::available_parallelism()
@@ -365,6 +374,9 @@ mod test {
             }
         });
 
-        assert_eq!(output_tensor.shape, vec![batch_size, hidden_size]);
+        assert_eq!(
+            output_tensor.shape,
+            vec![position_window_size, batch_size, hidden_size]
+        );
     }
 }

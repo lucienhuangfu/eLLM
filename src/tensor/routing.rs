@@ -36,8 +36,9 @@ where
         decode_only_flag: bool,
         _scope_name: String,
     ) -> ExpertRouting<T> {
-        let routing =
-            unsafe { Self::allocate_expert_routing(num_experts, self.shape[0], num_experts_per_tok) };
+        let routing = unsafe {
+            Self::allocate_expert_routing(num_experts, self.shape[0], num_experts_per_tok)
+        };
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
             self.data,
@@ -100,8 +101,9 @@ where
         decode_only_flag: bool,
         _scope_name: String,
     ) -> ExpertRouting<T> {
-        let routing =
-            unsafe { Self::allocate_expert_routing(num_experts, self.shape[0], num_experts_per_tok) };
+        let routing = unsafe {
+            Self::allocate_expert_routing(num_experts, self.shape[0], num_experts_per_tok)
+        };
 
         let operator = Operator::ExpertsTopkNorm(ExpertsTopkNorm::new(
             self.data,

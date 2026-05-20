@@ -1,8 +1,8 @@
 mod scheduler;
 mod slice_scheduler;
 
-pub mod huggingface_config;
 pub mod generation_config;
+pub mod huggingface_config;
 
 pub mod batch_sequence;
 pub mod chat_template;

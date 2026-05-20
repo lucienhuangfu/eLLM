@@ -4,10 +4,10 @@ use ellm::common::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::runtime::batch_sequence::BatchSequence;
+use ellm::runtime::model_loader::SafeTensorsLoader;
 use ellm::runtime::{
     BatchScheduler, Config, GenerationConfig, Phase, SequenceState, ServingRunner,
 };
-use ellm::runtime::model_loader::SafeTensorsLoader;
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
@@ -19,14 +19,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_size = 3;
     let chunk_size = 64;
 
-
     let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
-    let config =
-        Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
-    let generation_config = GenerationConfig::load_from_file(
-        format!("{}/generation_config.json", model_dir),
-    )
-    .ok();
+    let config = Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
+    let generation_config =
+        GenerationConfig::load_from_file(format!("{}/generation_config.json", model_dir)).ok();
 
     if let Some(gen_cfg) = &generation_config {
         println!("Loaded generation config: {:?}", gen_cfg);
@@ -35,24 +31,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tokenizer_path = format!("{}/tokenizer.json", model_dir);
     let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);
     let chat_template_path = format!("{}/chat_template.jinja", model_dir);
-    
-    
+
     let sequence_length = 128;
     let top_k = 8;
-
 
     let fixed_prompts = [
         "Hello from a fixed runner.",
         "This path does not use server input.",
         "The sequence data is hardcoded.",
     ];
-    // 载入模型参数
     let params = SafeTensorsLoader::new(model_dir)
         .and_then(|loader| loader.load_all_weights_f16())
         .map_err(|e| format!("failed to load model parameters: {}", e))?;
     println!("Loaded {} parameter tensors", params.len());
-
-    // Initialize global memory pool
     f16::init_global(params);
 
     // Allocate sequences buffer with sufficient size

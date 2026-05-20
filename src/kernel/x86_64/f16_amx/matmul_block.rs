@@ -15,12 +15,7 @@ use crate::kernel::x86_64::f16_amx::tile::{ensure_amx_ready, gemm_3x16_to_f32, A
 /// AMX-FP16 accumulates into FP32 tiles. The kernel computes two 3x16
 /// halves, adds the existing f16 C values in FP32, then writes f16 back.
 #[target_feature(enable = "amx-tile,amx-fp16")]
-pub unsafe fn matmul_block(
-    a: *const f16,
-    b_panel: *const f16,
-    c: *mut f16,
-    param: &MatMulParams,
-) {
+pub unsafe fn matmul_block(a: *const f16, b_panel: *const f16, c: *mut f16, param: &MatMulParams) {
     debug_assert_eq!(param.a_row_step_micro, AMX_MR);
     debug_assert_eq!(param.b_row_step_micro, 32);
     debug_assert!(param.column_step_macro > 0);
