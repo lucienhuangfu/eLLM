@@ -166,7 +166,11 @@ where
             let output_rows = output_sequence_length * output_batch_size;
 
             let view_context_tensor = attn_output.view(vec![output_rows, output_hidden_size]);
-            let view_residual_tensor = residual.view(vec![output_rows, residual.shape[2]]);
+            let residual_hidden_size = *residual
+                .shape
+                .last()
+                .expect("residual tensor must have at least one dimension");
+            let view_residual_tensor = residual.view(vec![output_rows, residual_hidden_size]);
 
             // [sequence_length, batch_size, hidden_size]
             // matmul + add

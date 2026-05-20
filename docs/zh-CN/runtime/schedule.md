@@ -25,7 +25,7 @@
 | --- | --- |
 | `phase` | 决定该槽位当前属于 decode 还是 prefill |
 | `sequence_index` | prefill 起点 |
-| `kv_index` | decode 时作为下一 token 的序列位置 |
+| `kv_index` | 下一次写入生成 token 的序列位置 |
 | `filling_length` | prefill 还剩多少 token |
 
 ### `SequenceSlice`
@@ -125,7 +125,8 @@ max_decode_size = batch_size
 
 每个 decode 候选都会生成一个长度为 `1` 的 `SequenceSlice`：
 
-* `sequence_index` 直接取 `record.kv_index`
+* `sequence_index` 直接取 `record.sequence_index`
+* `kv_index` 保持为下一次写入生成 token 的位置
 * `last_token_flag = true`
 * `token_start_index` 按出现顺序递增
 
@@ -259,4 +260,3 @@ batch_list 扫描
 * `src/runtime/slice_scheduler.rs`
 * `src/operators/softmax/topk_softmax.rs`
 * `src/runtime/runner.rs`
-

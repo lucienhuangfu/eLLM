@@ -218,6 +218,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::collections::HashMap;
     // use std::slice;
 
     #[test]
@@ -232,6 +233,7 @@ mod test {
         let max_position_embeddings = config.max_position_embeddings;
         let head_dim = config.head_dim;
 
+        f32::init_global(HashMap::new());
         f32::init_operator_queue();
 
         let vocab_size = config.vocab_size;
@@ -307,6 +309,7 @@ mod test {
         let max_position_embeddings = config.max_position_embeddings;
         let head_dim = config.head_dim;
 
+        f16::init_global(HashMap::new());
         f16::init_operator_queue();
 
         let vocab_size = config.vocab_size;

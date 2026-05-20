@@ -88,4 +88,37 @@ mod test {
         assert_eq!(split_sequence_by_triangle(12, 4, 3, 1), Some((8, 12)));
         assert_eq!(split_sequence_by_triangle(12, 4, 3, 2), None);
     }
+
+    #[test]
+    fn split_sequence_covers_aligned_rows_without_overlap() {
+        let len = 19;
+        let row_size = 4;
+        let thread_num = 6;
+        let aligned_len = len / row_size * row_size;
+        let mut ranges = Vec::new();
+
+        for thread_id in 0..thread_num {
+            if let Some(range) =
+                split_sequence_by_triangle(aligned_len, row_size, thread_num, thread_id)
+            {
+                ranges.push((thread_id, range));
+            }
+        }
+
+        assert!(!ranges.is_empty());
+        let first_range = ranges.first().unwrap().1;
+        let last_range = ranges.last().unwrap().1;
+        assert_eq!(first_range.0, 0);
+        assert_eq!(last_range.1, aligned_len);
+
+        let mut cursor = 0;
+        for (_, (begin, end)) in ranges {
+            assert_eq!(begin, cursor);
+            assert!(begin < end);
+            assert_eq!(begin % row_size, 0);
+            assert_eq!(end % row_size, 0);
+            cursor = end;
+        }
+        assert_eq!(cursor, aligned_len);
+    }
 }

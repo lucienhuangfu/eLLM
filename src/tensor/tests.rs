@@ -31,6 +31,11 @@ mod test {
             .unwrap_or(1)
     }
 
+    fn init_f16_tensor_test_runtime() {
+        f16::init_global(HashMap::new());
+        f16::init_operator_queue();
+    }
+
     #[inline]
     fn f32_from_f16(x: f16) -> f32 {
         // bitcast based f16->f32 (与你原实现一致)
@@ -421,6 +426,7 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
+        init_f16_tensor_test_runtime();
 
         let mem_pool: Rc<RefCell<MemPool<f16>>> =
             Rc::new(RefCell::new(MemPool::new(HashMap::new())));
@@ -563,6 +569,7 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
+        init_f16_tensor_test_runtime();
 
         let mem_pool: Rc<RefCell<MemPool<f16>>> =
             Rc::new(RefCell::new(MemPool::new(HashMap::new())));
@@ -715,6 +722,7 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
+        init_f16_tensor_test_runtime();
 
         let mem_pool: Rc<RefCell<MemPool<f16>>> =
             Rc::new(RefCell::new(MemPool::new(HashMap::new())));
@@ -842,6 +850,7 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
+        init_f16_tensor_test_runtime();
 
         let mem_pool: Rc<RefCell<MemPool<f16>>> =
             Rc::new(RefCell::new(MemPool::new(HashMap::new())));
@@ -962,6 +971,7 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
+        init_f16_tensor_test_runtime();
 
         let mem_pool: Rc<RefCell<MemPool<f16>>> =
             Rc::new(RefCell::new(MemPool::new(HashMap::new())));
@@ -1060,6 +1070,7 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
+        init_f16_tensor_test_runtime();
 
         let mem_pool: Rc<RefCell<MemPool<f16>>> =
             Rc::new(RefCell::new(MemPool::new(HashMap::new())));
@@ -1271,6 +1282,7 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
+        init_f16_tensor_test_runtime();
 
         let mem_pool: Rc<RefCell<MemPool<f16>>> =
             Rc::new(RefCell::new(MemPool::new(HashMap::new())));
@@ -1447,6 +1459,7 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
+        init_f16_tensor_test_runtime();
 
         let mem_pool: Rc<RefCell<MemPool<f16>>> =
             Rc::new(RefCell::new(MemPool::new(HashMap::new())));
@@ -1629,6 +1642,7 @@ mod test {
             println!("AVX512FP16 not supported, skipping test.");
             return;
         }
+        init_f16_tensor_test_runtime();
 
         let mem_pool: Rc<RefCell<MemPool<f16>>> =
             Rc::new(RefCell::new(MemPool::new(HashMap::new())));

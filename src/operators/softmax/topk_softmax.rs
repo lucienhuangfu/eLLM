@@ -137,6 +137,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
                 let out_offset = batch_index * self.sequence_stride + write_sequence_index;
                 ptr::write(output_sequences_ptr.add(out_offset), predict_token);
 
+                record.sequence_index = write_sequence_index;
                 record.kv_index = record.kv_index.saturating_add(1);
                 if predict_token == self.eos_id {
                     record.phase = Phase::Eos;

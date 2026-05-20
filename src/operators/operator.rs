@@ -270,6 +270,16 @@ mod test {
         }
     }
 
+    fn decode_state(sequence_index: usize, kv_index: usize) -> SequenceState {
+        SequenceState {
+            sequence_index,
+            kv_index,
+            filling_length: 0,
+            phase: Phase::Decode,
+            notify: Arc::new(Notify::new()),
+        }
+    }
+
     fn run_prefill_operator_all_threads(
         operator: &Operator<f32>,
         prefill_size: usize,
@@ -647,6 +657,579 @@ mod test {
         assert_eq!(single_thread.0, multi_thread.0);
         assert_eq!(single_thread.1, multi_thread.1);
         assert_eq!(single_thread.2, multi_thread.2);
+    }
+
+    #[test]
+    fn decode_chain_runs_from_current_token_and_writes_next_slot() {
+        const BATCH_SIZE: usize = 2;
+        const SEQUENCE_LENGTH: usize = 6;
+        const THREAD_NUM: usize = 4;
+        const HIDDEN_SIZE: usize = 64;
+        const HEAD_DIM: usize = 32;
+        const VOCAB_SIZE: usize = 128;
+        const TOPK: usize = 8;
+
+        let mut sequences = vec![0usize; BATCH_SIZE * SEQUENCE_LENGTH];
+        sequences[0..SEQUENCE_LENGTH].copy_from_slice(&[1, 2, 3, 42, 0, 0]);
+        sequences[SEQUENCE_LENGTH..SEQUENCE_LENGTH * 2].copy_from_slice(&[4, 5, 6, 7, 77, 0]);
+
+        let mut scheduler = BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM);
+        scheduler.batch_list.with_mut(|batch_list| {
+            batch_list.push(decode_state(3, 4));
+            batch_list.push(decode_state(4, 5));
+        });
+
+        let (prefill_size, decode_size) = scheduler.schedule_batch();
+        assert_eq!(prefill_size, 0);
+        assert_eq!(decode_size, 2);
+        assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
+        assert_eq!(scheduler.decode_list[0].sequence_index, 3);
+        assert_eq!(scheduler.decode_list[0].token_start_index, 0);
+        assert_eq!(scheduler.decode_list[1].sequence_index, 4);
+        assert_eq!(scheduler.decode_list[1].token_start_index, 1);
+
+        let prefill_list = scheduler.prefill_list.clone();
+        let decode_list = scheduler.decode_list.clone();
+
+        let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
+        fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
+
+        let mut hidden = vec![0.0f32; decode_size * HIDDEN_SIZE];
+        let mut normal = vec![0.0f32; decode_size * HIDDEN_SIZE];
+        let lookup = Operator::LookupRMSMap(LookupRMSMap::new(
+            sequences.as_ptr(),
+            word_embedding.as_ptr(),
+            hidden.as_mut_ptr(),
+            normal.as_mut_ptr(),
+            SEQUENCE_LENGTH,
+            HIDDEN_SIZE,
+            1.0e-6,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &lookup,
+                prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+        });
+
+        assert_eq!(hidden[0], word_embedding[42 * HIDDEN_SIZE]);
+        assert_eq!(hidden[HIDDEN_SIZE], word_embedding[77 * HIDDEN_SIZE]);
+
+        let q_weight = vec![0.0f32; HEAD_DIM * HIDDEN_SIZE];
+        let k_weight = vec![0.0f32; HEAD_DIM * HIDDEN_SIZE];
+        let mut v_weight = vec![0.0f32; HEAD_DIM * HIDDEN_SIZE];
+        copy_identity_prefix(&mut v_weight, HEAD_DIM, HIDDEN_SIZE);
+
+        let mut q_state = vec![0.0f32; decode_size * HEAD_DIM];
+        let mut k_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
+        let mut v_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
+        let rope = vec![0.0f32; SEQUENCE_LENGTH * HEAD_DIM];
+        let params = MatMulParams {
+            a_row_step_macro: 1,
+            b_row_step_macro: 1,
+            column_step_macro: HIDDEN_SIZE,
+            a_row_step_micro: 1,
+            b_row_step_micro: 32,
+        };
+        let matmul3 = Operator::MatMul3(MatMul3::new(
+            normal.as_ptr(),
+            q_weight.as_ptr(),
+            q_state.as_mut_ptr(),
+            k_weight.as_ptr(),
+            k_cache.as_mut_ptr(),
+            v_weight.as_ptr(),
+            v_cache.as_mut_ptr(),
+            rope.as_ptr(),
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            1,
+            1,
+            HEAD_DIM,
+            decode_size,
+            HIDDEN_SIZE,
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &matmul3,
+                prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+        });
+
+        let cache_offset = |sequence_index: usize, batch_index: usize| {
+            (sequence_index * BATCH_SIZE + batch_index) * HEAD_DIM
+        };
+        assert!(v_cache[cache_offset(3, 0)] != 0.0);
+        assert!(v_cache[cache_offset(4, 1)] != 0.0);
+        assert_eq!(v_cache[cache_offset(4, 0)], 0.0);
+        assert_eq!(v_cache[cache_offset(5, 1)], 0.0);
+
+        let mut attention_output = vec![0.0f32; decode_size * HEAD_DIM];
+        let attention = Operator::Attention(Attention::new(
+            q_state.as_ptr(),
+            k_cache.as_ptr(),
+            v_cache.as_ptr(),
+            attention_output.as_mut_ptr(),
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            1,
+            1,
+            HEAD_DIM,
+            HEAD_DIM,
+            BATCH_SIZE * HEAD_DIM,
+            HEAD_DIM,
+            HEAD_DIM,
+            BATCH_SIZE * HEAD_DIM,
+            1,
+            SEQUENCE_LENGTH,
+            HEAD_DIM,
+            1.0,
+            false,
+            THREAD_NUM,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &attention,
+                prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+        });
+        assert!(attention_output[0] != 0.0);
+        assert!(attention_output[HEAD_DIM] != 0.0);
+
+        let lift = Operator::LiftVector(LiftVector::new(attention_output.as_mut_ptr(), HEAD_DIM));
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &lift,
+                prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+        });
+
+        let mut input_indices = vec![0usize; decode_size * TOPK * THREAD_NUM];
+        let mut input_values = vec![-100.0f32; decode_size * TOPK * THREAD_NUM];
+        input_indices[0] = 43;
+        input_values[0] = 10.0;
+        input_indices[TOPK * THREAD_NUM] = 78;
+        input_values[TOPK * THREAD_NUM] = 9.0;
+        let mut output_indices = vec![0usize; decode_size * TOPK];
+        let mut output_values = vec![0.0f32; decode_size * TOPK];
+        let mut batch_temperature = vec![1.0f32; BATCH_SIZE];
+        let topk = Operator::TopKSoftmax(TopKSoftmax::new(
+            input_indices.as_ptr(),
+            input_values.as_ptr(),
+            output_indices.as_mut_ptr(),
+            output_values.as_mut_ptr(),
+            sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
+            SEQUENCE_LENGTH,
+            TOPK,
+            VOCAB_SIZE - 1,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &topk,
+                prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+
+            assert_eq!(batch_list[0].phase, Phase::Decode);
+            assert_eq!(batch_list[0].sequence_index, 4);
+            assert_eq!(batch_list[0].kv_index, 5);
+            assert_eq!(batch_list[1].phase, Phase::Decode);
+            assert_eq!(batch_list[1].sequence_index, 5);
+            assert_eq!(batch_list[1].kv_index, 6);
+        });
+
+        assert_eq!(sequences[4], 43);
+        assert_eq!(sequences[SEQUENCE_LENGTH + 5], 78);
+    }
+
+    #[test]
+    fn prefill_then_decode_reuses_kv_cache_and_advances_cursor() {
+        const BATCH_SIZE: usize = 1;
+        const SEQUENCE_LENGTH: usize = 6;
+        const THREAD_NUM: usize = 4;
+        const HIDDEN_SIZE: usize = 64;
+        const HEAD_DIM: usize = 32;
+        const VOCAB_SIZE: usize = 128;
+        const TOPK: usize = 8;
+
+        let mut sequences = vec![10usize, 11, 12, 0, 0, 0];
+        let mut scheduler = BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM);
+        scheduler.batch_list.with_mut(|batch_list| {
+            batch_list.push(prefill_state(0, 3));
+        });
+
+        let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
+        fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
+
+        let q_weight = vec![0.0f32; HEAD_DIM * HIDDEN_SIZE];
+        let k_weight = vec![0.0f32; HEAD_DIM * HIDDEN_SIZE];
+        let mut v_weight = vec![0.0f32; HEAD_DIM * HIDDEN_SIZE];
+        copy_identity_prefix(&mut v_weight, HEAD_DIM, HIDDEN_SIZE);
+        let rope = vec![0.0f32; SEQUENCE_LENGTH * HEAD_DIM];
+        let params = MatMulParams {
+            a_row_step_macro: 1,
+            b_row_step_macro: 1,
+            column_step_macro: HIDDEN_SIZE,
+            a_row_step_micro: 1,
+            b_row_step_micro: 32,
+        };
+        let mut k_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
+        let mut v_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
+        let cache_offset = |sequence_index: usize| (sequence_index * BATCH_SIZE) * HEAD_DIM;
+
+        let (prefill_size, decode_size) = scheduler.schedule_batch();
+        assert_eq!(prefill_size, 3);
+        assert_eq!(decode_size, 1);
+        assert_eq!(scheduler.decode_list[0].sequence_index, 0);
+        assert_eq!(scheduler.decode_list[0].length, 3);
+        assert!(scheduler.decode_list[0].last_token_flag);
+
+        let prefill_list = scheduler.prefill_list.clone();
+        let decode_list = scheduler.decode_list.clone();
+        let mut hidden = vec![0.0f32; prefill_size * HIDDEN_SIZE];
+        let mut normal = vec![0.0f32; prefill_size * HIDDEN_SIZE];
+        let lookup = Operator::LookupRMSMap(LookupRMSMap::new(
+            sequences.as_ptr(),
+            word_embedding.as_ptr(),
+            hidden.as_mut_ptr(),
+            normal.as_mut_ptr(),
+            SEQUENCE_LENGTH,
+            HIDDEN_SIZE,
+            1.0e-6,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &lookup,
+                prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+        });
+        assert_eq!(hidden[0], word_embedding[10 * HIDDEN_SIZE]);
+        assert_eq!(hidden[2 * HIDDEN_SIZE], word_embedding[12 * HIDDEN_SIZE]);
+
+        let mut q_state = vec![0.0f32; prefill_size * HEAD_DIM];
+        let matmul3 = Operator::MatMul3(MatMul3::new(
+            normal.as_ptr(),
+            q_weight.as_ptr(),
+            q_state.as_mut_ptr(),
+            k_weight.as_ptr(),
+            k_cache.as_mut_ptr(),
+            v_weight.as_ptr(),
+            v_cache.as_mut_ptr(),
+            rope.as_ptr(),
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            1,
+            1,
+            HEAD_DIM,
+            prefill_size,
+            HIDDEN_SIZE,
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &matmul3,
+                prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+        });
+        assert!(v_cache[cache_offset(0)] != 0.0);
+        assert!(v_cache[cache_offset(1)] != 0.0);
+        assert!(v_cache[cache_offset(2)] != 0.0);
+        assert_eq!(v_cache[cache_offset(3)], 0.0);
+
+        let mut prefill_attention_output = vec![0.0f32; prefill_size * HEAD_DIM];
+        let prefill_attention = Operator::Attention(Attention::new(
+            q_state.as_ptr(),
+            k_cache.as_ptr(),
+            v_cache.as_ptr(),
+            prefill_attention_output.as_mut_ptr(),
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            1,
+            1,
+            HEAD_DIM,
+            HEAD_DIM,
+            BATCH_SIZE * HEAD_DIM,
+            HEAD_DIM,
+            HEAD_DIM,
+            BATCH_SIZE * HEAD_DIM,
+            1,
+            SEQUENCE_LENGTH,
+            HEAD_DIM,
+            1.0,
+            false,
+            THREAD_NUM,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &prefill_attention,
+                prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+        });
+        assert!(prefill_attention_output[2 * HEAD_DIM] != 0.0);
+
+        let lift = Operator::LiftVector(LiftVector::new(
+            prefill_attention_output.as_mut_ptr(),
+            HEAD_DIM,
+        ));
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &lift,
+                prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+        });
+        assert_eq!(
+            prefill_attention_output[0],
+            prefill_attention_output[2 * HEAD_DIM]
+        );
+
+        let mut input_indices = vec![0usize; decode_size * TOPK * THREAD_NUM];
+        let mut input_values = vec![-100.0f32; decode_size * TOPK * THREAD_NUM];
+        input_indices[0] = 42;
+        input_values[0] = 10.0;
+        let mut output_indices = vec![0usize; decode_size * TOPK];
+        let mut output_values = vec![0.0f32; decode_size * TOPK];
+        let mut batch_temperature = vec![1.0f32; BATCH_SIZE];
+        let topk = Operator::TopKSoftmax(TopKSoftmax::new(
+            input_indices.as_ptr(),
+            input_values.as_ptr(),
+            output_indices.as_mut_ptr(),
+            output_values.as_mut_ptr(),
+            sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
+            SEQUENCE_LENGTH,
+            TOPK,
+            VOCAB_SIZE - 1,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &topk,
+                prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+            assert_eq!(batch_list[0].phase, Phase::Decode);
+            assert_eq!(batch_list[0].sequence_index, 3);
+            assert_eq!(batch_list[0].kv_index, 4);
+        });
+        assert_eq!(sequences[3], 42);
+        assert_eq!(v_cache[cache_offset(3)], 0.0);
+
+        let prefill_cache_snapshot = v_cache.clone();
+        let (decode_prefill_size, decode_size) = scheduler.schedule_batch();
+        assert_eq!(decode_prefill_size, 0);
+        assert_eq!(decode_size, 1);
+        assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
+        assert_eq!(scheduler.decode_list[0].sequence_index, 3);
+        assert_eq!(scheduler.decode_list[0].length, 1);
+
+        let prefill_list = scheduler.prefill_list.clone();
+        let decode_list = scheduler.decode_list.clone();
+        let mut hidden = vec![0.0f32; decode_size * HIDDEN_SIZE];
+        let mut normal = vec![0.0f32; decode_size * HIDDEN_SIZE];
+        let lookup = Operator::LookupRMSMap(LookupRMSMap::new(
+            sequences.as_ptr(),
+            word_embedding.as_ptr(),
+            hidden.as_mut_ptr(),
+            normal.as_mut_ptr(),
+            SEQUENCE_LENGTH,
+            HIDDEN_SIZE,
+            1.0e-6,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &lookup,
+                decode_prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+        });
+        assert_eq!(hidden[0], word_embedding[42 * HIDDEN_SIZE]);
+
+        let mut q_state = vec![0.0f32; decode_size * HEAD_DIM];
+        let matmul3 = Operator::MatMul3(MatMul3::new(
+            normal.as_ptr(),
+            q_weight.as_ptr(),
+            q_state.as_mut_ptr(),
+            k_weight.as_ptr(),
+            k_cache.as_mut_ptr(),
+            v_weight.as_ptr(),
+            v_cache.as_mut_ptr(),
+            rope.as_ptr(),
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            1,
+            1,
+            HEAD_DIM,
+            decode_size,
+            HIDDEN_SIZE,
+            params.a_row_step_macro,
+            params.b_row_step_macro,
+            params.column_step_macro,
+            params.a_row_step_micro,
+            params.b_row_step_micro,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &matmul3,
+                decode_prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+        });
+        assert_eq!(
+            &v_cache[cache_offset(0)..cache_offset(3)],
+            &prefill_cache_snapshot[cache_offset(0)..cache_offset(3)]
+        );
+        assert!(v_cache[cache_offset(3)] != 0.0);
+
+        let mut decode_attention_output = vec![0.0f32; decode_size * HEAD_DIM];
+        let decode_attention = Operator::Attention(Attention::new(
+            q_state.as_ptr(),
+            k_cache.as_ptr(),
+            v_cache.as_ptr(),
+            decode_attention_output.as_mut_ptr(),
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            1,
+            1,
+            HEAD_DIM,
+            HEAD_DIM,
+            BATCH_SIZE * HEAD_DIM,
+            HEAD_DIM,
+            HEAD_DIM,
+            BATCH_SIZE * HEAD_DIM,
+            1,
+            SEQUENCE_LENGTH,
+            HEAD_DIM,
+            1.0,
+            false,
+            THREAD_NUM,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &decode_attention,
+                decode_prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+        });
+
+        let expected = (v_cache[cache_offset(0)]
+            + v_cache[cache_offset(1)]
+            + v_cache[cache_offset(2)]
+            + v_cache[cache_offset(3)])
+            / 4.0;
+        assert_ulps_eq!(decode_attention_output[0], expected, max_ulps = 4);
+
+        let mut input_indices = vec![0usize; decode_size * TOPK * THREAD_NUM];
+        let mut input_values = vec![-100.0f32; decode_size * TOPK * THREAD_NUM];
+        input_indices[0] = 43;
+        input_values[0] = 10.0;
+        let mut output_indices = vec![0usize; decode_size * TOPK];
+        let mut output_values = vec![0.0f32; decode_size * TOPK];
+        let topk = Operator::TopKSoftmax(TopKSoftmax::new(
+            input_indices.as_ptr(),
+            input_values.as_ptr(),
+            output_indices.as_mut_ptr(),
+            output_values.as_mut_ptr(),
+            sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
+            SEQUENCE_LENGTH,
+            TOPK,
+            VOCAB_SIZE - 1,
+        ));
+
+        scheduler.batch_list.with_mut(|batch_list| {
+            run_prefill_operator_all_threads(
+                &topk,
+                decode_prefill_size,
+                decode_size,
+                THREAD_NUM,
+                &prefill_list,
+                &decode_list,
+                batch_list,
+            );
+            assert_eq!(batch_list[0].phase, Phase::Decode);
+            assert_eq!(batch_list[0].sequence_index, 4);
+            assert_eq!(batch_list[0].kv_index, 5);
+        });
+        assert_eq!(sequences[4], 43);
     }
 
     #[test]

@@ -43,13 +43,8 @@ impl<T> MemoryBlock<T> {
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
         match self {
-            MemoryBlock::Full(boxed) => Arc::get_mut(boxed)
-                .expect("Multiple strong references to MemoryBlock::Full")
-                .as_mut_ptr(),
-            MemoryBlock::Sub { parent, offset, .. } => Arc::get_mut(parent)
-                .expect("Multiple strong references to MemoryBlock::Sub")
-                .as_mut_ptr()
-                .wrapping_add(*offset),
+            MemoryBlock::Full(boxed) => boxed.as_mut_ptr(),
+            MemoryBlock::Sub { parent, offset, .. } => parent.as_mut_ptr_offset(*offset),
         }
     }
 
@@ -76,19 +71,16 @@ impl<T> MemoryBlock<T> {
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         match self {
-            MemoryBlock::Full(boxed) => Arc::get_mut(boxed)
-                .expect("Multiple strong references to MemoryBlock::Full")
-                .as_mut_slice(),
+            MemoryBlock::Full(boxed) => unsafe {
+                std::slice::from_raw_parts_mut(boxed.as_mut_ptr(), boxed.len())
+            },
             MemoryBlock::Sub {
                 parent,
                 offset,
                 size,
-            } => {
-                let parent_slice = Arc::get_mut(parent)
-                    .expect("Multiple strong references to MemoryBlock::Sub")
-                    .as_mut_slice();
-                parent_slice.get_mut(*offset..*offset + *size).unwrap()
-            }
+            } => unsafe {
+                std::slice::from_raw_parts_mut(parent.as_mut_ptr_offset(*offset), *size)
+            },
         }
     }
 }

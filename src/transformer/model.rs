@@ -192,6 +192,7 @@ mod test {
     use crate::common::sequence_slice::SequenceSlice;
     use crate::mem_mgr::allocator::AlignedBox;
     use crate::runtime::{Phase, SequenceState};
+    use std::collections::HashMap;
 
     fn build_batch_list(batch_size: usize) -> Vec<SequenceState> {
         (0..batch_size)
@@ -253,6 +254,7 @@ mod test {
         )
         .forward::<f32>();
         let eos_id = 151643;
+        f32::init_global(HashMap::new());
         let mut batch_temperature = vec![1.0f32; batch_size];
         let mut model = Model::<f32>::new(
             &config,
@@ -327,6 +329,7 @@ mod test {
         )
         .forward::<f16>();
         let eos_id = 151643;
+        f16::init_global(HashMap::new());
         let mut batch_temperature = vec![1.0f16; batch_size];
         let mut model = Model::<f16>::new(
             &config,
@@ -371,12 +374,17 @@ mod test {
 
     #[test]
     fn test_qwen3_06b_creation() {
-        use std::collections::HashMap;
         let sequence_length = 128;
         let batch_size = 1;
         let topk_size = 8;
 
-        let config = Config::load_from_file(r"models/Qwen3-0.6B/config.json").unwrap();
+        let config_path = r"models/Qwen3-0.6B/config.json";
+        if !std::path::Path::new(config_path).exists() {
+            eprintln!("skip test_qwen3_06b_creation: {config_path} not found");
+            return;
+        }
+
+        let config = Config::load_from_file(config_path).unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,
@@ -417,12 +425,17 @@ mod test {
             eprintln!("skip test_qwen3_06b_creation_f16: avx512fp16 not detected");
             return;
         }
-        use std::collections::HashMap;
         let sequence_length = 128;
         let batch_size = 1;
         let topk_size = 8;
 
-        let config = Config::load_from_file(r"models/Qwen3-0.6B/config.json").unwrap();
+        let config_path = r"models/Qwen3-0.6B/config.json";
+        if !std::path::Path::new(config_path).exists() {
+            eprintln!("skip test_qwen3_06b_creation_f16: {config_path} not found");
+            return;
+        }
+
+        let config = Config::load_from_file(config_path).unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,

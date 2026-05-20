@@ -1,7 +1,9 @@
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::operator::Operator;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 use crate::transformer::config::RouterScoringKind;
 use crate::transformer::names::SparseMoeTensorNames;
+use std::collections::HashMap;
 
 use super::SparseMoe;
 
@@ -57,6 +59,7 @@ fn build_case(
     router_scoring: RouterScoringKind,
     use_routing_bias: bool,
 ) -> (SparseMoe<f16>, Tensor<f16>, Tensor<f16>) {
+    f16::init_global(HashMap::new());
     f16::init_operator_queue();
 
     let moe = SparseMoe::<f16>::new(
@@ -70,7 +73,8 @@ fn build_case(
         SparseMoeTensorNames {
             scope: String::from("model.layers.0.mlp"),
             router_gate: String::from("model.layers.0.mlp.gate.weight"),
-            router_bias: None,
+            router_bias: use_routing_bias
+                .then(|| String::from("model.layers.0.mlp.gate.e_score_correction_bias")),
             experts_gate_proj: String::from("model.layers.0.mlp.experts.gate_proj.weight"),
             experts_up_proj: String::from("model.layers.0.mlp.experts.up_proj.weight"),
             experts_down_proj: String::from("model.layers.0.mlp.experts.down_proj.weight"),
