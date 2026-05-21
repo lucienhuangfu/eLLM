@@ -33,7 +33,6 @@ alignment/**/dump/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# AI assistant files
+# AI assistant files (local only)
 .trae/
-*.trae
 .kiro/
