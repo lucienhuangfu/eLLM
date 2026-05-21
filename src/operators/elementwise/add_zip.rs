@@ -18,6 +18,7 @@ pub struct AddZipMap<T> {
     // max_batch_size: usize,
     head_num: usize,
     head_size: usize,
+    decode_only_flag: bool,
     // cpu_num: usize
 }
 
@@ -38,6 +39,7 @@ where
         // max_batch_size: usize,
         head_num: usize,
         head_size: usize,
+        decode_only_flag: bool,
         // cpu_num: usize
     ) -> Self {
         Self {
@@ -48,6 +50,7 @@ where
             // max_batch_size,
             head_num,
             head_size,
+            decode_only_flag,
             // cpu_num
         }
     }
@@ -61,12 +64,17 @@ where
     pub fn run(
         &self,
         prefill_size: usize,
-        _decode_size: usize,
+        decode_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         //  [batch_size, head_num， head_size]
-        let len = prefill_size * self.head_num;
+        let active_rows = if prefill_size == 0 || self.decode_only_flag {
+            decode_size
+        } else {
+            prefill_size
+        };
+        let len = active_rows * self.head_num;
 
         if let Some((begin, end)) = assign(len, thread_num, thread_id) {
             let ptr1 = self.ptr1.ptr;
@@ -181,6 +189,7 @@ mod test {
             // batch_size,
             head_num,
             head_size,
+            false,
         );
 
         // operator.set_chunk(chunks);

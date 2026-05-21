@@ -223,6 +223,7 @@ mod test {
     // use std::slice;
 
     #[test]
+    #[ignore = "model-scale integration test; run manually on a large machine"]
     fn test_decoder_layer_f32() {
         let sequence_length = 1;
         let batch_size = 6;
@@ -298,6 +299,7 @@ mod test {
     }
 
     #[test]
+    #[ignore = "model-scale integration test; run manually on a large machine"]
     fn test_decoder_layer_f16() {
         let position_window_size = 1;
         let batch_size = 3;

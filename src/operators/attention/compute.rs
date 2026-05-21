@@ -78,6 +78,30 @@ impl AttentionTrait<f16> for Attention<f16> {
         running_denom: &mut [f16],
         scores: &mut [f16],
     ) {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            kernel::x86_64::f16_512::flash_attention::block_flash_attention(
+                q_ptr,
+                output_ptr,
+                row_begin,
+                row_end,
+                col_begin,
+                col_end,
+                total_col_end,
+                k_ptr,
+                v_ptr,
+                k_seq_stride,
+                v_seq_stride,
+                self.head_size,
+                self.inverse_sqrt_head,
+                sequence_index,
+                running_max,
+                running_denom,
+                scores,
+            );
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::scalar::block_flash_attention::block_flash_attention(
             q_ptr,
             output_ptr,

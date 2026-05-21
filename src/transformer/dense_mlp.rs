@@ -78,8 +78,11 @@ where
             format!("{}.up_proj.output", self.scope_name),
         );
 
-        let nonlinear_product =
-            gate_product.add(&up_product, format!("{}.intermediate", self.scope_name));
+        let nonlinear_product = gate_product.add(
+            &up_product,
+            decode_only_flag,
+            format!("{}.intermediate", self.scope_name),
+        );
 
         nonlinear_product.matmul_add(
             &self.down_weight,
