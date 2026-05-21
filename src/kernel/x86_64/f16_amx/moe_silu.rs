@@ -67,14 +67,7 @@ mod tests {
     use super::*;
     use std::arch::is_x86_feature_detected;
 
-    fn check_acc(
-        a: &[f16],
-        panel: &[f16],
-        before: &[f16],
-        after: &[f16],
-        kc: usize,
-        name: &str,
-    ) {
+    fn check_acc(a: &[f16], panel: &[f16], before: &[f16], after: &[f16], kc: usize, name: &str) {
         for r in 0..AMX_MR {
             for n in 0..32 {
                 let mut expected = before[r * 32 + n] as f32;

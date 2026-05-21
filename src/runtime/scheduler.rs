@@ -72,7 +72,7 @@ impl BatchScheduler {
                     Phase::Decode => {
                         has_decode = true;
                         if decode_candidates.len() < max_decode_size {
-                            decode_candidates.push((batch_index, record.kv_index));
+                            decode_candidates.push((batch_index, record.sequence_index));
                         }
                     }
                     Phase::Prefill => {
@@ -248,7 +248,7 @@ mod tests {
 
         let slice = &scheduler.decode_list[0];
         assert_eq!(slice.batch_index, 0);
-        assert_eq!(slice.sequence_index, 128);
+        assert_eq!(slice.sequence_index, 100);
         assert_eq!(slice.token_start_index, 0);
         assert_eq!(slice.length, 1);
         assert!(slice.last_token_flag);
@@ -359,7 +359,7 @@ mod tests {
 
         let slice = &scheduler.decode_list[0];
         assert_eq!(slice.batch_index, 1);
-        assert_eq!(slice.sequence_index, 128);
+        assert_eq!(slice.sequence_index, 100);
         assert_eq!(slice.token_start_index, 0);
         assert_eq!(slice.length, 1);
         assert!(slice.last_token_flag);

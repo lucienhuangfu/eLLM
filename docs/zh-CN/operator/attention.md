@@ -32,13 +32,13 @@
 | `head_dim` / `head_size` | 每个 head 的维度 |
 | `row_step` | 行方向 block 粒度，当前 `Tensor::attention` 调用传入为 1 |
 | `col_step` | 列方向 block 粒度，当前 `Tensor::attention` 调用传入为 8 |
-| `sequence_chunk_size` | 前向路径中当前 chunk 的序列长度 |
+| `sequence_length` | K/V cache 的序列容量或布局上限；当前参与计算的 token 范围由 `SequenceSlice` 决定 |
 
 说明：
 
 * GQA 通过 `num_attention_heads / num_key_value_heads` 的映射关系表达，不额外引入独立的 `group` 张量维度。
 * `batch_size` 仍然是张量语义中的 batch 维，但任务输入不是直接按 batch 维展开，而是通过外部切片结构传入。
-* 在前向层里更常见的是 `head_dim` 和 `sequence_chunk_size`；在底层 attention kernel 里对应的是 `head_size` 和 `seq_len`。
+* 在前向层里更常见的是 `head_dim`、`chunk_size` 和 K/V cache 的 `sequence_length`；在底层 attention kernel 里对应的是 `head_size`、stride 信息和 slice 的有效 token 范围。
 * `decode_only_flag` 会被保存在 `Attention` 结构体中，但当前 attention 调度与计算路径并未使用它参与分支判断。
 
 ---
@@ -56,8 +56,8 @@ attention 前向路径的张量组织可以概括为：
 
 从语义上看：
 
-* Q 的逻辑形状是 `[sequence_chunk_size, batch_size, num_attention_heads, head_dim]`
-* K / V 的逻辑形状是 `[batch_size, num_key_value_heads, sequence_chunk_size, head_dim]`
+* Q 的逻辑形状是 `[sequence_length, batch_size, num_attention_heads, head_dim]`
+* K / V 在前向路径中先按 `[sequence_length, batch_size, num_key_value_heads, head_dim]` 生成，再通过 view/permute 形成 `[batch_size, num_key_value_heads, sequence_length, head_dim]` 的逻辑访问；底层 kernel 依赖传入的 K/V stride 做真实寻址。
 
 这表示整体结构遵循典型的 GQA 设计：
 
@@ -75,7 +75,7 @@ attention kernel 处理的最小外部任务单元不是单独某一行，也不
 * 它对应哪段 sequence/token 区间
 * 这段区间的长度
 
-当前 attention 实现实际会读取 `token_start_index`、`batch_index`、`sequence_index` 和 `length` 来定位 Q/K/V/O 指针；`lift_index` 目前不参与该算子的调度。
+当前 attention 实现实际会读取 `token_start_index`、`batch_index`、`sequence_index` 和 `length` 来定位 Q/K/V/O 指针；`last_token_flag` 目前不参与该算子的调度。
 
 因此，最小调度单元可以理解为：
 
@@ -162,7 +162,7 @@ use_head_split = slice.length > 0
 aligned_len = floor(slice.length / row_step) * row_step
 ```
 
-然后只对 `aligned_len` 这一段调用按三角工作量的 sequence split。代码里虽然构造了 `tail = (aligned_len, slice.length)` 这一尾段计划，但当前 `visit_blocks_for_head` 只消费 `row_plan.main`，并不会执行 `row_plan.tail`。因此按现状实现，sequence split 路径真正参与计算的是 `main` 对应的对齐区间。
+然后对 `aligned_len` 这一段调用按三角工作量的 sequence split。代码里也会构造 `tail = (aligned_len, slice.length)` 这一尾段计划，并由最后一个线程执行尾段 block attention 计算。因此 sequence split 路径会覆盖 `main` 对应的对齐区间和末尾不足 `row_step` 的行区间。
 
 这一模式的优先目标是：
 
@@ -379,7 +379,7 @@ row_col_end = min(col_end, visible_col_end)
 * slice 足够长时，内部线程划分按三角工作量静态分段，而不是按行数平均分配。
 * slice 较短、无法用行块覆盖所有线程时，内部改为按 `kv_head` 波次静态推进：每一波只激活尽量少的连续 `kv_head`，再把当前波次展平后的 attention-head 槽位连续分给线程。
 * 内部遍历采用二维 block 结构，当前调用参数为 `row_step=1`、`col_step=8`。
-* 当前数值路径已经通过 scalar `block_flash_attention` 实现逐行 causal 截断；不过 `RowVisitPlan.tail` 目前尚未在访问路径中执行。
+* 当前数值路径已经通过 scalar `block_flash_attention` 实现逐行 causal 截断，`RowVisitPlan.tail` 也会在访问路径中执行。
 
 ---
 

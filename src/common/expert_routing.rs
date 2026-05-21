@@ -38,13 +38,22 @@ pub unsafe fn routing_from_dense<T: Copy + Default>(
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::common::send_sync_ptr::MutPtr;
-    use crate::mem_mgr::allocator::allocate_init;
+    use crate::mem_mgr::allocator::AlignedBox;
 
-    let expert_counts = crate::mem_mgr::allocator::allocate::<AtomicUsize>(num_experts);
+    let expert_counts_box = AlignedBox::<AtomicUsize>::allocate(num_experts);
+    let expert_counts = expert_counts_box.as_mut_ptr();
+    std::mem::forget(expert_counts_box);
     let capacity_per_expert = num_tokens;
-    let index_tensor = allocate_init(num_experts * capacity_per_expert, 0usize);
-    let score_tensor = allocate_init(num_experts * capacity_per_expert, T::default());
-    let topk_indices = allocate_init(num_tokens * num_topk, 0usize);
+    let index_tensor_box = AlignedBox::allocate_init(num_experts * capacity_per_expert, 0usize);
+    let index_tensor = index_tensor_box.as_mut_ptr();
+    std::mem::forget(index_tensor_box);
+    let score_tensor_box =
+        AlignedBox::allocate_init(num_experts * capacity_per_expert, T::default());
+    let score_tensor = score_tensor_box.as_mut_ptr();
+    std::mem::forget(score_tensor_box);
+    let topk_indices_box = AlignedBox::allocate_init(num_tokens * num_topk, 0usize);
+    let topk_indices = topk_indices_box.as_mut_ptr();
+    std::mem::forget(topk_indices_box);
 
     for t in 0..(num_tokens * num_topk) {
         *topk_indices.add(t) = *topk_indices_ptr.add(t);
@@ -86,25 +95,32 @@ pub unsafe fn empty_routing<T: Copy + Default>(
     use std::sync::atomic::AtomicUsize;
 
     use crate::common::send_sync_ptr::MutPtr;
-    use crate::mem_mgr::allocator::allocate_init;
+    use crate::mem_mgr::allocator::AlignedBox;
 
-    let expert_counts = crate::mem_mgr::allocator::allocate::<AtomicUsize>(num_experts);
+    let expert_counts_box = AlignedBox::<AtomicUsize>::allocate(num_experts);
+    let expert_counts = expert_counts_box.as_mut_ptr();
+    std::mem::forget(expert_counts_box);
     for e in 0..num_experts {
         std::ptr::write(expert_counts.add(e), AtomicUsize::new(0));
     }
 
     let capacity_per_expert = num_tokens;
+    let index_tensor_box = AlignedBox::allocate_init(num_experts * capacity_per_expert, 0usize);
+    let index_tensor = index_tensor_box.as_mut_ptr();
+    std::mem::forget(index_tensor_box);
+    let score_tensor_box =
+        AlignedBox::allocate_init(num_experts * capacity_per_expert, T::default());
+    let score_tensor = score_tensor_box.as_mut_ptr();
+    std::mem::forget(score_tensor_box);
+    let topk_indices_box = AlignedBox::allocate_init(num_tokens * num_topk, 0usize);
+    let topk_indices = topk_indices_box.as_mut_ptr();
+    std::mem::forget(topk_indices_box);
+
     ExpertRouting {
         expert_counts: MutPtr { ptr: expert_counts },
-        index_tensor: MutPtr {
-            ptr: allocate_init(num_experts * capacity_per_expert, 0usize),
-        },
-        score_tensor: MutPtr {
-            ptr: allocate_init(num_experts * capacity_per_expert, T::default()),
-        },
-        topk_indices: MutPtr {
-            ptr: allocate_init(num_tokens * num_topk, 0usize),
-        },
+        index_tensor: MutPtr { ptr: index_tensor },
+        score_tensor: MutPtr { ptr: score_tensor },
+        topk_indices: MutPtr { ptr: topk_indices },
         num_experts,
         num_tokens,
         num_topk,

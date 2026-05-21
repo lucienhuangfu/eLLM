@@ -2,10 +2,10 @@ use std::ops::{AddAssign, Neg, Sub};
 
 use crate::common::expert_routing::ExpertRouting;
 use crate::common::matmul_params::MatMulParams;
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
-use crate::runtime::tensor::Tensor;
+// removed custom Sigmoid/Sqrt traits; use standard numeric ops instead
+use crate::common::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
+use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 
 #[derive(Clone)]
 pub(super) struct SparseMoeSoftmaxRouter<T>
@@ -25,11 +25,13 @@ where
         + Default
         + Sub<Output = T>
         + Neg<Output = T>
-        + Exp
         + NegInfinity
+        + Exp
         + Sigmoid
         + Sqrt
-        + AddAssign,
+        + AddAssign
+        + GlobalMemPool
+        + GlobalOperatorQueue,
 {
     pub(super) fn new(
         hidden_size: usize,

@@ -6,6 +6,7 @@ pub struct ModelTensorNames {
     pub token_embedding: String,
     pub position_embedding: String,
     pub lm_head: String,
+    pub norm_weight: String,
 }
 
 #[derive(Debug, Clone)]
@@ -55,12 +56,22 @@ pub fn model_tensor_names(config: &Config) -> ModelTensorNames {
         | ModelFamily::Mixtral
         | ModelFamily::MiniMax
         | ModelFamily::MiniMaxM2
-        | ModelFamily::Unknown(_) => ModelTensorNames {
-            scope: String::from("model"),
-            token_embedding: String::from("model.embed_tokens.weight"),
-            position_embedding: String::from("model.position_embedding.weight"),
-            lm_head: String::from("lm_head.weight"),
-        },
+        | ModelFamily::Unknown(_) => {
+            let token_embedding = String::from("model.embed_tokens.weight");
+            let lm_head = if config.tie_word_embeddings {
+                token_embedding.clone()
+            } else {
+                String::from("lm_head.weight")
+            };
+
+            ModelTensorNames {
+                scope: String::from("model"),
+                token_embedding,
+                position_embedding: String::from("model.position_embedding.weight"),
+                lm_head,
+                norm_weight: String::from("model.norm.weight"),
+            }
+        }
     }
 }
 
@@ -87,12 +98,18 @@ pub fn layer_tensor_names(config: &Config, layer_idx: usize) -> LayerTensorNames
                 down_proj: format!("{}.down_proj.weight", ffn_scope),
             })
         }
-        FfnKind::SparseMoe { .. } => {
+        FfnKind::SparseMoe {
+            use_routing_bias, ..
+        } => {
             let ffn_scope = format!("{}.mlp", scope);
             FfnTensorNames::SparseMoe(SparseMoeTensorNames {
                 scope: ffn_scope.clone(),
                 router_gate: format!("{}.gate.weight", ffn_scope),
-                router_bias: Some(format!("{}.e_score_correction_bias", ffn_scope)),
+                router_bias: if *use_routing_bias {
+                    Some(format!("{}.e_score_correction_bias", ffn_scope))
+                } else {
+                    None
+                },
                 experts_gate_proj: format!("{}.experts.gate_proj.weight", ffn_scope),
                 experts_up_proj: format!("{}.experts.up_proj.weight", ffn_scope),
                 experts_down_proj: format!("{}.experts.down_proj.weight", ffn_scope),

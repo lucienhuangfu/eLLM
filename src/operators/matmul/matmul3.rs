@@ -3,12 +3,15 @@
 
 use std::f16;
 use std::marker::PhantomData;
-use std::ops::{Add, Mul};
+use std::ops::{Add, Mul, Sub};
 
 use crate::common::{
     matmul_params::MatMulParams,
+    num_traits::{FromNumber, Sqrt},
     send_sync_ptr::{ConstPtr, MutPtr},
 };
+
+use crate::common::sequence_slice::SequenceSlice;
 use crate::operators::assign::{assign, KqvPath};
 use crate::operators::traits::MatMulkqvTrait;
 
@@ -37,14 +40,17 @@ pub struct MatMul3<T> {
     v_state_ptr: MutPtr<T>,  // Cv[M×Nkv]
 
     // RoPE 相位表（按 N 方向拉平或按 head×dim 展开）
-    rope_ptr: ConstPtr<T>, // 由外部保证布局一致
-
+    rope_ptr: ConstPtr<T>,  // 由外部保证布局一致
+    sequence_length: usize, // 与 RoPE N 方向长度一致
+    batch_size: usize,
+    kv_head_num: usize, // 用于 GQA 的分组计算
+    group_num: usize,   // GQA 分组数（num_query_heads / num_key_value_heads）
     // 形状
     head_dim: usize, // 比如 128（要求 head_dim % 32 == 0）
     m_row: usize,    // M
     col: usize,      // K
-    b_q_row: usize,  // Nq
-    b_kv_row: usize, // Nkv
+    // b_q_row: usize,  // Nq
+    // b_kv_row: usize, // Nkv
 
     // 分块参数（MB/NB/KC/MR/NR=32）
     pub params: MatMulParams,
@@ -58,7 +64,7 @@ pub struct MatMul3<T> {
 
 impl<T> MatMul3<T>
 where
-    T: Copy + Add<Output = T> + Mul<Output = T> + Default,
+    T: Copy + Add<Output = T> + Mul<Output = T> + Sub<Output = T> + Default + Sqrt + FromNumber,
 {
     #[inline]
     pub fn new(
@@ -70,11 +76,23 @@ where
         v_weight_ptr_nt: *const T, // ✅ Wv_nt[Nkv×K]
         v_state_ptr: *mut T,
         rope_ptr: *const T,
+        sequence_length: usize,
+        batch_size: usize,
+        // Grouped Query Attention (GQA) 维度信息
+        // num_query_heads: Q的总头数（例：32）
+        // 与 b_q_row = num_query_heads × head_dim 对应
+        kv_head_num: usize,
+        // GQA 分组系数：多少个Q头共享一个KV头
+        // 关系：num_key_value_heads = num_query_heads / group_num
+        // 例：head_num=32, group_num=8 => 4个KV头服务32个Q头
+        group_num: usize,
+        // 每个Head的隐藏维度（通常为128、256等）
+        // Nq = num_query_heads × head_dim，Nkv = num_key_value_heads × head_dim
         head_dim: usize,
         m_row: usize,
         col: usize,
-        b_q_row: usize,
-        b_kv_row: usize,
+        // b_q_row: usize,
+        // b_kv_row: usize,
         a_row_step_macro: usize,
         b_row_step_macro: usize,
         column_step_macro: usize,
@@ -84,9 +102,15 @@ where
         let kc = column_step_macro.max(1);
         let nr = b_row_step_micro.max(1);
         let packed_panel_stride = kc * nr;
-        let packed_q = Self::pack_b_panels(q_weight_ptr_nt, b_q_row, col, kc, nr);
-        let packed_k = Self::pack_b_panels(k_weight_ptr_nt, b_kv_row, col, kc, nr);
-        let packed_v = Self::pack_b_panels(v_weight_ptr_nt, b_kv_row, col, kc, nr);
+        let packed_q = Self::pack_b_panels(
+            q_weight_ptr_nt,
+            kv_head_num * group_num * head_dim,
+            col,
+            kc,
+            nr,
+        );
+        let packed_k = Self::pack_b_panels(k_weight_ptr_nt, kv_head_num * head_dim, col, kc, nr);
+        let packed_v = Self::pack_b_panels(v_weight_ptr_nt, kv_head_num * head_dim, col, kc, nr);
 
         Self {
             hidden_ptr: ConstPtr { ptr: hidden_ptr },
@@ -95,13 +119,13 @@ where
             v_state_ptr: MutPtr { ptr: v_state_ptr },
 
             rope_ptr: ConstPtr { ptr: rope_ptr },
-
+            sequence_length,
+            batch_size,
+            kv_head_num,
+            group_num,
             head_dim,
             m_row,
             col,
-            b_q_row,
-            b_kv_row,
-
             params: MatMulParams {
                 a_row_step_macro,
                 b_row_step_macro,
@@ -281,26 +305,137 @@ where
         Some((KqvPath::Q, task_id - k_tiles))
     }
 
+    #[inline(always)]
+    fn build_row_map(
+        &self,
+        prefill_size: usize,
+        decode_size: usize,
+        attention_list: &[SequenceSlice],
+    ) -> Vec<(usize, usize, usize)> {
+        if attention_list.is_empty() {
+            let fallback_len = prefill_size.max(decode_size).min(self.m_row);
+            return (0..fallback_len)
+                .map(|row| (row, 0usize, row.min(self.sequence_length.saturating_sub(1))))
+                .collect();
+        }
+
+        let mut rows = Vec::with_capacity(attention_list.iter().map(|slice| slice.length).sum());
+        for slice in attention_list {
+            if slice.batch_index >= self.batch_size {
+                continue;
+            }
+
+            for offset in 0..slice.length {
+                let token_index = slice.token_start_index + offset;
+                let sequence_index = slice.sequence_index + offset;
+                if token_index >= self.m_row || sequence_index >= self.sequence_length {
+                    continue;
+                }
+                rows.push((token_index, slice.batch_index, sequence_index));
+            }
+        }
+        rows
+    }
+
+    #[inline(always)]
+    unsafe fn compute_head_from_packed(
+        &self,
+        a_row: *const T,
+        dst_head: *mut T,
+        packed_b: &[T],
+        n_total: usize,
+        head_index: usize,
+        apply_rope: bool,
+        sequence_index: usize,
+    ) {
+        let k = self.col;
+        let kc_block = self.params.column_step_macro.max(1);
+        let nr = self.params.b_row_step_micro.max(1);
+        debug_assert_eq!(nr, 32);
+        debug_assert_eq!(self.head_dim % nr, 0);
+
+        for head_col in 0..self.head_dim {
+            *dst_head.add(head_col) = T::default();
+        }
+
+        let head_col0 = head_index * self.head_dim;
+        for head_col in (0..self.head_dim).step_by(nr) {
+            let global_col = head_col0 + head_col;
+
+            let mut k0 = 0usize;
+            while k0 < k {
+                let kc_cur = kc_block.min(k - k0);
+                let b_panel = self.packed_panel_ptr(packed_b, n_total, global_col, k0);
+
+                for kk in 0..kc_cur {
+                    let a_value = *a_row.add(k0 + kk);
+                    for lane in 0..nr {
+                        let dst = dst_head.add(head_col + lane);
+                        *dst = *dst + a_value * *b_panel.add(kk * nr + lane);
+                    }
+                }
+
+                k0 += kc_cur;
+            }
+        }
+
+        if apply_rope {
+            let eps = T::from_f32(1e-6);
+            rms_norm(dst_head, dst_head, self.head_dim, eps);
+            let rope_ptr = self.rope_ptr.ptr.add(sequence_index * self.head_dim);
+            complex_mul(dst_head, rope_ptr, dst_head, self.head_dim);
+        }
+    }
+
+    #[inline(always)]
+    fn path_task(
+        row_count: usize,
+        kv_head_num: usize,
+        q_head_num: usize,
+        task_id: usize,
+    ) -> Option<(KqvPath, usize, usize)> {
+        let v_tasks = row_count * kv_head_num;
+        let k_tasks = v_tasks;
+        let q_tasks = row_count * q_head_num;
+        let total = v_tasks + k_tasks + q_tasks;
+        if task_id >= total {
+            return None;
+        }
+
+        if task_id < v_tasks {
+            return Some((KqvPath::V, task_id / kv_head_num, task_id % kv_head_num));
+        }
+
+        let task_id = task_id - v_tasks;
+        if task_id < k_tasks {
+            return Some((KqvPath::K, task_id / kv_head_num, task_id % kv_head_num));
+        }
+
+        let task_id = task_id - k_tasks;
+        Some((KqvPath::Q, task_id / q_head_num, task_id % q_head_num))
+    }
+
     /// 入口：不再有 S 维度，只针对当前 A[M×K] 做一次 K/Q/V。
-    pub fn run(&self, prefill_size: usize, _decode_size: usize, thread_num: usize, thread_id: usize)
-    where
+    pub fn run(
+        &self,
+        prefill_size: usize,
+        decode_size: usize,
+        attention_list: &[SequenceSlice],
+        thread_num: usize,
+        thread_id: usize,
+    ) where
         Self: MatMulkqvTrait<T>,
     {
         unsafe {
-            let m_run = prefill_size;
-
             let k = self.col;
-            let n_q = self.b_q_row;
-            let n_kv = self.b_kv_row;
-
-            let mr = self.params.a_row_step_micro.max(1); // 期望=3
-            debug_assert_eq!(mr, 3);
-
-            // === 关键：向上 pad 到 3 的倍数，用于固定 3×32 微核 ===
-            let m_pad = ((m_run + mr - 1) / mr) * mr;
-
-            // self.m_row 在你们“new 预留更大”语义下，应当视为 capacity（m_max）
-            debug_assert!(m_pad <= self.m_row);
+            let n_q = self.kv_head_num * self.group_num * self.head_dim;
+            let n_kv = self.kv_head_num * self.head_dim;
+            let q_head_num = self.kv_head_num * self.group_num;
+            let row_map = self.build_row_map(prefill_size, decode_size, attention_list);
+            let row_count = row_map.len();
+            if row_count == 0 || thread_id >= thread_num || thread_num == 0 {
+                return;
+            }
 
             let a_base = self.hidden_ptr.ptr;
             let cq_base = self.q_state_ptr.ptr;
@@ -310,63 +445,64 @@ where
             let ldq = n_q;
             let ldk = n_kv;
             let ldv = n_kv;
-
-            let rope_base = self.rope_ptr.ptr;
-            let mb = self.params.a_row_step_macro;
-            let nb = self.params.b_row_step_macro;
-            let tiles_m = (m_pad + mb - 1) / mb;
-            let v_tiles = tiles_m * ((n_kv + nb - 1) / nb);
-            let k_tiles = v_tiles;
-            let q_tiles = tiles_m * ((n_q + nb - 1) / nb);
-
-            let total_tasks = v_tiles + k_tiles + q_tiles;
+            let total_tasks = row_count * (self.kv_head_num * 2 + q_head_num);
             if let Some((tb, te)) = assign(total_tasks, thread_num, thread_id) {
                 for task_id in tb..te {
-                    let Some((path, local_tile)) =
-                        Self::decode_task(v_tiles, k_tiles, q_tiles, task_id)
+                    let Some((path, row_idx, head_index)) =
+                        Self::path_task(row_count, self.kv_head_num, q_head_num, task_id)
                     else {
                         continue;
                     };
+
+                    let (token_index, batch_index, sequence_index) = row_map[row_idx];
+                    let a_row = a_base.add(token_index * k);
+
+                    let rope_sequence_index = if attention_list.is_empty() {
+                        0
+                    } else {
+                        sequence_index
+                    };
+
                     match path {
-                        KqvPath::V => self.gemm_one_path_tiles(
-                            a_base,
-                            cv_base,
-                            &self.packed_v,
-                            m_pad,
-                            n_kv,
-                            k,
-                            ldv,
-                            rope_base,
-                            local_tile,
-                            local_tile + 1,
-                            false,
-                        ),
-                        KqvPath::K => self.gemm_one_path_tiles(
-                            a_base,
-                            ck_base,
-                            &self.packed_k,
-                            m_pad,
-                            n_kv,
-                            k,
-                            ldk,
-                            rope_base,
-                            local_tile,
-                            local_tile + 1,
-                            true,
-                        ),
-                        KqvPath::Q => self.gemm_one_path_tiles(
-                            a_base,
-                            cq_base,
-                            &self.packed_q,
-                            m_pad,
-                            n_q,
-                            k,
-                            ldq,
-                            rope_base,
-                            local_tile,
-                            local_tile + 1,
-                            true,
-                        ),
+                        KqvPath::V => {
+                            let cache_row = (sequence_index * self.batch_size + batch_index) * ldv;
+                            let dst_head = cv_base.add(cache_row + head_index * self.head_dim);
+                            self.compute_head_from_packed(
+                                a_row,
+                                dst_head,
+                                &self.packed_v,
+                                n_kv,
+                                head_index,
+                                false,
+                                rope_sequence_index,
+                            );
+                        }
+                        KqvPath::K => {
+                            let cache_row = (sequence_index * self.batch_size + batch_index) * ldk;
+                            let dst_head = ck_base.add(cache_row + head_index * self.head_dim);
+                            self.compute_head_from_packed(
+                                a_row,
+                                dst_head,
+                                &self.packed_k,
+                                n_kv,
+                                head_index,
+                                true,
+                                rope_sequence_index,
+                            );
+                        }
+                        KqvPath::Q => {
+                            let dst_head =
+                                cq_base.add(token_index * ldq + head_index * self.head_dim);
+                            self.compute_head_from_packed(
+                                a_row,
+                                dst_head,
+                                &self.packed_q,
+                                n_q,
+                                head_index,
+                                true,
+                                rope_sequence_index,
+                            );
+                        }
                     }
                 }
             }
@@ -416,8 +552,17 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        {
-            // TODO: fallback
+        unsafe {
+            let nr = self.params.b_row_step_micro;
+            for m in 0..self.params.a_row_step_micro {
+                for n in 0..nr {
+                    let mut sum = *c.add(m * ldc + n) as f32;
+                    for k in 0..kc {
+                        sum += (*a.add(m * lda + k) as f32) * (*b_panel.add(k * nr + n) as f32);
+                    }
+                    *c.add(m * ldc + n) = sum as f16;
+                }
+            }
         }
     }
 
@@ -434,8 +579,13 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        {
-            // TODO: fallback
+        unsafe {
+            let eps = 1e-6f32 as f16;
+            for r in 0..self.params.a_row_step_micro {
+                let row_ptr = c_head.add(r * ldc);
+                rms_norm(row_ptr, row_ptr, self.head_dim, eps);
+                complex_mul(row_ptr, rope_head, row_ptr, self.head_dim);
+            }
         }
     }
 }
@@ -557,7 +707,7 @@ mod tests {
 
     fn run_runner(runner: &MatMul3<f16>, m: usize, thread_num: usize) {
         for tid in 0..thread_num {
-            runner.run(m, 0, thread_num, tid);
+            runner.run(m, 0, &[], thread_num, tid);
         }
     }
 
@@ -569,6 +719,7 @@ mod tests {
     fn test_matmul3_qkv_f32_72_rows() {
         let m = 72;
         let k = 256;
+        let sequence_length = 1024;
         let head_dim = 128;
         let n_q = 32 * 128; // 4096
         let n_kv = 4 * 128; // 512
@@ -625,19 +776,21 @@ mod tests {
                 wv_nt.as_ptr(),
                 cv.as_mut_ptr(),
                 rope.as_ptr(),
-                head_dim,
-                m,
-                k,
-                n_q,
-                n_kv,
-                24,  // MB
-                128, // NB
-                32,  // KC
-                3,   // MR
-                32,  // NR
+                sequence_length, // sequence_length
+                1,               // batch_size
+                n_kv / head_dim, // kv_head_num
+                n_q / n_kv,      // group_num
+                head_dim,        // head_dim
+                m,               // m_row
+                k,               // col
+                24,              // a_row_step_macro
+                128,             // b_row_step_macro
+                32,              // column_step_macro
+                3,               // a_row_step_micro
+                32,              // b_row_step_micro
             );
 
-            matmul.run(m, 0, 1, 0);
+            matmul.run(m, 0, &[], 1, 0);
 
             // reference（从 W_nt 计算）
             ref_matmul_f32_from_wnt(m, k, n_q, &a, &wq_nt, &mut cq_ref);
@@ -723,16 +876,18 @@ mod tests {
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
             rope.as_ptr(),
-            HEAD_DIM,
-            M,
-            K,
-            NQ,
-            NKV,
-            3,  // MB
-            32, // NB
-            64, // KC
-            3,  // MR
-            32, // NR
+            HEAD_DIM,       // sequence_length
+            1,              // batch_size
+            NKV / HEAD_DIM, // kv_head_num
+            NQ / NKV,       // group_num
+            HEAD_DIM,       // head_dim
+            M,              // m_row
+            K,              // col
+            3,              // a_row_step_macro
+            32,             // b_row_step_macro
+            64,             // column_step_macro
+            3,              // a_row_step_micro
+            32,             // b_row_step_micro
         );
 
         run_runner(&runner, M, thread_num);
@@ -811,16 +966,18 @@ mod tests {
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
             rope.as_ptr(),
-            HEAD_DIM,
-            M,
-            K,
-            NQ,
-            NKV,
-            6,
-            64,
-            64,
-            3,
-            32,
+            HEAD_DIM,       // sequence_length
+            1,              // batch_size
+            NKV / HEAD_DIM, // kv_head_num
+            NQ / NKV,       // group_num
+            HEAD_DIM,       // head_dim
+            M,              // m_row
+            K,              // col
+            6,              // a_row_step_macro
+            64,             // b_row_step_macro
+            64,             // column_step_macro
+            3,              // a_row_step_micro
+            32,             // b_row_step_micro
         );
 
         run_runner(&runner, M, thread_num);
@@ -891,16 +1048,18 @@ mod tests {
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
             rope.as_ptr(),
-            HEAD_DIM,
-            M,
-            K,
-            NQ,
-            NKV,
-            3,
-            32,
-            64,
-            3,
-            32,
+            HEAD_DIM,       // sequence_length
+            1,              // batch_size
+            NKV / HEAD_DIM, // kv_head_num
+            NQ / NKV,       // group_num
+            HEAD_DIM,       // head_dim
+            M,              // m_row
+            K,              // col
+            3,              // a_row_step_macro
+            32,             // b_row_step_macro
+            64,             // column_step_macro
+            3,              // a_row_step_micro
+            32,             // b_row_step_micro
         );
 
         run_runner(&runner, M, thread_num);
@@ -930,9 +1089,7 @@ mod tests {
         const K: usize = 256;
         const NQ: usize = 256;
         const NKV: usize = 256;
-        // Keep this test focused on medium-size GEMM. A head_dim larger than N
-        // avoids the Q/K finalize path, which has its own coverage below.
-        const HEAD_DIM: usize = 512;
+        const HEAD_DIM: usize = 128;
 
         let thread_num = avail_threads_cap(16);
 
@@ -973,16 +1130,18 @@ mod tests {
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
             rope.as_ptr(),
-            HEAD_DIM,
-            M,
-            K,
-            NQ,
-            NKV,
-            24,
-            128,
-            64,
-            3,
-            32,
+            HEAD_DIM,       // sequence_length
+            1,              // batch_size
+            NKV / HEAD_DIM, // kv_head_num
+            NQ / NKV,       // group_num
+            HEAD_DIM,       // head_dim
+            M,              // m_row
+            K,              // col
+            24,             // a_row_step_macro
+            128,            // b_row_step_macro
+            64,             // column_step_macro
+            3,              // a_row_step_micro
+            32,             // b_row_step_micro
         );
 
         run_runner(&runner, M, thread_num);
@@ -1001,104 +1160,6 @@ mod tests {
             for j in 0..NKV {
                 assert_abs_diff_eq!(ck[i * NKV + j] as f32, ck_ref[i * NKV + j], epsilon = 1.0);
                 assert_abs_diff_eq!(cv[i * NKV + j] as f32, cv_ref[i * NKV + j], epsilon = 1.0);
-            }
-        }
-    }
-
-    #[test]
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-    fn test_kqv_f16_avx512_finalize_qk_only() {
-        const M: usize = 3;
-        const K: usize = 64;
-        const NQ: usize = 128;
-        const NKV: usize = 128;
-        const HEAD_DIM: usize = 128;
-
-        let thread_num = avail_threads_cap(8);
-
-        let mut a = vec![0.0f16; M * K];
-        let mut wq_nt = vec![0.0f16; NQ * K];
-        let mut wk_nt = vec![0.0f16; NKV * K];
-        let mut wv_nt = vec![0.0f16; NKV * K];
-
-        let mut cq = vec![0.0f16; M * NQ];
-        let mut ck = vec![0.0f16; M * NKV];
-        let mut cv = vec![0.0f16; M * NKV];
-
-        let mut rope = vec![0.0f16; HEAD_DIM];
-        for pair in 0..(HEAD_DIM / 2) {
-            rope[2 * pair] = 1.0;
-            rope[2 * pair + 1] = 0.0;
-        }
-
-        for i in 0..M {
-            for kk in 0..K {
-                a[i * K + kk] = (((i * 5 + kk * 3) % 41) as f32 * 0.01 + 0.01) as f16;
-            }
-        }
-        for j in 0..NQ {
-            for kk in 0..K {
-                wq_nt[j * K + kk] = (((kk * 7 + j * 3) % 43) as f32 * 0.005 + 0.002) as f16;
-            }
-        }
-        for j in 0..NKV {
-            for kk in 0..K {
-                wk_nt[j * K + kk] = (((kk * 11 + j * 5) % 47) as f32 * 0.005 + 0.002) as f16;
-                wv_nt[j * K + kk] = (((kk * 13 + j * 7) % 53) as f32 * 0.005 + 0.002) as f16;
-            }
-        }
-
-        let runner = MatMul3::<f16>::new(
-            a.as_ptr(),
-            wq_nt.as_ptr(),
-            cq.as_mut_ptr(),
-            wk_nt.as_ptr(),
-            ck.as_mut_ptr(),
-            wv_nt.as_ptr(),
-            cv.as_mut_ptr(),
-            rope.as_ptr(),
-            HEAD_DIM,
-            M,
-            K,
-            NQ,
-            NKV,
-            3,
-            128,
-            64,
-            3,
-            32,
-        );
-
-        run_runner(&runner, M, thread_num);
-
-        let mut cv_ref = vec![0.0f32; M * NKV];
-        gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M, K, NKV);
-
-        for i in 0..M {
-            let q_rms = (cq[i * NQ..(i + 1) * NQ]
-                .iter()
-                .map(|&v| {
-                    let v = v as f32;
-                    v * v
-                })
-                .sum::<f32>()
-                / NQ as f32)
-                .sqrt();
-            let k_rms = (ck[i * NKV..(i + 1) * NKV]
-                .iter()
-                .map(|&v| {
-                    let v = v as f32;
-                    v * v
-                })
-                .sum::<f32>()
-                / NKV as f32)
-                .sqrt();
-
-            assert_abs_diff_eq!(q_rms, 1.0, epsilon = 5e-2);
-            assert_abs_diff_eq!(k_rms, 1.0, epsilon = 5e-2);
-
-            for j in 0..NKV {
-                assert_abs_diff_eq!(cv[i * NKV + j] as f32, cv_ref[i * NKV + j], epsilon = 5e-1);
             }
         }
     }
@@ -1162,16 +1223,18 @@ mod tests {
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
             rope.as_ptr(),
-            HEAD_DIM,
-            M_MAX, // m_row 当 capacity 用
-            K,
-            NQ,
-            NKV,
-            6,  // MB
-            64, // NB（=N）
-            64, // KC（=K）
-            3,  // MR
-            32, // NR
+            HEAD_DIM,       // sequence_length
+            1,              // batch_size
+            NKV / HEAD_DIM, // kv_head_num
+            NQ / NKV,       // group_num
+            HEAD_DIM,       // head_dim
+            M_MAX,          // m_row 当 capacity 用
+            K,              // col
+            6,              // a_row_step_macro
+            64,             // b_row_step_macro
+            64,             // column_step_macro
+            3,              // a_row_step_micro
+            32,             // b_row_step_micro
         );
 
         // run 传 batch=7（内部 pad 到 9）

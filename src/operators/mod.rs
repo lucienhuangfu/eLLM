@@ -1,6 +1,8 @@
 pub mod assign;
 pub mod attention;
 pub mod fake_echo;
+pub mod operator;
+pub use operator::Operator;
 
 pub mod elementwise {
     pub mod add_zip;

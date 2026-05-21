@@ -3,7 +3,7 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 
 // use axum::http::HeaderName;
 
-use crate::common::num_traits::Sigmoid;
+// removed custom Sigmoid trait; kernel provides per-type implementations
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::operators::assign::assign;
@@ -29,8 +29,7 @@ where
         + Sub<Output = T>
         + Mul<Output = T>
         + Div<Output = T>
-        + Neg<Output = T>
-        + Sigmoid,
+        + Neg<Output = T>,
 {
     pub fn new(
         ptr1: *const T,
@@ -96,8 +95,7 @@ where
         + Sub<Output = T>
         + Mul<Output = T>
         + Div<Output = T>
-        + Neg<Output = T>
-        + Sigmoid,
+        + Neg<Output = T>,
 {
     default fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T) {
         // print!("generic \n");
@@ -137,7 +135,7 @@ mod test {
 
     use super::*;
     // use super::super::chunk_zipmap::chunk_zipmap;
-    use crate::common::tensor_utils::get_strides;
+    use crate::tensor::get_strides;
     use approx::assert_ulps_eq;
     // use nom::sequence;
     // use rand::seq;

@@ -1,12 +1,10 @@
 use std::ops::{AddAssign, Neg, Sub};
-use std::rc::Rc;
 
 use crate::common::expert_routing::ExpertRouting;
 use crate::common::matmul_params::MatMulParams;
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
-use crate::runtime::tensor::{Tensor, TensorCtx};
+use crate::common::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
+use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 
 use super::super::names::SparseMoeTensorNames;
 use super::router_sigmoid::SparseMoeSigmoidRouter;
@@ -33,7 +31,9 @@ where
         + NegInfinity
         + Sigmoid
         + Sqrt
-        + AddAssign,
+        + AddAssign
+        + GlobalMemPool
+        + GlobalOperatorQueue,
 {
     fn new(
         hidden_size: usize,
@@ -96,7 +96,9 @@ where
         + NegInfinity
         + Sigmoid
         + Sqrt
-        + AddAssign,
+        + AddAssign
+        + GlobalMemPool
+        + GlobalOperatorQueue,
 {
     pub fn new(
         hidden_size: usize,
@@ -107,20 +109,14 @@ where
         router_scoring: RouterScoringKind,
         use_routing_bias: bool,
         names: SparseMoeTensorNames,
-        ctx: Rc<TensorCtx<T>>,
     ) -> Self {
         let scope_name = names.scope.clone();
-        let gate_weight = ctx.zeros(vec![num_experts, hidden_size], names.router_gate);
+        let gate_weight = Tensor::zeros(vec![num_experts, hidden_size], names.router_gate);
         let router_bias = if use_routing_bias {
-            Some(
-                ctx.zeros(
-                    vec![num_experts],
-                    names
-                        .router_bias
-                        .clone()
-                        .unwrap_or_else(|| format!("{}.e_score_correction_bias", scope_name)),
-                ),
-            )
+            let bias_name = names
+                .router_bias
+                .expect("use_routing_bias is true but SparseMoeTensorNames.router_bias is None");
+            Some(Tensor::zeros(vec![num_experts], bias_name))
         } else {
             None
         };
@@ -137,15 +133,15 @@ where
                 router_scoring,
                 scope_name.clone(),
             ),
-            experts_gate_weight: ctx.zeros(
+            experts_gate_weight: Tensor::zeros(
                 vec![num_experts, moe_intermediate_size, hidden_size],
                 names.experts_gate_proj,
             ),
-            experts_up_weight: ctx.zeros(
+            experts_up_weight: Tensor::zeros(
                 vec![num_experts, moe_intermediate_size, hidden_size],
                 names.experts_up_proj,
             ),
-            experts_down_weight: ctx.zeros(
+            experts_down_weight: Tensor::zeros(
                 vec![num_experts, hidden_size, moe_intermediate_size],
                 names.experts_down_proj,
             ),
@@ -160,7 +156,8 @@ where
         decode_only_flag: bool,
         tensor_name: String,
     ) -> Tensor<T> {
-        println!("Entering SparseMoe forward: {}", tensor_name);
+        #[cfg(debug_assertions)]
+        eprintln!("Entering SparseMoe forward: {}", tensor_name);
         let routing = self.router.forward(hidden_states, decode_only_flag);
 
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(
@@ -175,7 +172,7 @@ where
                 b_row_step_micro: 32,
             },
             decode_only_flag,
-            format!("{}.gate_up", self.scope_name),
+            format!("{}.gate_up_proj.output", self.scope_name),
         );
 
         let down_product = nonlinear_product.experts_matmul_mul(
@@ -190,14 +187,14 @@ where
                 b_row_step_micro: 32,
             },
             decode_only_flag,
-            format!("{}.down", self.scope_name),
+            format!("{}.down_proj.output", self.scope_name),
         );
 
         down_product.experts_merge_add(
             residual,
             routing,
             decode_only_flag,
-            format!("{}.merge", self.scope_name),
+            format!("{}.output", self.scope_name),
         )
     }
 }

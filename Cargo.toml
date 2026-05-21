@@ -7,9 +7,18 @@ edition = "2021"
 name = "ellm"
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "rope_alignment_test"
+path = "alignment/rope/rope_alignment_test.rs"
+
+[[bin]]
+name = "silu_mul_alignment_test"
+path = "alignment/silu_mul/silu_mul_alignment_test.rs"
+
 [dependencies]
 num_cpus = "1.13"
 regex = "1.10.2"
+once_cell = "1.19"
 core_affinity = "0.8.1"
 anyhow = "1.0.72"
 serde = {version = "1.0.226", features = ["derive"]}
@@ -22,6 +31,7 @@ num = "0.4.3"
 safetensors = "0.4.1"
 memmap2 = "0.9.4"
 tiktoken-rs = "0.6"
+npy = "0.4.0"
 async-stream = "0.3.6"
 axum = "0.8.4"
 minijinja = "2.12.0"
@@ -38,14 +48,6 @@ strip = "symbols"
 unwind-tables = false
 rpath = false
 
-# half = { version = "2.4.1", features = ["num-traits", "std"] }
-# linked-hash-map = "0.5.6"
-# hurdles = "1.0.1"
-# half  = {version = "2.4.1" , features = ["num-traits", "std"] }
-# half  = {version = "2.4.1" , features = [ "std"] }
-# zip = { version = "0.6", optional = true }
-# repugnant-pickle = { git = "https://github.com/KerfuffleV2/repugnant-pickle", features = ["torch"] }
-# smol = "1.3.0"
 [build-dependencies]
 raw-cpuid = "11.0.2"
 
@@ -54,6 +56,7 @@ raw-cpuid = "11.0.2"
 rand = "0.8.5"
 criterion = { version = "0.5.1", features = ["html_reports"] }
 approx = "0.5.1"
+tempfile = "3.8.1"
 
 [toolchain]
 channel = "nightly"

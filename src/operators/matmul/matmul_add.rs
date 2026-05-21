@@ -29,6 +29,7 @@ pub struct MatMulAdd<T> {
     pub m_max: usize,
     pub n_max: usize,
     pub k_max: usize,
+    pub decode_only_flag: bool,
 
     packed_b: Box<[T]>,         // [panels_k][panels_n][kc*nr]
     packed_panel_stride: usize, // = kc * nr
@@ -51,6 +52,7 @@ where
         m_max: usize,
         n_max: usize,
         k_max: usize,
+        decode_only_flag: bool,
     ) -> Self {
         let kc = params.column_step_macro.max(1);
         let nr = params.b_row_step_micro.max(1);
@@ -67,6 +69,7 @@ where
             m_max,
             n_max,
             k_max,
+            decode_only_flag,
             packed_b,
             packed_panel_stride,
         }
@@ -126,13 +129,17 @@ where
     pub fn run(
         &self,
         prefill_size: usize,
-        _decode_size: usize,
+        decode_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
             // ===== 维度 =====
-            let m_run = prefill_size; // 真实 M
+            let m_run = if self.decode_only_flag {
+                decode_size
+            } else {
+                prefill_size
+            }; // 真实 M
             let n = self.n_max; // N
             let k = self.k_max; // K
 
@@ -328,6 +335,7 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 
@@ -373,6 +381,7 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 
@@ -430,6 +439,7 @@ mod tests {
                 M,
                 N,
                 K,
+                false,
             )
         };
 
@@ -498,6 +508,7 @@ mod tests {
                 M_MAX,
                 N,
                 K,
+                false,
             )
         };
 

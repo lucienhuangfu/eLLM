@@ -7,7 +7,7 @@ use crate::common::num_traits::{exp::Exp, sqrt::Sqrt};
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::scalar;
 use crate::kernel::x86_64;
-use crate::mem_mgr::allocator::allocate_init;
+use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::assign::assign;
 use crate::operators::traits::SoftmaxTrait;
 
@@ -36,7 +36,12 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
             ptr1: ConstPtr { ptr: ptr1 },
 
             topk_values_ptr: MutPtr {
-                ptr: unsafe { allocate_init::<T>(length, T::default()) },
+                ptr: {
+                    let mut boxed = AlignedBox::allocate_init(length, T::default());
+                    let ptr = boxed.as_mut_ptr();
+                    std::mem::forget(boxed);
+                    ptr
+                },
             },
             routing,
             num_experts,
@@ -311,11 +316,11 @@ mod test {
             return;
         }
 
-        let sequence_chunk_size = 1;
+        let sequence_length = 1;
         let batch_size = 6;
         let num_experts = 128;
         let num_topk = 8;
-        let num_tokens = sequence_chunk_size * batch_size;
+        let num_tokens = sequence_length * batch_size;
 
         // Generate input data for batch_size tokens * num_experts
         let mut input_vals: Vec<f32> = Vec::with_capacity((num_tokens * num_experts));

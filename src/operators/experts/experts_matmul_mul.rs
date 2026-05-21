@@ -44,6 +44,7 @@ pub struct ExpertsMatMulDown<T> {
     pub hmid: usize,        // Hmid
     pub h: usize,           // H
     pub num_topk: usize,    // Ktop
+    pub decode_only_flag: bool,
 
     pub params: MatMulParams,
     _marker: PhantomData<T>,
@@ -93,7 +94,7 @@ where
         num_topk: usize,
 
         params: MatMulParams,
-        _decode_only_flag: bool,
+        decode_only_flag: bool,
     ) -> Self {
         let mb = params.a_row_step_macro.max(1);
         let kc = params.column_step_macro.max(1);
@@ -135,6 +136,7 @@ where
             hmid,
             h,
             num_topk,
+            decode_only_flag,
 
             params,
             _marker: PhantomData,
@@ -337,12 +339,16 @@ where
     pub fn run(
         &self,
         prefill_size: usize,
-        _decode_size: usize,
+        decode_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
-            let m = prefill_size; // token 数
+            let m = if self.decode_only_flag {
+                decode_size
+            } else {
+                prefill_size
+            }; // token 数
             let n = self.h; // 输出列 H
             let k = self.hmid; // 输入维 Hmid
 
@@ -489,8 +495,17 @@ impl ExpertsDownTrait<f16> for ExpertsMatMulDown<f16> {
             kernel::x86_64::f16_512::matmul_block::matmul_block(a_tile, b_panel, acc, &call_param);
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        {
-            unreachable!("avx512fp16 required for ExpertsDownTrait<f16>::compute1");
+        unsafe {
+            for r in 0..mr {
+                for lane in 0..nr {
+                    let mut sum = *acc.add(r * nr + lane) as f32;
+                    for kk in 0..kc {
+                        sum += (*a_tile.add(r * kc + kk) as f32)
+                            * (*b_panel.add(kk * nr + lane) as f32);
+                    }
+                    *acc.add(r * nr + lane) = sum as f16;
+                }
+            }
         }
     }
 
@@ -504,8 +519,12 @@ impl ExpertsDownTrait<f16> for ExpertsMatMulDown<f16> {
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        {
-            unreachable!("avx512fp16 required for ExpertsDownTrait<f16>::compute2");
+        unsafe {
+            for i in 0..len {
+                let out = *out_row.add(i) as f32;
+                let acc = *acc_row.add(i) as f32;
+                *out_row.add(i) = (out + acc * (factor_val as f32)) as f16;
+            }
         }
     }
 }

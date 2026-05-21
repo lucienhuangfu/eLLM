@@ -1,11 +1,9 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use crate::mem_mgr::cache::Cache;
-use crate::runtime::operator::Operator;
-use crate::runtime::tensor::{Tensor, TensorCtx};
+use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::operators::operator::Operator;
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 use crate::transformer::config::RouterScoringKind;
 use crate::transformer::names::SparseMoeTensorNames;
+use std::collections::HashMap;
 
 use super::SparseMoe;
 
@@ -41,16 +39,18 @@ fn tensor_to_bits_vec(t: &Tensor<f16>) -> Vec<u16> {
     out
 }
 
-fn run_queue(output: &Tensor<f16>, batch_size: usize, thread_num: usize) {
-    for op in output.operator_queue.borrow().iter() {
-        for tid in 0..thread_num {
-            op.run(batch_size, 0, thread_num, tid, &[], &[], &mut Vec::new());
+fn run_queue(_output: &Tensor<f16>, batch_size: usize, thread_num: usize) {
+    f16::with_operator_queue(|queue| {
+        for op in queue.iter() {
+            for tid in 0..thread_num {
+                op.run(batch_size, 0, thread_num, tid, &[], &[], &mut Vec::new());
+            }
         }
-    }
+    });
 }
 
 fn build_case(
-    sequence_chunk_size: usize,
+    sequence_length: usize,
     batch_size: usize,
     hidden_size: usize,
     intermediate_size: usize,
@@ -59,11 +59,8 @@ fn build_case(
     router_scoring: RouterScoringKind,
     use_routing_bias: bool,
 ) -> (SparseMoe<f16>, Tensor<f16>, Tensor<f16>) {
-    let cache = Rc::new(RefCell::new(Cache::<f16>::new(
-        std::collections::HashMap::new(),
-    )));
-    let operator_queue = Rc::new(RefCell::new(Vec::<Operator<f16>>::new()));
-    let ctx = Rc::new(TensorCtx::new(cache, operator_queue));
+    f16::init_global(HashMap::new());
+    f16::init_operator_queue();
 
     let moe = SparseMoe::<f16>::new(
         hidden_size,
@@ -76,17 +73,18 @@ fn build_case(
         SparseMoeTensorNames {
             scope: String::from("model.layers.0.mlp"),
             router_gate: String::from("model.layers.0.mlp.gate.weight"),
-            router_bias: None,
+            router_bias: use_routing_bias
+                .then(|| String::from("model.layers.0.mlp.gate.e_score_correction_bias")),
             experts_gate_proj: String::from("model.layers.0.mlp.experts.gate_proj.weight"),
             experts_up_proj: String::from("model.layers.0.mlp.experts.up_proj.weight"),
             experts_down_proj: String::from("model.layers.0.mlp.experts.down_proj.weight"),
         },
-        ctx.clone(),
     );
 
-    let shape = vec![sequence_chunk_size * batch_size, hidden_size];
-    let input = ctx.tensor(shape.clone(), "model.layers.0.input_tensor".to_string());
-    let residual = ctx.tensor(shape.clone(), "model.layers.0.residual_tensor".to_string());
+    let shape = vec![sequence_length, batch_size, hidden_size];
+    let input = Tensor::from_mem_pool(shape.clone(), "model.layers.0.input_tensor".to_string());
+    let residual =
+        Tensor::from_mem_pool(shape.clone(), "model.layers.0.residual_tensor".to_string());
 
     (moe, input, residual)
 }
@@ -102,30 +100,30 @@ fn test_sparse_moe_queue_structure() {
         false,
         "model.layers.0.output".to_string(),
     );
-    let q = out.operator_queue.borrow();
+    f16::with_operator_queue(|q| {
+        assert!(q.len() >= 5, "Expected >=5 operators, got {}", q.len());
 
-    assert!(q.len() >= 5, "Expected >=5 operators, got {}", q.len());
-
-    match &q[0] {
-        Operator::MatMul(_) => {}
-        _ => panic!("op[0] should be MatMul"),
-    }
-    match &q[1] {
-        Operator::ExpertsSoftmaxNorm(_) => {}
-        _ => panic!("op[1] should be ExpertsSoftmaxNorm"),
-    }
-    match &q[2] {
-        Operator::ExpertsMatMulSilu(_) => {}
-        _ => panic!("op[2] should be ExpertsMatMulSilu"),
-    }
-    match &q[3] {
-        Operator::ExpertsMatMulDown(_) => {}
-        _ => panic!("op[3] should be ExpertsMatMulDown"),
-    }
-    match &q[4] {
-        Operator::ExpertsMergeAdd(_) => {}
-        _ => panic!("op[4] should be ExpertsMergeAdd"),
-    }
+        match &q[0] {
+            Operator::MatMul(_) => {}
+            _ => panic!("op[0] should be MatMul"),
+        }
+        match &q[1] {
+            Operator::ExpertsSoftmaxNorm(_) => {}
+            _ => panic!("op[1] should be ExpertsSoftmaxNorm"),
+        }
+        match &q[2] {
+            Operator::ExpertsMatMulSilu(_) => {}
+            _ => panic!("op[2] should be ExpertsMatMulSilu"),
+        }
+        match &q[3] {
+            Operator::ExpertsMatMulDown(_) => {}
+            _ => panic!("op[3] should be ExpertsMatMulDown"),
+        }
+        match &q[4] {
+            Operator::ExpertsMergeAdd(_) => {}
+            _ => panic!("op[4] should be ExpertsMergeAdd"),
+        }
+    });
 }
 
 #[test]
@@ -139,30 +137,30 @@ fn test_sparse_moe_sigmoid_queue_structure() {
         false,
         "model.layers.0.output".to_string(),
     );
-    let q = out.operator_queue.borrow();
+    f16::with_operator_queue(|q| {
+        assert!(q.len() >= 5, "Expected >=5 operators, got {}", q.len());
 
-    assert!(q.len() >= 5, "Expected >=5 operators, got {}", q.len());
-
-    match &q[0] {
-        Operator::MatMulSigmoid(_) => {}
-        _ => panic!("op[0] should be MatMulSigmoid"),
-    }
-    match &q[1] {
-        Operator::ExpertsTopkNorm(_) => {}
-        _ => panic!("op[1] should be ExpertsTopkNorm"),
-    }
-    match &q[2] {
-        Operator::ExpertsMatMulSilu(_) => {}
-        _ => panic!("op[2] should be ExpertsMatMulSilu"),
-    }
-    match &q[3] {
-        Operator::ExpertsMatMulDown(_) => {}
-        _ => panic!("op[3] should be ExpertsMatMulDown"),
-    }
-    match &q[4] {
-        Operator::ExpertsMergeAdd(_) => {}
-        _ => panic!("op[4] should be ExpertsMergeAdd"),
-    }
+        match &q[0] {
+            Operator::MatMulSigmoid(_) => {}
+            _ => panic!("op[0] should be MatMulSigmoid"),
+        }
+        match &q[1] {
+            Operator::ExpertsTopkNorm(_) => {}
+            _ => panic!("op[1] should be ExpertsTopkNorm"),
+        }
+        match &q[2] {
+            Operator::ExpertsMatMulSilu(_) => {}
+            _ => panic!("op[2] should be ExpertsMatMulSilu"),
+        }
+        match &q[3] {
+            Operator::ExpertsMatMulDown(_) => {}
+            _ => panic!("op[3] should be ExpertsMatMulDown"),
+        }
+        match &q[4] {
+            Operator::ExpertsMergeAdd(_) => {}
+            _ => panic!("op[4] should be ExpertsMergeAdd"),
+        }
+    });
 }
 
 #[test]

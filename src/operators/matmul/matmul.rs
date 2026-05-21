@@ -29,6 +29,7 @@ pub struct MatMul<T> {
     pub m_max: usize,
     pub n_max: usize,
     pub k_max: usize,
+    pub decode_only_flag: bool,
 
     packed_b: Box<[T]>,         // [panels_k][panels_n][kc*nr]
     packed_panel_stride: usize, // = kc * nr
@@ -50,7 +51,7 @@ where
         m_max: usize,
         n_max: usize,
         k_max: usize,
-        _decode_only_flag: bool,
+        decode_only_flag: bool,
     ) -> Self {
         let kc = params.column_step_macro.max(1);
         let nr = params.b_row_step_micro.max(1);
@@ -67,6 +68,7 @@ where
             m_max,
             n_max,
             k_max,
+            decode_only_flag,
             packed_b,
             packed_panel_stride,
         }
@@ -123,12 +125,16 @@ where
     pub fn run(
         &self,
         prefill_size: usize,
-        _decode_size: usize,
+        decode_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
-            let m_run = prefill_size;
+            let m_run = if self.decode_only_flag {
+                decode_size
+            } else {
+                prefill_size
+            };
 
             let n = self.n_max;
             let k = self.k_max;
@@ -276,15 +282,6 @@ impl MatMulTrait<f16> for MatMul<f16> {
 
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::scalar::dot_product::dot_product(input_ptr1, input_ptr2, output_ptr, length);
-    }
-}
-
-impl MatMulTrait<f32> for MatMul<f32> {
-    fn compute(&self, _a: *const f32, _b: *const f32, _c: *mut f32) {
-        /* TODO */
-    }
-    fn compute2(&self, _a: *const f32, _b: *const f32, _c: *mut f32, _length: usize) {
-        /* TODO */
     }
 }
 
@@ -511,5 +508,78 @@ mod tests {
 
         // 额外：确认 MR 固定=3 的前提没被破坏
         assert_eq!(MR, 3);
+    }
+
+    #[test]
+    fn test_matmul_runner_f32_alignment_fp32_small_qwen_style() {
+        use approx::assert_abs_diff_eq;
+
+        const M_RUN: usize = 4;
+        const M_MAX: usize = 6; // pad to MR=3
+        const K: usize = 64;
+        const N: usize = 32;
+
+        let thread_num = 1;
+
+        let mut a = vec![0.0f32; M_MAX * K];
+        let mut b_nt = vec![0.0f32; N * K];
+        let mut c = vec![0.0f32; M_MAX * N];
+
+        // Synthetic deterministic inputs: easy to debug and stable across runs.
+        for i in 0..M_RUN {
+            for kk in 0..K {
+                a[i * K + kk] = 0.01f32 * (i as f32) + 0.001f32 * (kk as f32);
+            }
+        }
+
+        for j in 0..N {
+            for kk in 0..K {
+                b_nt[j * K + kk] = 0.02f32 * (kk as f32) + 0.003f32 * (j as f32);
+            }
+        }
+
+        let params = MatMulParams {
+            a_row_step_macro: 6,
+            b_row_step_macro: 32,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+
+        let matmul = unsafe {
+            MatMul::<f32>::new(
+                a.as_ptr(),
+                b_nt.as_ptr(),
+                c.as_mut_ptr(),
+                false,
+                params,
+                M_MAX,
+                N,
+                K,
+                false,
+            )
+        };
+
+        for tid in 0..thread_num {
+            matmul.run(M_RUN, 0, thread_num, tid);
+        }
+
+        for i in 0..M_RUN {
+            for j in 0..N {
+                let mut sum = 0.0f32;
+                for kk in 0..K {
+                    sum += a[i * K + kk] * b_nt[j * K + kk];
+                }
+
+                let got = c[i * N + j];
+                assert_abs_diff_eq!(got, sum, epsilon = 1e-5);
+            }
+        }
+
+        for i in M_RUN..M_MAX {
+            for j in 0..N {
+                assert_abs_diff_eq!(c[i * N + j], 0.0f32, epsilon = 1e-5);
+            }
+        }
     }
 }

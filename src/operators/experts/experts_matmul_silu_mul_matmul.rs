@@ -42,6 +42,7 @@ pub struct ExpertsMatMulSilu<T> {
     pub inter: usize,       // I (N)
     pub hidden: usize,      // H (K)
     pub num_experts: usize, // E
+    pub decode_only_flag: bool,
 
     // === strides（保留）===
     pub packed_panel_stride: usize, // kc*nr
@@ -84,7 +85,7 @@ where
         column_step_macro: usize, // KC
         a_row_step_micro: usize,  // MR=3
         b_row_step_micro: usize,  // NR=32
-        _decode_only_flag: bool,
+        decode_only_flag: bool,
     ) -> Self {
         let mb = a_row_step_macro.max(1);
         let kc = column_step_macro.max(1);
@@ -130,6 +131,7 @@ where
             inter,
             hidden,
             num_experts,
+            decode_only_flag,
 
             packed_panel_stride,
             acc_stride,
@@ -297,12 +299,16 @@ where
     pub fn run(
         &self,
         prefill_size: usize,
-        _decode_size: usize,
+        decode_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
-            let b = prefill_size;
+            let b = if self.decode_only_flag {
+                decode_size
+            } else {
+                prefill_size
+            };
             let n = self.inter;
             let k = self.hidden;
 
@@ -460,8 +466,22 @@ impl ExpertsSiluTrait<f16> for ExpertsMatMulSilu<f16> {
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        {
-            unreachable!("avx512fp16 required for ExpertsMatMulSilu<f16>::compute1");
+        unsafe {
+            let mr = self.params.a_row_step_micro.max(1);
+            let nr = self.params.b_row_step_micro.max(1);
+            for r in 0..mr {
+                for lane in 0..nr {
+                    let mut gate = *gate_acc.add(r * nr + lane) as f32;
+                    let mut up = *up_acc.add(r * nr + lane) as f32;
+                    for kk in 0..kc {
+                        let a = *a_tile.add(r * kc + kk) as f32;
+                        gate += a * (*gate_panel.add(kk * nr + lane) as f32);
+                        up += a * (*up_panel.add(kk * nr + lane) as f32);
+                    }
+                    *gate_acc.add(r * nr + lane) = gate as f16;
+                    *up_acc.add(r * nr + lane) = up as f16;
+                }
+            }
         }
     }
 
@@ -473,8 +493,14 @@ impl ExpertsSiluTrait<f16> for ExpertsMatMulSilu<f16> {
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        {
-            unreachable!("avx512fp16 required for ExpertsMatMulSilu<f16>::compute2");
+        unsafe {
+            let nr = self.params.b_row_step_micro.max(1);
+            for i in 0..nr {
+                let gate = *gate_row.add(i) as f32;
+                let up = *up_row.add(i) as f32;
+                let silu = gate / (1.0 + (-gate).exp());
+                *c_row.add(i) = (silu * up) as f16;
+            }
         }
     }
 }

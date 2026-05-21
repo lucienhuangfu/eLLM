@@ -25,7 +25,7 @@ When the scheduler scans `batch_list`, it mainly looks at these fields:
 | --- | --- |
 | `phase` | Decides whether the slot currently belongs to decode or prefill |
 | `sequence_index` | Prefill start position |
-| `kv_index` | The sequence position used as the next token location during decode |
+| `kv_index` | The next sequence position where a generated token will be written |
 | `filling_length` | How many prefill tokens remain |
 
 ### `SequenceSlice`
@@ -127,7 +127,8 @@ max_decode_size = batch_size
 
 Each decode candidate produces a `SequenceSlice` of length `1`:
 
-* `sequence_index` is taken directly from `record.kv_index`
+* `sequence_index` is taken directly from `record.sequence_index`
+* `kv_index` remains the next sequence position where a generated token will be written
 * `last_token_flag = true`
 * `token_start_index` increases in the order of appearance
 

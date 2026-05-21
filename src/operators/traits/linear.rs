@@ -11,6 +11,8 @@ pub trait AttentionTrait<T> {
         col_end: usize,
         total_col_end: usize,
         sequence_index: usize,
+        k_seq_stride: usize,
+        v_seq_stride: usize,
         running_max: &mut [T],
         running_denom: &mut [T],
         scores: &mut [T],

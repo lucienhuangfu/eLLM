@@ -1,10 +1,10 @@
 #![feature(f16)]
 
 use ellm::common::send_sync_ptr::SharedMut;
-use ellm::mem_mgr::allocator::allocate_init;
+use ellm::mem_mgr::allocator::AlignedBox;
+use ellm::operators::operator::Operator;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::operator::Operator;
 use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
 use ellm::serving;
 use std::sync::Arc;
@@ -44,7 +44,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
     let sequence_length = 256usize;
     let batch_size = 4usize;
-    let sequences = allocate_init::<usize>(sequence_length * batch_size, 0);
+    let sequences = {
+        let mut boxed = AlignedBox::allocate_init(sequence_length * batch_size, 0);
+        let ptr = boxed.as_mut_ptr();
+        std::mem::forget(boxed);
+        ptr
+    };
 
     let tokenizer_path = format!("{}/tokenizer.json", model_dir);
     let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);

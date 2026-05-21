@@ -1,7 +1,0 @@
-{
-  "head_dim": 8,
-  "rotary_dim": 4,
-  "max_sequence_length": 2,
-  "theta": 10000.0,
-  "rope_scaling": null
-}

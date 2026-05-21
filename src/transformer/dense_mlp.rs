@@ -1,13 +1,12 @@
 use std::ops::{AddAssign, Neg, Sub};
-use std::rc::Rc;
 
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::common::num_traits::NegInfinity;
+use crate::common::num_traits::{Exp, Sigmoid, Sqrt};
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::super::common::matmul_params::MatMulParams;
-use super::super::runtime::tensor::{Tensor, TensorCtx};
 use super::names::DenseMlpTensorNames;
+use crate::tensor::{GlobalOperatorQueue, Tensor};
 
 #[derive(Clone)]
 pub struct DenseMlp<T>
@@ -31,18 +30,15 @@ where
         + NegInfinity
         + Sigmoid
         + Sqrt
-        + AddAssign,
+        + AddAssign
+        + GlobalMemPool
+        + GlobalOperatorQueue,
 {
-    pub fn new(
-        hidden_size: usize,
-        intermediate_size: usize,
-        names: DenseMlpTensorNames,
-        ctx: Rc<TensorCtx<T>>,
-    ) -> Self {
+    pub fn new(hidden_size: usize, intermediate_size: usize, names: DenseMlpTensorNames) -> Self {
         Self {
-            gate_weight: ctx.zeros(vec![hidden_size, intermediate_size], names.gate_proj),
-            up_weight: ctx.zeros(vec![hidden_size, intermediate_size], names.up_proj),
-            down_weight: ctx.zeros(vec![intermediate_size, hidden_size], names.down_proj),
+            gate_weight: Tensor::zeros(vec![hidden_size, intermediate_size], names.gate_proj),
+            up_weight: Tensor::zeros(vec![hidden_size, intermediate_size], names.up_proj),
+            down_weight: Tensor::zeros(vec![intermediate_size, hidden_size], names.down_proj),
             scope_name: names.scope,
         }
     }
@@ -51,6 +47,7 @@ where
         &self,
         hidden_states: &Tensor<T>,
         residual: &Tensor<T>,
+        decode_only_flag: bool,
         _tensor_name: String,
     ) -> Tensor<T> {
         let gate_product = hidden_states.matmul(
@@ -63,8 +60,8 @@ where
                 b_row_step_micro: 8,
             },
             hidden_states.shape[0],
-            false,
-            format!("{}.gate", self.scope_name),
+            decode_only_flag,
+            format!("{}.gate_proj.output", self.scope_name),
         );
 
         let up_product = hidden_states.matmul(
@@ -77,12 +74,12 @@ where
                 b_row_step_micro: 8,
             },
             hidden_states.shape[0],
-            false,
-            format!("{}.up", self.scope_name),
+            decode_only_flag,
+            format!("{}.up_proj.output", self.scope_name),
         );
 
         let nonlinear_product =
-            gate_product.add(&up_product, format!("{}.nonlinear_part1", self.scope_name));
+            gate_product.add(&up_product, format!("{}.intermediate", self.scope_name));
 
         nonlinear_product.matmul_add(
             &self.down_weight,
@@ -94,7 +91,8 @@ where
                 a_row_step_micro: 8,
                 b_row_step_micro: 8,
             },
-            format!("{}.nonlinear_part2", self.scope_name),
+            decode_only_flag,
+            format!("{}.output", self.scope_name),
         )
     }
 }
