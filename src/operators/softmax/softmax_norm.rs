@@ -69,11 +69,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
             let ptr1 = self.ptr1.ptr;
             let topk_indices_ptr = self.routing.topk_indices.ptr;
             let topk_values_ptr = self.topk_values_ptr.ptr;
-            let assigned_tokens = end - begin;
-            let mini_capacity = (assigned_tokens * self.num_topk).max(1);
-            let mut mini_counts = vec![0usize; self.num_experts];
-            let mut mini_indices = vec![0usize; self.num_experts * mini_capacity];
-            let mut mini_scores = vec![T::default(); self.num_experts * mini_capacity];
 
             for i in begin..end {
                 unsafe {
@@ -89,33 +84,12 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
 
                     for slot in 0..self.num_topk {
                         let expert_idx = *topk_indices_ptr.add(p2 + slot);
-                        let local_pos = mini_counts[expert_idx];
-                        let mini_offset = expert_idx * mini_capacity + local_pos;
-                        mini_indices[mini_offset] = i;
-                        mini_scores[mini_offset] = *topk_values_ptr.add(p2 + slot);
-                        mini_counts[expert_idx] += 1;
-                    }
-                }
-            }
-
-            unsafe {
-                for e in 0..self.num_experts {
-                    let count = mini_counts[e];
-                    if count == 0 {
-                        continue;
-                    }
-
-                    let base = (&*self.routing.expert_counts.ptr.add(e))
-                        .fetch_add(count, Ordering::AcqRel);
-                    debug_assert!(base + count <= self.routing.capacity_per_expert);
-
-                    for i in 0..count {
-                        let src = e * mini_capacity + i;
-                        let dst = self.routing.expert_offset(e, base + i);
-                        let token = mini_indices[src];
-                        let score = mini_scores[src];
-                        *self.routing.index_tensor.ptr.add(dst) = token;
-                        *self.routing.score_tensor.ptr.add(dst) = score;
+                        let pos = (&*self.routing.expert_counts.ptr.add(expert_idx))
+                            .fetch_add(1, Ordering::AcqRel);
+                        debug_assert!(pos < self.routing.capacity_per_expert);
+                        let dst = self.routing.expert_offset(expert_idx, pos);
+                        *self.routing.index_tensor.ptr.add(dst) = i;
+                        *self.routing.score_tensor.ptr.add(dst) = *topk_values_ptr.add(p2 + slot);
                     }
                 }
             }

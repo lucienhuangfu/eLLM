@@ -15,51 +15,76 @@ use crate::common::sequence_slice::SequenceSlice;
 use crate::operators::assign::{assign, KqvPath};
 use crate::operators::traits::MatMulkqvTrait;
 
-// 添加 generic kernel 的引用
+// Generic scalar helpers used by fallback paths.
+// fallback 路径使用的通用标量 helper。
 use crate::kernel::scalar::complex_mul::complex_mul;
 use crate::kernel::scalar::rms_norm::rms_norm;
 
-/// K/Q/V 三个 GEMM（不含 sequence 维度）
+// Variable naming used in this operator:
+// - input_rows / input_row_start: token rows from hidden states.
+// - query_output_cols: Q projection columns, equal to query_head_count * head_dim.
+// - key_value_output_cols: K/V projection columns, equal to kv_head_num * head_dim.
+// - reduction_cols / reduction_col_start: hidden-size K dimension reduced by GEMM.
+// - input_block_rows / output_block_cols / reduction_block_cols: macro tile sizes.
+// - micro_tile_rows / micro_tile_cols: micro-kernel tile size.
+// - head_index / head_col: head-level offsets used by Q/K/V and RoPE.
+// 本算子的变量命名约定：
+// - input_rows / input_row_start：hidden states 的 token 行。
+// - query_output_cols：Q 投影列数，等于 query_head_count * head_dim。
+// - key_value_output_cols：K/V 投影列数，等于 kv_head_num * head_dim。
+// - reduction_cols / reduction_col_start：GEMM 中被规约的 hidden-size K 维度。
+// - input_block_rows / output_block_cols / reduction_block_cols：宏块大小。
+// - micro_tile_rows / micro_tile_cols：微内核 tile 大小。
+// - head_index / head_col：Q/K/V 和 RoPE 使用的 head 级偏移。
+
+/// Three GEMMs for Q/K/V projection.
+/// Q/K/V 三路投影 GEMM。
 ///
-/// 约定（改动后）:
+/// Layout contract:
+/// 布局约定：
 /// - A:      [M×K]
-/// - Wq_nt:  [Nq×K]（✅ 由外部保证已经是 N×K 行主）
+/// - Wq_nt:  [Nq×K]
 /// - Wk_nt:  [Nkv×K]
 /// - Wv_nt:  [Nkv×K]
 /// - Cq:     [M×Nq]
 /// - Ck:     [M×Nkv]
 /// - Cv:     [M×Nkv]
 ///
-/// 注意：本文件不再在 new() 中转置权重，也不再持有 wq_buf/wk_buf/wv_buf。
+/// Weights must already be NT layout; new() packs panels but does not transpose.
+/// 权重必须已经是 NT 布局；new() 只 pack panel，不做转置。
 #[derive(Clone)]
 pub struct MatMul3<T> {
-    // A / W / C
-    hidden_ptr: ConstPtr<T>, // A[M×K]
-    q_state_ptr: MutPtr<T>,  // Cq[M×Nq]
-    k_state_ptr: MutPtr<T>,  // Ck[M×Nkv]
-    v_state_ptr: MutPtr<T>,  // Cv[M×Nkv]
+    // Input and Q/K/V output states.
+    // 输入以及 Q/K/V 输出状态。
+    hidden_ptr: ConstPtr<T>, // A[input_rows, reduction_cols]
+    q_state_ptr: MutPtr<T>,  // Query state. query 输出。
+    k_state_ptr: MutPtr<T>,  // Key cache/state. key cache/state。
+    v_state_ptr: MutPtr<T>,  // Value cache/state. value cache/state。
 
-    // RoPE 相位表（按 N 方向拉平或按 head×dim 展开）
-    rope_ptr: ConstPtr<T>,  // 由外部保证布局一致
-    sequence_length: usize, // 与 RoPE N 方向长度一致
+    // RoPE table; caller guarantees layout compatibility.
+    // RoPE 表；布局由外部保证一致。
+    rope_ptr: ConstPtr<T>,
+    sequence_length: usize,
     batch_size: usize,
-    kv_head_num: usize, // 用于 GQA 的分组计算
-    group_num: usize,   // GQA 分组数（num_query_heads / num_key_value_heads）
-    // 形状
-    head_dim: usize, // 比如 128（要求 head_dim % 32 == 0）
-    m_row: usize,    // M
-    col: usize,      // K
+    kv_head_num: usize,
+    group_num: usize,
+    head_dim: usize,
+    m_row: usize,
+    col: usize,
     // b_q_row: usize,  // Nq
     // b_kv_row: usize, // Nkv
 
-    // 分块参数（MB/NB/KC/MR/NR=32）
+    // Blocking parameters.
+    // 分块参数。
     pub params: MatMulParams,
     _marker: PhantomData<T>,
 
-    packed_q: Box<[T]>,         // [panels_k][panels_nq][kc*nr]
-    packed_k: Box<[T]>,         // [panels_k][panels_nkv][kc*nr]
-    packed_v: Box<[T]>,         // [panels_k][panels_nkv][kc*nr]
-    packed_panel_stride: usize, // = kc * nr
+    // Packed Q/K/V weight panels prepared in new().
+    // Q/K/V 权重 panel 在 new() 中提前准备。
+    packed_q: Box<[T]>,
+    packed_k: Box<[T]>,
+    packed_v: Box<[T]>,
+    packed_panel_stride: usize,
 }
 
 impl<T> MatMul3<T>
@@ -69,25 +94,19 @@ where
     #[inline]
     pub fn new(
         hidden_ptr: *const T,
-        q_weight_ptr_nt: *const T, // ✅ 现在约定为 Wq_nt[Nq×K]
+        q_weight_ptr_nt: *const T, // Wq_nt[query_cols, reduction_cols]
         q_state_ptr: *mut T,
-        k_weight_ptr_nt: *const T, // ✅ Wk_nt[Nkv×K]
+        k_weight_ptr_nt: *const T, // Wk_nt[key_value_cols, reduction_cols]
         k_state_ptr: *mut T,
-        v_weight_ptr_nt: *const T, // ✅ Wv_nt[Nkv×K]
+        v_weight_ptr_nt: *const T, // Wv_nt[key_value_cols, reduction_cols]
         v_state_ptr: *mut T,
         rope_ptr: *const T,
         sequence_length: usize,
         batch_size: usize,
-        // Grouped Query Attention (GQA) 维度信息
-        // num_query_heads: Q的总头数（例：32）
-        // 与 b_q_row = num_query_heads × head_dim 对应
+        // GQA dimensions.
+        // GQA 维度信息。
         kv_head_num: usize,
-        // GQA 分组系数：多少个Q头共享一个KV头
-        // 关系：num_key_value_heads = num_query_heads / group_num
-        // 例：head_num=32, group_num=8 => 4个KV头服务32个Q头
         group_num: usize,
-        // 每个Head的隐藏维度（通常为128、256等）
-        // Nq = num_query_heads × head_dim，Nkv = num_key_value_heads × head_dim
         head_dim: usize,
         m_row: usize,
         col: usize,
@@ -99,18 +118,30 @@ where
         a_row_step_micro: usize,
         b_row_step_micro: usize,
     ) -> Self {
-        let kc = column_step_macro.max(1);
-        let nr = b_row_step_micro.max(1);
-        let packed_panel_stride = kc * nr;
+        let reduction_block_cols = column_step_macro.max(1);
+        let micro_tile_cols = b_row_step_micro.max(1);
+        let packed_panel_stride = reduction_block_cols * micro_tile_cols;
         let packed_q = Self::pack_b_panels(
             q_weight_ptr_nt,
             kv_head_num * group_num * head_dim,
             col,
-            kc,
-            nr,
+            reduction_block_cols,
+            micro_tile_cols,
         );
-        let packed_k = Self::pack_b_panels(k_weight_ptr_nt, kv_head_num * head_dim, col, kc, nr);
-        let packed_v = Self::pack_b_panels(v_weight_ptr_nt, kv_head_num * head_dim, col, kc, nr);
+        let packed_k = Self::pack_b_panels(
+            k_weight_ptr_nt,
+            kv_head_num * head_dim,
+            col,
+            reduction_block_cols,
+            micro_tile_cols,
+        );
+        let packed_v = Self::pack_b_panels(
+            v_weight_ptr_nt,
+            kv_head_num * head_dim,
+            col,
+            reduction_block_cols,
+            micro_tile_cols,
+        );
 
         Self {
             hidden_ptr: ConstPtr { ptr: hidden_ptr },
@@ -150,24 +181,38 @@ where
     }
 
     #[inline(always)]
-    fn pack_b_panels(b_nt: *const T, n: usize, k: usize, kc: usize, nr: usize) -> Box<[T]> {
-        let panels_k = k.div_ceil(kc);
-        let panels_n = n.div_ceil(nr);
-        let panel_stride = kc * nr;
-        let mut packed = vec![T::default(); panels_k * panels_n * panel_stride];
+    fn pack_b_panels(
+        weight_nt: *const T,
+        output_cols: usize,
+        reduction_cols: usize,
+        reduction_block_cols: usize,
+        micro_tile_cols: usize,
+    ) -> Box<[T]> {
+        let reduction_panel_count = reduction_cols.div_ceil(reduction_block_cols);
+        let output_panel_count = output_cols.div_ceil(micro_tile_cols);
+        let panel_stride = reduction_block_cols * micro_tile_cols;
+        let mut packed =
+            vec![T::default(); reduction_panel_count * output_panel_count * panel_stride];
 
         unsafe {
-            for kb in 0..panels_k {
-                let k0 = kb * kc;
-                let kc_cur = (k - k0).min(kc);
-                for nb in 0..panels_n {
-                    let n0 = nb * nr;
-                    let nr_cur = (n - n0).min(nr);
-                    let panel = packed.as_mut_ptr().add((kb * panels_n + nb) * panel_stride);
-                    for p in 0..kc_cur {
-                        let dst_row = panel.add(p * nr);
-                        for lane in 0..nr_cur {
-                            *dst_row.add(lane) = *b_nt.add((n0 + lane) * k + (k0 + p));
+            for reduction_panel_index in 0..reduction_panel_count {
+                let reduction_start = reduction_panel_index * reduction_block_cols;
+                let reduction_cols_this =
+                    (reduction_cols - reduction_start).min(reduction_block_cols);
+                for output_panel_index in 0..output_panel_count {
+                    let output_start = output_panel_index * micro_tile_cols;
+                    let output_cols_this = (output_cols - output_start).min(micro_tile_cols);
+                    let panel = packed.as_mut_ptr().add(
+                        (reduction_panel_index * output_panel_count + output_panel_index)
+                            * panel_stride,
+                    );
+                    for reduction_lane in 0..reduction_cols_this {
+                        let packed_row = panel.add(reduction_lane * micro_tile_cols);
+                        for output_lane in 0..output_cols_this {
+                            *packed_row.add(output_lane) = *weight_nt.add(
+                                (output_start + output_lane) * reduction_cols
+                                    + (reduction_start + reduction_lane),
+                            );
                         }
                     }
                 }
@@ -178,114 +223,142 @@ where
     }
 
     #[inline(always)]
-    fn packed_panel_ptr(&self, packed_b: &[T], n: usize, n0: usize, k0: usize) -> *const T {
-        let kc = self.params.column_step_macro.max(1);
-        let nr = self.params.b_row_step_micro.max(1);
-        let panels_n = n.div_ceil(nr);
-        let panel_idx = (k0 / kc) * panels_n + (n0 / nr);
-        unsafe { packed_b.as_ptr().add(panel_idx * self.packed_panel_stride) }
+    fn packed_panel_ptr(
+        &self,
+        packed_b: &[T],
+        output_cols: usize,
+        output_col_start: usize,
+        reduction_col_start: usize,
+    ) -> *const T {
+        let reduction_block_cols = self.params.column_step_macro.max(1);
+        let micro_tile_cols = self.params.b_row_step_micro.max(1);
+        let output_panel_count = output_cols.div_ceil(micro_tile_cols);
+        let panel_index = (reduction_col_start / reduction_block_cols) * output_panel_count
+            + (output_col_start / micro_tile_cols);
+        unsafe {
+            packed_b
+                .as_ptr()
+                .add(panel_index * self.packed_panel_stride)
+        }
     }
 
-    /// 某一条路径的 M×N×K 分块 + assign(total_tiles) + 3×32 GEMM +（可选）3×128 finalize
+    /// Run tiled GEMM for one Q/K/V path and optionally apply RMSNorm+RoPE.
+    /// 对 Q/K/V 中一路执行 tiled GEMM，并可选执行 RMSNorm+RoPE。
     #[inline(always)]
     unsafe fn gemm_one_path_tiles(
         &self,
-        a: *const T,    // A[M×K]
-        c: *mut T,      // C[M×N]
-        packed_b: &[T], // packed [panels_k][panels_n][kc*nr]
-        m: usize,
-        n: usize,
-        k: usize,
-        ldc: usize,
-        rope_base: *const T, // 与 C 同行布局的 RoPE，相同 N 方向
+        input_base: *const T,
+        output_base: *mut T,
+        packed_weight: &[T],
+        input_rows: usize,
+        output_cols: usize,
+        reduction_cols: usize,
+        output_row_stride: usize,
+        rope_base: *const T,
         tile_begin: usize,
         tile_end: usize,
-        finalize: bool, // 是否做 RMS+RoPE（3×128）
+        finalize: bool,
     ) where
         Self: MatMulkqvTrait<T>,
     {
-        let mb = self.params.a_row_step_macro;
-        let nb = self.params.b_row_step_macro;
-        let kc_block = self.params.column_step_macro;
-        let mr = self.params.a_row_step_micro; // 3
-        let nr = self.params.b_row_step_micro; // 32
+        let input_block_rows = self.params.a_row_step_macro;
+        let output_block_cols = self.params.b_row_step_macro;
+        let reduction_block_cols = self.params.column_step_macro;
+        let micro_tile_rows = self.params.a_row_step_micro;
+        let micro_tile_cols = self.params.b_row_step_micro;
 
-        debug_assert_eq!(mr, 3);
-        debug_assert_eq!(nr, 32);
-        debug_assert!(k % kc_block == 0);
-        debug_assert!(n % nr == 0);
-        debug_assert!(self.head_dim % nr == 0);
+        debug_assert_eq!(micro_tile_rows, 3);
+        debug_assert_eq!(micro_tile_cols, 32);
+        debug_assert!(reduction_cols % reduction_block_cols == 0);
+        debug_assert!(output_cols % micro_tile_cols == 0);
+        debug_assert!(self.head_dim % micro_tile_cols == 0);
 
-        let tiles_m = (m + mb - 1) / mb;
-        let tiles_n = (n + nb - 1) / nb;
-        let total_tiles = tiles_m * tiles_n;
+        let input_tile_count = input_rows.div_ceil(input_block_rows);
+        let output_tile_count = output_cols.div_ceil(output_block_cols);
+        let total_tiles = input_tile_count * output_tile_count;
 
         let head_dim = self.head_dim;
 
         debug_assert!(tile_begin <= tile_end);
         debug_assert!(tile_end <= total_tiles);
 
-        for t in tile_begin..tile_end {
-            let tm = t / tiles_n;
-            let tn = t % tiles_n;
+        for task_id in tile_begin..tile_end {
+            let input_tile_id = task_id / output_tile_count;
+            let output_tile_id = task_id % output_tile_count;
 
-            let m0 = tm * mb;
-            let n0 = tn * nb;
+            let input_row_start = input_tile_id * input_block_rows;
+            let output_col_start = output_tile_id * output_block_cols;
 
-            let m_blk = (m - m0).min(mb);
-            let n_blk = (n - n0).min(nb);
+            let input_rows_in_block = (input_rows - input_row_start).min(input_block_rows);
+            let output_cols_in_block = (output_cols - output_col_start).min(output_block_cols);
 
-            debug_assert!(m_blk % mr == 0);
-            debug_assert!(n_blk % nr == 0);
+            debug_assert!(input_rows_in_block % micro_tile_rows == 0);
+            debug_assert!(output_cols_in_block % micro_tile_cols == 0);
 
-            let mut k0 = 0;
-            while k0 < k {
-                let kc_cur = kc_block.min(k - k0);
+            let mut reduction_col_start = 0;
+            while reduction_col_start < reduction_cols {
+                let reduction_cols_this =
+                    reduction_block_cols.min(reduction_cols - reduction_col_start);
 
-                let mut nt = 0;
-                while nt < n_blk {
-                    let b_panel_ptr = self.packed_panel_ptr(packed_b, n, n0 + nt, k0);
+                let mut output_col_offset = 0;
+                while output_col_offset < output_cols_in_block {
+                    let weight_panel_ptr = self.packed_panel_ptr(
+                        packed_weight,
+                        output_cols,
+                        output_col_start + output_col_offset,
+                        reduction_col_start,
+                    );
 
-                    let mut mi = 0;
-                    while mi < m_blk {
-                        let a_tile = a.add((m0 + mi) * k + k0); // 3×kc
-                        let c_tile = c.add((m0 + mi) * ldc + (n0 + nt)); // 3×32
-
-                        self.compute1(
-                            a_tile,
-                            b_panel_ptr,
-                            c_tile,
-                            k, // lda = K
-                            ldc,
-                            kc_cur,
+                    let mut input_row_offset = 0;
+                    while input_row_offset < input_rows_in_block {
+                        let input_tile = input_base.add(
+                            (input_row_start + input_row_offset) * reduction_cols
+                                + reduction_col_start,
+                        );
+                        let output_tile = output_base.add(
+                            (input_row_start + input_row_offset) * output_row_stride
+                                + (output_col_start + output_col_offset),
                         );
 
-                        if finalize && (k0 + kc_cur == k) {
-                            let global_col = n0 + nt;
+                        self.compute1(
+                            input_tile,
+                            weight_panel_ptr,
+                            output_tile,
+                            reduction_cols,
+                            output_row_stride,
+                            reduction_cols_this,
+                        );
+
+                        if finalize && (reduction_col_start + reduction_cols_this == reduction_cols)
+                        {
+                            let global_col = output_col_start + output_col_offset;
                             let offset_in_head = global_col % head_dim;
 
-                            if offset_in_head + nr == head_dim {
+                            if offset_in_head + micro_tile_cols == head_dim {
                                 let head_col0 = global_col - offset_in_head;
 
-                                let c_head_ptr = c.add((m0 + mi) * ldc + head_col0);
+                                let c_head_ptr = output_base.add(
+                                    (input_row_start + input_row_offset) * output_row_stride
+                                        + head_col0,
+                                );
                                 let rope_head_ptr = rope_base.add(head_col0);
 
-                                self.compute2(c_head_ptr, rope_head_ptr, ldc);
+                                self.compute2(c_head_ptr, rope_head_ptr, output_row_stride);
                             }
                         }
 
-                        mi += mr;
+                        input_row_offset += micro_tile_rows;
                     }
 
-                    nt += nr;
+                    output_col_offset += micro_tile_cols;
                 }
-                k0 += kc_cur;
+                reduction_col_start += reduction_cols_this;
             }
         }
     }
 
     #[inline(always)]
-    fn decode_task(
+    fn task_assign_path(
         v_tiles: usize,
         k_tiles: usize,
         q_tiles: usize,
@@ -348,34 +421,38 @@ where
         apply_rope: bool,
         sequence_index: usize,
     ) {
-        let k = self.col;
-        let kc_block = self.params.column_step_macro.max(1);
-        let nr = self.params.b_row_step_micro.max(1);
-        debug_assert_eq!(nr, 32);
-        debug_assert_eq!(self.head_dim % nr, 0);
+        let reduction_cols = self.col;
+        let reduction_block_cols = self.params.column_step_macro.max(1);
+        let micro_tile_cols = self.params.b_row_step_micro.max(1);
+        debug_assert_eq!(micro_tile_cols, 32);
+        debug_assert_eq!(self.head_dim % micro_tile_cols, 0);
 
         for head_col in 0..self.head_dim {
             *dst_head.add(head_col) = T::default();
         }
 
         let head_col0 = head_index * self.head_dim;
-        for head_col in (0..self.head_dim).step_by(nr) {
+        for head_col in (0..self.head_dim).step_by(micro_tile_cols) {
             let global_col = head_col0 + head_col;
 
-            let mut k0 = 0usize;
-            while k0 < k {
-                let kc_cur = kc_block.min(k - k0);
-                let b_panel = self.packed_panel_ptr(packed_b, n_total, global_col, k0);
+            let mut reduction_col_start = 0usize;
+            while reduction_col_start < reduction_cols {
+                let reduction_cols_this =
+                    reduction_block_cols.min(reduction_cols - reduction_col_start);
+                let weight_panel =
+                    self.packed_panel_ptr(packed_b, n_total, global_col, reduction_col_start);
 
-                for kk in 0..kc_cur {
-                    let a_value = *a_row.add(k0 + kk);
-                    for lane in 0..nr {
-                        let dst = dst_head.add(head_col + lane);
-                        *dst = *dst + a_value * *b_panel.add(kk * nr + lane);
+                for reduction_lane in 0..reduction_cols_this {
+                    let input_value = *a_row.add(reduction_col_start + reduction_lane);
+                    for output_lane in 0..micro_tile_cols {
+                        let dst = dst_head.add(head_col + output_lane);
+                        *dst = *dst
+                            + input_value
+                                * *weight_panel.add(reduction_lane * micro_tile_cols + output_lane);
                     }
                 }
 
-                k0 += kc_cur;
+                reduction_col_start += reduction_cols_this;
             }
         }
 
@@ -427,10 +504,10 @@ where
         Self: MatMulkqvTrait<T>,
     {
         unsafe {
-            let k = self.col;
-            let n_q = self.kv_head_num * self.group_num * self.head_dim;
-            let n_kv = self.kv_head_num * self.head_dim;
-            let q_head_num = self.kv_head_num * self.group_num;
+            let reduction_cols = self.col;
+            let query_output_cols = self.kv_head_num * self.group_num * self.head_dim;
+            let key_value_output_cols = self.kv_head_num * self.head_dim;
+            let query_head_count = self.kv_head_num * self.group_num;
             let row_map = self.build_row_map(prefill_size, decode_size, attention_list);
             let row_count = row_map.len();
             if row_count == 0 || thread_id >= thread_num || thread_num == 0 {
@@ -442,20 +519,20 @@ where
             let ck_base = self.k_state_ptr.ptr;
             let cv_base = self.v_state_ptr.ptr;
 
-            let ldq = n_q;
-            let ldk = n_kv;
-            let ldv = n_kv;
-            let total_tasks = row_count * (self.kv_head_num * 2 + q_head_num);
-            if let Some((tb, te)) = assign(total_tasks, thread_num, thread_id) {
-                for task_id in tb..te {
+            let query_row_stride = query_output_cols;
+            let key_row_stride = key_value_output_cols;
+            let value_row_stride = key_value_output_cols;
+            let total_tasks = row_count * (self.kv_head_num * 2 + query_head_count);
+            if let Some((task_begin, task_end)) = assign(total_tasks, thread_num, thread_id) {
+                for task_id in task_begin..task_end {
                     let Some((path, row_idx, head_index)) =
-                        Self::path_task(row_count, self.kv_head_num, q_head_num, task_id)
+                        Self::path_task(row_count, self.kv_head_num, query_head_count, task_id)
                     else {
                         continue;
                     };
 
                     let (token_index, batch_index, sequence_index) = row_map[row_idx];
-                    let a_row = a_base.add(token_index * k);
+                    let input_row = a_base.add(token_index * reduction_cols);
 
                     let rope_sequence_index = if attention_list.is_empty() {
                         0
@@ -465,39 +542,41 @@ where
 
                     match path {
                         KqvPath::V => {
-                            let cache_row = (sequence_index * self.batch_size + batch_index) * ldv;
+                            let cache_row =
+                                (sequence_index * self.batch_size + batch_index) * value_row_stride;
                             let dst_head = cv_base.add(cache_row + head_index * self.head_dim);
                             self.compute_head_from_packed(
-                                a_row,
+                                input_row,
                                 dst_head,
                                 &self.packed_v,
-                                n_kv,
+                                key_value_output_cols,
                                 head_index,
                                 false,
                                 rope_sequence_index,
                             );
                         }
                         KqvPath::K => {
-                            let cache_row = (sequence_index * self.batch_size + batch_index) * ldk;
+                            let cache_row =
+                                (sequence_index * self.batch_size + batch_index) * key_row_stride;
                             let dst_head = ck_base.add(cache_row + head_index * self.head_dim);
                             self.compute_head_from_packed(
-                                a_row,
+                                input_row,
                                 dst_head,
                                 &self.packed_k,
-                                n_kv,
+                                key_value_output_cols,
                                 head_index,
                                 true,
                                 rope_sequence_index,
                             );
                         }
                         KqvPath::Q => {
-                            let dst_head =
-                                cq_base.add(token_index * ldq + head_index * self.head_dim);
+                            let dst_head = cq_base
+                                .add(token_index * query_row_stride + head_index * self.head_dim);
                             self.compute_head_from_packed(
-                                a_row,
+                                input_row,
                                 dst_head,
                                 &self.packed_q,
-                                n_q,
+                                query_output_cols,
                                 head_index,
                                 true,
                                 rope_sequence_index,
@@ -533,7 +612,8 @@ where
     }
 }
 
-// ===== f16 特化：真正调用 AVX-512 微核 =====
+// f16 specialization: call the AVX-512 micro-kernel.
+// f16 特化：调用 AVX-512 微内核。
 impl MatMulkqvTrait<f16> for MatMul3<f16> {
     #[inline]
     fn compute1(
@@ -590,7 +670,8 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
     }
 }
 
-// ===== f32 占位版本（以后要的话再补微核） =====
+// f32 fallback implementation; a dedicated micro-kernel can be added later.
+// f32 fallback 实现；后续需要时可以补专用微内核。
 impl MatMulkqvTrait<f32> for MatMul3<f32> {
     #[inline]
     fn compute1(

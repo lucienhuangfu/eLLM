@@ -2,6 +2,44 @@ use std::sync::atomic::AtomicUsize;
 
 use crate::common::send_sync_ptr::MutPtr;
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ExpertTaskMeta {
+    /// Expert id for this contiguous task range.
+    /// 这个连续任务区间对应的 expert 编号。
+    pub expert_id: usize,
+    /// First routed-token offset in the compact per-thread routed token buffer.
+    /// 当前 expert 在每线程紧凑 token buffer 中的起始位置。
+    pub token_begin: usize,
+    /// Number of tokens routed to this expert.
+    /// 路由到当前 expert 的 token 数量。
+    pub token_count: usize,
+    /// First global task id owned by this expert.
+    /// 当前 expert 覆盖的第一个全局 task id。
+    pub task_begin: usize,
+    /// One-past-last global task id owned by this expert.
+    /// 当前 expert 覆盖的全局 task id 结束位置，左闭右开。
+    pub task_end: usize,
+}
+
+/// Map one global task id to its expert and local matrix tile.
+/// 将一个全局 task id 分配到对应 expert 以及该 expert 内部的局部矩阵 tile。
+#[inline(always)]
+pub(crate) fn task_assign(
+    expert_tasks: &[ExpertTaskMeta],
+    output_column_tile_count: usize,
+    task_id: usize,
+) -> Option<(ExpertTaskMeta, usize, usize)> {
+    let task_meta_index = expert_tasks.partition_point(|meta| meta.task_end <= task_id);
+    let task_meta = *expert_tasks.get(task_meta_index)?;
+    debug_assert!(task_id >= task_meta.task_begin && task_id < task_meta.task_end);
+    let local_task_id = task_id - task_meta.task_begin;
+    Some((
+        task_meta,
+        local_task_id / output_column_tile_count,
+        local_task_id % output_column_tile_count,
+    ))
+}
+
 #[derive(Clone, Copy)]
 pub struct ExpertRouting<T> {
     pub expert_counts: MutPtr<AtomicUsize>,

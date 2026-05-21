@@ -64,12 +64,6 @@ where
         };
 
         if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
-            let assigned_tokens = end - begin;
-            let mini_capacity = (assigned_tokens * self.num_topk).max(1);
-            let mut mini_counts = vec![0usize; self.num_experts];
-            let mut mini_indices = vec![0usize; self.num_experts * mini_capacity];
-            let mut mini_scores = vec![T::default(); self.num_experts * mini_capacity];
-
             for token_index in begin..end {
                 unsafe {
                     let input_offset = token_index * self.num_experts;
@@ -84,32 +78,13 @@ where
 
                     for slot in 0..self.num_topk {
                         let expert_idx = *self.routing.topk_indices.ptr.add(topk_offset + slot);
-                        let local_pos = mini_counts[expert_idx];
-                        let mini_offset = expert_idx * mini_capacity + local_pos;
-                        mini_indices[mini_offset] = token_index;
-                        mini_scores[mini_offset] =
+                        let pos = (&*self.routing.expert_counts.ptr.add(expert_idx))
+                            .fetch_add(1, Ordering::AcqRel);
+                        debug_assert!(pos < self.routing.capacity_per_expert);
+                        let dst = self.routing.expert_offset(expert_idx, pos);
+                        *self.routing.index_tensor.ptr.add(dst) = token_index;
+                        *self.routing.score_tensor.ptr.add(dst) =
                             *self.topk_values_ptr.ptr.add(topk_offset + slot);
-                        mini_counts[expert_idx] += 1;
-                    }
-                }
-            }
-
-            unsafe {
-                for e in 0..self.num_experts {
-                    let count = mini_counts[e];
-                    if count == 0 {
-                        continue;
-                    }
-
-                    let base = (&*self.routing.expert_counts.ptr.add(e))
-                        .fetch_add(count, Ordering::AcqRel);
-                    debug_assert!(base + count <= self.routing.capacity_per_expert);
-
-                    for i in 0..count {
-                        let src = e * mini_capacity + i;
-                        let dst = self.routing.expert_offset(e, base + i);
-                        *self.routing.index_tensor.ptr.add(dst) = mini_indices[src];
-                        *self.routing.score_tensor.ptr.add(dst) = mini_scores[src];
                     }
                 }
             }
