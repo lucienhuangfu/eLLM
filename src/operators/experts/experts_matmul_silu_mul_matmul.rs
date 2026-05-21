@@ -7,60 +7,81 @@ use std::ops::{Add, Mul};
 use std::sync::atomic::Ordering;
 
 use crate::common::{
-    expert_routing::ExpertRouting,
+    expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta},
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use crate::operators::assign::assign;
 use crate::operators::traits::ExpertsSiluTrait;
 
-#[derive(Clone, Copy, Debug)]
-struct ExpertTaskMeta {
-    expert_id: usize,
-    token_begin: usize,
-    token_count: usize,
-    task_begin: usize,
-    task_end: usize,
-}
+// Variable naming used in this operator:
+// - token_block_rows / token_block_start: routed-token macro block inside one expert.
+// - output_cols / output_col_start: intermediate I columns produced by gate/up projections.
+// - reduction_cols / reduction_col_start: hidden H dimension reduced by GEMM.
+// - micro_tile_rows / micro_tile_cols: micro-kernel tile size.
+// - gate_acc / up_acc: per-thread accumulators before SiLU(gate) * up.
+// - token_offset_in_block: position inside the compact routed-token block.
+// 本算子的变量命名约定：
+// - token_block_rows / token_block_start：单个 expert 内 routed token 的宏块。
+// - output_cols / output_col_start：gate/up 投影产生的 intermediate I 列。
+// - reduction_cols / reduction_col_start：GEMM 中被规约的 hidden H 维度。
+// - micro_tile_rows / micro_tile_cols：微内核 tile 大小。
+// - gate_acc / up_acc：执行 SiLU(gate) * up 前的每线程累加器。
+// - token_offset_in_block：compact routed-token block 内的位置。
 
 #[derive(Clone)]
 pub struct ExpertsMatMulSilu<T> {
-    pub input_ptr: ConstPtr<T>, // A[B,H]
+    pub input_ptr: ConstPtr<T>, // Input hidden states: [B,H]. 输入 hidden states。
 
-    // ✅ 现在要求外部传入的权重已经是 NT（N×K，行距=H）
-    // gate_nt_ptr/up_nt_ptr 指向 [E][I×H]，每 expert 一个 [I×H]
-    pub gate_nt_ptr: ConstPtr<T>, // [E, I×H]  (N×K), row_stride=H
-    pub up_nt_ptr: ConstPtr<T>,   // [E, I×H]
+    // Gate/up weights are expected in NT layout: [E][I x H], row stride = H.
+    // gate/up 权重要求外部传入 NT 布局：[E][I x H]，行距为 H。
+    pub gate_nt_ptr: ConstPtr<T>, // Gate weight NT: [E,I,H]. gate 权重 NT 布局。
+    pub up_nt_ptr: ConstPtr<T>,   // Up weight NT: [E,I,H]. up 权重 NT 布局。
 
     pub routing: ExpertRouting<T>,
 
-    pub output_ptr: MutPtr<T>, // NONLIN[E,B,I]
+    pub output_ptr: MutPtr<T>, // Nonlinear output: [E,B,I]. 非线性输出。
 
     pub params: MatMulParams,
 
-    pub batch: usize,       // B
-    pub inter: usize,       // I (N)
-    pub hidden: usize,      // H (K)
-    pub num_experts: usize, // E
+    pub batch: usize,       // Token capacity. token 容量。
+    pub inter: usize,       // Intermediate size. intermediate 大小。
+    pub hidden: usize,      // Hidden size. hidden 大小。
+    pub num_experts: usize, // Expert count. expert 数量。
     pub decode_only_flag: bool,
 
-    // === strides（保留）===
-    pub packed_panel_stride: usize, // kc*nr
-    pub acc_stride: usize,          // mr*nr
-    pub a_tile_stride: usize,       // mr*kc
+    // === strides ===
+    // === stride 参数 ===
+    pub packed_panel_stride: usize, // reduction_block_cols * micro_tile_cols
+    pub acc_stride: usize,          // micro_tile_rows * micro_tile_cols
+    pub a_tile_stride: usize,       // micro_tile_rows * reduction_block_cols
 
     // === prepacked weights ===
-    pub packed_gate: Box<[T]>, // [E][panels_k][panels_n][kc*nr]
-    pub packed_up: Box<[T]>,   // [E][panels_k][panels_n][kc*nr]
+    // === 预打包权重 ===
+    // Gate/up weights are packed in new(), so run() only reads prebuilt panels.
+    // gate/up 权重在 new() 中提前 pack，run() 中只读取已准备好的 panel。
+    pub packed_gate: Box<[T]>, // [E][reduction_panels][output_panels][reduction_block * micro_cols]
+    pub packed_up: Box<[T]>,   // [E][reduction_panels][output_panels][reduction_block * micro_cols]
 
-    // === pools（按 threads 切片）===
+    // === pools split by thread ===
+    // === 按线程切分的缓存池 ===
+    // Thread-private scratch buffers reused by run(); no runtime allocation.
+    // 每线程独占 scratch buffer，run() 中复用，不动态分配。
     pub gate_acc_pool: Box<[T]>,
     pub up_acc_pool: Box<[T]>,
     pub a_tile_pool: Box<[T]>,
 
     pub idx_buf_pool: Box<[usize]>,
 
-    // ✅ 不再持有转置后权重（外部保证生命周期）
+    // Task-space buffers, one slice per thread. run() reuses them without allocation.
+    // task 空间缓存，每个线程一份；run() 中只复用，不动态分配。
+    task_meta_pool: Box<[ExpertTaskMeta]>,
+    task_meta_stride: usize, // num_experts
+    routed_tokens_pool: Box<[usize]>,
+    routed_stride: usize, // num_experts * capacity_per_expert
+
+    // Transposed weights are owned by the caller; this operator only keeps pointers.
+    // 转置后权重由外部持有生命周期；该算子只保存指针。
     // pub wgate_nt_buf: Box<[T]>,
     // pub wup_nt_buf: Box<[T]>,
     _marker: PhantomData<T>,
@@ -71,45 +92,65 @@ where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     pub unsafe fn new(
-        input_ptr: *const T,   // A[B,H]
-        gate_nt_ptr: *const T, // ✅ W_gate_nt[E, I×H]（每 expert: [I×H] 行主）
-        up_nt_ptr: *const T,   // ✅ W_up_nt  [E, I×H]
+        input_ptr: *const T,   // Input hidden states: [B,H]. 输入 hidden states。
+        gate_nt_ptr: *const T, // W_gate_nt[E,I,H], row-major per expert. gate 权重 NT。
+        up_nt_ptr: *const T,   // W_up_nt[E,I,H], row-major per expert. up 权重 NT。
         routing: ExpertRouting<T>,
-        output_ptr: *mut T, // NONLIN[E,B,I]
+        output_ptr: *mut T, // Nonlinear output: [E,B,I]. 非线性输出。
         batch: usize,
         inter: usize,
         hidden: usize,
         num_experts: usize,
-        a_row_step_macro: usize,  // MB
-        b_row_step_macro: usize,  // NB
-        column_step_macro: usize, // KC
-        a_row_step_micro: usize,  // MR=3
-        b_row_step_micro: usize,  // NR=32
+        a_row_step_macro: usize,  // token block rows. token 宏块行数。
+        b_row_step_macro: usize,  // output block cols. 输出宏块列数。
+        column_step_macro: usize, // reduction block cols. 规约宏块列数。
+        a_row_step_micro: usize,  // micro tile rows. 微内核行数。
+        b_row_step_micro: usize,  // micro tile cols. 微内核列数。
         decode_only_flag: bool,
     ) -> Self {
-        let mb = a_row_step_macro.max(1);
-        let kc = column_step_macro.max(1);
-        let mr = a_row_step_micro.max(1);
-        let nr = b_row_step_micro.max(1);
+        let token_block_rows = a_row_step_macro.max(1);
+        let reduction_block_cols = column_step_macro.max(1);
+        let micro_tile_rows = a_row_step_micro.max(1);
+        let micro_tile_cols = b_row_step_micro.max(1);
 
-        let packed_panel_stride = kc * nr;
-        let acc_stride = mr * nr;
-        let a_tile_stride = mr * kc;
+        let packed_panel_stride = reduction_block_cols * micro_tile_cols;
+        let acc_stride = micro_tile_rows * micro_tile_cols;
+        let a_tile_stride = micro_tile_rows * reduction_block_cols;
 
-        let packed_gate =
-            Self::pack_expert_b_panels(gate_nt_ptr, num_experts, inter, hidden, kc, nr);
-        let packed_up = Self::pack_expert_b_panels(up_nt_ptr, num_experts, inter, hidden, kc, nr);
+        let packed_gate = Self::pack_expert_b_panels(
+            gate_nt_ptr,
+            num_experts,
+            inter,
+            hidden,
+            reduction_block_cols,
+            micro_tile_cols,
+        );
+        let packed_up = Self::pack_expert_b_panels(
+            up_nt_ptr,
+            num_experts,
+            inter,
+            hidden,
+            reduction_block_cols,
+            micro_tile_cols,
+        );
 
-        // threads 只在 new() 用一次
+        // Detect thread count once and allocate all per-thread scratch in new().
+        // 线程数只在 new() 中探测一次，并在这里分配所有每线程 scratch。
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
-            .unwrap_or(1);
+            .unwrap_or(1)
+            .max(16);
 
         let gate_acc_pool = vec![T::default(); threads * acc_stride].into_boxed_slice();
         let up_acc_pool = vec![T::default(); threads * acc_stride].into_boxed_slice();
         let a_tile_pool = vec![T::default(); threads * a_tile_stride].into_boxed_slice();
 
-        let idx_buf_pool = vec![0usize; threads * mb].into_boxed_slice();
+        let idx_buf_pool = vec![0usize; threads * token_block_rows].into_boxed_slice();
+        let task_meta_stride = num_experts;
+        let routed_stride = num_experts * routing.capacity_per_expert;
+        let task_meta_pool =
+            vec![ExpertTaskMeta::default(); threads * task_meta_stride].into_boxed_slice();
+        let routed_tokens_pool = vec![0usize; threads * routed_stride].into_boxed_slice();
 
         Self {
             input_ptr: ConstPtr { ptr: input_ptr },
@@ -144,6 +185,10 @@ where
             a_tile_pool,
 
             idx_buf_pool,
+            task_meta_pool,
+            task_meta_stride,
+            routed_tokens_pool,
+            routed_stride,
 
             _marker: PhantomData,
         }
@@ -165,34 +210,41 @@ where
 
     #[inline(always)]
     fn pack_expert_b_panels(
-        b_nt: *const T, // [E, N, K]
-        experts: usize,
-        n: usize,
-        k: usize,
-        kc: usize,
-        nr: usize,
+        weight_nt: *const T, // [E, output_cols, reduction_cols]
+        expert_count: usize,
+        output_cols: usize,
+        reduction_cols: usize,
+        reduction_block_cols: usize,
+        micro_tile_cols: usize,
     ) -> Box<[T]> {
-        let panels_k = k.div_ceil(kc);
-        let panels_n = n.div_ceil(nr);
-        let panel_stride = kc * nr;
-        let expert_stride = panels_k * panels_n * panel_stride;
-        let mut packed = vec![T::default(); experts * expert_stride];
+        let reduction_panel_count = reduction_cols.div_ceil(reduction_block_cols);
+        let output_panel_count = output_cols.div_ceil(micro_tile_cols);
+        let panel_stride = reduction_block_cols * micro_tile_cols;
+        let expert_stride = reduction_panel_count * output_panel_count * panel_stride;
+        let mut packed = vec![T::default(); expert_count * expert_stride];
 
         unsafe {
-            for ex in 0..experts {
-                let src_ex = b_nt.add(ex * n * k);
-                let dst_ex = packed.as_mut_ptr().add(ex * expert_stride);
-                for kb in 0..panels_k {
-                    let k0 = kb * kc;
-                    let kc_cur = (k - k0).min(kc);
-                    for nb in 0..panels_n {
-                        let n0 = nb * nr;
-                        let nr_cur = (n - n0).min(nr);
-                        let panel = dst_ex.add((kb * panels_n + nb) * panel_stride);
-                        for p in 0..kc_cur {
-                            let dst = panel.add(p * nr);
-                            for lane in 0..nr_cur {
-                                *dst.add(lane) = *src_ex.add((n0 + lane) * k + (k0 + p));
+            for expert_id in 0..expert_count {
+                let source_expert = weight_nt.add(expert_id * output_cols * reduction_cols);
+                let packed_expert = packed.as_mut_ptr().add(expert_id * expert_stride);
+                for reduction_panel_index in 0..reduction_panel_count {
+                    let reduction_start = reduction_panel_index * reduction_block_cols;
+                    let reduction_cols_this =
+                        (reduction_cols - reduction_start).min(reduction_block_cols);
+                    for output_panel_index in 0..output_panel_count {
+                        let output_start = output_panel_index * micro_tile_cols;
+                        let output_cols_this = (output_cols - output_start).min(micro_tile_cols);
+                        let packed_panel = packed_expert.add(
+                            (reduction_panel_index * output_panel_count + output_panel_index)
+                                * panel_stride,
+                        );
+                        for reduction_lane in 0..reduction_cols_this {
+                            let packed_row = packed_panel.add(reduction_lane * micro_tile_cols);
+                            for output_lane in 0..output_cols_this {
+                                *packed_row.add(output_lane) = *source_expert.add(
+                                    (output_start + output_lane) * reduction_cols
+                                        + (reduction_start + reduction_lane),
+                                );
                             }
                         }
                     }
@@ -204,41 +256,50 @@ where
     }
 
     #[inline(always)]
-    fn packed_panel_ptr(&self, packed: &[T], expert: usize, n0: usize, k0: usize) -> *const T {
-        let kc = self.params.column_step_macro.max(1);
-        let nr = self.params.b_row_step_micro.max(1);
-        let panels_n = self.inter.div_ceil(nr);
-        let panels_k = self.hidden.div_ceil(kc);
-        let expert_stride = panels_k * panels_n * self.packed_panel_stride;
-        let panel_idx = (k0 / kc) * panels_n + (n0 / nr);
+    fn packed_panel_ptr(
+        &self,
+        packed: &[T],
+        expert_id: usize,
+        output_col_start: usize,
+        reduction_col_start: usize,
+    ) -> *const T {
+        let reduction_block_cols = self.params.column_step_macro.max(1);
+        let micro_tile_cols = self.params.b_row_step_micro.max(1);
+        let output_panel_count = self.inter.div_ceil(micro_tile_cols);
+        let reduction_panel_count = self.hidden.div_ceil(reduction_block_cols);
+        let expert_stride = reduction_panel_count * output_panel_count * self.packed_panel_stride;
+        let panel_index = (reduction_col_start / reduction_block_cols) * output_panel_count
+            + (output_col_start / micro_tile_cols);
         unsafe {
             packed
                 .as_ptr()
-                .add(expert * expert_stride + panel_idx * self.packed_panel_stride)
+                .add(expert_id * expert_stride + panel_index * self.packed_panel_stride)
         }
     }
 
+    /// Pack routed tokens into a micro input tile and zero-pad unused rows.
+    /// 将路由后的 token 收集到微内核输入 tile，未使用的行补零。
     #[inline(always)]
     pub unsafe fn pack_a_tile_mrkc(
-        a_bxh: *const T,   // [B,H]
-        lda: usize,        // = H
-        idx: *const usize, // b_idx list
+        input_base: *const T, // [B,H]
+        input_row_stride: usize,
+        routed_token_indices: *const usize,
         idx_off: usize,
-        valid_rows: usize, // <= MR
-        k0: usize,
-        kc: usize,
-        out_mrkc: *mut T, // MR×KC
-        mr: usize,
+        valid_rows: usize,
+        reduction_col_start: usize,
+        reduction_block_cols: usize,
+        output_tile: *mut T,
+        micro_tile_rows: usize,
     ) {
-        for i in 0..(mr * kc) {
-            *out_mrkc.add(i) = T::default();
+        for tile_index in 0..(micro_tile_rows * reduction_block_cols) {
+            *output_tile.add(tile_index) = T::default();
         }
-        for r in 0..valid_rows {
-            let b = *idx.add(idx_off + r);
-            let src = a_bxh.add(b * lda + k0);
-            let dst = out_mrkc.add(r * kc);
-            for p in 0..kc {
-                *dst.add(p) = *src.add(p);
+        for row_in_tile in 0..valid_rows {
+            let token_id = *routed_token_indices.add(idx_off + row_in_tile);
+            let source_row = input_base.add(token_id * input_row_stride + reduction_col_start);
+            let packed_row = output_tile.add(row_in_tile * reduction_block_cols);
+            for reduction_lane in 0..reduction_block_cols {
+                *packed_row.add(reduction_lane) = *source_row.add(reduction_lane);
             }
         }
     }
@@ -246,54 +307,58 @@ where
     #[inline]
     fn build_task_space(
         &self,
+        thread_id: usize,
         batch_size: usize,
-        mb: usize,
-        tiles_n: usize,
-    ) -> (Vec<ExpertTaskMeta>, Vec<usize>, usize) {
-        let mut expert_tasks = Vec::new();
-        let mut routed_tokens = Vec::new();
+        token_block_rows: usize,
+        output_column_tile_count: usize,
+    ) -> (&[ExpertTaskMeta], &[usize], usize) {
+        let expert_tasks_ptr =
+            self.task_meta_pool
+                .as_ptr()
+                .wrapping_add(thread_id * self.task_meta_stride) as *mut ExpertTaskMeta;
+        let routed_tokens_ptr =
+            self.routed_tokens_pool
+                .as_ptr()
+                .wrapping_add(thread_id * self.routed_stride) as *mut usize;
+        let mut expert_task_count = 0usize;
+        let mut routed_count = 0usize;
         let mut total_tasks = 0usize;
 
         unsafe {
-            for e in 0..self.num_experts {
-                let token_count = (&*self.routing.expert_counts.ptr.add(e)).load(Ordering::Acquire);
-                if token_count == 0 {
+            for expert_id in 0..self.num_experts {
+                let routed_token_count =
+                    (&*self.routing.expert_counts.ptr.add(expert_id)).load(Ordering::Acquire);
+                if routed_token_count == 0 {
                     continue;
                 }
-                let token_begin = routed_tokens.len();
-                let count = token_count.min(batch_size);
-                for pos in 0..count {
-                    let offset = self.routing.expert_offset(e, pos);
-                    routed_tokens.push(*self.routing.index_tensor.ptr.add(offset));
+                let token_begin = routed_count;
+                let routed_token_count = routed_token_count.min(batch_size);
+                for expert_queue_pos in 0..routed_token_count {
+                    let offset = self.routing.expert_offset(expert_id, expert_queue_pos);
+                    *routed_tokens_ptr.add(routed_count) =
+                        *self.routing.index_tensor.ptr.add(offset);
+                    routed_count += 1;
                 }
 
-                let tiles_m_e = count.div_ceil(mb);
-                let task_count = tiles_m_e * tiles_n;
-                expert_tasks.push(ExpertTaskMeta {
-                    expert_id: e,
+                let token_tile_count = routed_token_count.div_ceil(token_block_rows);
+                let task_count = token_tile_count * output_column_tile_count;
+                *expert_tasks_ptr.add(expert_task_count) = ExpertTaskMeta {
+                    expert_id,
                     token_begin,
-                    token_count: count,
+                    token_count: routed_token_count,
                     task_begin: total_tasks,
                     task_end: total_tasks + task_count,
-                });
+                };
+                expert_task_count += 1;
                 total_tasks += task_count;
             }
+
+            (
+                std::slice::from_raw_parts(expert_tasks_ptr, expert_task_count),
+                std::slice::from_raw_parts(routed_tokens_ptr, routed_count),
+                total_tasks,
+            )
         }
-
-        (expert_tasks, routed_tokens, total_tasks)
-    }
-
-    #[inline(always)]
-    fn decode_task(
-        expert_tasks: &[ExpertTaskMeta],
-        tiles_n: usize,
-        task_id: usize,
-    ) -> Option<(ExpertTaskMeta, usize, usize)> {
-        let meta_idx = expert_tasks.partition_point(|meta| meta.task_end <= task_id);
-        let meta = *expert_tasks.get(meta_idx)?;
-        debug_assert!(task_id >= meta.task_begin && task_id < meta.task_end);
-        let local_task = task_id - meta.task_begin;
-        Some((meta, local_task / tiles_n, local_task % tiles_n))
     }
 
     pub fn run(
@@ -304,88 +369,114 @@ where
         thread_id: usize,
     ) {
         unsafe {
-            let b = if self.decode_only_flag {
+            let active_token_count = if self.decode_only_flag {
                 decode_size
             } else {
                 prefill_size
             };
-            let n = self.inter;
-            let k = self.hidden;
+            let output_cols = self.inter;
+            let reduction_cols = self.hidden;
 
-            let mb = self.params.a_row_step_macro.max(1);
-            let nb = self.params.b_row_step_macro.max(1);
-            let kc = self.params.column_step_macro.max(1);
-            let mr = self.params.a_row_step_micro.max(1);
-            let nr = self.params.b_row_step_micro.max(1);
+            let token_block_rows = self.params.a_row_step_macro.max(1);
+            let output_block_cols = self.params.b_row_step_macro.max(1);
+            let reduction_block_cols = self.params.column_step_macro.max(1);
+            let micro_tile_rows = self.params.a_row_step_micro.max(1);
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
 
-            debug_assert!(n % nr == 0 && k % kc == 0);
+            debug_assert!(output_cols % micro_tile_cols == 0);
+            debug_assert!(reduction_cols % reduction_block_cols == 0);
 
-            let a_base = self.input_ptr.ptr;
-            let lda = self.hidden;
+            let input_base = self.input_ptr.ptr;
+            let input_row_stride = self.hidden;
 
-            let c_base = self.output_ptr.ptr;
-            let c_stride_e = self.batch * self.inter; // 每 expert 的 C 块跨度
-
-            let w_stride = self.inter * self.hidden; // I*H per expert
+            let output_base = self.output_ptr.ptr;
+            let output_expert_stride = self.batch * self.inter;
 
             let (gate_acc, up_acc, a_tile, idx_buf) = self.thread_slices(thread_id);
 
-            let tiles_n = (n + nb - 1) / nb;
-            let (expert_tasks, routed_tokens, total_tasks) = self.build_task_space(b, mb, tiles_n);
+            let output_column_tile_count = output_cols.div_ceil(output_block_cols);
+            let (expert_tasks, routed_tokens, total_tasks) = self.build_task_space(
+                thread_id,
+                active_token_count,
+                token_block_rows,
+                output_column_tile_count,
+            );
 
-            if let Some((tb, te)) = assign(total_tasks, thread_num, thread_id) {
-                for t in tb..te {
-                    let Some((meta, tm, tn)) = Self::decode_task(&expert_tasks, tiles_n, t) else {
+            if let Some((task_begin, task_end)) = assign(total_tasks, thread_num, thread_id) {
+                for task_id in task_begin..task_end {
+                    let Some((task_meta, token_tile_id, output_tile_id)) =
+                        task_assign(&expert_tasks, output_column_tile_count, task_id)
+                    else {
                         continue;
                     };
 
-                    let n0 = tn * nb;
-                    let n_blk = (n - n0).min(nb);
-                    if n_blk == 0 {
+                    let output_col_start = output_tile_id * output_block_cols;
+                    let output_cols_in_block =
+                        (output_cols - output_col_start).min(output_block_cols);
+                    if output_cols_in_block == 0 {
                         continue;
                     }
 
-                    let slot_start = tm * mb;
-                    let be = (meta.token_count - slot_start).min(mb);
-                    debug_assert!(be > 0);
+                    let token_block_start = token_tile_id * token_block_rows;
+                    let tokens_in_block =
+                        (task_meta.token_count - token_block_start).min(token_block_rows);
+                    debug_assert!(tokens_in_block > 0);
 
-                    let token_slice = &routed_tokens
-                        [(meta.token_begin + slot_start)..(meta.token_begin + slot_start + be)];
-                    for (dst, &b_idx) in token_slice.iter().enumerate() {
-                        *idx_buf.add(dst) = b_idx;
+                    let token_slice = &routed_tokens[(task_meta.token_begin + token_block_start)
+                        ..(task_meta.token_begin + token_block_start + tokens_in_block)];
+                    for (buffer_offset, &token_id) in token_slice.iter().enumerate() {
+                        *idx_buf.add(buffer_offset) = token_id;
                     }
 
-                    let e = meta.expert_id;
-                    let _ = w_stride;
+                    let expert_id = task_meta.expert_id;
 
-                    let mut nt = 0usize;
-                    while nt < n_blk {
-                        let cols_this = (n_blk - nt).min(nr);
-                        debug_assert!(cols_this == nr || nt + cols_this == n_blk);
-                        let gate_panel = self.packed_panel_ptr(&self.packed_gate, e, n0 + nt, 0);
-                        let up_panel = self.packed_panel_ptr(&self.packed_up, e, n0 + nt, 0);
+                    let mut output_col_offset = 0usize;
+                    while output_col_offset < output_cols_in_block {
+                        let output_cols_this =
+                            (output_cols_in_block - output_col_offset).min(micro_tile_cols);
+                        debug_assert!(
+                            output_cols_this == micro_tile_cols
+                                || output_col_offset + output_cols_this == output_cols_in_block
+                        );
 
-                        let mut off = 0usize;
-                        while off < be {
-                            let valid_rows = (be - off).min(mr);
+                        let mut token_offset_in_block = 0usize;
+                        while token_offset_in_block < tokens_in_block {
+                            let valid_rows =
+                                (tokens_in_block - token_offset_in_block).min(micro_tile_rows);
 
-                            for i in 0..(mr * nr) {
-                                *gate_acc.add(i) = T::default();
+                            for accumulator_index in 0..(micro_tile_rows * micro_tile_cols) {
+                                *gate_acc.add(accumulator_index) = T::default();
                             }
-                            for i in 0..(mr * nr) {
-                                *up_acc.add(i) = T::default();
+                            for accumulator_index in 0..(micro_tile_rows * micro_tile_cols) {
+                                *up_acc.add(accumulator_index) = T::default();
                             }
 
-                            let mut k0 = 0usize;
-                            while k0 < k {
+                            let mut reduction_col_start = 0usize;
+                            while reduction_col_start < reduction_cols {
                                 Self::pack_a_tile_mrkc(
-                                    a_base, lda, idx_buf, off, valid_rows, k0, kc, a_tile, mr,
+                                    input_base,
+                                    input_row_stride,
+                                    idx_buf,
+                                    token_offset_in_block,
+                                    valid_rows,
+                                    reduction_col_start,
+                                    reduction_block_cols,
+                                    a_tile,
+                                    micro_tile_rows,
                                 );
 
-                                let gate_panel =
-                                    self.packed_panel_ptr(&self.packed_gate, e, n0 + nt, k0);
-                                let up_panel =
-                                    self.packed_panel_ptr(&self.packed_up, e, n0 + nt, k0);
+                                let gate_panel = self.packed_panel_ptr(
+                                    &self.packed_gate,
+                                    expert_id,
+                                    output_col_start + output_col_offset,
+                                    reduction_col_start,
+                                );
+                                let up_panel = self.packed_panel_ptr(
+                                    &self.packed_up,
+                                    expert_id,
+                                    output_col_start + output_col_offset,
+                                    reduction_col_start,
+                                );
 
                                 self.compute1(
                                     a_tile as *const T,
@@ -393,33 +484,35 @@ where
                                     up_panel,
                                     gate_acc as *mut T,
                                     up_acc as *mut T,
-                                    kc,
+                                    reduction_block_cols,
                                 );
 
-                                k0 += kc;
+                                reduction_col_start += reduction_block_cols;
                             }
 
-                            for r in 0..valid_rows {
-                                let b_idx = *idx_buf.add(off + r);
-                                let c_row = c_base
-                                    .add(e * c_stride_e)
-                                    .add(b_idx * self.inter)
-                                    .add(n0 + nt);
+                            // Finalize SiLU(gate) * up for each routed token row.
+                            // 对每个 routed token 行计算 SiLU(gate) * up 并写回。
+                            for row_in_tile in 0..valid_rows {
+                                let token_id = *idx_buf.add(token_offset_in_block + row_in_tile);
+                                let output_row = output_base
+                                    .add(expert_id * output_expert_stride)
+                                    .add(token_id * self.inter)
+                                    .add(output_col_start + output_col_offset);
 
-                                let gate_row = gate_acc.add(r * nr);
-                                let up_row = up_acc.add(r * nr);
+                                let gate_row = gate_acc.add(row_in_tile * micro_tile_cols);
+                                let up_row = up_acc.add(row_in_tile * micro_tile_cols);
 
                                 self.compute2(
                                     gate_row as *const T,
                                     up_row as *const T,
-                                    c_row as *mut T,
+                                    output_row as *mut T,
                                 );
                             }
 
-                            off += valid_rows;
+                            token_offset_in_block += valid_rows;
                         }
 
-                        nt += nr;
+                        output_col_offset += micro_tile_cols;
                     }
                 }
             }
@@ -427,7 +520,8 @@ where
     }
 }
 
-/* -------------------- ExpertsSiluTrait 默认实现（占位） -------------------- */
+/* -------------------- ExpertsSiluTrait default implementation -------------------- */
+/* -------------------- ExpertsSiluTrait 默认实现 -------------------- */
 
 impl<T> ExpertsSiluTrait<T> for ExpertsMatMulSilu<T>
 where
@@ -447,7 +541,8 @@ where
     default fn compute2(&self, _gate_row: *const T, _up_row: *const T, _c_row: *mut T) {}
 }
 
-/* -------------------- f16 AVX-512 FP16 特化实现 -------------------- */
+/* -------------------- f16 specialization: AVX-512 FP16 -------------------- */
+/* -------------------- f16 特化实现：AVX-512 FP16 -------------------- */
 
 impl ExpertsSiluTrait<f16> for ExpertsMatMulSilu<f16> {
     fn compute1(
@@ -467,19 +562,26 @@ impl ExpertsSiluTrait<f16> for ExpertsMatMulSilu<f16> {
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         unsafe {
-            let mr = self.params.a_row_step_micro.max(1);
-            let nr = self.params.b_row_step_micro.max(1);
-            for r in 0..mr {
-                for lane in 0..nr {
-                    let mut gate = *gate_acc.add(r * nr + lane) as f32;
-                    let mut up = *up_acc.add(r * nr + lane) as f32;
-                    for kk in 0..kc {
-                        let a = *a_tile.add(r * kc + kk) as f32;
-                        gate += a * (*gate_panel.add(kk * nr + lane) as f32);
-                        up += a * (*up_panel.add(kk * nr + lane) as f32);
+            let micro_tile_rows = self.params.a_row_step_micro.max(1);
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            let reduction_block_cols = kc;
+            for row_in_tile in 0..micro_tile_rows {
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut gate =
+                        *gate_acc.add(row_in_tile * micro_tile_cols + col_in_tile) as f32;
+                    let mut up = *up_acc.add(row_in_tile * micro_tile_cols + col_in_tile) as f32;
+                    for reduction_lane in 0..reduction_block_cols {
+                        let input =
+                            *a_tile.add(row_in_tile * reduction_block_cols + reduction_lane) as f32;
+                        gate += input
+                            * (*gate_panel.add(reduction_lane * micro_tile_cols + col_in_tile)
+                                as f32);
+                        up += input
+                            * (*up_panel.add(reduction_lane * micro_tile_cols + col_in_tile)
+                                as f32);
                     }
-                    *gate_acc.add(r * nr + lane) = gate as f16;
-                    *up_acc.add(r * nr + lane) = up as f16;
+                    *gate_acc.add(row_in_tile * micro_tile_cols + col_in_tile) = gate as f16;
+                    *up_acc.add(row_in_tile * micro_tile_cols + col_in_tile) = up as f16;
                 }
             }
         }
@@ -494,12 +596,12 @@ impl ExpertsSiluTrait<f16> for ExpertsMatMulSilu<f16> {
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         unsafe {
-            let nr = self.params.b_row_step_micro.max(1);
-            for i in 0..nr {
-                let gate = *gate_row.add(i) as f32;
-                let up = *up_row.add(i) as f32;
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            for col_in_tile in 0..micro_tile_cols {
+                let gate = *gate_row.add(col_in_tile) as f32;
+                let up = *up_row.add(col_in_tile) as f32;
                 let silu = gate / (1.0 + (-gate).exp());
-                *c_row.add(i) = (silu * up) as f16;
+                *c_row.add(col_in_tile) = (silu * up) as f16;
             }
         }
     }

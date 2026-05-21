@@ -13,29 +13,45 @@ use crate::kernel;
 use crate::operators::assign::assign;
 use crate::operators::traits::MoeMergeTrait;
 
-/// Merge num_experts_per_token 个 experts 的输出，并加 residual：
+// Variable naming used in this operator:
+// - active_token_count: number of token rows handled by this run().
+// - hidden_size / hidden_index: hidden columns in each token row.
+// - num_experts_per_token / topk_slot: number of expert outputs merged per token.
+// - token_id: token row currently being merged.
+// 本算子的变量命名约定：
+// - active_token_count：本次 run() 实际处理的 token 行数。
+// - hidden_size / hidden_index：每个 token 行中的 hidden 列。
+// - num_experts_per_token / topk_slot：每个 token 需要合并的 expert 输出数量。
+// - token_id：当前正在合并的 token 行。
+
+/// Merge per-token expert outputs and add residual.
+/// 合并每个 token 的 expert 输出，并加上 residual。
 ///
 /// input   : [num_tokens, K, H]
 /// residual: [num_tokens, H]
 /// output  : [num_tokens, H]
 ///
-/// 第三步不做矩阵乘法，只做逐元素加法；
+/// This stage has no matrix multiplication; it only performs elementwise add.
+/// 这一阶段不做矩阵乘法，只做逐元素加法。
+///
+/// SIMD selection is delegated to MoeMergeTrait::merge_add.
 /// 是否使用 SIMD 由 MoeMergeTrait::merge_add 决定。
 #[derive(Clone)]
 pub struct ExpertsMergeAdd<T> {
-    pub input_ptr: ConstPtr<T>,    // [num_tokens, K, H]
-    pub residual_ptr: ConstPtr<T>, // [num_tokens, H]
-    pub output_ptr: MutPtr<T>,     // [num_tokens, H]
+    pub input_ptr: ConstPtr<T>, // Expert outputs: [num_tokens,K,H]. expert 输出。
+    pub residual_ptr: ConstPtr<T>, // Residual rows: [num_tokens,H]. residual 行。
+    pub output_ptr: MutPtr<T>,  // Merged output: [num_tokens,H]. 合并后的输出。
 
     pub routing: ExpertRouting<T>,
 
     pub sequence_chunk_size: usize,
     pub batch_size: usize,
     pub num_experts: usize,
-    pub num_experts_per_token: usize, // K
-    pub hidden_size: usize,           // H
+    pub num_experts_per_token: usize,
+    pub hidden_size: usize,
 
-    /// 是否在 run() 中执行 reset gate_routing（避免每次都做 O(E*tokens)）
+    /// Whether run() resets routing counters.
+    /// 是否在 run() 中重置 routing 计数。
     pub reset_gating: bool,
 
     pub decode_only_flag: bool,
@@ -46,10 +62,10 @@ where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
     pub fn new(
-        input_ptr: *const T,    // [num_tokens, K, H]
-        residual_ptr: *const T, // [num_tokens, H]
+        input_ptr: *const T,    // Expert outputs: [num_tokens,K,H]. expert 输出。
+        residual_ptr: *const T, // Residual rows: [num_tokens,H]. residual 行。
         routing: ExpertRouting<T>,
-        output_ptr: *mut T, // [num_tokens, H]
+        output_ptr: *mut T, // Merged output: [num_tokens,H]. 合并后的输出。
         sequence_chunk_size: usize,
         batch_size: usize,
         num_experts: usize,
@@ -88,37 +104,46 @@ where
             } else {
                 prefill_size
             };
-            let num_tokens = self.sequence_chunk_size * active_size;
-            let H = self.hidden_size;
-            let K = self.num_experts_per_token;
+            let active_token_count = self.sequence_chunk_size * active_size;
+            let hidden_size = self.hidden_size;
+            let num_experts_per_token = self.num_experts_per_token;
 
-            // ===== (1) 可选 reset gate_routing =====
-            if let Some((begin, end)) = assign(self.num_experts, thread_num, thread_id) {
-                for e in begin..end {
-                    (&*self.routing.expert_counts.ptr.add(e)).store(0, Ordering::Release);
+            // Reset routing counters before the next routing pass.
+            // 在下一轮 routing 前重置 expert 计数。
+            if let Some((expert_begin, expert_end)) =
+                assign(self.num_experts, thread_num, thread_id)
+            {
+                for expert_id in expert_begin..expert_end {
+                    (&*self.routing.expert_counts.ptr.add(expert_id)).store(0, Ordering::Release);
                 }
             }
 
-            // ===== (2) 按 token 维度切片：merge + residual =====
-            if let Some((t0, t1)) = assign(num_tokens, thread_num, thread_id) {
-                let in_ptr = self.input_ptr.ptr; // [num_tokens, K, H]
-                let res_ptr = self.residual_ptr.ptr; // [num_tokens, H]
-                let out_ptr = self.output_ptr.ptr; // [num_tokens, H]
+            // Split by token rows, then merge all top-k expert slots for each token.
+            // 按 token 行切分，然后合并每个 token 的所有 top-k expert slot。
+            if let Some((token_begin, token_end)) =
+                assign(active_token_count, thread_num, thread_id)
+            {
+                let input_base = self.input_ptr.ptr;
+                let residual_base = self.residual_ptr.ptr;
+                let output_base = self.output_ptr.ptr;
 
-                for t in t0..t1 {
-                    let res_row = res_ptr.add(t * H);
-                    let out_row = out_ptr.add(t * H);
+                for token_id in token_begin..token_end {
+                    let residual_row = residual_base.add(token_id * hidden_size);
+                    let output_row = output_base.add(token_id * hidden_size);
 
-                    // 1) out = residual（标量拷贝，保持你原意）
-                    for h in 0..H {
-                        *out_row.add(h) = *res_row.add(h);
+                    // Start from residual.
+                    // 先写入 residual。
+                    for hidden_index in 0..hidden_size {
+                        *output_row.add(hidden_index) = *residual_row.add(hidden_index);
                     }
 
-                    // 2) out += sum_s input[t,s,:]
-                    let in_token_base = in_ptr.add(t * (K * H));
-                    for s in 0..K {
-                        let add_row = in_token_base.add(s * H);
-                        self.merge_add(out_row, add_row, H);
+                    // Add all expert slots for this token.
+                    // 累加当前 token 的所有 expert slot。
+                    let input_token_base =
+                        input_base.add(token_id * (num_experts_per_token * hidden_size));
+                    for topk_slot in 0..num_experts_per_token {
+                        let expert_output_row = input_token_base.add(topk_slot * hidden_size);
+                        self.merge_add(output_row, expert_output_row, hidden_size);
                     }
                 }
             }
@@ -126,7 +151,8 @@ where
     }
 }
 
-/* ------------------ MoeMergeTrait 默认实现（generic 标量版本） ------------------ */
+/* ------------------ MoeMergeTrait default implementation: generic scalar path ------------------ */
+/* ------------------ MoeMergeTrait 默认实现：generic 标量路径 ------------------ */
 
 impl<T> MoeMergeTrait<T> for ExpertsMergeAdd<T>
 where
@@ -134,16 +160,17 @@ where
 {
     default fn merge_add(&self, out_row: *mut T, add_row: *const T, len: usize) {
         unsafe {
-            for h in 0..len {
-                let d = *out_row.add(h);
-                let a = *add_row.add(h);
-                *out_row.add(h) = d + a;
+            for hidden_index in 0..len {
+                let output_value = *out_row.add(hidden_index);
+                let add_value = *add_row.add(hidden_index);
+                *out_row.add(hidden_index) = output_value + add_value;
             }
         }
     }
 }
 
-/* ------------------ MoeMergeTrait<f16> 专用 AVX-512 实现 ------------------ */
+/* ------------------ MoeMergeTrait<f16> specialization: AVX-512 path ------------------ */
+/* ------------------ MoeMergeTrait<f16> 特化：AVX-512 路径 ------------------ */
 
 impl MoeMergeTrait<f16> for ExpertsMergeAdd<f16> {
     fn merge_add(&self, out_row: *mut f16, add_row: *const f16, len: usize) {

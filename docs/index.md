@@ -21,4 +21,9 @@ The translated topic pages now live under `docs/en/`:
 - [Transformer: minimal_model_abstraction](./en/transformers/minimal_model_abstraction.md)
 - [Transformer: minimax_m2.5_rope](./en/transformers/minimax_m2.5_rope.md)
 - [Transformer: moe_refactor](./en/transformers/moe_refactor.md)
+- [Transformer: MoE routing data structures](./en/transformers/moe_routing_data_structures.md)
 - [Reference: Hugging Face alignment](./en/reference/hf_alignment.md)
+
+中文对应页面：
+
+- [Transformer：MoE Routing 数据结构调整说明](./zh-CN/transformers/moe_routing_data_structures.md)

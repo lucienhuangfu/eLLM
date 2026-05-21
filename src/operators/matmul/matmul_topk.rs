@@ -14,36 +14,57 @@ use crate::kernel;
 use crate::operators::assign::assign;
 use crate::operators::traits::MatMulTopKTrait;
 
+// Variable naming used in this operator:
+// - input_rows / input_row_start: rows from the input matrix A and batch rows.
+// - output_cols / output_col_start: candidate columns scored for top-k.
+// - reduction_cols / reduction_col_start: the K dimension reduced by GEMM.
+// - input_block_rows / output_block_cols / reduction_block_cols: macro tile sizes.
+// - micro_tile_rows / micro_tile_cols: micro-kernel tile size.
+// - batch_row: a real, non-padded input row whose heap receives top-k candidates.
+// 本算子的变量命名约定：
+// - input_rows / input_row_start：输入矩阵 A 的行维度，也对应 batch 行。
+// - output_cols / output_col_start：参与 top-k 打分的候选列。
+// - reduction_cols / reduction_col_start：GEMM 中被规约的 K 维度。
+// - input_block_rows / output_block_cols / reduction_block_cols：宏块大小。
+// - micro_tile_rows / micro_tile_cols：微内核 tile 大小。
+// - batch_row：真实的非 padding 输入行，对应一个 top-k heap。
+
 #[derive(Clone)]
 pub struct MatMulTopK<T> {
-    // A / B / 输出 top-k
-    ptr1: ConstPtr<T>,         // A[M×K]
-    ptr2: ConstPtr<T>,         // ✅ B_nt[N×K]
-    indice_ptr: MutPtr<usize>, // indices buffer: [batch_max][thread_max][TOPK]
-    value_ptr: MutPtr<T>,      // values buffer : [batch_max][thread_max][TOPK]
+    // Input, weight, and per-thread top-k output buffers.
+    // 输入、权重以及每线程 top-k 输出缓存。
+    ptr1: ConstPtr<T>,         // A[input_rows, reduction_cols]
+    ptr2: ConstPtr<T>,         // B_nt[output_cols, reduction_cols]
+    indice_ptr: MutPtr<usize>, // Top-k index buffer. top-k 下标缓存：[batch_max][thread_max][TOPK]
+    value_ptr: MutPtr<T>,      // Top-k value buffer. top-k 分数缓存：[batch_max][thread_max][TOPK]
 
-    // 维度
-    a_row: usize,  // M_max
-    b_row: usize,  // N_max
-    column: usize, // K_max
+    // Maximum dimensions.
+    // 最大维度。
+    a_row: usize,  // Maximum input rows. 最大输入行数，M_max。
+    b_row: usize,  // Maximum output columns. 最大输出列数，N_max。
+    column: usize, // Maximum reduction columns. 最大规约列数，K_max。
 
     pub params: MatMulParams,
 
     topk: usize,
     batch_max: usize,
 
-    // ✅ 内部 thread_max（用于 scratch/heaps 绑定）
+    // Internal thread capacity used by scratch tiles and heaps.
+    // 内部线程容量，用于绑定 scratch tile 和 heap。
     thread_max: usize,
 
-    // 预打包的 B panel：[panels_k][panels_n][kc*nr]
+    // Weight panels packed once in new().
+    // 权重 panel 在 new() 中提前 pack。
     packed_b: Box<[T]>,
-    packed_panel_stride: usize, // = kc * nr
+    packed_panel_stride: usize,
 
-    // 每线程的 C_tile 池：[thread_max][mr×nr]
+    // Per-thread output micro tile pool.
+    // 每线程一份输出微内核 tile 缓存。
     c_tile_pool: Box<[T]>,
-    c_tile_stride_elems: usize, // = mr * nr
+    c_tile_stride_elems: usize,
 
-    // 每 (batch, thread) 一棵 heap
+    // One heap for each (batch, thread) pair.
+    // 每个 (batch, thread) 对应一棵 heap。
     heaps: Box<[FixedMinHeap<T>]>,
 
     _marker: PhantomData<T>,
@@ -63,13 +84,13 @@ where
 
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn new(
-        ptr1: *const T,          // A[M×K]
-        ptr2_b_nt_nxk: *const T, // ✅ B_nt[N×K]（按行连续），不再转置
-        indice_ptr: *mut usize,  // indices 输出 buffer（至少 batch_max*thread_max*topk）
-        value_ptr: *mut T,       // values 输出 buffer（至少 batch_max*thread_max*topk）
-        a_row: usize,            // M_max
-        b_row: usize,            // N_max
-        column: usize,           // K_max
+        ptr1: *const T,          // A[input_rows, reduction_cols]
+        ptr2_b_nt_nxk: *const T, // B_nt[output_cols, reduction_cols]
+        indice_ptr: *mut usize,  // indices output buffer. 下标输出缓存。
+        value_ptr: *mut T,       // values output buffer. 分数输出缓存。
+        a_row: usize,            // maximum input rows. 最大输入行数。
+        b_row: usize,            // maximum output columns. 最大输出列数。
+        column: usize,           // maximum reduction columns. 最大规约列数。
         a_row_step_macro: usize,
         b_row_step_macro: usize,
         column_step_macro: usize,
@@ -90,21 +111,29 @@ where
         let n_max = b_row;
         let k_max = column;
 
-        // ✅ 内部决定 thread_max
+        // Detect thread capacity once; run() only validates against it.
+        // 只在 new() 中确定线程容量；run() 中只做校验。
         let thread_max = Self::detect_threads();
 
-        let kc = params.column_step_macro.max(1);
-        let nr = params.b_row_step_micro.max(1);
-        let mr = params.a_row_step_micro.max(1);
+        let reduction_block_cols = params.column_step_macro.max(1);
+        let micro_tile_cols = params.b_row_step_micro.max(1);
+        let micro_tile_rows = params.a_row_step_micro.max(1);
 
-        let packed_panel_stride = kc * nr;
-        let packed_b = Self::pack_b_panels(ptr2_b_nt_nxk, n_max, k_max, kc, nr);
+        let packed_panel_stride = reduction_block_cols * micro_tile_cols;
+        let packed_b = Self::pack_b_panels(
+            ptr2_b_nt_nxk,
+            n_max,
+            k_max,
+            reduction_block_cols,
+            micro_tile_cols,
+        );
 
-        let c_tile_stride_elems = mr * nr;
+        let c_tile_stride_elems = micro_tile_rows * micro_tile_cols;
         let c_tile_pool_len = thread_max * c_tile_stride_elems;
         let c_tile_pool: Vec<T> = vec![T::default(); c_tile_pool_len];
 
-        // === (2) heaps: [batch_max][thread_max]，绑定到输出 buffer 上 ===
+        // Bind heaps directly to caller-provided output buffers.
+        // heap 直接绑定到外部传入的输出 buffer。
         let stride_thread = topk;
         let stride_batch = thread_max * topk;
 
@@ -153,7 +182,8 @@ where
         }
     }
 
-    /// ✅ 不改你风格：返回 *mut FixedMinHeap<T>
+    /// Return this thread's heap for one batch row.
+    /// 返回当前线程在某个 batch row 上的 heap。
     #[inline(always)]
     fn heap_for(&self, batch: usize, thread_id: usize) -> *mut FixedMinHeap<T> {
         debug_assert!(batch < self.batch_max);
@@ -164,24 +194,38 @@ where
     }
 
     #[inline(always)]
-    fn pack_b_panels(b_nt: *const T, n: usize, k: usize, kc: usize, nr: usize) -> Box<[T]> {
-        let panels_k = k.div_ceil(kc);
-        let panels_n = n.div_ceil(nr);
-        let panel_stride = kc * nr;
-        let mut packed = vec![T::default(); panels_k * panels_n * panel_stride];
+    fn pack_b_panels(
+        weight_nt: *const T,
+        output_cols: usize,
+        reduction_cols: usize,
+        reduction_block_cols: usize,
+        micro_tile_cols: usize,
+    ) -> Box<[T]> {
+        let reduction_panel_count = reduction_cols.div_ceil(reduction_block_cols);
+        let output_panel_count = output_cols.div_ceil(micro_tile_cols);
+        let panel_stride = reduction_block_cols * micro_tile_cols;
+        let mut packed =
+            vec![T::default(); reduction_panel_count * output_panel_count * panel_stride];
 
         unsafe {
-            for kb in 0..panels_k {
-                let k0 = kb * kc;
-                let kc_cur = (k - k0).min(kc);
-                for nb in 0..panels_n {
-                    let n0 = nb * nr;
-                    let nr_cur = (n - n0).min(nr);
-                    let panel = packed.as_mut_ptr().add((kb * panels_n + nb) * panel_stride);
-                    for p in 0..kc_cur {
-                        let dst_row = panel.add(p * nr);
-                        for lane in 0..nr_cur {
-                            *dst_row.add(lane) = *b_nt.add((n0 + lane) * k + (k0 + p));
+            for reduction_panel_index in 0..reduction_panel_count {
+                let reduction_start = reduction_panel_index * reduction_block_cols;
+                let reduction_cols_this =
+                    (reduction_cols - reduction_start).min(reduction_block_cols);
+                for output_panel_index in 0..output_panel_count {
+                    let output_start = output_panel_index * micro_tile_cols;
+                    let output_cols_this = (output_cols - output_start).min(micro_tile_cols);
+                    let panel = packed.as_mut_ptr().add(
+                        (reduction_panel_index * output_panel_count + output_panel_index)
+                            * panel_stride,
+                    );
+                    for reduction_lane in 0..reduction_cols_this {
+                        let packed_row = panel.add(reduction_lane * micro_tile_cols);
+                        for output_lane in 0..output_cols_this {
+                            *packed_row.add(output_lane) = *weight_nt.add(
+                                (output_start + output_lane) * reduction_cols
+                                    + (reduction_start + reduction_lane),
+                            );
                         }
                     }
                 }
@@ -192,15 +236,16 @@ where
     }
 
     #[inline(always)]
-    fn packed_panel_ptr(&self, n0: usize, k0: usize) -> *const T {
-        let kc = self.params.column_step_macro.max(1);
-        let nr = self.params.b_row_step_micro.max(1);
-        let panels_n = self.b_row.div_ceil(nr);
-        let panel_idx = (k0 / kc) * panels_n + (n0 / nr);
+    fn packed_panel_ptr(&self, output_col_start: usize, reduction_col_start: usize) -> *const T {
+        let reduction_block_cols = self.params.column_step_macro.max(1);
+        let micro_tile_cols = self.params.b_row_step_micro.max(1);
+        let output_panel_count = self.b_row.div_ceil(micro_tile_cols);
+        let panel_index = (reduction_col_start / reduction_block_cols) * output_panel_count
+            + (output_col_start / micro_tile_cols);
         unsafe {
             self.packed_b
                 .as_ptr()
-                .add(panel_idx * self.packed_panel_stride)
+                .add(panel_index * self.packed_panel_stride)
         }
     }
 
@@ -212,119 +257,123 @@ where
         thread_id: usize,
     ) {
         unsafe {
-            let m_run = if decode_size > 0 {
+            let active_input_rows = if decode_size > 0 {
                 decode_size
             } else {
                 prefill_size
             };
 
-            assert!(m_run <= self.batch_max);
+            assert!(active_input_rows <= self.batch_max);
 
-            // ✅ cpu_num/thread_id 合法，且 cpu_num <= thread_max
             assert!(thread_num <= self.thread_max);
             assert!(thread_id < thread_num);
 
-            let n = self.b_row;
-            let k = self.column;
+            let output_cols = self.b_row;
+            let reduction_cols = self.column;
 
-            let mb = self.params.a_row_step_macro.max(1);
-            let nb = self.params.b_row_step_macro.max(1);
-            let kc = self.params.column_step_macro.max(1);
-            let mr = self.params.a_row_step_micro.max(1);
-            let nr = self.params.b_row_step_micro.max(1);
+            let input_block_rows = self.params.a_row_step_macro.max(1);
+            let output_block_cols = self.params.b_row_step_macro.max(1);
+            let reduction_block_cols = self.params.column_step_macro.max(1);
+            let micro_tile_rows = self.params.a_row_step_micro.max(1);
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
 
-            // === 关键：M 向上 pad 到 MR 的倍数（空算），保证固定 MR 微核/循环不炸 ===
-            let m_pad = ((m_run + mr - 1) / mr) * mr;
+            // Pad rows so the fixed micro-kernel never sees a partial input tile.
+            // 补齐行数，避免固定微内核处理输入行 tail。
+            let padded_input_rows = active_input_rows.div_ceil(micro_tile_rows) * micro_tile_rows;
 
-            // new() 预留的 A 行容量必须覆盖到 m_pad
-            debug_assert!(m_pad <= self.a_row);
+            debug_assert!(padded_input_rows <= self.a_row);
 
-            // 你当前的块内循环仍要求 m_blk%mr==0；
-            // 这轮不做 tile 内 tail，要求 MB 是 MR 的倍数
-            debug_assert!(mb % mr == 0);
+            debug_assert!(input_block_rows % micro_tile_rows == 0);
 
-            debug_assert!(n % nr == 0);
-            debug_assert!(k % kc == 0);
+            debug_assert!(output_cols % micro_tile_cols == 0);
+            debug_assert!(reduction_cols % reduction_block_cols == 0);
 
-            let a_base = self.ptr1.ptr;
-            let lda = k;
+            let input_base = self.ptr1.ptr;
+            let input_row_stride = reduction_cols;
             let c_tile_ptr = self.thread_c_tile_ptr(thread_id);
 
-            // 清本线程 heap：只清真实 batch
-            for b in 0..m_run {
-                let heap_ptr = self.heap_for(b, thread_id);
+            // Clear heaps only for real batch rows, not padded rows.
+            // 只清真实 batch 行的 heap，不处理 padding 行。
+            for batch_row in 0..active_input_rows {
+                let heap_ptr = self.heap_for(batch_row, thread_id);
                 (*heap_ptr).clear();
             }
 
-            // === tiling 走 m_pad 而不是 m_run ===
-            let tiles_m = (m_pad + mb - 1) / mb;
-            let tiles_n = (n + nb - 1) / nb;
-            let tiles_total = tiles_m * tiles_n;
+            let input_tile_count = padded_input_rows.div_ceil(input_block_rows);
+            let output_tile_count = output_cols.div_ceil(output_block_cols);
+            let total_tiles = input_tile_count * output_tile_count;
 
-            if let Some((tb, te)) = assign(tiles_total, thread_num, thread_id) {
-                for t in tb..te {
-                    let tm = t / tiles_n;
-                    let tn = t % tiles_n;
+            if let Some((task_begin, task_end)) = assign(total_tiles, thread_num, thread_id) {
+                for task_id in task_begin..task_end {
+                    let input_tile_id = task_id / output_tile_count;
+                    let output_tile_id = task_id % output_tile_count;
 
-                    let m0 = tm * mb;
-                    let n0 = tn * nb;
+                    let input_row_start = input_tile_id * input_block_rows;
+                    let output_col_start = output_tile_id * output_block_cols;
 
-                    let m_blk = (m_pad - m0).min(mb);
-                    let n_blk = (n - n0).min(nb);
+                    let input_rows_in_block =
+                        (padded_input_rows - input_row_start).min(input_block_rows);
+                    let output_cols_in_block =
+                        (output_cols - output_col_start).min(output_block_cols);
 
-                    debug_assert!(m_blk % mr == 0);
-                    debug_assert!(n_blk % nr == 0);
+                    debug_assert!(input_rows_in_block % micro_tile_rows == 0);
+                    debug_assert!(output_cols_in_block % micro_tile_cols == 0);
 
-                    let mut mi = 0usize;
-                    while mi < m_blk {
-                        let global_m_start = m0 + mi;
+                    let mut input_row_offset = 0usize;
+                    while input_row_offset < input_rows_in_block {
+                        let global_input_row_start = input_row_start + input_row_offset;
 
-                        let mut nt = 0usize;
-                        while nt < n_blk {
-                            let global_n_start = n0 + nt;
+                        let mut output_col_offset = 0usize;
+                        while output_col_offset < output_cols_in_block {
+                            let global_output_col_start = output_col_start + output_col_offset;
 
-                            // 清 tile
-                            for i in 0..(mr * nr) {
-                                *c_tile_ptr.add(i) = T::default();
+                            for tile_index in 0..(micro_tile_rows * micro_tile_cols) {
+                                *c_tile_ptr.add(tile_index) = T::default();
                             }
 
-                            let mut k0 = 0usize;
-                            while k0 < k {
-                                let a_tile = a_base.add(global_m_start * lda + k0);
-                                let b_panel_ptr = self.packed_panel_ptr(global_n_start, k0);
+                            let mut reduction_col_start = 0usize;
+                            while reduction_col_start < reduction_cols {
+                                let input_tile = input_base.add(
+                                    global_input_row_start * input_row_stride + reduction_col_start,
+                                );
+                                let weight_panel_ptr = self
+                                    .packed_panel_ptr(global_output_col_start, reduction_col_start);
 
-                                self.compute(a_tile, b_panel_ptr, c_tile_ptr);
+                                self.compute(input_tile, weight_panel_ptr, c_tile_ptr);
 
-                                k0 += kc;
+                                reduction_col_start += reduction_block_cols;
                             }
 
-                            // 写 heap：仍然只写 batch_size 范围内的行（你原本就 guard 了）
-                            for r in 0..mr {
-                                let batch_idx = global_m_start + r;
-                                if batch_idx >= m_run {
+                            // Push only real rows into top-k heaps; padded rows are ignored.
+                            // 只把真实行写入 top-k heap，忽略 padding 行。
+                            for row_in_tile in 0..micro_tile_rows {
+                                let batch_row = global_input_row_start + row_in_tile;
+                                if batch_row >= active_input_rows {
                                     continue;
                                 }
-                                let heap_ptr = self.heap_for(batch_idx, thread_id);
+                                let heap_ptr = self.heap_for(batch_row, thread_id);
                                 let heap = &mut *heap_ptr;
 
-                                for c in 0..nr {
-                                    let col_idx = global_n_start + c;
-                                    let v = *c_tile_ptr.add(r * nr + c);
-                                    heap.push(v, col_idx);
+                                for col_in_tile in 0..micro_tile_cols {
+                                    let output_col = global_output_col_start + col_in_tile;
+                                    let value = *c_tile_ptr
+                                        .add(row_in_tile * micro_tile_cols + col_in_tile);
+                                    heap.push(value, output_col);
                                 }
                             }
 
-                            nt += nr;
+                            output_col_offset += micro_tile_cols;
                         }
 
-                        mi += mr;
+                        input_row_offset += micro_tile_rows;
                     }
                 }
             }
 
-            // sort：只对真实 batch 做
-            for b in 0..m_run {
-                let heap_ptr = self.heap_for(b, thread_id);
+            // Sort only real batch rows.
+            // 只排序真实 batch 行。
+            for batch_row in 0..active_input_rows {
+                let heap_ptr = self.heap_for(batch_row, thread_id);
                 (*heap_ptr).sort_desc();
             }
         }
@@ -336,7 +385,8 @@ where
     }
 }
 
-/* ------------------ 微核 compute：保持你的调用风格 ------------------ */
+/* ------------------ compute micro-kernel entry ------------------ */
+/* ------------------ compute 微内核入口 ------------------ */
 
 impl<T> MatMulTopKTrait<T> for MatMulTopK<T>
 where

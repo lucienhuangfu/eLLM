@@ -7,16 +7,31 @@ use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::operators::assign::assign;
 
+// Variable naming used in this operator:
+// - input_rows / input_row_start: rows from the input matrix and sigmoid output.
+// - output_cols / output_col_start: router/expert columns produced by the gate projection.
+// - reduction_cols: the K dimension reduced by the matmul.
+// - input_block_rows / output_block_cols: scalar block-kernel macro tile sizes.
+// - micro_tile_rows: scalar block-kernel row tile size.
+// 本算子的变量命名约定：
+// - input_rows / input_row_start：输入矩阵和 sigmoid 输出的行维度。
+// - output_cols / output_col_start：gate 投影产生的 router/expert 列。
+// - reduction_cols：matmul 中被规约的 K 维度。
+// - input_block_rows / output_block_cols：scalar block kernel 的宏块大小。
+// - micro_tile_rows：scalar block kernel 的行方向微 tile 大小。
+
 #[derive(Clone)]
 pub struct MatMulSigmoid<T> {
-    pub ptr1: ConstPtr<T>,
-    pub ptr2: ConstPtr<T>,
-    pub output_ptr: MutPtr<T>,
+    pub ptr1: ConstPtr<T>,     // Input matrix: [input_rows, reduction_cols].
+    pub ptr2: ConstPtr<T>,     // Gate weight: [output_cols, reduction_cols].
+    pub output_ptr: MutPtr<T>, // Sigmoid output: [input_rows, output_cols].
     pub params: MatMulParams,
     pub m_max: usize,
     pub n_max: usize,
     pub k_max: usize,
     pub _marker: PhantomData<T>,
+    // Per-thread scratch buffers reused by run().
+    // 每线程 scratch buffer，run() 中复用。
     b_panel_pool: Box<[T]>,
     b_panel_stride_elems: usize,
     acc_pool: Box<[T]>,
@@ -42,12 +57,12 @@ where
         use_routing_bias: bool,
         decode_only_flag: bool,
     ) -> Self {
-        let kc = params.kc();
-        let nr = params.nr();
-        let mb = params.mb();
-        let nb = params.nb();
-        let b_panel_stride_elems = kc * nr;
-        let acc_stride_elems = mb * nb;
+        let reduction_block_cols = params.kc();
+        let micro_tile_cols = params.nr();
+        let input_block_rows = params.mb();
+        let output_block_cols = params.nb();
+        let b_panel_stride_elems = reduction_block_cols * micro_tile_cols;
+        let acc_stride_elems = input_block_rows * output_block_cols;
 
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -91,22 +106,24 @@ where
         thread_id: usize,
     ) {
         unsafe {
-            let m_run = if self.decode_only_flag {
+            let active_input_rows = if self.decode_only_flag {
                 decode_size
             } else {
                 prefill_size
             };
-            let n = self.n_max;
-            let k = self.k_max;
-            let mb = self.params.mb();
-            let nb = self.params.nb();
-            let mr = self.params.mr();
+            let output_cols = self.n_max;
+            let reduction_cols = self.k_max;
+            let input_block_rows = self.params.mb();
+            let output_block_cols = self.params.nb();
+            let micro_tile_rows = self.params.mr();
 
-            let m_pad = ((m_run + mr - 1) / mr) * mr;
-            debug_assert!(m_pad <= self.m_max);
-            debug_assert!(mb % mr == 0);
-            debug_assert!(n % self.params.nr() == 0);
-            debug_assert!(k % self.params.kc() == 0);
+            // Pad rows so the scalar block kernel sees aligned micro tiles.
+            // 补齐行数，让 scalar block kernel 看到对齐的微内核 tile。
+            let padded_input_rows = active_input_rows.div_ceil(micro_tile_rows) * micro_tile_rows;
+            debug_assert!(padded_input_rows <= self.m_max);
+            debug_assert!(input_block_rows % micro_tile_rows == 0);
+            debug_assert!(output_cols % self.params.nr() == 0);
+            debug_assert!(reduction_cols % self.params.kc() == 0);
 
             let max_threads = if self.b_panel_stride_elems == 0 {
                 0
@@ -118,9 +135,9 @@ where
             debug_assert!(thread_id < thread_num);
             debug_assert!(thread_num <= max_threads);
 
-            let tiles_m = (m_pad + mb - 1) / mb;
-            let tiles_n = (n + nb - 1) / nb;
-            let tiles = tiles_m * tiles_n;
+            let input_tile_count = padded_input_rows.div_ceil(input_block_rows);
+            let output_tile_count = output_cols.div_ceil(output_block_cols);
+            let total_tiles = input_tile_count * output_tile_count;
 
             let b_panel_ptr = self
                 .b_panel_pool
@@ -132,17 +149,19 @@ where
                 .add(thread_id * self.acc_stride_elems) as *mut T;
             let bias_ptr = self.bias_ptr.map(|ptr| ptr.ptr);
 
-            if let Some((tb, te)) = assign(tiles, thread_num, thread_id) {
-                for t in tb..te {
-                    let tm = t / tiles_n;
-                    let tn = t % tiles_n;
-                    let m0 = tm * mb;
-                    let n0 = tn * nb;
-                    let m_blk = (m_pad - m0).min(mb);
-                    let n_blk = (n - n0).min(nb);
+            if let Some((task_begin, task_end)) = assign(total_tiles, thread_num, thread_id) {
+                for task_id in task_begin..task_end {
+                    let input_tile_id = task_id / output_tile_count;
+                    let output_tile_id = task_id % output_tile_count;
+                    let input_row_start = input_tile_id * input_block_rows;
+                    let output_col_start = output_tile_id * output_block_cols;
+                    let input_rows_in_block =
+                        (padded_input_rows - input_row_start).min(input_block_rows);
+                    let output_cols_in_block =
+                        (output_cols - output_col_start).min(output_block_cols);
 
-                    debug_assert!(m_blk % mr == 0);
-                    debug_assert!(n_blk % self.params.nr() == 0);
+                    debug_assert!(input_rows_in_block % micro_tile_rows == 0);
+                    debug_assert!(output_cols_in_block % self.params.nr() == 0);
 
                     kernel::scalar::block_matmul_sigmoid::matmul_sigmoid(
                         self.ptr1.ptr,
@@ -154,10 +173,10 @@ where
                         self.k_max,
                         bias_ptr,
                         self.use_routing_bias,
-                        m0,
-                        n0,
-                        m_blk,
-                        n_blk,
+                        input_row_start,
+                        output_col_start,
+                        input_rows_in_block,
+                        output_cols_in_block,
                         b_panel_ptr,
                         acc_ptr,
                     );
