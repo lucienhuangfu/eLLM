@@ -51,7 +51,7 @@ where
     ) -> Result<usize, String> {
         let prompt = self
             .chat_template
-            .apply_chat_template(messages)
+            .apply_chat_template(messages, true)
             .map_err(|e| format!("Render chat template failed: {}", e))?;
         let tokens = self.tokenizer.encode_with_special_tokens(prompt.as_str());
         let ids = tokens;
@@ -136,7 +136,7 @@ mod tests {
 
         let prompt = batch
             .chat_template
-            .apply_chat_template(&messages)
+            .apply_chat_template(&messages, true)
             .expect("render failed");
         let expected_ids = batch.tokenizer.encode_with_special_tokens(prompt.as_str());
 

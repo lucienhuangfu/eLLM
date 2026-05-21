@@ -1,6 +1,7 @@
 use core_affinity;
 use std::cell::SyncUnsafeCell;
 use std::ops::{AddAssign, Neg, Sub};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
@@ -20,6 +21,7 @@ use crate::runtime::BatchScheduler;
 pub struct ServingRunner<T> {
     operator_queue: Vec<Operator<T>>,
     batch_scheduler: BatchScheduler,
+    stop_flag: Arc<AtomicBool>,
 }
 
 impl<T> ServingRunner<T>
@@ -42,6 +44,7 @@ where
         Self {
             operator_queue,
             batch_scheduler,
+            stop_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -54,6 +57,7 @@ where
         let barrier = Arc::new(Barrier::new(thread_num));
         let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
         let shared_scheduler = Arc::new(SyncUnsafeCell::new(self.batch_scheduler));
+        let stop_flag = self.stop_flag;
 
         let mut handles = Vec::with_capacity(thread_num);
 
@@ -62,6 +66,7 @@ where
             let queue = Arc::clone(&operator_queue);
             let shared_sizes = Arc::clone(&shared_sizes);
             let shared_scheduler = Arc::clone(&shared_scheduler);
+            let stop_flag = Arc::clone(&stop_flag);
             let core_id = core_ids.get(thread_id).copied();
 
             let handle = thread::spawn(move || {
@@ -73,6 +78,10 @@ where
                 let scheduler_ptr = shared_scheduler.get();
 
                 loop {
+                    if stop_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+
                     if thread_id == 0 {
                         unsafe {
                             let scheduler = &mut *scheduler_ptr;
@@ -104,6 +113,16 @@ where
                         );
                         barrier.wait();
                     }
+
+                    if thread_id == 0 {
+                        let all_eos = batch_list
+                            .iter()
+                            .all(|s| matches!(s.phase, crate::runtime::Phase::Eos));
+                        if all_eos && !batch_list.is_empty() {
+                            stop_flag.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    barrier.wait();
                 }
             });
 
