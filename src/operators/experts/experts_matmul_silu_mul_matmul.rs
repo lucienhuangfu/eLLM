@@ -369,7 +369,7 @@ where
         thread_id: usize,
     ) {
         unsafe {
-            let active_token_count = if self.decode_only_flag {
+            let active_token_count = if prefill_size == 0 || self.decode_only_flag {
                 decode_size
             } else {
                 prefill_size

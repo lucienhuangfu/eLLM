@@ -54,11 +54,17 @@ where
     pub fn run(
         &self,
         prefill_size: usize,
-        _decode_size: usize,
+        decode_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
-        if let Some((begin, end)) = assign(prefill_size, thread_num, thread_id) {
+        let active_rows = if prefill_size == 0 {
+            decode_size
+        } else {
+            prefill_size
+        };
+
+        if let Some((begin, end)) = assign(active_rows, thread_num, thread_id) {
             let mut ptr1 = self.ptr1.ptr;
             let mut ptr2 = self.ptr2.ptr;
             let mut output_ptr = self.output_ptr.ptr;
@@ -93,7 +99,7 @@ where
 
 impl ZipMapTrait<f16> for AddRMSZipMap<f16> {
     fn compute(&self, input_ptr1: *const f16, input_ptr2: *const f16, output_ptr: *mut f16) {
-        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::rms_norm::add_rms_norm(
             input_ptr1,
             input_ptr2,

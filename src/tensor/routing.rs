@@ -130,7 +130,7 @@ where
             std::ptr::write(expert_counts.add(e), AtomicUsize::new(0));
         }
 
-        let capacity_per_expert = num_tokens;
+        let capacity_per_expert = num_tokens * num_topk;
         let mut index_tensor = AlignedBox::allocate_init(num_experts * capacity_per_expert, 0usize);
         let index_tensor = {
             let ptr = index_tensor.as_mut_ptr();

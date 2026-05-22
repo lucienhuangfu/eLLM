@@ -1,9 +1,6 @@
-use std::{cell::RefCell, rc::Rc};
-
 use crate::common::matmul_params::MatMulParams;
 use crate::common::sequence_slice::SequenceSlice;
 use crate::mem_mgr::allocator::AlignedBox;
-use crate::mem_mgr::mem_pool::MemPool;
 use crate::operators::linear::{MatMul, MatMulAdd};
 use crate::operators::operator::Operator;
 use crate::runtime::{Phase, SequenceState};
@@ -85,6 +82,63 @@ mod test {
                 &[],
                 &mut Vec::new(),
             );
+        }
+    }
+
+    fn take_single_f16_operator<F>(matches_expected: F) -> Operator<f16>
+    where
+        F: FnOnce(&Operator<f16>) -> bool,
+    {
+        let queue = f16::take_operator_queue();
+        assert_eq!(queue.len(), 1);
+        assert!(matches_expected(&queue[0]));
+        queue.into_iter().next().unwrap()
+    }
+
+    fn run_f16_queue(prefill_size: usize, decode_size: usize, cpu_num: usize) {
+        let queue = f16::take_operator_queue();
+        assert_eq!(queue.len(), 1);
+        for op in queue.iter() {
+            run_operator_all_threads(op, prefill_size, decode_size, cpu_num);
+        }
+    }
+
+    fn rope_identity(head_dim: usize) -> Vec<f16> {
+        let mut rope = vec![0.0f16; head_dim];
+        for i in (0..head_dim).step_by(2) {
+            rope[i] = 1.0f16;
+        }
+        rope
+    }
+
+    fn rms_norm_f32_in_place(row: &mut [f32]) {
+        let sum_sq: f32 = row.iter().map(|v| v * v).sum();
+        let rrms = 1.0f32 / (sum_sq / row.len() as f32 + 1e-6).sqrt();
+        for v in row {
+            *v *= rrms;
+        }
+    }
+
+    fn apply_qk_post_process_ref_f16(
+        data: &mut [f32],
+        rows: usize,
+        cols: usize,
+        head_dim: usize,
+        rope: &[f16],
+    ) {
+        for row in 0..rows {
+            for head_base in (0..cols).step_by(head_dim) {
+                let head = &mut data[row * cols + head_base..row * cols + head_base + head_dim];
+                rms_norm_f32_in_place(head);
+                for i in (0..head_dim).step_by(2) {
+                    let a = head[i];
+                    let b = head[i + 1];
+                    let c = rope[i] as f32;
+                    let d = rope[i + 1] as f32;
+                    head[i] = a * c - b * d;
+                    head[i + 1] = a * d + b * c;
+                }
+            }
         }
     }
 
@@ -428,14 +482,10 @@ mod test {
         }
         init_f16_tensor_test_runtime();
 
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
-
         let batch_size = 3;
         let hidden_size = 64;
-        let q_dim = 96;
-        let kv_dim = 96;
+        let q_dim = 128;
+        let kv_dim = 128;
         let head_dim = 128;
 
         let input_shape = vec![batch_size, hidden_size];
@@ -497,7 +547,7 @@ mod test {
                 .copy_from_nonoverlapping(v_data_nt.as_ptr(), v_data_nt.len());
         }
 
-        let rope_data = vec![0.0f16; head_dim];
+        let rope_data = rope_identity(head_dim);
         unsafe {
             position_embedding
                 .data
@@ -518,7 +568,7 @@ mod test {
             &v_weight,
             &position_embedding,
             batch_size, // sequence_length
-            batch_size, // batch_size
+            1,          // batch_size
             1,          // kv_head_num
             1,          // group_num
             head_dim,
@@ -526,41 +576,58 @@ mod test {
             "model.layers.0.matmul3".to_string(),
         );
 
-        for op in operator_queue.borrow_mut().iter() {
-            op.run(batch_size, 1, 1, 0, &[], &[], &mut Vec::new());
-        }
+        run_f16_queue(batch_size, 0, 1);
 
-        let verify_matmul_nt =
-            |output_tensor: &Tensor<f16>, w_nt: &[f16], n_dim: usize, name: &str| {
-                let out_len = batch_size * n_dim;
-                let out_data = unsafe { std::slice::from_raw_parts(output_tensor.data, out_len) };
+        let verify_matmul_nt = |output_tensor: &Tensor<f16>,
+                                w_nt: &[f16],
+                                n_dim: usize,
+                                name: &str,
+                                post_process_qk: bool| {
+            let out_len = batch_size * n_dim;
+            let out_data = unsafe { std::slice::from_raw_parts(output_tensor.data, out_len) };
+            let mut expected = vec![0.0f32; out_len];
 
-                for i in 0..batch_size {
-                    for j in 0..n_dim {
-                        let mut sum = 0.0f32;
-                        for k in 0..hidden_size {
-                            let a_val = input_data[i * hidden_size + k] as f32;
-                            let w_val = w_nt[j * hidden_size + k] as f32; // NT
-                            sum += a_val * w_val;
-                        }
-
-                        let val = out_data[i * n_dim + j] as f32;
-                        assert!(
-                            (val - sum).abs() < 0.5,
-                            "{} mismatch at batch {}, col {}: got {}, expected {}",
-                            name,
-                            i,
-                            j,
-                            val,
-                            sum
-                        );
+            for i in 0..batch_size {
+                for j in 0..n_dim {
+                    let mut sum = 0.0f32;
+                    for k in 0..hidden_size {
+                        let a_val = input_data[i * hidden_size + k] as f32;
+                        let w_val = w_nt[j * hidden_size + k] as f32; // NT
+                        sum += a_val * w_val;
                     }
+                    expected[i * n_dim + j] = sum;
                 }
-            };
+            }
 
-        verify_matmul_nt(&q_out, &q_data_nt, q_dim, "Q");
-        verify_matmul_nt(&k_out, &k_data_nt, kv_dim, "K");
-        verify_matmul_nt(&v_out, &v_data_nt, kv_dim, "V");
+            if post_process_qk {
+                apply_qk_post_process_ref_f16(
+                    &mut expected,
+                    batch_size,
+                    n_dim,
+                    head_dim,
+                    &rope_data,
+                );
+            }
+
+            for i in 0..batch_size {
+                for j in 0..n_dim {
+                    let val = out_data[i * n_dim + j] as f32;
+                    assert!(
+                        (val - expected[i * n_dim + j]).abs() < 0.5,
+                        "{} mismatch at batch {}, col {}: got {}, expected {}",
+                        name,
+                        i,
+                        j,
+                        val,
+                        expected[i * n_dim + j]
+                    );
+                }
+            }
+        };
+
+        verify_matmul_nt(&q_out, &q_data_nt, q_dim, "Q", true);
+        verify_matmul_nt(&k_out, &k_data_nt, kv_dim, "K", true);
+        verify_matmul_nt(&v_out, &v_data_nt, kv_dim, "V", false);
     }
 
     #[test]
@@ -571,15 +638,11 @@ mod test {
         }
         init_f16_tensor_test_runtime();
 
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
-
         let batch_size = 24;
         let hidden_size = 64;
 
-        let q_dim = 96;
-        let kv_dim = 96;
+        let q_dim = 128;
+        let kv_dim = 128;
         let head_dim = 128;
 
         let input_tensor = Tensor::<f16>::from_mem_pool(
@@ -640,7 +703,7 @@ mod test {
                 .copy_from_nonoverlapping(v_data_nt.as_ptr(), v_data_nt.len());
         }
 
-        let rope_data = vec![0.0f16; head_dim];
+        let rope_data = rope_identity(head_dim);
         unsafe {
             position_embedding
                 .data
@@ -661,7 +724,7 @@ mod test {
             &v_weight,
             &position_embedding,
             batch_size, // sequence_length
-            batch_size, // batch_size
+            1,          // batch_size
             1,          // kv_head_num
             1,          // group_num
             head_dim,
@@ -669,15 +732,11 @@ mod test {
             "model.layers.0.matmul3".to_string(),
         );
 
-        assert_eq!(q_out.shape, vec![batch_size, q_dim]);
-        assert_eq!(k_out.shape, vec![batch_size, kv_dim]);
-        assert_eq!(v_out.shape, vec![batch_size, kv_dim]);
-        assert_eq!(operator_queue.borrow().len(), 1);
-        assert!(matches!(&operator_queue.borrow()[0], Operator::MatMul3(_)));
-
-        for op in operator_queue.borrow_mut().iter() {
-            op.run(batch_size, 1, 1, 0, &[], &[], &mut Vec::new());
-        }
+        assert_eq!(q_out.shape, vec![batch_size, 1, q_dim]);
+        assert_eq!(k_out.shape, vec![batch_size, 1, kv_dim]);
+        assert_eq!(v_out.shape, vec![batch_size, 1, kv_dim]);
+        let op = take_single_f16_operator(|op| matches!(op, Operator::MatMul3(_)));
+        run_operator_all_threads(&op, batch_size, 0, 1);
 
         let q_len = m * q_dim;
         let kv_len = m * kv_dim;
@@ -685,31 +744,43 @@ mod test {
         let k_got = unsafe { std::slice::from_raw_parts(k_out.data, kv_len) };
         let v_got = unsafe { std::slice::from_raw_parts(v_out.data, kv_len) };
 
-        let check_nt = |got: &[f16], w_nt: &[f16], n_dim: usize, name: &str| {
-            for i in 0..m {
-                for j in 0..n_dim {
-                    let mut sum = 0.0f32;
-                    for kk in 0..hidden_size {
-                        sum += (input_data[i * hidden_size + kk] as f32)
-                            * (w_nt[j * hidden_size + kk] as f32);
+        let check_nt =
+            |got: &[f16], w_nt: &[f16], n_dim: usize, name: &str, post_process_qk: bool| {
+                let mut expected = vec![0.0f32; m * n_dim];
+                for i in 0..m {
+                    for j in 0..n_dim {
+                        let mut sum = 0.0f32;
+                        for kk in 0..hidden_size {
+                            sum += (input_data[i * hidden_size + kk] as f32)
+                                * (w_nt[j * hidden_size + kk] as f32);
+                        }
+                        expected[i * n_dim + j] = sum;
                     }
-                    let val = got[i * n_dim + j] as f32;
-                    assert!(
-                        (val - sum).abs() < 0.5,
-                        "{} mismatch at row {}, col {}: got {}, expected {}",
-                        name,
-                        i,
-                        j,
-                        val,
-                        sum
-                    );
                 }
-            }
-        };
 
-        check_nt(q_got, &q_data_nt, q_dim, "Q");
-        check_nt(k_got, &k_data_nt, kv_dim, "K");
-        check_nt(v_got, &v_data_nt, kv_dim, "V");
+                if post_process_qk {
+                    apply_qk_post_process_ref_f16(&mut expected, m, n_dim, head_dim, &rope_data);
+                }
+
+                for i in 0..m {
+                    for j in 0..n_dim {
+                        let val = got[i * n_dim + j] as f32;
+                        assert!(
+                            (val - expected[i * n_dim + j]).abs() < 0.5,
+                            "{} mismatch at row {}, col {}: got {}, expected {}",
+                            name,
+                            i,
+                            j,
+                            val,
+                            expected[i * n_dim + j]
+                        );
+                    }
+                }
+            };
+
+        check_nt(q_got, &q_data_nt, q_dim, "Q", true);
+        check_nt(k_got, &k_data_nt, kv_dim, "K", true);
+        check_nt(v_got, &v_data_nt, kv_dim, "V", false);
     }
 
     // ============================================================
@@ -724,16 +795,10 @@ mod test {
         }
         init_f16_tensor_test_runtime();
 
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
-
         let batch_size = 12;
         let hidden_size = 64; // K
         let intermediate_size = 96; // N
         let topk = 10;
-
-        let thread_num = avail_threads();
 
         let input_tensor = Tensor::<f16>::from_mem_pool(
             vec![batch_size, hidden_size],
@@ -742,7 +807,7 @@ mod test {
 
         let weight_tensor = Tensor::<f16>::from_mem_pool(
             vec![intermediate_size, hidden_size],
-            "weight".to_string(),
+            "weight.weight".to_string(),
         );
 
         let m = batch_size;
@@ -791,13 +856,15 @@ mod test {
             "model.layers.0.matmul_local_topk".to_string(),
         );
 
-        for op in operator_queue.borrow_mut().iter() {
-            for i in 0..thread_num {
-                op.run(m, 1, thread_num, i, &[], &[], &mut Vec::new());
-            }
-        }
+        let op = take_single_f16_operator(|op| matches!(op, Operator::MatMulTopK(_)));
+        let buffer_thread_num = match &op {
+            Operator::MatMulTopK(operator) => operator.thread_max(),
+            _ => unreachable!(),
+        };
+        let run_thread_num = avail_threads().min(buffer_thread_num).max(1);
+        run_operator_all_threads(&op, m, 0, run_thread_num);
 
-        let out_len = m * thread_num * topk;
+        let out_len = m * buffer_thread_num * topk;
         let indices = unsafe { std::slice::from_raw_parts(indice_ptr, out_len) };
         let values = unsafe { std::slice::from_raw_parts(value_tensor.data, out_len) };
 
@@ -817,8 +884,8 @@ mod test {
             let expected_topk = &indexed_row[0..topk];
 
             let mut merged: Vec<(usize, f32)> = Vec::new();
-            for tid in 0..thread_num {
-                let offset = i * (thread_num * topk) + tid * topk;
+            for tid in 0..run_thread_num {
+                let offset = i * (buffer_thread_num * topk) + tid * topk;
                 for r in 0..topk {
                     merged.push((indices[offset + r], values[offset + r] as f32));
                 }
@@ -852,21 +919,15 @@ mod test {
         }
         init_f16_tensor_test_runtime();
 
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
-
         let batch_size = 12;
         let k = 64;
         let n = 128;
         let topk = 10;
 
-        let thread_num = avail_threads().max(1);
-
         let input_tensor =
             Tensor::<f16>::from_mem_pool(vec![batch_size, k], "model.layers.0.input".to_string());
 
-        let weight_tensor = Tensor::<f16>::from_mem_pool(vec![n, k], "weight".to_string());
+        let weight_tensor = Tensor::<f16>::from_mem_pool(vec![n, k], "weight.weight".to_string());
 
         // A = 1
         let m = batch_size;
@@ -909,13 +970,15 @@ mod test {
             "model.layers.0.matmul_local_topk".to_string(),
         );
 
-        for op in operator_queue.borrow_mut().iter() {
-            for tid in 0..thread_num {
-                op.run(m, 1, thread_num, tid, &[], &[], &mut Vec::new());
-            }
-        }
+        let op = take_single_f16_operator(|op| matches!(op, Operator::MatMulTopK(_)));
+        let buffer_thread_num = match &op {
+            Operator::MatMulTopK(operator) => operator.thread_max(),
+            _ => unreachable!(),
+        };
+        let run_thread_num = avail_threads().min(buffer_thread_num).max(1);
+        run_operator_all_threads(&op, m, 0, run_thread_num);
 
-        let out_len = m * thread_num * topk;
+        let out_len = m * buffer_thread_num * topk;
         let indices = unsafe { std::slice::from_raw_parts(indice_ptr, out_len) };
         let values = unsafe { std::slice::from_raw_parts(value_tensor.data, out_len) };
 
@@ -927,9 +990,9 @@ mod test {
         };
 
         for row in 0..m {
-            let mut merged: Vec<(usize, f32)> = Vec::with_capacity(thread_num * topk);
-            for tid in 0..thread_num {
-                let base = row * (thread_num * topk) + tid * topk;
+            let mut merged: Vec<(usize, f32)> = Vec::with_capacity(run_thread_num * topk);
+            for tid in 0..run_thread_num {
+                let base = row * (buffer_thread_num * topk) + tid * topk;
                 for r in 0..topk {
                     merged.push((indices[base + r], values[base + r] as f32));
                 }
@@ -972,10 +1035,6 @@ mod test {
             return;
         }
         init_f16_tensor_test_runtime();
-
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
         let hidden_size = 64; // K
@@ -1036,9 +1095,8 @@ mod test {
             "model.layers.0.matmul".to_string(),
         );
 
-        for op in operator_queue.borrow_mut().iter() {
-            op.run(m, 1, 1, 0, &[], &[], &mut Vec::new());
-        }
+        let op = take_single_f16_operator(|op| matches!(op, Operator::MatMul(_)));
+        run_operator_all_threads(&op, m, 0, 1);
 
         let out_len = m * n;
         let output_data = unsafe { std::slice::from_raw_parts(output_tensor.data, out_len) };
@@ -1071,10 +1129,6 @@ mod test {
             return;
         }
         init_f16_tensor_test_runtime();
-
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
         let hidden_size = 64; // K
@@ -1154,9 +1208,8 @@ mod test {
             "model.layers.0.matmul_add".to_string(),
         );
 
-        for op in operator_queue.borrow_mut().iter() {
-            op.run(m, 1, 1, 0, &[], &[], &mut Vec::new());
-        }
+        let op = take_single_f16_operator(|op| matches!(op, Operator::MatMulAdd(_)));
+        run_operator_all_threads(&op, m, 0, 1);
 
         let out_len = m * n;
         let output_data = unsafe { std::slice::from_raw_parts(output_tensor.data, out_len) };
@@ -1285,10 +1338,6 @@ mod test {
         }
         init_f16_tensor_test_runtime();
 
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
-
         let batch_size = 12;
         let hidden = 64; // H
         let inter = 64; // I
@@ -1396,19 +1445,10 @@ mod test {
         );
 
         assert_eq!(out.shape, vec![num_experts, batch_size, inter]);
-        assert_eq!(operator_queue.borrow().len(), 1);
-        assert!(matches!(
-            &operator_queue.borrow()[0],
-            Operator::ExpertsMatMulSilu(_)
-        ));
+        let op = take_single_f16_operator(|op| matches!(op, Operator::ExpertsMatMulSilu(_)));
 
         let thread_num = avail_threads();
-
-        for op in operator_queue.borrow_mut().iter() {
-            for tid in 0..thread_num {
-                op.run(b, 1, thread_num, tid, &[], &[], &mut Vec::new());
-            }
-        }
+        run_operator_all_threads(&op, b, 0, thread_num);
 
         let out_len = num_experts * b * inter;
         let out_got = unsafe { std::slice::from_raw_parts(out.data, out_len) };
@@ -1461,10 +1501,6 @@ mod test {
             return;
         }
         init_f16_tensor_test_runtime();
-
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
         let num_experts = 2;
@@ -1589,11 +1625,7 @@ mod test {
         );
 
         assert_eq!(out.shape, vec![batch_size, num_experts_per_tok, hidden]);
-        assert_eq!(operator_queue.borrow().len(), 1);
-        assert!(matches!(
-            &operator_queue.borrow()[0],
-            Operator::ExpertsMatMulDown(_)
-        ));
+        let op = take_single_f16_operator(|op| matches!(op, Operator::ExpertsMatMulDown(_)));
 
         // ✅ IMPORTANT: down does out += acc * factor, so zero out first
         let out_len = b * num_experts_per_tok * hidden;
@@ -1607,11 +1639,7 @@ mod test {
             .map(|n| n.get())
             .unwrap_or(1);
 
-        for op in operator_queue.borrow_mut().iter() {
-            for tid in 0..thread_num {
-                op.run(b, 1, thread_num, tid, &[], &[], &mut Vec::new());
-            }
-        }
+        run_operator_all_threads(&op, b, 0, thread_num);
 
         // verify reference:
         // out[t, 0, j] = sum_k x_e0[t,k] * w_e0_nt[j,k]
@@ -1644,10 +1672,6 @@ mod test {
             return;
         }
         init_f16_tensor_test_runtime();
-
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
 
         let batch_size = 12;
         let num_tokens = batch_size;
@@ -1747,21 +1771,20 @@ mod test {
         );
 
         assert_eq!(out.shape, vec![batch_size, hidden]);
-        assert_eq!(operator_queue.borrow().len(), 1);
-        assert!(matches!(
-            &operator_queue.borrow()[0],
-            Operator::ExpertsMergeAdd(_)
-        ));
+        let op = take_single_f16_operator(|op| matches!(op, Operator::ExpertsMergeAdd(_)));
+        match &op {
+            Operator::ExpertsMergeAdd(operator) => {
+                assert_eq!(operator.num_experts, num_experts);
+                assert_eq!(operator.batch_size, batch_size);
+            }
+            _ => unreachable!(),
+        }
 
         // run
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        for op in operator_queue.borrow_mut().iter() {
-            for tid in 0..thread_num {
-                op.run(num_tokens, 1, thread_num, tid, &[], &[], &mut Vec::new());
-            }
-        }
+        run_operator_all_threads(&op, num_tokens, 0, thread_num);
 
         // verify: out = residual + slot0 + slot1(0)
         let out_len = num_tokens * hidden;
@@ -1786,6 +1809,7 @@ mod test {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tensor::GlobalOperatorQueue;
     use approx::assert_abs_diff_eq;
     use std::collections::HashMap;
     use std::f16;
@@ -2109,10 +2133,6 @@ mod tests {
         const K: usize = 1536;
         const N: usize = 1536;
 
-        let mem_pool: Rc<RefCell<MemPool<f16>>> =
-            Rc::new(RefCell::new(MemPool::new(HashMap::new())));
-        let operator_queue: Rc<RefCell<Vec<Operator<f16>>>> = Rc::new(RefCell::new(Vec::new()));
-
         let input_tensor = Tensor::<f16>::from_mem_pool(
             vec![SEQUENCE_CHUNK_SIZE, BATCH_SIZE, K],
             "perf.matmul.input".to_string(),
@@ -2155,15 +2175,14 @@ mod tests {
             "perf.matmul".to_string(),
         );
 
-        let operator = {
-            let queue = operator_queue.borrow();
-            assert_eq!(
-                queue.len(),
-                1,
-                "expected exactly one operator from tensor.matmul"
-            );
-            Arc::new(queue[0].clone())
-        };
+        let queue = f16::take_operator_queue();
+        assert_eq!(
+            queue.len(),
+            1,
+            "expected exactly one operator from tensor.matmul"
+        );
+        assert!(matches!(&queue[0], Operator::MatMul(_)));
+        let operator = Arc::new(queue[0].clone());
 
         let panel_threads = match operator.as_ref() {
             Operator::MatMul(runner) => runner.panel_threads(),

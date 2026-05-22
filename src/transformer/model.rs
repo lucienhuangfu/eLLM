@@ -233,6 +233,7 @@ mod test {
     }
 
     #[test]
+    #[ignore = "model-scale integration test; run manually on a large machine"]
     fn test_model_forward() {
         // let cpu_num =  thread::available_parallelism().unwrap().get();
         let sequence_length = 128;
@@ -304,6 +305,7 @@ mod test {
     }
 
     #[test]
+    #[ignore = "model-scale integration test; run manually on a large machine"]
     fn test_model_forward_f16() {
         if !std::arch::is_x86_feature_detected!("avx512fp16") {
             eprintln!("skip test_model_forward_f16: avx512fp16 not detected");

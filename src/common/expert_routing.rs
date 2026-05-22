@@ -81,7 +81,7 @@ pub unsafe fn routing_from_dense<T: Copy + Default>(
     let expert_counts_box = AlignedBox::<AtomicUsize>::allocate(num_experts);
     let expert_counts = expert_counts_box.as_mut_ptr();
     std::mem::forget(expert_counts_box);
-    let capacity_per_expert = num_tokens;
+    let capacity_per_expert = num_tokens * num_topk;
     let index_tensor_box = AlignedBox::allocate_init(num_experts * capacity_per_expert, 0usize);
     let index_tensor = index_tensor_box.as_mut_ptr();
     std::mem::forget(index_tensor_box);
@@ -142,7 +142,7 @@ pub unsafe fn empty_routing<T: Copy + Default>(
         std::ptr::write(expert_counts.add(e), AtomicUsize::new(0));
     }
 
-    let capacity_per_expert = num_tokens;
+    let capacity_per_expert = num_tokens * num_topk;
     let index_tensor_box = AlignedBox::allocate_init(num_experts * capacity_per_expert, 0usize);
     let index_tensor = index_tensor_box.as_mut_ptr();
     std::mem::forget(index_tensor_box);

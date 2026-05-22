@@ -81,7 +81,7 @@ fn build_case(
         },
     );
 
-    let shape = vec![sequence_length, batch_size, hidden_size];
+    let shape = vec![sequence_length * batch_size, hidden_size];
     let input = Tensor::from_mem_pool(shape.clone(), "model.layers.0.input_tensor".to_string());
     let residual =
         Tensor::from_mem_pool(shape.clone(), "model.layers.0.residual_tensor".to_string());

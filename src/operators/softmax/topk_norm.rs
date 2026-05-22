@@ -57,7 +57,7 @@ where
         thread_num: usize,
         thread_id: usize,
     ) {
-        let task_size = if self.decode_only_flag {
+        let task_size = if prefill_size == 0 || self.decode_only_flag {
             decode_size
         } else {
             prefill_size

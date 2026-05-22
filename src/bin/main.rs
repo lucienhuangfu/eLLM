@@ -115,9 +115,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
     );
     batch_scheduler.batch_list = Arc::new(SharedMut::new(batch_list));
+    let batch_list_ref = Arc::clone(&batch_scheduler.batch_list);
 
     println!("Starting serving runner...");
     let runner = ServingRunner::new(f16::take_operator_queue(), batch_scheduler);
     runner.start();
+
+    println!("\n=== Generated Output ===");
+    batch_list_ref.with(|list| {
+        for (slot, record) in list.iter().enumerate() {
+            let text = batch_seq.decode_generated_text(slot, record);
+            if !text.is_empty() {
+                println!("Slot {}: {}", slot, text);
+            }
+        }
+    });
+
     Ok(())
 }

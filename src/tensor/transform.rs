@@ -26,7 +26,7 @@ where
         + GlobalMemPool
         + GlobalOperatorQueue,
 {
-    pub fn add(&self, b_tensor: &Tensor<T>, tensor_name: String) -> Self {
+    pub fn add(&self, b_tensor: &Tensor<T>, decode_only_flag: bool, tensor_name: String) -> Self {
         let output_tensor = Self::from_mem_pool(self.shape.clone(), tensor_name);
         let operator = Operator::AddZipMap(AddZipMap::new(
             self.data,
@@ -34,6 +34,7 @@ where
             output_tensor.data,
             self.shape[1],
             self.shape[2],
+            decode_only_flag,
         ));
         Self::enqueue(operator);
         output_tensor

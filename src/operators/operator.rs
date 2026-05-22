@@ -1622,7 +1622,7 @@ mod test {
             let op = Operator::MatMulTopK(runner);
 
             for tid in 0..used_cpu {
-                op.run(M, 1, used_cpu, tid, &[], &[], &mut Vec::new());
+                op.run(M, 0, used_cpu, tid, &[], &[], &mut Vec::new());
             }
 
             for row in 0..M {
@@ -1718,7 +1718,7 @@ mod test {
             let op = Operator::MatMulTopK(runner);
 
             for tid in 0..used_cpu {
-                op.run(M, 1, used_cpu, tid, &[], &[], &mut Vec::new());
+                op.run(M, 0, used_cpu, tid, &[], &[], &mut Vec::new());
             }
 
             for row in 0..M {
@@ -2797,9 +2797,9 @@ mod test {
             input_data1.as_ptr(),
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
-            batch_size,
             head_num,
             head_size,
+            false,
         ));
 
         for i in 0..thread_num {

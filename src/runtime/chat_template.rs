@@ -27,6 +27,7 @@ impl ChatTemplate {
     pub fn apply_chat_template(
         &self,
         messages: &[(&str, &str)],
+        add_generation_prompt: bool,
     ) -> Result<String, Box<dyn Error + Send + Sync>> {
         let prompt = self.template.render(context! {
             messages => messages
@@ -37,7 +38,8 @@ impl ChatTemplate {
                         "content": content
                     })
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            add_generation_prompt => add_generation_prompt
         })?;
 
         Ok(prompt)
@@ -61,7 +63,7 @@ mod tests {
         ];
 
         let tester = ChatTemplate::new(template_path)?;
-        let prompt = tester.apply_chat_template(&messages)?;
+        let prompt = tester.apply_chat_template(&messages, false)?;
         println!("渲染后的 Prompt:\n{}", prompt);
         Ok(())
     }
@@ -85,7 +87,7 @@ mod tests {
         ];
 
         let tester = ChatTemplate::new(template_path)?;
-        let prompt = tester.apply_chat_template(&messages)?;
+        let prompt = tester.apply_chat_template(&messages, false)?;
         println!("多轮渲染后的 Prompt:\n{}", prompt);
         assert!(!prompt.trim().is_empty());
         Ok(())

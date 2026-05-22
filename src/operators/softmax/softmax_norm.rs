@@ -59,7 +59,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
         thread_num: usize,
         thread_id: usize,
     ) {
-        let task_size = if self.decode_only_flag == true {
+        let task_size = if prefill_size == 0 || self.decode_only_flag {
             decode_size
         } else {
             prefill_size
@@ -130,6 +130,15 @@ impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
     ) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         x86_64::f16_512::experts_topk_softmax_norm::experts_topk_softmax_norm(
+            input_ptr,
+            topk_values_ptr,
+            topk_indices_ptr,
+            input_length,
+            output_length,
+            true,
+        );
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        scalar::experts_topk_softmax_norm::experts_topk_softmax_norm(
             input_ptr,
             topk_values_ptr,
             topk_indices_ptr,

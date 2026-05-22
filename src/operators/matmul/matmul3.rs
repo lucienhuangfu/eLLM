@@ -786,6 +786,33 @@ mod tests {
         }
     }
 
+    fn ref_post_process_f16_acc_f32(
+        m: usize,
+        n: usize,
+        c: &mut [f32],
+        rope: &[f16],
+        head_dim: usize,
+    ) {
+        for i in 0..m {
+            for h_base in (0..n).step_by(head_dim) {
+                let head = &mut c[i * n + h_base..i * n + h_base + head_dim];
+                let sum_sq: f32 = head.iter().map(|v| v * v).sum();
+                let rrms = 1.0f32 / (sum_sq / head_dim as f32 + 1e-6).sqrt();
+                for v in head.iter_mut() {
+                    *v *= rrms;
+                }
+                for j in (0..head_dim).step_by(2) {
+                    let a = head[j];
+                    let b = head[j + 1];
+                    let c = rope[h_base + j] as f32;
+                    let d = rope[h_base + j + 1] as f32;
+                    head[j] = a * c - b * d;
+                    head[j + 1] = a * d + b * c;
+                }
+            }
+        }
+    }
+
     fn run_runner(runner: &MatMul3<f16>, m: usize, thread_num: usize) {
         for tid in 0..thread_num {
             runner.run(m, 0, &[], thread_num, tid);
@@ -910,8 +937,8 @@ mod tests {
     fn test_kqv_f16_avx512_small_single_tile() {
         const M: usize = 3;
         const K: usize = 64;
-        const NQ: usize = 32;
-        const NKV: usize = 64;
+        const NQ: usize = 128;
+        const NKV: usize = 128;
         const HEAD_DIM: usize = 128;
 
         let thread_num = avail_threads_cap(8);
@@ -927,7 +954,10 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
-        let rope = vec![0.0f16; HEAD_DIM];
+        let mut rope = vec![0.0f16; NQ.max(NKV)];
+        for i in (0..rope.len()).step_by(2) {
+            rope[i] = 1.0f16;
+        }
 
         for i in 0..M {
             for kk in 0..K {
@@ -979,6 +1009,8 @@ mod tests {
         gemm_ref_f16_acc_f32_from_wnt(&a, &wq_nt, &mut cq_ref, M, K, NQ);
         gemm_ref_f16_acc_f32_from_wnt(&a, &wk_nt, &mut ck_ref, M, K, NKV);
         gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M, K, NKV);
+        ref_post_process_f16_acc_f32(M, NQ, &mut cq_ref, &rope, HEAD_DIM);
+        ref_post_process_f16_acc_f32(M, NKV, &mut ck_ref, &rope, HEAD_DIM);
 
         for i in 0..M {
             for j in 0..NQ {
@@ -1004,8 +1036,8 @@ mod tests {
     fn test_kqv_f16_avx512_multi_tile() {
         const M: usize = 12;
         const K: usize = 64;
-        const NQ: usize = 96;
-        const NKV: usize = 96;
+        const NQ: usize = 128;
+        const NKV: usize = 128;
         const HEAD_DIM: usize = 128;
 
         let thread_num = avail_threads_cap(16);
@@ -1019,7 +1051,10 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
-        let rope = vec![0.0f16; HEAD_DIM];
+        let mut rope = vec![0.0f16; NQ.max(NKV)];
+        for i in (0..rope.len()).step_by(2) {
+            rope[i] = 1.0f16;
+        }
 
         for i in 0..M {
             for kk in 0..K {
@@ -1069,6 +1104,8 @@ mod tests {
         gemm_ref_f16_acc_f32_from_wnt(&a, &wq_nt, &mut cq_ref, M, K, NQ);
         gemm_ref_f16_acc_f32_from_wnt(&a, &wk_nt, &mut ck_ref, M, K, NKV);
         gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M, K, NKV);
+        ref_post_process_f16_acc_f32(M, NQ, &mut cq_ref, &rope, HEAD_DIM);
+        ref_post_process_f16_acc_f32(M, NKV, &mut ck_ref, &rope, HEAD_DIM);
 
         for i in 0..M {
             for j in 0..NQ {
@@ -1086,8 +1123,8 @@ mod tests {
     fn test_kqv_f16_avx512_kc_split() {
         const M: usize = 3;
         const K: usize = 128;
-        const NQ: usize = 64;
-        const NKV: usize = 64;
+        const NQ: usize = 128;
+        const NKV: usize = 128;
         const HEAD_DIM: usize = 128;
 
         let thread_num = avail_threads_cap(8);
@@ -1101,7 +1138,10 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
-        let rope = vec![0.0f16; HEAD_DIM];
+        let mut rope = vec![0.0f16; NQ.max(NKV)];
+        for i in (0..rope.len()).step_by(2) {
+            rope[i] = 1.0f16;
+        }
 
         for i in 0..M {
             for kk in 0..K {
@@ -1151,6 +1191,8 @@ mod tests {
         gemm_ref_f16_acc_f32_from_wnt(&a, &wq_nt, &mut cq_ref, M, K, NQ);
         gemm_ref_f16_acc_f32_from_wnt(&a, &wk_nt, &mut ck_ref, M, K, NKV);
         gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M, K, NKV);
+        ref_post_process_f16_acc_f32(M, NQ, &mut cq_ref, &rope, HEAD_DIM);
+        ref_post_process_f16_acc_f32(M, NKV, &mut ck_ref, &rope, HEAD_DIM);
 
         for i in 0..M {
             for j in 0..NQ {
@@ -1183,7 +1225,10 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
-        let rope = vec![0.0f16; HEAD_DIM];
+        let mut rope = vec![0.0f16; NQ.max(NKV)];
+        for i in (0..rope.len()).step_by(2) {
+            rope[i] = 1.0f16;
+        }
 
         for i in 0..M {
             for kk in 0..K {
@@ -1233,6 +1278,8 @@ mod tests {
         gemm_ref_f16_acc_f32_from_wnt(&a, &wq_nt, &mut cq_ref, M, K, NQ);
         gemm_ref_f16_acc_f32_from_wnt(&a, &wk_nt, &mut ck_ref, M, K, NKV);
         gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M, K, NKV);
+        ref_post_process_f16_acc_f32(M, NQ, &mut cq_ref, &rope, HEAD_DIM);
+        ref_post_process_f16_acc_f32(M, NKV, &mut ck_ref, &rope, HEAD_DIM);
 
         for i in 0..M {
             for j in 0..NQ {
@@ -1254,10 +1301,9 @@ mod tests {
         const M_MAX: usize = 9; // ceil_div(7,3)*3 = 9
         const K: usize = 64;
 
-        // 关键：让 N < HEAD_DIM，避免 finalize 条件 offset+32==head_dim 触发
         const HEAD_DIM: usize = 128;
-        const NQ: usize = 64; // < 128 => nt 只会 0,32，不会到 96
-        const NKV: usize = 64; // < 128
+        const NQ: usize = 128;
+        const NKV: usize = 128;
 
         let thread_num = avail_threads_cap(8);
 
@@ -1291,8 +1337,10 @@ mod tests {
         let mut ck = vec![0.0f16; M_MAX * NKV];
         let mut cv = vec![0.0f16; M_MAX * NKV];
 
-        // rope 给足长度即可（本测试不会触发 finalize）
-        let rope = vec![1.0f16; HEAD_DIM.max(NQ).max(NKV)];
+        let mut rope = vec![0.0f16; HEAD_DIM.max(NQ).max(NKV)];
+        for i in (0..rope.len()).step_by(2) {
+            rope[i] = 1.0f16;
+        }
 
         // MB 要是 MR 的倍数（你现有 gemm_one_path_tiles 要求 m_blk%mr==0）
         let runner = MatMul3::<f16>::new(
@@ -1329,6 +1377,8 @@ mod tests {
         gemm_ref_f16_acc_f32_from_wnt(&a, &wq_nt, &mut cq_ref, M_RUN, K, NQ);
         gemm_ref_f16_acc_f32_from_wnt(&a, &wk_nt, &mut ck_ref, M_RUN, K, NKV);
         gemm_ref_f16_acc_f32_from_wnt(&a, &wv_nt, &mut cv_ref, M_RUN, K, NKV);
+        ref_post_process_f16_acc_f32(M_RUN, NQ, &mut cq_ref, &rope, HEAD_DIM);
+        ref_post_process_f16_acc_f32(M_RUN, NKV, &mut ck_ref, &rope, HEAD_DIM);
 
         for i in 0..M_RUN {
             for j in 0..NQ {
