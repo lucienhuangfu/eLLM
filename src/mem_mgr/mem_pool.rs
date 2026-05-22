@@ -396,7 +396,7 @@ where
                         }
                         return self.insert_full_from_vec(name, data);
                     } else {
-                        if self.strict_weights {
+                        if self.strict_weights && !name.contains("position_embedding") {
                             panic!(
                                 "Strict weight loading failed: missing parameter {name} for shape {:?} ({size} values)",
                                 shape

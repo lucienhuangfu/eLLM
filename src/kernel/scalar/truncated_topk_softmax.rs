@@ -34,13 +34,16 @@ pub fn truncated_topk_softmax<
         let mut heap = FixedMinHeap::new(output_values_ptr, output_indices_ptr, topk_size);
         for i in 0..total_candidates {
             let value = *input_values_ptr.add(i);
+            if value != value {
+                continue;
+            }
             let index = *input_indices_ptr.add(i);
             heap.push(value, index);
         }
         let len = heap.len();
-        // if len == 0 {
-        //    return;
-        // }
+        if len == 0 {
+            return;
+        }
         heap.sort_desc();
 
         let max_val = *output_values_ptr.add(0);

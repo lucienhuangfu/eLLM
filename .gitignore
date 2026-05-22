@@ -36,3 +36,4 @@ alignment/**/dump/
 # AI assistant files (local only)
 .trae/
 .kiro/
+.claude/

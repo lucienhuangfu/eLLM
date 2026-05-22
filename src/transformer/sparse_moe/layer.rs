@@ -156,8 +156,7 @@ where
         decode_only_flag: bool,
         tensor_name: String,
     ) -> Tensor<T> {
-        #[cfg(debug_assertions)]
-        eprintln!("Entering SparseMoe forward: {}", tensor_name);
+        let _ = tensor_name;
         let routing = self.router.forward(hidden_states, decode_only_flag);
 
         let nonlinear_product = hidden_states.experts_matmul_silu_mul_matmul(

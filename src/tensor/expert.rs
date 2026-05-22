@@ -32,8 +32,7 @@ where
         decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
-        // output [batch_size, hidden_size]
-        let output_shape = vec![self.shape[0], self.shape[2]];
+        let output_shape = residual.shape.clone();
 
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
 
@@ -43,10 +42,10 @@ where
             routing,
             output_tensor.data,
             1,
-            self.shape[0],
+            self.row_count(),
             routing.num_experts,
             self.shape[1],
-            self.shape[2],
+            self.last_dim(),
             false,
             decode_only_flag,
         ));
@@ -66,7 +65,8 @@ where
     ) -> Self {
         // down_weights [num_experts, hidden_size, intermediate_size]
         // output [batch_size, num_experts_per_token, hidden_size]
-        let output_shape = vec![self.shape[1], num_experts_per_tok, down_weights.shape[1]];
+        let token_count = self.shape[1];
+        let output_shape = vec![token_count, num_experts_per_tok, down_weights.shape[1]];
 
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
 
@@ -77,7 +77,7 @@ where
                 routing,
                 output_tensor.data,
                 down_weights.shape[0],
-                self.shape[1],
+                token_count,
                 down_weights.shape[2],
                 down_weights.shape[1],
                 num_experts_per_tok,
@@ -101,7 +101,9 @@ where
     ) -> Self {
         // gate_weights [num_experts, intermediate_size, hidden_size]
         // output [num_experts, batch_size, intermediate_size]
-        let output_shape = vec![gate_weights.shape[0], self.shape[0], gate_weights.shape[1]];
+        let token_count = self.row_count();
+        let hidden_size = self.last_dim();
+        let output_shape = vec![gate_weights.shape[0], token_count, gate_weights.shape[1]];
 
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
 
@@ -112,9 +114,9 @@ where
                 up_weights.data,
                 routing,
                 output_tensor.data,
-                self.shape[0],
+                token_count,
                 gate_weights.shape[1],
-                self.shape[1],
+                hidden_size,
                 gate_weights.shape[0],
                 params.a_row_step_macro,
                 params.b_row_step_macro,

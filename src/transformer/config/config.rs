@@ -56,6 +56,8 @@ impl Config {
             .use_routing_bias
             .unwrap_or(matches!(family, ModelFamily::MiniMaxM2));
         let decoder_sparse_step = hf.decoder_sparse_step.max(1);
+        let use_qk_norm =
+            hf.use_qk_norm || matches!(hf.model_type.as_str(), "qwen3" | "qwen3_moe");
 
         let layer_types = hf.layer_types;
 
@@ -94,7 +96,7 @@ impl Config {
             tie_word_embeddings: hf.tie_word_embeddings,
             layers,
             qkv_bias: hf.qkv_bias,
-            use_qk_norm: hf.use_qk_norm,
+            use_qk_norm,
             rope_scaling: hf.rope_scaling,
             eos_token_id: hf.eos_token_id,
             max_window_layers,

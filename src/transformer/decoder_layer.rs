@@ -41,6 +41,8 @@ where
     layer_idx: usize,
     word_embedding: Rc<Tensor<T>>,
     position_embedding: Rc<Tensor<T>>,
+    input_layernorm_weight: Tensor<T>,
+    post_attention_layernorm_weight: Tensor<T>,
     self_attention: AttentionBlock<T>,
     ffn_block: FfnBlock<T>,
     scope_name: String,
@@ -92,7 +94,7 @@ where
             ),
         };
 
-        let ffn_block = match (&config.layers[layer_idx].ffn, names.ffn) {
+        let ffn_block = match (&config.layers[layer_idx].ffn, names.ffn.clone()) {
             (FfnKind::Dense { intermediate_size }, FfnTensorNames::Dense(ffn_names)) => {
                 FfnBlock::Dense(DenseMlp::new(
                     config.hidden_size,
@@ -133,6 +135,14 @@ where
             ffn_block,
             word_embedding: word_embedding,
             position_embedding: position_embedding,
+            input_layernorm_weight: Tensor::zeros(
+                vec![config.hidden_size],
+                names.input_layernorm.clone(),
+            ),
+            post_attention_layernorm_weight: Tensor::zeros(
+                vec![config.hidden_size],
+                names.post_attention_layernorm.clone(),
+            ),
             scope_name: names.scope,
         }
     }
@@ -147,6 +157,7 @@ where
         // # Attention 层
         let (hidden_states_owned, norm_hidden) = if self.layer_idx != 0 {
             let norm_hidden = hidden_states.rms(
+                &self.input_layernorm_weight,
                 self.rms_norm_eps,
                 false,
                 format!("{}.input_layernorm", self.scope_name),
@@ -156,6 +167,7 @@ where
             Tensor::lookup_rms(
                 input_sequences,
                 &*self.word_embedding,
+                &self.input_layernorm_weight,
                 self.chunk_size,
                 self.sequence_length,
                 self.rms_norm_eps,
@@ -176,7 +188,7 @@ where
         };
 
         let norm_hidden_states = attention_hidden_states.rms(
-            // self.layernorm_weight.data,
+            &self.post_attention_layernorm_weight,
             self.rms_norm_eps,
             decode_only_flag,
             format!("{}.post_attention_layernorm", self.scope_name),

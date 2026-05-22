@@ -74,6 +74,7 @@ where
     pub fn lookup_rms(
         sequences_ptr: *const usize,
         word_embedding: &Tensor<T>,
+        norm_weight: &Tensor<T>,
         token_capacity: usize,
         sequence_stride: usize,
         eps: T,
@@ -92,6 +93,7 @@ where
         let operator = Operator::LookupRMSMap(LookupRMSMap::new(
             sequences_ptr,
             word_embedding.data,
+            norm_weight.data,
             output_hidden_tensor.data,
             output_normal_tensor.data,
             sequence_stride,
@@ -109,14 +111,20 @@ where
         Self::enqueue(operator);
     }
 
-    pub fn rms(&self, eps: T, decode_only_flag: bool, scope_name: String) -> Self {
+    pub fn rms(
+        &self,
+        weight: &Tensor<T>,
+        eps: T,
+        decode_only_flag: bool,
+        scope_name: String,
+    ) -> Self {
         let output_tensor = Self::output_tensor(self.shape.clone(), &scope_name);
 
         let operator = Operator::RMSMap(RMSMap::new(
             self.data,
+            weight.data,
             output_tensor.data,
-            // self.shape[0],
-            self.shape[1],
+            self.last_dim(),
             eps,
             decode_only_flag,
         ));

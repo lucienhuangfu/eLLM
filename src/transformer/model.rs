@@ -31,6 +31,7 @@ where
     T: Copy + PartialOrd,
 {
     lm_head_weight: Tensor<T>,
+    norm_weight: Tensor<T>,
     pub layers: Vec<DecoderLayer<T>>,
     rms_norm_eps: T,
     pub chunk_size: usize,
@@ -105,6 +106,10 @@ where
                 vec![config.vocab_size, config.hidden_size],
                 model_names.lm_head.clone(),
             ),
+            norm_weight: Tensor::zeros(
+                vec![config.hidden_size],
+                model_names.norm_weight.clone(),
+            ),
             layers: layers,
             chunk_size: chunk_size,
             sequence_length: sequence_length,
@@ -147,6 +152,7 @@ where
         }
 
         let norm_state = hidden_state.rms(
+            &self.norm_weight,
             self.rms_norm_eps,
             true,
             format!("{}.norm_hidden", self.scope_name),

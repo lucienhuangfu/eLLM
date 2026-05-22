@@ -522,6 +522,9 @@ where
                                 );
 
                                 let acc_row = acc.add(row_in_tile * micro_tile_cols) as *const T;
+                                for col_in_tile in 0..output_cols_this {
+                                    *out_row.add(col_in_tile) = T::default();
+                                }
 
                                 self.compute2(
                                     out_row,

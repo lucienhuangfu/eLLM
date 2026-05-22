@@ -59,13 +59,23 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
         thread_num: usize,
         thread_id: usize,
     ) {
+        if thread_id != 0 {
+            return;
+        }
+
+        for expert in 0..self.num_experts {
+            unsafe {
+                (&*self.routing.expert_counts.ptr.add(expert)).store(0, Ordering::Release);
+            }
+        }
+
         let task_size = if prefill_size == 0 || self.decode_only_flag {
             decode_size
         } else {
             prefill_size
         };
 
-        if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
+        if let Some((begin, end)) = assign(task_size, 1, 0) {
             let ptr1 = self.ptr1.ptr;
             let topk_indices_ptr = self.routing.topk_indices.ptr;
             let topk_values_ptr = self.topk_values_ptr.ptr;

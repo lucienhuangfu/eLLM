@@ -94,20 +94,11 @@ pub fn flash_attention(
 
 #[inline(always)]
 unsafe fn dot_product_avx512(q: *const f16, k: *const f16, head_size: usize) -> f16 {
-    let simd_end = head_size / 32 * 32;
-    let mut acc = _mm512_setzero_ph();
-
-    for offset in (0..simd_end).step_by(32) {
-        let q_chunk = _mm512_loadu_ph(q.add(offset));
-        let k_chunk = _mm512_loadu_ph(k.add(offset));
-        acc = _mm512_fmadd_ph(q_chunk, k_chunk, acc);
+    let mut sum = 0.0f32;
+    for index in 0..head_size {
+        sum += (*q.add(index) as f32) * (*k.add(index) as f32);
     }
-
-    let mut sum = _mm512_reduce_add_ph(acc);
-    for index in simd_end..head_size {
-        sum += *q.add(index) * *k.add(index);
-    }
-    sum
+    sum as f16
 }
 
 #[inline(always)]

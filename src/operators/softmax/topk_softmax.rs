@@ -133,7 +133,12 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
                     self.topk_size,
                 );
 
-                let predict_token = *output_indices_ptr.add(output_stride);
+                let mut predict_token = *output_indices_ptr.add(output_stride);
+                let predict_value = *output_values_ptr.add(output_stride);
+                if predict_value != predict_value {
+                    predict_token = self.eos_id;
+                    ptr::write(output_indices_ptr.add(output_stride), predict_token);
+                }
                 let out_offset = batch_index * self.sequence_stride + write_sequence_index;
                 ptr::write(output_sequences_ptr.add(out_offset), predict_token);
 

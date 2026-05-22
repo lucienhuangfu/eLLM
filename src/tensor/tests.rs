@@ -499,6 +499,10 @@ mod test {
             Tensor::<f16>::from_mem_pool(vec![kv_dim, hidden_size], "k.weight".to_string());
         let v_weight =
             Tensor::<f16>::from_mem_pool(vec![kv_dim, hidden_size], "v.weight".to_string());
+        let q_norm_weight =
+            Tensor::<f16>::from_mem_pool(vec![head_dim], "q_norm.weight".to_string());
+        let k_norm_weight =
+            Tensor::<f16>::from_mem_pool(vec![head_dim], "k_norm.weight".to_string());
 
         let position_embedding =
             Tensor::<f16>::from_mem_pool(vec![head_dim], "rope.weight".to_string());
@@ -545,6 +549,10 @@ mod test {
             v_weight
                 .data
                 .copy_from_nonoverlapping(v_data_nt.as_ptr(), v_data_nt.len());
+            for i in 0..head_dim {
+                *q_norm_weight.data.add(i) = 1.0f16;
+                *k_norm_weight.data.add(i) = 1.0f16;
+            }
         }
 
         let rope_data = rope_identity(head_dim);
@@ -566,12 +574,15 @@ mod test {
             &q_weight,
             &k_weight,
             &v_weight,
+            &q_norm_weight,
+            &k_norm_weight,
             &position_embedding,
             batch_size, // sequence_length
             1,          // batch_size
             1,          // kv_head_num
             1,          // group_num
             head_dim,
+            true,
             params,
             "model.layers.0.matmul3".to_string(),
         );
@@ -656,6 +667,10 @@ mod test {
             Tensor::<f16>::from_mem_pool(vec![kv_dim, hidden_size], "k.weight".to_string());
         let v_weight =
             Tensor::<f16>::from_mem_pool(vec![kv_dim, hidden_size], "v.weight".to_string());
+        let q_norm_weight =
+            Tensor::<f16>::from_mem_pool(vec![head_dim], "q_norm.weight".to_string());
+        let k_norm_weight =
+            Tensor::<f16>::from_mem_pool(vec![head_dim], "k_norm.weight".to_string());
 
         let position_embedding =
             Tensor::<f16>::from_mem_pool(vec![head_dim], "rope.weight".to_string());
@@ -701,6 +716,10 @@ mod test {
             v_weight
                 .data
                 .copy_from_nonoverlapping(v_data_nt.as_ptr(), v_data_nt.len());
+            for i in 0..head_dim {
+                *q_norm_weight.data.add(i) = 1.0f16;
+                *k_norm_weight.data.add(i) = 1.0f16;
+            }
         }
 
         let rope_data = rope_identity(head_dim);
@@ -722,12 +741,15 @@ mod test {
             &q_weight,
             &k_weight,
             &v_weight,
+            &q_norm_weight,
+            &k_norm_weight,
             &position_embedding,
             batch_size, // sequence_length
             1,          // batch_size
             1,          // kv_head_num
             1,          // group_num
             head_dim,
+            true,
             params,
             "model.layers.0.matmul3".to_string(),
         );

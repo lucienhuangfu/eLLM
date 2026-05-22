@@ -73,10 +73,12 @@ where
         decode_only_flag: bool,
         scope_name: String,
     ) -> Self {
-        let output_shape = vec![self.shape[0], tensor2.shape[0]];
+        let input_rows = self.row_count();
+        let output_shape = vec![input_rows, tensor2.shape[0]];
 
-        let output_to_kv = self.shape[0] > sequence_length;
+        let output_to_kv = input_rows > sequence_length;
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
+        let column = self.last_dim();
 
         let operator = unsafe {
             Operator::MatMul(MatMul::new(
@@ -85,9 +87,9 @@ where
                 output_tensor.data,
                 output_to_kv,
                 params,
-                self.shape[0],
+                input_rows,
                 tensor2.shape[0],
-                self.shape[1],
+                column,
                 decode_only_flag,
             ))
         };
@@ -104,11 +106,11 @@ where
         decode_only_flag: bool,
         tensor_name: String,
     ) -> Self {
-        let output_shape = vec![self.shape[0], tensor2.shape[0]];
+        let a_row = self.row_count();
+        let output_shape = vec![a_row, tensor2.shape[0]];
 
-        let a_row = self.shape[0];
         let b_row = tensor2.shape[0];
-        let column = self.shape[1];
+        let column = self.last_dim();
 
         let output_tensor = Self::from_mem_pool(output_shape, tensor_name);
 
@@ -135,12 +137,15 @@ where
         q_weight: &Tensor<T>,
         k_weight: &Tensor<T>,
         v_weight: &Tensor<T>,
+        q_norm_weight: &Tensor<T>,
+        k_norm_weight: &Tensor<T>,
         position_embedding: &Tensor<T>,
         sequence_length: usize,
         batch_size: usize,
         kv_head_num: usize,
         group_num: usize,
         head_dim: usize,
+        use_qk_norm: bool,
         params: MatMulParams,
         scope_name: String,
     ) -> (Self, Self, Self) {
@@ -174,12 +179,15 @@ where
             k_state.data,
             v_weight.data,
             v_state.data,
+            q_norm_weight.data,
+            k_norm_weight.data,
             position_embedding.data,
             sequence_length,
             batch_size,
             kv_head_num,
             group_num,
             head_dim,
+            use_qk_norm,
             output_rows,
             hidden_size,
             params.a_row_step_macro,
@@ -204,9 +212,9 @@ where
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        let m = self.shape[0];
-        let k = self.shape[1];
-        let output_shape = vec![self.shape[0], thread_num * topk];
+        let m = self.row_count();
+        let k = self.last_dim();
+        let output_shape = vec![m, thread_num * topk];
 
         let indice_ptr = leaked_aligned_ptr(output_shape.iter().product(), 0usize);
 

@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);
     let chat_template_path = format!("{}/chat_template.jinja", model_dir);
 
-    let sequence_length = 128;
+    let sequence_length = 32;
     let top_k = 8;
 
     let fixed_prompts = [
@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Run the model forward pass to populate the operator queue
-    let (_output_indices, _output_tensor) =
+    let (output_indices, output_tensor) =
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
 
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -122,12 +122,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.start();
 
     println!("\n=== Generated Output ===");
+    let _ = (output_indices, output_tensor);
     batch_list_ref.with(|list| {
         for (slot, record) in list.iter().enumerate() {
-            let text = batch_seq.decode_generated_text(slot, record);
-            if !text.is_empty() {
-                println!("Slot {}: {}", slot, text);
-            }
+            let generated_begin = written_lengths[slot].min(sequence_length);
+            let generated_end = record.kv_index.min(sequence_length);
+            let token_ids = batch_seq.token_ids(slot, generated_begin, generated_end);
+            let text = batch_seq.decode_token_span(slot, generated_begin, generated_end);
+            println!("Slot {} token ids: {:?}", slot, token_ids);
+            println!("Slot {} ({:?}): {}", slot, record.phase, text);
         }
     });
 

@@ -58,4 +58,26 @@ pub trait MatMulkqvTrait<T> {
     );
 
     fn compute2(&self, c_head: *mut T, rope_head: *const T, ldc: usize);
+
+    fn compute_norm_rope(
+        &self,
+        c_head: *mut T,
+        norm_weight: *const T,
+        rope_head: *const T,
+        length: usize,
+        eps: T,
+    );
+
+    fn compute_head_gemv(
+        &self,
+        a_row: *const T,
+        dst_head: *mut T,
+        packed_b: *const T,
+        head_output_panel: usize,
+        output_panel_count: usize,
+        reduction_cols: usize,
+        reduction_block_cols: usize,
+        micro_tile_cols: usize,
+        head_dim: usize,
+    );
 }

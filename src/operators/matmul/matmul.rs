@@ -233,6 +233,27 @@ where
                             && output_cols_in_block % micro_tile_cols == 0
                     );
 
+                    let mut output_col_offset = 0;
+                    while output_col_offset < output_cols_in_block {
+                        let mut input_row_offset = 0;
+                        while input_row_offset < input_rows_in_block {
+                            let output_tile = output_base.add(
+                                (input_row_start + input_row_offset) * output_row_stride
+                                    + (output_col_start + output_col_offset),
+                            );
+
+                            for row_in_tile in 0..micro_tile_rows {
+                                let output_row = output_tile.add(row_in_tile * output_row_stride);
+                                for col_in_tile in 0..micro_tile_cols {
+                                    *output_row.add(col_in_tile) = T::default();
+                                }
+                            }
+
+                            input_row_offset += micro_tile_rows;
+                        }
+                        output_col_offset += micro_tile_cols;
+                    }
+
                     let mut reduction_col_start = 0;
                     while reduction_col_start < reduction_cols {
                         let mut output_col_offset = 0;

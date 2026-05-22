@@ -77,22 +77,33 @@ where
     pub fn decode_generated_text(&self, slot_index: usize, record: &SequenceState) -> String {
         let sequence_index = record.sequence_index;
         let kv_index = record.kv_index;
-        let start = slot_index * self.col_size + sequence_index;
-        let end = slot_index * self.col_size + kv_index;
-        let capacity = self.row_size * self.col_size;
+        self.decode_token_span(slot_index, sequence_index, kv_index)
+    }
 
-        if end <= start || end > capacity {
+    pub fn decode_token_span(&self, slot_index: usize, begin: usize, end: usize) -> String {
+        let token_ids = self.token_ids(slot_index, begin, end);
+        if token_ids.is_empty() {
             return String::new();
         }
-
-        let token_ids: Vec<u32> = unsafe {
-            let token_slice = std::slice::from_raw_parts(self.sequences.add(start), end - start);
-            token_slice.iter().map(|&id| id as u32).collect()
-        };
 
         self.tokenizer
             .decode(token_ids)
             .unwrap_or_else(|_| String::from("Decode error"))
+    }
+
+    pub fn token_ids(&self, slot_index: usize, begin: usize, end: usize) -> Vec<u32> {
+        let start = slot_index * self.col_size + begin;
+        let end = slot_index * self.col_size + end;
+        let capacity = self.row_size * self.col_size;
+
+        if end <= start || end > capacity {
+            return Vec::new();
+        }
+
+        unsafe {
+            let token_slice = std::slice::from_raw_parts(self.sequences.add(start), end - start);
+            token_slice.iter().map(|&id| id as u32).collect()
+        }
     }
 }
 

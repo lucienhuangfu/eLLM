@@ -21,10 +21,13 @@ where
     num_key_value_heads: usize,
     head_dim: usize,
     scaling: T,
+    use_qk_norm: bool,
     q_weight: Tensor<T>,
     k_weight: Tensor<T>,
     v_weight: Tensor<T>,
     o_weight: Tensor<T>,
+    q_norm_weight: Tensor<T>,
+    k_norm_weight: Tensor<T>,
     scope_name: String,
 }
 
@@ -61,6 +64,7 @@ where
             num_key_value_heads: config.num_key_value_heads,
             head_dim: head_dim,
             scaling: scaling,
+            use_qk_norm: config.use_qk_norm,
             q_weight: Tensor::zeros(
                 vec![config.num_attention_heads * head_dim, config.hidden_size],
                 names.q_proj,
@@ -78,6 +82,8 @@ where
                 vec![config.hidden_size, config.num_attention_heads * head_dim],
                 names.o_proj,
             ),
+            q_norm_weight: Tensor::zeros(vec![head_dim], names.q_norm),
+            k_norm_weight: Tensor::zeros(vec![head_dim], names.k_norm),
             scope_name: names.scope,
         }
     }
@@ -101,12 +107,15 @@ where
                 &self.q_weight,
                 &self.k_weight,
                 &self.v_weight,
+                &self.q_norm_weight,
+                &self.k_norm_weight,
                 position_embedding,
                 self.sequence_length,
                 self.batch_size,
                 self.num_key_value_heads,
                 self.num_attention_heads / self.num_key_value_heads,
                 self.head_dim,
+                self.use_qk_norm,
                 MatMulParams {
                     a_row_step_macro: 3,
                     b_row_step_macro: 128,
@@ -234,6 +243,8 @@ mod test {
                 k_proj: String::from("model.layers.1.self_attn.k_proj.weight"),
                 v_proj: String::from("model.layers.1.self_attn.v_proj.weight"),
                 o_proj: String::from("model.layers.1.self_attn.o_proj.weight"),
+                q_norm: String::from("model.layers.1.self_attn.q_norm.weight"),
+                k_norm: String::from("model.layers.1.self_attn.k_norm.weight"),
             },
         );
 
@@ -302,6 +313,8 @@ mod test {
                 k_proj: String::from("model.layers.1.self_attn.k_proj.weight"),
                 v_proj: String::from("model.layers.1.self_attn.v_proj.weight"),
                 o_proj: String::from("model.layers.1.self_attn.o_proj.weight"),
+                q_norm: String::from("model.layers.1.self_attn.q_norm.weight"),
+                k_norm: String::from("model.layers.1.self_attn.k_norm.weight"),
             },
         );
 
