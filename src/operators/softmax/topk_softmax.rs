@@ -1,5 +1,5 @@
 use std::f16;
-use std::ops::{AddAssign, Sub};
+use std::ops::{AddAssign, Div, Mul, Sub};
 use std::ptr;
 
 use crate::common::num_traits::Exp;
@@ -11,6 +11,7 @@ use crate::kernel;
 use crate::operators::assign::assign;
 use crate::operators::traits::TopKSoftmaxTrait;
 use crate::runtime::{Phase, SequenceState};
+use rand::Rng;
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {
@@ -22,10 +23,25 @@ pub struct TopKSoftmax<T> {
     batch_temperature: MutPtr<T>,
     sequence_stride: usize,
     topk_size: usize,
+    top_p: T,
+    min_p: T,
+    do_sample: bool,
     eos_id: usize,
 }
 
-impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> TopKSoftmax<T> {
+impl<
+        T: Sqrt
+            + Exp
+            + Default
+            + AddAssign
+            + Div<Output = T>
+            + Mul<Output = T>
+            + Sub<Output = T>
+            + PartialOrd
+            + Copy
+            + FromNumber,
+    > TopKSoftmax<T>
+{
     pub fn new(
         input_indices_ptr: *const usize,
         input_values_ptr: *const T,
@@ -35,6 +51,9 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
         batch_temperature: *mut T,
         sequence_stride: usize,
         topk_size: usize,
+        top_p: T,
+        min_p: T,
+        do_sample: bool,
         eos_id: usize,
     ) -> Self {
         Self {
@@ -58,6 +77,9 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
             },
             sequence_stride,
             topk_size,
+            top_p,
+            min_p,
+            do_sample,
             eos_id,
         }
     }
@@ -133,7 +155,11 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
                     self.topk_size,
                 );
 
-                let predict_token = *output_indices_ptr.add(output_stride);
+                let predict_token = self.filter_and_sample(
+                    output_indices_ptr.add(output_stride),
+                    output_values_ptr.add(output_stride),
+                    self.topk_size,
+                );
                 let out_offset = batch_index * self.sequence_stride + write_sequence_index;
                 ptr::write(output_sequences_ptr.add(out_offset), predict_token);
 
@@ -146,9 +172,120 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
             }
         }
     }
+
+    unsafe fn filter_and_sample(
+        &self,
+        output_indices_ptr: *mut usize,
+        output_values_ptr: *mut T,
+        len: usize,
+    ) -> usize {
+        if len == 0 {
+            return self.eos_id;
+        }
+
+        let zero = T::default();
+        let one = T::from_f32(1.0);
+        let top_p_enabled = self.top_p > zero && self.top_p < one;
+        let min_p_enabled = self.min_p > zero;
+
+        let max_prob = *output_values_ptr;
+        let min_prob_threshold = if min_p_enabled {
+            max_prob * self.min_p
+        } else {
+            zero
+        };
+
+        let mut kept_mass = zero;
+        for i in 0..len {
+            let prob = *output_values_ptr.add(i);
+            if prob >= min_prob_threshold {
+                kept_mass += prob;
+            } else {
+                ptr::write(output_values_ptr.add(i), zero);
+            }
+        }
+
+        if kept_mass <= zero {
+            ptr::write(output_values_ptr, one);
+            for i in 1..len {
+                ptr::write(output_values_ptr.add(i), zero);
+            }
+            return *output_indices_ptr;
+        }
+
+        let mut cutoff = len;
+        if top_p_enabled {
+            let target_mass = kept_mass * self.top_p;
+            let mut cumulative = zero;
+            for i in 0..len {
+                let prob = *output_values_ptr.add(i);
+                if prob <= zero {
+                    continue;
+                }
+                cumulative += prob;
+                if cumulative >= target_mass {
+                    cutoff = i + 1;
+                    break;
+                }
+            }
+
+            if cutoff == 0 {
+                cutoff = 1;
+            }
+        }
+
+        let mut selected_mass = zero;
+        for i in 0..cutoff {
+            selected_mass += *output_values_ptr.add(i);
+        }
+
+        if selected_mass <= zero {
+            ptr::write(output_values_ptr, one);
+            for i in 1..len {
+                ptr::write(output_values_ptr.add(i), zero);
+            }
+            return *output_indices_ptr;
+        }
+
+        let inv_mass = one / selected_mass;
+        for i in 0..len {
+            let prob = if i < cutoff {
+                *output_values_ptr.add(i) * inv_mass
+            } else {
+                zero
+            };
+            ptr::write(output_values_ptr.add(i), prob);
+        }
+
+        if !self.do_sample {
+            return *output_indices_ptr;
+        }
+
+        let mut rng = rand::thread_rng();
+        let sample = T::from_f32(rng.gen::<f32>());
+        let mut cumulative = zero;
+        for i in 0..cutoff {
+            cumulative += *output_values_ptr.add(i);
+            if sample <= cumulative || i + 1 == cutoff {
+                return *output_indices_ptr.add(i);
+            }
+        }
+
+        *output_indices_ptr
+    }
 }
-impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> TopKSoftmaxTrait<T>
-    for TopKSoftmax<T>
+impl<
+        T: Sqrt
+            + Exp
+            + Default
+            + AddAssign
+            + Div<Output = T>
+            + Mul<Output = T>
+            + Sub<Output = T>
+            + PartialOrd
+            + Copy
+            + FromNumber,
+    > TopKSoftmaxTrait<T> for TopKSoftmax<T>
 {
     default fn compute(
         &self,
@@ -309,6 +446,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
+            1.0f32,
+            0.0f32,
+            false,
             eos_id,
         );
 
@@ -408,6 +548,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
+            1.0f32,
+            0.0f32,
+            false,
             eos_id,
         );
 
@@ -421,6 +564,129 @@ mod test {
         assert_ulps_eq!(output_values.as_slice(), expected.as_slice(), max_ulps = 4);
         assert_eq!(output_indices, input_indices);
         assert_eq!(output_sequences[1], 10);
+    }
+
+    #[test]
+    fn test_topk_softmax_applies_top_p_and_min_p() {
+        let sequence_length = 2;
+        let batch_size = 1;
+        let topk_size = 8;
+        let thread_num = 1;
+        let eos_id = 100;
+
+        let input_indices = vec![10usize, 11, 12, 13, 14, 15, 16, 17];
+        let input_values = vec![4.0f32, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0];
+        let mut batch_list = vec![SequenceState {
+            filling_length: 0,
+            sequence_index: 1,
+            kv_index: 1,
+            phase: Phase::Decode,
+            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }];
+
+        let decode_list = [SequenceSlice {
+            batch_index: 0,
+            sequence_index: 1,
+            token_start_index: 0,
+            length: 1,
+            last_token_flag: true,
+        }];
+
+        let mut output_values = vec![0.0f32; batch_size * topk_size];
+        let mut output_indices = vec![0usize; batch_size * topk_size];
+        let mut output_sequences = vec![usize::MAX; batch_size * sequence_length];
+        let mut batch_temperature = vec![1.0f32; batch_size];
+
+        let operator = TopKSoftmax::<f32>::new(
+            input_indices.as_ptr(),
+            input_values.as_ptr(),
+            output_indices.as_mut_ptr(),
+            output_values.as_mut_ptr(),
+            output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
+            sequence_length,
+            topk_size,
+            0.8f32,
+            0.1f32,
+            false,
+            eos_id,
+        );
+
+        operator.run(1, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
+
+        let max_val = 4.0f32;
+        let probs: Vec<f32> = input_values
+            .iter()
+            .map(|&v| (v - max_val).exp())
+            .collect();
+        let denom: f32 = probs.iter().sum();
+        let probs: Vec<f32> = probs.into_iter().map(|v| v / denom).collect();
+        let kept_mass = probs[0] + probs[1];
+        let expected0 = probs[0] / kept_mass;
+        let expected1 = probs[1] / kept_mass;
+
+        assert_ulps_eq!(output_values[0], expected0, max_ulps = 4);
+        assert_ulps_eq!(output_values[1], expected1, max_ulps = 4);
+        assert_eq!(output_values[2], 0.0);
+        assert_eq!(output_values[3], 0.0);
+        assert_eq!(output_indices, input_indices);
+        assert_eq!(output_sequences[1], 10);
+    }
+
+    #[test]
+    fn test_topk_softmax_sampling_path_uses_filtered_token() {
+        let sequence_length = 2;
+        let batch_size = 1;
+        let topk_size = 8;
+        let thread_num = 1;
+        let eos_id = 100;
+
+        let input_indices = vec![20usize, 21, 22, 23, 24, 25, 26, 27];
+        let input_values = vec![4.0f32, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0];
+        let mut batch_list = vec![SequenceState {
+            filling_length: 0,
+            sequence_index: 1,
+            kv_index: 1,
+            phase: Phase::Decode,
+            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }];
+
+        let decode_list = [SequenceSlice {
+            batch_index: 0,
+            sequence_index: 1,
+            token_start_index: 0,
+            length: 1,
+            last_token_flag: true,
+        }];
+
+        let mut output_values = vec![0.0f32; batch_size * topk_size];
+        let mut output_indices = vec![0usize; batch_size * topk_size];
+        let mut output_sequences = vec![usize::MAX; batch_size * sequence_length];
+        let mut batch_temperature = vec![1.0f32; batch_size];
+
+        let operator = TopKSoftmax::<f32>::new(
+            input_indices.as_ptr(),
+            input_values.as_ptr(),
+            output_indices.as_mut_ptr(),
+            output_values.as_mut_ptr(),
+            output_sequences.as_mut_ptr(),
+            batch_temperature.as_mut_ptr(),
+            sequence_length,
+            topk_size,
+            0.5f32,
+            0.0f32,
+            true,
+            eos_id,
+        );
+
+        operator.run(1, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
+
+        assert_eq!(output_sequences[1], 20);
+        assert_eq!(output_indices, input_indices);
+        assert!((output_values[0] - 1.0).abs() < 1e-5);
+        assert_eq!(output_values[1], 0.0);
+        assert_eq!(output_values[2], 0.0);
+        assert_eq!(output_values[3], 0.0);
     }
 
     #[test]
@@ -463,6 +729,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
+            1.0f32,
+            0.0f32,
+            false,
             eos_id,
         );
 
@@ -520,6 +789,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
+            1.0f32,
+            0.0f32,
+            false,
             eos_id,
         );
 
@@ -582,6 +854,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
+            1.0f32,
+            0.0f32,
+            false,
             eos_id,
         );
 
@@ -635,6 +910,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
+            1.0f32,
+            0.0f32,
+            false,
             eos_id,
         );
 
@@ -723,6 +1001,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
+            1.0f16,
+            0.0f16,
+            false,
             eos_id,
         );
 

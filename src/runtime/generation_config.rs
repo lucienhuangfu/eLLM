@@ -13,6 +13,8 @@ pub struct GenerationConfig {
     #[serde(default)]
     pub top_p: Option<f64>,
     #[serde(default)]
+    pub min_p: Option<f64>,
+    #[serde(default)]
     pub top_k: Option<usize>,
     #[serde(default)]
     pub repetition_penalty: Option<f64>,

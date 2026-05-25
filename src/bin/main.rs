@@ -33,7 +33,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chat_template_path = format!("{}/chat_template.jinja", model_dir);
 
     let sequence_length = 128;
-    let top_k = 8;
+    let top_k = generation_config
+        .as_ref()
+        .and_then(|cfg| cfg.top_k)
+        .unwrap_or(8);
+    let top_p = generation_config
+        .as_ref()
+        .and_then(|cfg| cfg.top_p)
+        .unwrap_or(1.0) as f32;
+    let min_p = generation_config
+        .as_ref()
+        .and_then(|cfg| cfg.min_p)
+        .unwrap_or(0.0) as f32;
+    let do_sample = generation_config
+        .as_ref()
+        .and_then(|cfg| cfg.do_sample)
+        .unwrap_or(false);
 
     let fixed_prompts = [
         "Hello from a fixed runner.",
@@ -90,6 +105,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sequence_length,
         batch_size,
         top_k,
+        top_p,
+        min_p,
+        do_sample,
         eos_id,
     );
 

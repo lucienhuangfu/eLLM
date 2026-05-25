@@ -170,6 +170,9 @@ where
         batch_temperature: *mut T,
         sequence_stride: usize,
         num_topk: usize,
+        top_p: T,
+        min_p: T,
+        do_sample: bool,
         eos_id: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
@@ -188,6 +191,9 @@ where
             batch_temperature,
             sequence_stride,
             num_topk,
+            top_p,
+            min_p,
+            do_sample,
             eos_id,
         ));
 

@@ -38,6 +38,9 @@ where
     pub batch_size: usize,
     pub hidden_size: usize,
     pub topk_size: usize,
+    pub top_p: T,
+    pub min_p: T,
+    pub do_sample: bool,
     pub eos_id: usize,
     scope_name: String,
 }
@@ -67,6 +70,9 @@ where
         sequence_length: usize,
         batch_size: usize,
         topk_size: usize,
+        top_p: T,
+        min_p: T,
+        do_sample: bool,
         eos_id: usize,
     ) -> Self {
         let model_names = model_tensor_names(config);
@@ -111,6 +117,9 @@ where
             batch_size: batch_size,
             hidden_size: config.hidden_size,
             topk_size: topk_size,
+            top_p,
+            min_p,
+            do_sample,
             eos_id: eos_id,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
@@ -171,6 +180,9 @@ where
             batch_temperature,
             self.sequence_length,
             self.topk_size,
+            self.top_p,
+            self.min_p,
+            self.do_sample,
             self.eos_id,
             format!("{}.softmax", self.scope_name),
         );
@@ -264,6 +276,9 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
+            1.0f32,
+            0.0f32,
+            false,
             eos_id,
         );
 
@@ -340,6 +355,9 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
+            1.0f16,
+            0.0f16,
+            false,
             eos_id,
         );
 
@@ -411,6 +429,9 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
+            1.0f32,
+            0.0f32,
+            false,
             eos_id,
         );
 
@@ -459,6 +480,9 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
+            1.0f16,
+            0.0f16,
+            false,
             eos_id,
         );
 

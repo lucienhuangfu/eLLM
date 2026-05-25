@@ -525,6 +525,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
+            1.0f32,
+            0.0f32,
+            false,
             VOCAB_SIZE - 1,
         ));
 
@@ -849,6 +852,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
+            1.0f32,
+            0.0f32,
+            false,
             VOCAB_SIZE - 1,
         ));
 
@@ -1058,6 +1064,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
+            1.0f32,
+            0.0f32,
+            false,
             VOCAB_SIZE - 1,
         ));
 
@@ -1212,6 +1221,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
+            1.0f32,
+            0.0f32,
+            false,
             VOCAB_SIZE - 1,
         ));
 
@@ -1385,6 +1397,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
+            1.0f32,
+            0.0f32,
+            false,
             eos_id,
         ));
 
