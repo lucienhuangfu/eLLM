@@ -70,7 +70,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("failed to write prompt: {}", e))?;
         written_lengths.push(write_len);
     }
-
     let position_vec = RotaryEmbedding::new(
         config.head_dim,
         config.rotary_dim,

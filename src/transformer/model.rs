@@ -136,11 +136,7 @@ where
         );
 
         for (i, layer_module) in self.layers.iter().enumerate() {
-            let decode_only_flag = if i == (self.layers.len() - 1) {
-                true
-            } else {
-                false
-            };
+            let decode_only_flag = i == (self.layers.len() - 1);
 
             hidden_state = layer_module.forward(
                 &hidden_state,
