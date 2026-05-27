@@ -102,7 +102,11 @@ impl BatchScheduler {
     }
 
     pub fn new(sequence_length: usize, batch_size: usize, thread_num: usize) -> Self {
-        Self::build(sequence_length, batch_size, thread_num)
+        Self::build(sequence_length, batch_size, thread_num.max(1))
+    }
+
+    pub fn thread_num(&self) -> usize {
+        self.thread_num
     }
 
     fn schedule_decode_round(&mut self, decode_candidates: Vec<(usize, usize)>) -> usize {

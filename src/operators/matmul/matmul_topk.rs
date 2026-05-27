@@ -35,8 +35,8 @@ pub struct MatMulTopK<T> {
     // 输入、权重以及每线程 top-k 输出缓存。
     ptr1: ConstPtr<T>,         // A[input_rows, reduction_cols]
     ptr2: ConstPtr<T>,         // B_nt[output_cols, reduction_cols]
-    indice_ptr: MutPtr<usize>, // Top-k index buffer. top-k 下标缓存：[batch_max][thread_max][TOPK]
-    value_ptr: MutPtr<T>,      // Top-k value buffer. top-k 分数缓存：[batch_max][thread_max][TOPK]
+    indice_ptr: MutPtr<usize>, // Top-k index buffer. top-k 下标缓存：[batch_max][thread_num][TOPK]
+    value_ptr: MutPtr<T>,      // Top-k value buffer. top-k 分数缓存：[batch_max][thread_num][TOPK]
 
     // Maximum dimensions.
     // 最大维度。
@@ -51,7 +51,7 @@ pub struct MatMulTopK<T> {
 
     // Internal thread capacity used by scratch tiles and heaps.
     // 内部线程容量，用于绑定 scratch tile 和 heap。
-    thread_max: usize,
+    thread_num: usize,
 
     // Weight panels packed once in new().
     // 权重 panel 在 new() 中提前 pack。
@@ -96,8 +96,9 @@ where
         column_step_macro: usize,
         a_row_step_micro: usize,
         b_row_step_micro: usize,
-        batch_max: usize,
         topk: usize,
+        thread_num: usize,
+        batch_max: usize,
     ) -> Self {
         let params = MatMulParams {
             a_row_step_macro,
@@ -111,9 +112,7 @@ where
         let n_max = b_row;
         let k_max = column;
 
-        // Detect thread capacity once; run() only validates against it.
-        // 只在 new() 中确定线程容量；run() 中只做校验。
-        let thread_max = Self::detect_threads();
+        let thread_num = thread_num.max(1);
 
         let reduction_block_cols = params.column_step_macro.max(1);
         let micro_tile_cols = params.b_row_step_micro.max(1);
@@ -129,18 +128,18 @@ where
         );
 
         let c_tile_stride_elems = micro_tile_rows * micro_tile_cols;
-        let c_tile_pool_len = thread_max * c_tile_stride_elems;
+        let c_tile_pool_len = thread_num * c_tile_stride_elems;
         let c_tile_pool: Vec<T> = vec![T::default(); c_tile_pool_len];
 
         // Bind heaps directly to caller-provided output buffers.
         // heap 直接绑定到外部传入的输出 buffer。
         let stride_thread = topk;
-        let stride_batch = thread_max * topk;
+        let stride_batch = thread_num * topk;
 
-        let mut heaps_vec: Vec<FixedMinHeap<T>> = Vec::with_capacity(batch_max * thread_max);
+        let mut heaps_vec: Vec<FixedMinHeap<T>> = Vec::with_capacity(batch_max * thread_num);
 
         for b in 0..batch_max {
-            for tid in 0..thread_max {
+            for tid in 0..thread_num {
                 let values_base = value_ptr.add(b * stride_batch + tid * stride_thread);
                 let indices_base = indice_ptr.add(b * stride_batch + tid * stride_thread);
                 heaps_vec.push(FixedMinHeap::new(values_base, indices_base, topk));
@@ -160,7 +159,7 @@ where
             params,
             topk,
             batch_max,
-            thread_max,
+            thread_num,
 
             packed_b,
             packed_panel_stride,
@@ -174,7 +173,7 @@ where
 
     #[inline(always)]
     fn thread_c_tile_ptr(&self, thread_id: usize) -> *mut T {
-        debug_assert!(thread_id < self.thread_max);
+        debug_assert!(thread_id < self.thread_num);
         unsafe {
             self.c_tile_pool
                 .as_ptr()
@@ -187,8 +186,8 @@ where
     #[inline(always)]
     fn heap_for(&self, batch: usize, thread_id: usize) -> *mut FixedMinHeap<T> {
         debug_assert!(batch < self.batch_max);
-        debug_assert!(thread_id < self.thread_max);
-        let idx = batch * self.thread_max + thread_id;
+        debug_assert!(thread_id < self.thread_num);
+        let idx = batch * self.thread_num + thread_id;
         debug_assert!(idx < self.heaps.len());
         unsafe { self.heaps.as_ptr().add(idx) as *mut FixedMinHeap<T> }
     }
@@ -265,7 +264,7 @@ where
 
             assert!(active_input_rows <= self.batch_max);
 
-            assert!(thread_num <= self.thread_max);
+            assert!(thread_num <= self.thread_num);
             assert!(thread_id < thread_num);
 
             let output_cols = self.b_row;
@@ -380,8 +379,8 @@ where
     }
 
     #[inline]
-    pub fn thread_max(&self) -> usize {
-        self.thread_max
+    pub fn thread_num(&self) -> usize {
+        self.thread_num
     }
 }
 
@@ -470,7 +469,7 @@ mod tests {
         n: usize,
         topk: usize,
         cpu_num: usize,
-        thread_max: usize,
+        thread_num: usize,
         a: &[f16],
         b_nt: &[f16], // ✅ N×K
         indices_buf: &[usize],
@@ -496,7 +495,7 @@ mod tests {
             // (3) 合并所有线程局部 topk
             let mut merged: Vec<(usize, f32)> = Vec::with_capacity(cpu_num * topk);
             for tid in 0..cpu_num {
-                let offset = i * (thread_max * topk) + tid * topk;
+                let offset = i * (thread_num * topk) + tid * topk;
                 for r in 0..topk {
                     merged.push((indices_buf[offset + r], values_buf[offset + r] as f32));
                 }
@@ -543,8 +542,8 @@ mod tests {
         }
 
         unsafe {
-            let thread_max = MatMulTopK::<f16>::detect_threads();
-            let buf_len = M * thread_max * TOPK;
+            let thread_num = MatMulTopK::<f16>::detect_threads();
+            let buf_len = M * thread_num * TOPK;
             let mut indices_buf = vec![0usize; buf_len];
             let mut values_buf = vec![0.0 as f16; buf_len];
 
@@ -561,11 +560,12 @@ mod tests {
                 64,
                 3,
                 32,
-                M,
                 TOPK,
+                thread_num,
+                M,
             );
 
-            let used = cpu_num.min(runner.thread_max());
+            let used = cpu_num.min(runner.thread_num());
             for tid in 0..used {
                 runner.run(M, 0, used, tid);
             }
@@ -576,7 +576,7 @@ mod tests {
                 N,
                 TOPK,
                 used,
-                runner.thread_max(),
+                runner.thread_num(),
                 &a,
                 &b_nt,
                 &indices_buf,
@@ -612,8 +612,8 @@ mod tests {
         }
 
         unsafe {
-            let thread_max = MatMulTopK::<f16>::detect_threads();
-            let buf_len = M * thread_max * TOPK;
+            let thread_num = MatMulTopK::<f16>::detect_threads();
+            let buf_len = M * thread_num * TOPK;
             let mut indices_buf = vec![0usize; buf_len];
             let mut values_buf = vec![0.0 as f16; buf_len];
 
@@ -630,11 +630,12 @@ mod tests {
                 64,
                 3,
                 32,
-                M,
                 TOPK,
+                thread_num,
+                M,
             );
 
-            let used = cpu_num.min(runner.thread_max());
+            let used = cpu_num.min(runner.thread_num());
             for tid in 0..used {
                 runner.run(M, 0, used, tid);
             }
@@ -645,7 +646,7 @@ mod tests {
                 N,
                 TOPK,
                 used,
-                runner.thread_max(),
+                runner.thread_num(),
                 &a,
                 &b_nt,
                 &indices_buf,
@@ -679,8 +680,8 @@ mod tests {
         }
 
         unsafe {
-            let thread_max = MatMulTopK::<f16>::detect_threads();
-            let buf_len = M * thread_max * TOPK;
+            let thread_num = MatMulTopK::<f16>::detect_threads();
+            let buf_len = M * thread_num * TOPK;
             let mut indices_buf = vec![0usize; buf_len];
             let mut values_buf = vec![0.0 as f16; buf_len];
 
@@ -697,11 +698,12 @@ mod tests {
                 64,
                 3,
                 32,
-                M,
                 TOPK,
+                thread_num,
+                M,
             );
 
-            let used = cpu_num.min(runner.thread_max());
+            let used = cpu_num.min(runner.thread_num());
             for tid in 0..used {
                 runner.run(M, 0, used, tid);
             }
@@ -712,7 +714,7 @@ mod tests {
                 N,
                 TOPK,
                 used,
-                runner.thread_max(),
+                runner.thread_num(),
                 &a,
                 &b_nt,
                 &indices_buf,
@@ -751,10 +753,10 @@ mod tests {
         }
 
         unsafe {
-            let thread_max = MatMulTopK::<f16>::detect_threads();
+            let thread_num = MatMulTopK::<f16>::detect_threads();
 
             // indices/values buffer 按 batch_max=M_MAX 分配（capacity），但这次 run 只会写前 M_RUN
-            let buf_len = M_MAX * thread_max * TOPK;
+            let buf_len = M_MAX * thread_num * TOPK;
             let mut indices_buf = vec![0usize; buf_len];
             let mut values_buf = vec![0.0f16; buf_len];
 
@@ -771,11 +773,12 @@ mod tests {
                 64,    // KC
                 3,     // MR
                 32,    // NR
-                M_MAX, // batch_max (capacity)
                 TOPK,
+                thread_num,
+                M_MAX, // batch_max (capacity)
             );
 
-            let used = cpu_num.min(runner.thread_max());
+            let used = cpu_num.min(runner.thread_num());
             for tid in 0..used {
                 runner.run(M_RUN, 0, used, tid); // batch_size=7
             }
@@ -788,7 +791,7 @@ mod tests {
             for i in 0..M_RUN {
                 let mut merged: Vec<(usize, f32)> = Vec::with_capacity(used * TOPK);
                 for tid in 0..used {
-                    let offset = i * (thread_max * TOPK) + tid * TOPK;
+                    let offset = i * (thread_num * TOPK) + tid * TOPK;
                     for r in 0..TOPK {
                         merged.push((indices_buf[offset + r], values_buf[offset + r] as f32));
                     }

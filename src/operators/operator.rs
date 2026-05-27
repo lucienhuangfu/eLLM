@@ -204,6 +204,7 @@ mod test {
     use crate::common::sequence_slice::SequenceSlice;
     use crate::runtime::{BatchScheduler, Phase, SequenceState};
     use approx::assert_ulps_eq;
+    use std::mem::size_of;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use tokio::sync::Notify;
@@ -217,6 +218,11 @@ mod test {
         num_topk: usize,
     ) -> ExpertRouting<T> {
         unsafe { crate::common::expert_routing::empty_routing(num_experts, num_tokens, num_topk) }
+    }
+
+    fn top_k_simd_for<T>(top_k: usize) -> usize {
+        let simd_width = if size_of::<T>() == 2 { 32 } else { 8 };
+        top_k.div_ceil(simd_width) * simd_width
     }
 
     fn dense_routing(
@@ -525,10 +531,12 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
+            top_k_simd_for::<f32>(TOPK),
+            THREAD_NUM,
             1.0f32,
             0.0f32,
             false,
-            VOCAB_SIZE - 1,
+            vec![VOCAB_SIZE - 1],
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -852,10 +860,12 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
+            top_k_simd_for::<f32>(TOPK),
+            THREAD_NUM,
             1.0f32,
             0.0f32,
             false,
-            VOCAB_SIZE - 1,
+            vec![VOCAB_SIZE - 1],
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -1064,10 +1074,12 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
+            top_k_simd_for::<f32>(TOPK),
+            THREAD_NUM,
             1.0f32,
             0.0f32,
             false,
-            VOCAB_SIZE - 1,
+            vec![VOCAB_SIZE - 1],
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -1221,10 +1233,12 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
+            top_k_simd_for::<f32>(TOPK),
+            THREAD_NUM,
             1.0f32,
             0.0f32,
             false,
-            VOCAB_SIZE - 1,
+            vec![VOCAB_SIZE - 1],
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -1331,12 +1345,12 @@ mod test {
     #[test]
     fn test_topk_softmax() {
         let batch_size = 2;
-        let topk_size = 8;
+        let top_k = 8;
         let thread_num = 4;
         let prefill_size = batch_size;
         let decode_size = 1;
 
-        let total_candidates_per_item = topk_size * thread_num;
+        let total_candidates_per_item = top_k * thread_num;
         let input_len = batch_size * total_candidates_per_item;
 
         let mut input_values = Vec::<f32>::with_capacity(input_len);
@@ -1349,8 +1363,8 @@ mod test {
             }
         }
 
-        let mut output_values = vec![0.0f32; batch_size * topk_size];
-        let mut output_indices = vec![0usize; batch_size * topk_size];
+        let mut output_values = vec![0.0f32; batch_size * top_k];
+        let mut output_indices = vec![0usize; batch_size * top_k];
         let sequence_length = 1;
         let mut output_sequences = vec![0usize; batch_size * sequence_length];
         let eos_id = 0usize;
@@ -1396,11 +1410,12 @@ mod test {
             output_sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
             sequence_length,
-            topk_size,
+            top_k,
+            top_k_simd_for::<f32>(top_k),
             1.0f32,
             0.0f32,
             false,
-            eos_id,
+            vec![eos_id],
         ));
 
         for i in 0..thread_num {
@@ -1430,7 +1445,7 @@ mod test {
                 .collect();
             paired.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
 
-            let topk = &paired[..topk_size];
+            let topk = &paired[..top_k];
             let max_val = topk[0].0;
             let denom: f32 = topk.iter().map(|(v, _)| (v - max_val).exp()).sum();
 
@@ -1440,8 +1455,8 @@ mod test {
                 .collect();
             let expected_indices: Vec<usize> = topk.iter().map(|(_, idx)| *idx).collect();
 
-            let output_vals_slice = &output_values[i * topk_size..(i + 1) * topk_size];
-            let output_idx_slice = &output_indices[i * topk_size..(i + 1) * topk_size];
+            let output_vals_slice = &output_values[i * top_k..(i + 1) * top_k];
+            let output_idx_slice = &output_indices[i * top_k..(i + 1) * top_k];
 
             assert_ulps_eq!(output_vals_slice, expected_probs.as_slice(), max_ulps = 4);
             assert_eq!(output_idx_slice, expected_indices.as_slice());
@@ -1611,8 +1626,8 @@ mod test {
         let sum_base: f32 = (0..K).map(|kk| (kk as f32) * 1e-6).sum();
 
         unsafe {
-            let thread_max = crate::operators::routing::MatMulTopK::<f16>::detect_threads();
-            let buf_len = M * thread_max * TOPK;
+            let thread_num = crate::operators::routing::MatMulTopK::<f16>::detect_threads();
+            let buf_len = M * thread_num * TOPK;
             let mut indices_buf = vec![0usize; buf_len];
             let mut values_buf = vec![0.0f16; buf_len];
 
@@ -1633,7 +1648,7 @@ mod test {
                 TOPK,
             );
 
-            let used_cpu = num_cpus::get().min(runner.thread_max()).min(8).max(1);
+            let used_cpu = num_cpus::get().min(runner.thread_num()).min(8).max(1);
             let op = Operator::MatMulTopK(runner);
 
             for tid in 0..used_cpu {
@@ -1643,7 +1658,7 @@ mod test {
             for row in 0..M {
                 let mut merged: Vec<(usize, f32)> = Vec::with_capacity(used_cpu * TOPK);
                 for tid in 0..used_cpu {
-                    let off = row * (thread_max * TOPK) + tid * TOPK;
+                    let off = row * (thread_num * TOPK) + tid * TOPK;
                     for r in 0..TOPK {
                         merged.push((indices_buf[off + r], values_buf[off + r] as f32));
                     }
@@ -1707,8 +1722,8 @@ mod test {
         let sum_base: f32 = (0..K).map(|kk| (kk as f32) * 5e-7).sum();
 
         unsafe {
-            let thread_max = crate::operators::routing::MatMulTopK::<f16>::detect_threads();
-            let buf_len = M * thread_max * TOPK;
+            let thread_num = crate::operators::routing::MatMulTopK::<f16>::detect_threads();
+            let buf_len = M * thread_num * TOPK;
             let mut indices_buf = vec![0usize; buf_len];
             let mut values_buf = vec![0.0f16; buf_len];
 
@@ -1729,7 +1744,7 @@ mod test {
                 TOPK,
             );
 
-            let used_cpu = num_cpus::get().min(runner.thread_max()).min(16).max(1);
+            let used_cpu = num_cpus::get().min(runner.thread_num()).min(16).max(1);
             let op = Operator::MatMulTopK(runner);
 
             for tid in 0..used_cpu {
@@ -1739,7 +1754,7 @@ mod test {
             for row in 0..M {
                 let mut merged: Vec<(usize, f32)> = Vec::with_capacity(used_cpu * TOPK);
                 for tid in 0..used_cpu {
-                    let off = row * (thread_max * TOPK) + tid * TOPK;
+                    let off = row * (thread_num * TOPK) + tid * TOPK;
                     for r in 0..TOPK {
                         merged.push((indices_buf[off + r], values_buf[off + r] as f32));
                     }

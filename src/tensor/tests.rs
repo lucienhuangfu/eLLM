@@ -240,10 +240,12 @@ mod test {
             batch_temperature.as_mut_ptr(),
             1,
             num_topk,
+            num_topk,
+            thread_num,
             1.0f32,
             0.0f32,
             false,
-            eos_id,
+            vec![eos_id],
             "model.layers.0.topk_softmax".to_string(),
         );
 
@@ -396,10 +398,12 @@ mod test {
             batch_temperature.as_mut_ptr(),
             1,
             num_topk,
+            if std::mem::size_of::<f16>() == 2 { 32 } else { 8 },
+            thread_num,
             1.0f16,
             0.0f16,
             false,
-            eos_id,
+            vec![eos_id],
             "model.layers.0.topk_softmax".to_string(),
         );
 
@@ -854,17 +858,19 @@ mod test {
             a_row_step_micro: 3,
             b_row_step_micro: 32,
         };
+        let thread_num = avail_threads();
 
         let (indice_ptr, value_tensor) = input_tensor.matmul_local_topk(
             &weight_tensor,
             params,
             topk,
+            thread_num,
             "model.layers.0.matmul_local_topk".to_string(),
         );
 
         let op = take_single_f16_operator(|op| matches!(op, Operator::MatMulTopK(_)));
         let buffer_thread_num = match &op {
-            Operator::MatMulTopK(operator) => operator.thread_max(),
+            Operator::MatMulTopK(operator) => operator.thread_num(),
             _ => unreachable!(),
         };
         let run_thread_num = avail_threads().min(buffer_thread_num).max(1);
@@ -968,17 +974,19 @@ mod test {
             a_row_step_micro: 3,
             b_row_step_micro: 32,
         };
+        let thread_num = avail_threads();
 
         let (indice_ptr, value_tensor) = input_tensor.matmul_local_topk(
             &weight_tensor,
             params,
             topk,
+            thread_num,
             "model.layers.0.matmul_local_topk".to_string(),
         );
 
         let op = take_single_f16_operator(|op| matches!(op, Operator::MatMulTopK(_)));
         let buffer_thread_num = match &op {
-            Operator::MatMulTopK(operator) => operator.thread_max(),
+            Operator::MatMulTopK(operator) => operator.thread_num(),
             _ => unreachable!(),
         };
         let run_thread_num = avail_threads().min(buffer_thread_num).max(1);

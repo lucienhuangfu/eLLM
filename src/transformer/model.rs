@@ -37,11 +37,13 @@ where
     pub sequence_length: usize,
     pub batch_size: usize,
     pub hidden_size: usize,
-    pub topk_size: usize,
+    pub top_k: usize,
+    pub thread_num: usize,
+    pub top_k_simd: usize,
     pub top_p: T,
     pub min_p: T,
     pub do_sample: bool,
-    pub eos_id: usize,
+    pub eos_token_id_list: Vec<usize>,
     scope_name: String,
 }
 
@@ -69,11 +71,13 @@ where
         chunk_size: usize,
         sequence_length: usize,
         batch_size: usize,
-        topk_size: usize,
+        top_k: usize,
+        thread_num: usize,
+        top_k_simd: usize,
         top_p: T,
         min_p: T,
         do_sample: bool,
-        eos_id: usize,
+        eos_token_id_list: Vec<usize>,
     ) -> Self {
         let model_names = model_tensor_names(config);
         let scope_name = model_names.scope.clone();
@@ -116,11 +120,13 @@ where
             sequence_length: sequence_length,
             batch_size: batch_size,
             hidden_size: config.hidden_size,
-            topk_size: topk_size,
+            top_k: top_k,
+            thread_num: thread_num.max(1),
+            top_k_simd,
             top_p,
             min_p,
             do_sample,
-            eos_id: eos_id,
+            eos_token_id_list: eos_token_id_list,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
         }
@@ -170,7 +176,8 @@ where
                 a_row_step_micro: 3,
                 b_row_step_micro: 32,
             },
-            self.topk_size,
+            self.top_k,
+            self.thread_num,
             format!("{}.lm_head", self.scope_name),
         );
 
@@ -179,11 +186,13 @@ where
             input_sequences,
             batch_temperature,
             self.sequence_length,
-            self.topk_size,
+            self.top_k,
+            self.top_k_simd,
+            self.thread_num,
             self.top_p,
             self.min_p,
             self.do_sample,
-            self.eos_id,
+            self.eos_token_id_list.clone(),
             format!("{}.softmax", self.scope_name),
         );
 
@@ -205,6 +214,12 @@ mod test {
     use crate::mem_mgr::allocator::AlignedBox;
     use crate::runtime::{Phase, SequenceState};
     use std::collections::HashMap;
+    use std::mem::size_of;
+
+    fn top_k_simd_for<T>(top_k: usize) -> usize {
+        let simd_width = if size_of::<T>() == 2 { 32 } else { 8 };
+        top_k.div_ceil(simd_width) * simd_width
+    }
 
     fn build_batch_list(batch_size: usize) -> Vec<SequenceState> {
         (0..batch_size)
@@ -250,7 +265,7 @@ mod test {
         // let cpu_num =  thread::available_parallelism().unwrap().get();
         let sequence_length = 128;
         let batch_size = 3;
-        let topk_size = 8;
+        let top_k = 8;
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
@@ -266,7 +281,7 @@ mod test {
             config.rope_scaling.clone(),
         )
         .forward::<f32>();
-        let eos_id = 151643;
+        let eos_token_id_list = vec![151643];
         f32::init_global(HashMap::new());
         let mut batch_temperature = vec![1.0f32; batch_size];
         let mut model = Model::<f32>::new(
@@ -275,11 +290,13 @@ mod test {
             sequence_length, // chunk_size
             sequence_length, // sequence_length
             batch_size,
-            topk_size,
+            top_k,
+            thread_num,
+            top_k_simd_for::<f32>(top_k),
             1.0f32,
             0.0f32,
             false,
-            eos_id,
+            eos_token_id_list.clone(),
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
@@ -329,7 +346,7 @@ mod test {
 
         let sequence_length = 128;
         let batch_size = 3;
-        let topk_size = 8;
+        let top_k = 8;
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
@@ -345,7 +362,7 @@ mod test {
             config.rope_scaling.clone(),
         )
         .forward::<f16>();
-        let eos_id = 151643;
+        let eos_token_id_list = vec![151643];
         f16::init_global(HashMap::new());
         let mut batch_temperature = vec![1.0f16; batch_size];
         let mut model = Model::<f16>::new(
@@ -354,11 +371,13 @@ mod test {
             sequence_length, // chunk_size
             sequence_length, // sequence_length
             batch_size,
-            topk_size,
+            top_k,
+            thread_num,
+            top_k_simd_for::<f16>(top_k),
             1.0f16,
             0.0f16,
             false,
-            eos_id,
+            eos_token_id_list.clone(),
         );
 
         let mut sequences_box =
@@ -396,7 +415,10 @@ mod test {
     fn test_qwen3_06b_creation() {
         let sequence_length = 128;
         let batch_size = 1;
-        let topk_size = 8;
+        let top_k = 8;
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
 
         let config_path = r"models/Qwen3-0.6B/config.json";
         if !std::path::Path::new(config_path).exists() {
@@ -415,7 +437,7 @@ mod test {
         )
         .forward::<f32>();
 
-        let eos_id = config.eos_token_id;
+        let eos_token_id_list = vec![config.eos_token_id];
         // Initialize global mem pool with dummy parameters instead of empty
         let mut params = HashMap::new();
         // Just put a dummy small vec for one key so parameters isn't empty
@@ -428,18 +450,20 @@ mod test {
             sequence_length, // chunk_size
             sequence_length, // sequence_length
             batch_size,
-            topk_size,
+            top_k,
+            thread_num,
+            top_k_simd_for::<f32>(top_k),
             1.0f32,
             0.0f32,
             false,
-            eos_id,
+            eos_token_id_list.clone(),
         );
 
         assert_eq!(model.layers.len(), config.num_hidden_layers);
         assert_eq!(model.hidden_size, config.hidden_size);
         assert_eq!(model.batch_size, batch_size);
-        assert_eq!(model.topk_size, topk_size);
-        assert_eq!(model.eos_id, eos_id);
+        assert_eq!(model.top_k, top_k);
+        assert_eq!(model.eos_token_id_list, eos_token_id_list);
     }
 
     #[test]
@@ -450,7 +474,10 @@ mod test {
         }
         let sequence_length = 128;
         let batch_size = 1;
-        let topk_size = 8;
+        let top_k = 8;
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
 
         let config_path = r"models/Qwen3-0.6B/config.json";
         if !std::path::Path::new(config_path).exists() {
@@ -469,7 +496,7 @@ mod test {
         )
         .forward::<f16>();
 
-        let eos_id = config.eos_token_id;
+        let eos_token_id_list = vec![config.eos_token_id];
         // Initialize global mem pool with empty parameters
         f16::init_global(HashMap::new());
 
@@ -479,17 +506,19 @@ mod test {
             sequence_length, // chunk_size
             sequence_length, // sequence_length
             batch_size,
-            topk_size,
+            top_k,
+            thread_num,
+            top_k_simd_for::<f16>(top_k),
             1.0f16,
             0.0f16,
             false,
-            eos_id,
+            eos_token_id_list.clone(),
         );
 
         assert_eq!(model.layers.len(), config.num_hidden_layers);
         assert_eq!(model.hidden_size, config.hidden_size);
         assert_eq!(model.batch_size, batch_size);
-        assert_eq!(model.topk_size, topk_size);
-        assert_eq!(model.eos_id, eos_id);
+        assert_eq!(model.top_k, top_k);
+        assert_eq!(model.eos_token_id_list, eos_token_id_list);
     }
 }

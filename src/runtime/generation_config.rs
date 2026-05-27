@@ -23,11 +23,14 @@ pub struct GenerationConfig {
     #[serde(default)]
     pub num_beams: Option<usize>,
     #[serde(default)]
-    pub eos_token_id: Option<usize>,
+    #[serde(alias = "eos_token_id")]
+    pub eos_token_id_list: Option<Vec<usize>>,
     #[serde(default)]
     pub pad_token_id: Option<usize>,
     #[serde(default)]
     pub bos_token_id: Option<usize>,
+    #[serde(default)]
+    pub thread_num: Option<usize>,
     #[serde(default)]
     pub stop: Option<Vec<String>>,
     #[serde(flatten)]
@@ -35,6 +38,29 @@ pub struct GenerationConfig {
 }
 
 impl GenerationConfig {
+    #[inline]
+    pub fn align_top_k(top_k: usize, simd_width: usize) -> usize {
+        if simd_width == 0 {
+            top_k
+        } else {
+            top_k.div_ceil(simd_width) * simd_width
+        }
+    }
+
+    #[inline]
+    pub fn top_k_simd(&self, default_top_k: usize, simd_width: usize) -> usize {
+        let top_k = self.top_k.unwrap_or(default_top_k);
+        Self::align_top_k(top_k, simd_width)
+    }
+
+    #[inline]
+    pub fn thread_num(&self) -> usize {
+        self.thread_num
+            .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
+            .unwrap_or(1)
+            .max(1)
+    }
+
     pub fn load_from_file<P: AsRef<Path>>(filename: P) -> Result<Self, Box<dyn std::error::Error>> {
         let file = File::open(filename)?;
         let reader = BufReader::new(file);

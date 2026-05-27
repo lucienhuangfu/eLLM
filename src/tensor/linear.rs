@@ -198,14 +198,13 @@ where
         tensor2: &Tensor<T>,
         params: MatMulParams,
         topk: usize,
+        thread_num: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
         let n = tensor2.shape[0];
-        let thread_num = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
         let m = self.shape[0];
         let k = self.shape[1];
+        let thread_num = thread_num.max(1);
         let output_shape = vec![self.shape[0], thread_num * topk];
 
         let indice_ptr = leaked_aligned_ptr(output_shape.iter().product(), 0usize);
@@ -227,8 +226,9 @@ where
                 params.column_step_macro,
                 params.a_row_step_micro,
                 params.b_row_step_micro,
-                m,
                 topk,
+                thread_num,
+                m,
             ))
         };
 

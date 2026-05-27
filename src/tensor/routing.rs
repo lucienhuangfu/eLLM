@@ -170,10 +170,12 @@ where
         batch_temperature: *mut T,
         sequence_stride: usize,
         num_topk: usize,
+        top_k_simd: usize,
+        thread_num: usize,
         top_p: T,
         min_p: T,
         do_sample: bool,
-        eos_id: usize,
+        eos_token_id_list: Vec<usize>,
         scope_name: String,
     ) -> (*const usize, Self) {
         let output_shape = vec![self.shape[0], num_topk];
@@ -191,10 +193,12 @@ where
             batch_temperature,
             sequence_stride,
             num_topk,
+            top_k_simd,
+            thread_num,
             top_p,
             min_p,
             do_sample,
-            eos_id,
+            eos_token_id_list,
         ));
 
         Self::enqueue(operator);

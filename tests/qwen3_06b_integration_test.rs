@@ -5,6 +5,7 @@ use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::runtime::{model_loader::SafeTensorsLoader, Config};
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
+use std::mem::size_of;
 
 #[test]
 #[ignore = "Requires models/Qwen3-0.6B to be present"]
@@ -27,7 +28,8 @@ fn test_define_and_load_qwen3_06b() {
 
     let sequence_length = 128;
     let batch_size = 1;
-    let topk_size = 8;
+    let top_k = 8;
+    let top_k_simd = if size_of::<f32>() == 2 { 32 } else { 8 };
     let eos_id = config.eos_token_id;
 
     println!("Loading model weights from safetensors...");
@@ -45,8 +47,12 @@ fn test_define_and_load_qwen3_06b() {
         sequence_length, // chunk_size
         sequence_length, // sequence_length
         batch_size,
-        topk_size,
-        eos_id,
+        top_k,
+        top_k_simd,
+        1.0f32,
+        0.0f32,
+        false,
+        vec![eos_id],
     );
 
     println!("Model defined successfully");
@@ -86,7 +92,8 @@ fn test_define_and_load_qwen3_06b_f16() {
 
     let sequence_length = 128;
     let batch_size = 1;
-    let topk_size = 8;
+    let top_k = 8;
+    let top_k_simd = if size_of::<f16>() == 2 { 32 } else { 8 };
     let eos_id = config.eos_token_id;
 
     println!("Loading model weights from safetensors...");
@@ -104,8 +111,12 @@ fn test_define_and_load_qwen3_06b_f16() {
         sequence_length, // chunk_size
         sequence_length, // sequence_length
         batch_size,
-        topk_size,
-        eos_id,
+        top_k,
+        top_k_simd,
+        1.0f16,
+        0.0f16,
+        false,
+        vec![eos_id],
     );
 
     println!("Model defined successfully");

@@ -11,6 +11,7 @@ use ellm::runtime::{
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
+use std::mem::size_of;
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,6 +38,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .and_then(|cfg| cfg.top_k)
         .unwrap_or(8);
+    let thread_num = generation_config
+        .as_ref()
+        .map_or_else(
+            || std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+            |cfg| cfg.thread_num(),
+        )
+        .max(1);
+    let top_k_simd = generation_config.as_ref().map_or_else(
+        || GenerationConfig::align_top_k(top_k, if size_of::<f16>() == 2 { 32 } else { 8 }),
+        |cfg| cfg.top_k_simd(top_k, if size_of::<f16>() == 2 { 32 } else { 8 }),
+    );
     let top_p = generation_config
         .as_ref()
         .and_then(|cfg| cfg.top_p)
@@ -95,8 +107,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .forward::<f16>();
 
-    // Use eos id from model config or default to known value
-    let eos_id = config.eos_token_id;
+    // Use eos token ids from generation config when available, otherwise fall back to model config.
+    let eos_token_id_list = generation_config
+        .as_ref()
+        .and_then(|cfg| cfg.eos_token_id_list.clone())
+        .unwrap_or_else(|| vec![config.eos_token_id]);
 
     let mut model = Model::<f16>::new(
         &config,
@@ -105,10 +120,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sequence_length,
         batch_size,
         top_k,
-        top_p,
-        min_p,
+        thread_num,
+        top_k_simd,
+        top_p as f16,
+        min_p as f16,
         do_sample,
-        eos_id,
+        eos_token_id_list,
     );
 
     // Run the model forward pass to populate the operator queue
@@ -116,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
 
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    let thread_num = core_ids.len().max(1);
+    let thread_num = core_ids.len().max(1).min(thread_num);
     let mut batch_scheduler: BatchScheduler =
         BatchScheduler::new(sequence_length, batch_size, thread_num);
     let mut batch_list = Vec::with_capacity(batch_size);

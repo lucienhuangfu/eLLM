@@ -50,7 +50,7 @@ where
 
     pub fn start(self) {
         let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-        let thread_num = core_ids.len().max(1);
+        let thread_num = core_ids.len().max(1).min(self.batch_scheduler.thread_num());
 
         let operator_queue: Arc<[Operator<T>]> = self.operator_queue.into();
 
