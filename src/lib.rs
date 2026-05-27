@@ -5,6 +5,7 @@
 #![feature(sync_unsafe_cell)]
 
 pub mod common;
+pub mod config;
 pub mod kernel;
 pub mod mem_mgr;
 pub mod operators;

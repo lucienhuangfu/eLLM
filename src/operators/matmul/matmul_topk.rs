@@ -768,11 +768,11 @@ mod tests {
                 M_MAX, // a_row (capacity)
                 N,
                 K,
-                6,     // MB（3 的倍数）
-                64,    // NB
-                64,    // KC
-                3,     // MR
-                32,    // NR
+                6,  // MB（3 的倍数）
+                64, // NB
+                64, // KC
+                3,  // MR
+                32, // NR
                 TOPK,
                 thread_num,
                 M_MAX, // batch_max (capacity)

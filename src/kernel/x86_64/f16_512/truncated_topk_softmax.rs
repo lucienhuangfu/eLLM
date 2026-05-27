@@ -103,13 +103,13 @@ mod tests {
                 values.as_ptr(),
                 indices.as_ptr(),
                 1.0 as f16,
-            out_vals.as_mut_ptr(),
-            out_idx.as_mut_ptr(),
-            // &mut out_token,
-            thread_num,
-            top_k,
-            top_k,
-        );
+                out_vals.as_mut_ptr(),
+                out_idx.as_mut_ptr(),
+                // &mut out_token,
+                thread_num,
+                top_k,
+                top_k,
+            );
         }
 
         let total_candidates = top_k * thread_num;

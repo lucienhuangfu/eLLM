@@ -1,13 +1,13 @@
 #![feature(f16)]
 
 use ellm::common::send_sync_ptr::SharedMut;
+use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::runtime::batch_sequence::BatchSequence;
 use ellm::runtime::model_loader::SafeTensorsLoader;
-use ellm::runtime::{
-    BatchScheduler, Config, GenerationConfig, Phase, SequenceState, ServingRunner,
-};
+use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
+use ellm::transformer::config::Config;
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
@@ -41,7 +41,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let thread_num = generation_config
         .as_ref()
         .map_or_else(
-            || std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+            || {
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1)
+            },
             |cfg| cfg.thread_num(),
         )
         .max(1);

@@ -5,7 +5,7 @@ mod layer_plan;
 mod model_family;
 mod router_scoring;
 
-pub use crate::runtime::HfConfig;
+pub use crate::config::HfConfig;
 pub use attention_kind::AttentionKind;
 pub use config::Config;
 pub use ffn_kind::FfnKind;

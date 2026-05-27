@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::runtime::HfConfig;
+use crate::config::HfConfig;
 
 use super::ffn_kind::FfnResolveParams;
 use super::layer_plan::LayerPlan;

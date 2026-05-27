@@ -398,7 +398,11 @@ mod test {
             batch_temperature.as_mut_ptr(),
             1,
             num_topk,
-            if std::mem::size_of::<f16>() == 2 { 32 } else { 8 },
+            if std::mem::size_of::<f16>() == 2 {
+                32
+            } else {
+                8
+            },
             thread_num,
             1.0f16,
             0.0f16,

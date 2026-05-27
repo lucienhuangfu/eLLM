@@ -1,9 +1,9 @@
 use std::f16;
 // use num::{complex::ComplexFloat, Zero};
 use std::arch::x86_64::{
-    __m512h, _mm512_fmadd_ph, _mm512_load_ph, _mm512_loadu_ph, _mm512_mul_ph,
-    _mm512_reduce_add_ph, _mm512_set1_ph, _mm512_setzero_ph, _mm512_store_ph, _mm512_storeu_ph,
-    _mm_prefetch, _MM_HINT_T2,
+    __m512h, _mm512_fmadd_ph, _mm512_load_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_reduce_add_ph,
+    _mm512_set1_ph, _mm512_setzero_ph, _mm512_store_ph, _mm512_storeu_ph, _mm_prefetch,
+    _MM_HINT_T2,
 }; // Add this line
 
 use super::dot_product::_dot_product;
