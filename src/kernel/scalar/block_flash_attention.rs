@@ -14,6 +14,7 @@ pub fn block_flash_attention<T>(
     v_head_ptr: *const T,
     k_seq_stride: usize,
     v_seq_stride: usize,
+    q_seq_stride: usize,
     head_size: usize,
     inverse_sqrt_head: T,
     sequence_index: usize,
@@ -39,9 +40,9 @@ pub fn block_flash_attention<T>(
                 continue;
             }
 
-            let head_offset = row * head_size;
-            let q_row_ptr = q_head_ptr.add(head_offset);
-            let output_row_ptr = output_head_ptr.add(head_offset);
+            let q_offset = row * q_seq_stride;
+            let q_row_ptr = q_head_ptr.add(q_offset);
+            let output_row_ptr = output_head_ptr.add(q_offset);
             let block_len = row_col_end - col_begin;
             let mut block_max = T::neg_infinity();
 
@@ -183,6 +184,7 @@ mod tests {
                 head_size,
                 head_size,
                 head_size,
+                head_size,
                 inverse_sqrt_head,
                 0,
                 &mut running_max,
@@ -246,6 +248,7 @@ mod tests {
                 col_end,
                 k.as_ptr(),
                 v.as_ptr(),
+                head_size,
                 head_size,
                 head_size,
                 head_size,

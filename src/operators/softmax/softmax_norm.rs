@@ -69,7 +69,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
             }
         }
 
-        let task_size = if prefill_size == 0 || self.decode_only_flag {
+        let task_size = if prefill_size == 0 {
             decode_size
         } else {
             prefill_size

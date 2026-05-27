@@ -53,6 +53,7 @@ where
             v_tensor.strides[0],
             v_tensor.strides[1],
             v_tensor.strides[2],
+            self.strides[0],
             1,
             8,
             self.shape[3],
@@ -208,18 +209,28 @@ where
         topk: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
+        let trace_alignment = std::env::var_os("ELLM_ALIGN_TRACE").is_some();
         let n = tensor2.shape[0];
         let thread_num = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
         let m = self.row_count();
         let k = self.last_dim();
+        if trace_alignment {
+            eprintln!(
+                "building matmul_local_topk m={m} n={n} k={k} topk={topk} threads={thread_num}"
+            );
+        }
         let output_shape = vec![m, thread_num * topk];
 
         let indice_ptr = leaked_aligned_ptr(output_shape.iter().product(), 0usize);
 
         let value_tensor =
             Self::from_mem_pool(output_shape, format!("{}.values.output", scope_name));
+
+        if trace_alignment {
+            eprintln!("creating MatMulTopK operator");
+        }
 
         let operator = unsafe {
             Operator::MatMulTopK(MatMulTopK::new(
@@ -239,6 +250,10 @@ where
                 topk,
             ))
         };
+
+        if trace_alignment {
+            eprintln!("created MatMulTopK operator");
+        }
 
         Self::enqueue(operator);
         (indice_ptr, value_tensor)

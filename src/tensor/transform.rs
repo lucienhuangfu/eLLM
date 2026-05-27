@@ -4,7 +4,9 @@ use crate::common::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::movement::LiftVector;
 use crate::operators::operator::Operator;
-use crate::operators::transform::{AddRMSZipMap, AddZipMap, LookupRMSMap, RMSMap, SigmoidMap};
+use crate::operators::transform::{
+    AddRMSZipMap, AddZipMap, LookupRMSMap, RMSMap, SigmoidMap, SiluMulZipMap,
+};
 
 use super::{GlobalOperatorQueue, Tensor};
 
@@ -28,12 +30,41 @@ where
 {
     pub fn add(&self, b_tensor: &Tensor<T>, decode_only_flag: bool, tensor_name: String) -> Self {
         let output_tensor = Self::from_mem_pool(self.shape.clone(), tensor_name);
+        let (head_num, head_size) = match self.shape.as_slice() {
+            [_, cols] => (1, *cols),
+            [_, heads, size] => (*heads, *size),
+            _ => (self.last_dim(), 1),
+        };
         let operator = Operator::AddZipMap(AddZipMap::new(
             self.data,
             b_tensor.data,
             output_tensor.data,
-            self.shape[1],
-            self.shape[2],
+            head_num,
+            head_size,
+            decode_only_flag,
+        ));
+        Self::enqueue(operator);
+        output_tensor
+    }
+
+    pub fn silu_mul(
+        &self,
+        b_tensor: &Tensor<T>,
+        decode_only_flag: bool,
+        tensor_name: String,
+    ) -> Self {
+        let output_tensor = Self::from_mem_pool(self.shape.clone(), tensor_name);
+        let (head_num, head_size) = match self.shape.as_slice() {
+            [_, cols] => (1, *cols),
+            [_, heads, size] => (*heads, *size),
+            _ => (self.last_dim(), 1),
+        };
+        let operator = Operator::SiluMulZipMap(SiluMulZipMap::new_with_decode_only(
+            self.data,
+            b_tensor.data,
+            output_tensor.data,
+            head_num,
+            head_size,
             decode_only_flag,
         ));
         Self::enqueue(operator);

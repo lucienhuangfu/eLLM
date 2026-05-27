@@ -69,7 +69,7 @@ where
         thread_id: usize,
     ) {
         //  [batch_size, head_num， head_size]
-        let active_rows = if prefill_size == 0 || self.decode_only_flag {
+        let active_rows = if prefill_size == 0 {
             decode_size
         } else {
             prefill_size

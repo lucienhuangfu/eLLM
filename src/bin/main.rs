@@ -33,7 +33,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chat_template_path = format!("{}/chat_template.jinja", model_dir);
 
     let sequence_length = 32;
-    let top_k = 8;
+    let top_k = generation_config
+        .as_ref()
+        .map(|gen_cfg| gen_cfg.effective_top_k(8))
+        .unwrap_or(1);
+    let temperature = generation_config
+        .as_ref()
+        .map(|gen_cfg| gen_cfg.effective_temperature(1.0))
+        .unwrap_or(1.0);
 
     let fixed_prompts = [
         "Hello from a fixed runner.",
@@ -66,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (slot, prompt) in fixed_prompts.iter().enumerate().take(batch_size) {
         let messages: [(&str, &str); 1] = [("user", prompt)];
         let write_len = batch_seq
-            .write_prompts(slot, &messages, 1.0)
+            .write_prompts(slot, &messages, temperature)
             .map_err(|e| format!("failed to write prompt: {}", e))?;
         written_lengths.push(write_len);
     }
@@ -79,8 +86,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .forward::<f16>();
 
-    // Use eos id from model config or default to known value
-    let eos_id = config.eos_token_id;
+    let eos_ids = generation_config
+        .as_ref()
+        .and_then(GenerationConfig::eos_token_ids)
+        .filter(|ids| !ids.is_empty())
+        .unwrap_or(config.eos_token_ids);
 
     let mut model = Model::<f16>::new(
         &config,
@@ -89,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sequence_length,
         batch_size,
         top_k,
-        eos_id,
+        eos_ids,
     );
 
     // Run the model forward pass to populate the operator queue

@@ -3,6 +3,7 @@ use crate::common::sequence_slice::SequenceSlice;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::linear::{MatMul, MatMulAdd};
 use crate::operators::operator::Operator;
+use crate::runtime::generation_config::EosTokenIds;
 use crate::runtime::{Phase, SequenceState};
 
 use super::Tensor;
@@ -240,7 +241,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             1,
             num_topk,
-            eos_id,
+            EosTokenIds::single(eos_id),
             "model.layers.0.topk_softmax".to_string(),
         );
 
@@ -393,7 +394,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             1,
             num_topk,
-            eos_id,
+            EosTokenIds::single(eos_id),
             "model.layers.0.topk_softmax".to_string(),
         );
 

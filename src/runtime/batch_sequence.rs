@@ -29,9 +29,14 @@ where
     ) -> Result<Self, String> {
         let tokenizer =
             load_tiktoken(tokenizer_json_path, tokenizer_config_json_path).map(Arc::new)?;
-        let chat_template = ChatTemplate::new(chat_template_path)
+        let chat_template = ChatTemplate::from_model_files(chat_template_path, tokenizer_config_json_path)
             .map(Arc::new)
-            .map_err(|e| format!("Unable to load chat template {}: {}", chat_template_path, e))?;
+            .map_err(|e| {
+                format!(
+                    "Unable to load chat template from {} or {}: {}",
+                    chat_template_path, tokenizer_config_json_path, e
+                )
+            })?;
 
         Ok(Self {
             sequences,

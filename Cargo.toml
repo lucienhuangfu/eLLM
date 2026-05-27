@@ -15,6 +15,18 @@ path = "alignment/rope/rope_alignment_test.rs"
 name = "silu_mul_alignment_test"
 path = "alignment/silu_mul/silu_mul_alignment_test.rs"
 
+[[bin]]
+name = "qwen3_tokenizer_alignment"
+path = "alignment/tokenizer/qwen3_tokenizer_alignment.rs"
+
+[[bin]]
+name = "rms_map_alignment"
+path = "alignment/rms_map/rms_map_alignment.rs"
+
+[[bin]]
+name = "qwen3_one_token_alignment"
+path = "alignment/tokenizer/qwen3_one_token_alignment.rs"
+
 [dependencies]
 anyhow = "1.0.72"
 async-stream = "0.3.6"

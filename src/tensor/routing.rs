@@ -10,6 +10,7 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::operator::Operator;
 use crate::operators::routing::{ExpertsSoftmaxNorm, ExpertsTopkNorm, MatMulSigmoid, TopKSoftmax};
+use crate::runtime::generation_config::EosTokenIds;
 
 use super::core::leaked_aligned_ptr;
 use super::{GlobalOperatorQueue, Tensor};
@@ -37,9 +38,8 @@ where
         _scope_name: String,
     ) -> ExpertRouting<T> {
         let token_count = self.row_count();
-        let routing = unsafe {
-            Self::allocate_expert_routing(num_experts, token_count, num_experts_per_tok)
-        };
+        let routing =
+            unsafe { Self::allocate_expert_routing(num_experts, token_count, num_experts_per_tok) };
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
             self.data,
@@ -106,9 +106,8 @@ where
         _scope_name: String,
     ) -> ExpertRouting<T> {
         let token_count = self.row_count();
-        let routing = unsafe {
-            Self::allocate_expert_routing(num_experts, token_count, num_experts_per_tok)
-        };
+        let routing =
+            unsafe { Self::allocate_expert_routing(num_experts, token_count, num_experts_per_tok) };
 
         let operator = Operator::ExpertsTopkNorm(ExpertsTopkNorm::new(
             self.data,
@@ -174,7 +173,7 @@ where
         batch_temperature: *mut T,
         sequence_stride: usize,
         num_topk: usize,
-        eos_id: usize,
+        eos_ids: EosTokenIds,
         scope_name: String,
     ) -> (*const usize, Self) {
         let output_shape = vec![self.shape[0], num_topk];
@@ -192,7 +191,7 @@ where
             batch_temperature,
             sequence_stride,
             num_topk,
-            eos_id,
+            eos_ids,
         ));
 
         Self::enqueue(operator);

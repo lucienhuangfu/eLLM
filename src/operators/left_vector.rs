@@ -20,12 +20,16 @@ impl<T> LiftVector<T> {
 
     pub fn run(
         &self,
-        _prefill_size: usize,
+        prefill_size: usize,
         _decode_size: usize,
         decode_list: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
     ) {
+        if prefill_size > 0 {
+            return;
+        }
+
         let total_tokens = decode_list.len();
         let Some((begin, end)) = assign(total_tokens, thread_num, thread_id) else {
             return;

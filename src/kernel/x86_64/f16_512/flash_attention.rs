@@ -151,6 +151,7 @@ pub unsafe fn block_flash_attention(
     v_head_ptr: *const f16,
     k_seq_stride: usize,
     v_seq_stride: usize,
+    q_seq_stride: usize,
     head_size: usize,
     inverse_sqrt_head: f16,
     sequence_index: usize,
@@ -165,9 +166,9 @@ pub unsafe fn block_flash_attention(
             continue;
         }
 
-        let head_offset = row * head_size;
-        let q_row_ptr = q_head_ptr.add(head_offset);
-        let output_row_ptr = output_head_ptr.add(head_offset);
+        let q_offset = row * q_seq_stride;
+        let q_row_ptr = q_head_ptr.add(q_offset);
+        let output_row_ptr = output_head_ptr.add(q_offset);
         let block_len = row_col_end - col_begin;
         let mut block_max = f16::NEG_INFINITY;
 

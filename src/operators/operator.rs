@@ -19,6 +19,7 @@ use crate::operators::movement::LiftVector;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddZipMap;
 use crate::operators::transform::SigmoidMap;
+use crate::operators::transform::SiluMulZipMap;
 use crate::operators::transform::{AddRMSZipMap, RMSMap};
 // use super::zip_map::complex_zip::ComplexZipMap;
 // use super::zip_map::silu_mul_zip::SiluMulZipMap;
@@ -52,7 +53,7 @@ pub enum Operator<T>
     RMSMap(RMSMap<T>),
     SigmoidMap(SigmoidMap<T>),
     FakeEcho(FakeEcho),
-    // SiluMulZipMap(SiluMulZipMap<T>),
+    SiluMulZipMap(SiluMulZipMap<T>),
     // SoftmaxMap(SoftmaxMap<T>),
     TopKSoftmax(TopKSoftmax<T>),
     // ArgmaxReduce(ArgmaxReduce<T>),
@@ -171,10 +172,11 @@ where
             }
             Self::RMSMap(operator) => {
                 run_simple!(operator);
-            } /*
-            Self::SiluMulZipMap(operator) => {
-            operator.run(prefill_size, cpu_num, thread_id);
             }
+            Self::SiluMulZipMap(operator) => {
+                operator.run_scheduled(prefill_size, decode_size, cpu_num, thread_id);
+            }
+            /*
             Self::ComplexZipMap(operator) => {
             operator.run(prefill_size, cpu_num, thread_id);
             }*/
@@ -199,6 +201,7 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::runtime::generation_config::EosTokenIds;
     use crate::common::expert_routing::ExpertRouting;
     use crate::common::matmul_params::MatMulParams;
     use crate::common::sequence_slice::SequenceSlice;
@@ -464,6 +467,7 @@ mod test {
             HEAD_DIM,
             HEAD_DIM,
             BATCH_SIZE * HEAD_DIM,
+            HEAD_DIM,
             1,
             SEQUENCE_LENGTH,
             HEAD_DIM,
@@ -532,7 +536,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
-            VOCAB_SIZE - 1,
+            EosTokenIds::single(VOCAB_SIZE - 1),
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -817,6 +821,7 @@ mod test {
             HEAD_DIM,
             HEAD_DIM,
             BATCH_SIZE * HEAD_DIM,
+            HEAD_DIM,
             1,
             SEQUENCE_LENGTH,
             HEAD_DIM,
@@ -870,7 +875,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
-            VOCAB_SIZE - 1,
+            EosTokenIds::single(VOCAB_SIZE - 1),
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -1029,6 +1034,7 @@ mod test {
             HEAD_DIM,
             HEAD_DIM,
             BATCH_SIZE * HEAD_DIM,
+            HEAD_DIM,
             1,
             SEQUENCE_LENGTH,
             HEAD_DIM,
@@ -1086,7 +1092,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
-            VOCAB_SIZE - 1,
+            EosTokenIds::single(VOCAB_SIZE - 1),
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -1203,6 +1209,7 @@ mod test {
             HEAD_DIM,
             HEAD_DIM,
             BATCH_SIZE * HEAD_DIM,
+            HEAD_DIM,
             1,
             SEQUENCE_LENGTH,
             HEAD_DIM,
@@ -1245,7 +1252,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
-            VOCAB_SIZE - 1,
+            EosTokenIds::single(VOCAB_SIZE - 1),
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -1418,7 +1425,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         ));
 
         for i in 0..thread_num {

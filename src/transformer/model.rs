@@ -19,6 +19,7 @@ use super::super::mem_mgr::mem_pool::GlobalMemPool;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
 use super::decoder_layer::DecoderLayer;
+use crate::runtime::generation_config::EosTokenIds;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 // use crate::runtime::inference::state::TokenRecord;
 
@@ -40,6 +41,7 @@ where
     pub hidden_size: usize,
     pub topk_size: usize,
     pub eos_id: usize,
+    pub eos_ids: EosTokenIds,
     scope_name: String,
 }
 
@@ -68,7 +70,7 @@ where
         sequence_length: usize,
         batch_size: usize,
         topk_size: usize,
-        eos_id: usize,
+        eos_ids: EosTokenIds,
     ) -> Self {
         let model_names = model_tensor_names(config);
         let scope_name = model_names.scope.clone();
@@ -101,15 +103,14 @@ where
             ));
         }
 
+        let eos_id = eos_ids.primary();
+
         Self {
             lm_head_weight: Tensor::zeros(
                 vec![config.vocab_size, config.hidden_size],
                 model_names.lm_head.clone(),
             ),
-            norm_weight: Tensor::zeros(
-                vec![config.hidden_size],
-                model_names.norm_weight.clone(),
-            ),
+            norm_weight: Tensor::zeros(vec![config.hidden_size], model_names.norm_weight.clone()),
             layers: layers,
             chunk_size: chunk_size,
             sequence_length: sequence_length,
@@ -117,6 +118,7 @@ where
             hidden_size: config.hidden_size,
             topk_size: topk_size,
             eos_id: eos_id,
+            eos_ids,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
         }
@@ -135,7 +137,12 @@ where
             format!("{}.hidden_state.output", self.scope_name),
         );
 
+        let trace_alignment = std::env::var_os("ELLM_ALIGN_TRACE").is_some();
+
         for (i, layer_module) in self.layers.iter().enumerate() {
+            if trace_alignment {
+                eprintln!("building layer {i}");
+            }
             let decode_only_flag = i == (self.layers.len() - 1);
 
             hidden_state = layer_module.forward(
@@ -147,13 +154,19 @@ where
             // all_hidden_states.push(hidden_states);
         }
 
+        if trace_alignment {
+            eprintln!("building final norm");
+        }
         let norm_state = hidden_state.rms(
             &self.norm_weight,
             self.rms_norm_eps,
-            true,
+            false,
             format!("{}.norm_hidden", self.scope_name),
         );
 
+        if trace_alignment {
+            eprintln!("building lm_head/topk");
+        }
         let (indices_ptr, values_tensor) = norm_state.matmul_local_topk(
             &self.lm_head_weight,
             MatMulParams {
@@ -173,7 +186,7 @@ where
             batch_temperature,
             self.sequence_length,
             self.topk_size,
-            self.eos_id,
+            self.eos_ids,
             format!("{}.softmax", self.scope_name),
         );
 
@@ -266,7 +279,7 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
@@ -342,7 +355,7 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         );
 
         let mut sequences_box =
@@ -413,7 +426,7 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         );
 
         assert_eq!(model.layers.len(), config.num_hidden_layers);
@@ -461,7 +474,7 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         );
 
         assert_eq!(model.layers.len(), config.num_hidden_layers);

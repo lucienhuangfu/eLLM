@@ -74,6 +74,8 @@ where
     ) -> Self {
         let reduction_block_cols = params.column_step_macro.max(1);
         let micro_tile_cols = params.b_row_step_micro.max(1);
+        let micro_tile_rows = params.a_row_step_micro.max(1);
+        let m_max = m_max.div_ceil(micro_tile_rows) * micro_tile_rows;
         let packed_panel_stride = reduction_block_cols * micro_tile_cols;
         let packed_b = Self::pack_b_panels(
             ptr2_b_nt_nxk,
@@ -170,7 +172,7 @@ where
         thread_id: usize,
     ) {
         unsafe {
-            let active_input_rows = if prefill_size == 0 || self.decode_only_flag {
+            let active_input_rows = if prefill_size == 0 {
                 decode_size
             } else {
                 prefill_size

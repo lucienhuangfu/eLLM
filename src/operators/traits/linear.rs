@@ -1,4 +1,5 @@
 pub trait AttentionTrait<T> {
+    #[allow(clippy::too_many_arguments)]
     fn compute(
         &self,
         q_ptr1: *const T,
@@ -13,6 +14,7 @@ pub trait AttentionTrait<T> {
         sequence_index: usize,
         k_seq_stride: usize,
         v_seq_stride: usize,
+        q_seq_stride: usize,
         running_max: &mut [T],
         running_denom: &mut [T],
         scores: &mut [T],
