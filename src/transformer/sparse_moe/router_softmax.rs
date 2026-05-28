@@ -1,7 +1,7 @@
 use std::ops::{AddAssign, Neg, Sub};
 
-use crate::common::matmul_params::MatMulParams;
-use crate::operators::experts::expert_routing::ExpertRouting;
+use crate::kernel::common::matmul_params::MatMulParams;
+use crate::operators::expert::expert_routing::ExpertRouting;
 // removed custom Sigmoid/Sqrt traits; use standard numeric ops instead
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};

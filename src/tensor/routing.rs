@@ -1,15 +1,15 @@
 use std::ops::{AddAssign, Neg, Sub};
 use std::sync::atomic::AtomicUsize;
 
-use crate::common::matmul_params::MatMulParams;
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::Sigmoid;
 use crate::num_traits::Sqrt;
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
-use crate::operators::experts::expert_routing::ExpertRouting;
+use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::operators::operator::Operator;
-use crate::operators::routing::{ExpertsSoftmaxNorm, ExpertsTopkNorm, MatMulSigmoid, TopKSoftmax};
+use crate::operators::routing::{ExpertSoftmaxNorm, ExpertTopkNorm, MatMulSigmoid, TopKSoftmax};
 
 use super::core::leaked_aligned_ptr;
 use super::{GlobalOperatorQueue, Tensor};
@@ -40,7 +40,7 @@ where
             Self::allocate_expert_routing(num_experts, self.shape[0], num_experts_per_tok)
         };
 
-        let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
+        let operator = Operator::ExpertSoftmaxNorm(ExpertSoftmaxNorm::new(
             self.data,
             routing,
             self.shape[0],
@@ -106,7 +106,7 @@ where
             Self::allocate_expert_routing(num_experts, self.shape[0], num_experts_per_tok)
         };
 
-        let operator = Operator::ExpertsTopkNorm(ExpertsTopkNorm::new(
+        let operator = Operator::ExpertTopkNorm(ExpertTopkNorm::new(
             self.data,
             routing,
             self.shape[0],

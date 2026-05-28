@@ -15,7 +15,7 @@ use crate::num_traits::{Exp, Sigmoid, Sqrt};
 
 // use super::super::operators::map::rms_map::RMSMap;
 use super::super::mem_mgr::mem_pool::GlobalMemPool;
-use crate::common::matmul_params::MatMulParams;
+use crate::kernel::common::matmul_params::MatMulParams;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
 use super::decoder_layer::DecoderLayer;

@@ -5,7 +5,7 @@ use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
 
 use super::names::DenseMlpTensorNames;
-use crate::common::matmul_params::MatMulParams;
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
 #[derive(Clone)]

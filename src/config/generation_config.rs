@@ -32,7 +32,7 @@ pub struct GenerationConfig {
     #[serde(default)]
     pub stop: Option<Vec<String>>,
     #[serde(flatten)]
-    pub other: HashMap<String, Value>,
+    pub extra_config: HashMap<String, Value>,
 }
 
 impl GenerationConfig {

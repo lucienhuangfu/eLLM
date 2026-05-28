@@ -27,7 +27,7 @@ pub trait SoftmaxTrait<T> {
     );
 }
 
-pub trait ExpertsTopkNormTrait<T> {
+pub trait ExpertTopkNormTrait<T> {
     fn compute(
         &self,
         ptr1: *const T,

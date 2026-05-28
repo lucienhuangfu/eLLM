@@ -1,4 +1,4 @@
-use super::types::{
+use super::config_types::{
     ChatConfig, Command, Config, ModelConfig, ResolvedConfig, ResolvedModelConfig, ServeConfig,
 };
 use std::{fs::File, io::BufReader, path::Path};
@@ -45,7 +45,7 @@ impl Config {
         Self {
             command,
             model: ModelConfig::default(),
-            scheduler: super::types::SchedulerConfig::default(),
+            scheduler: super::config_types::SchedulerConfig::default(),
             serve: Some(ServeConfig::default()),
             chat: Some(ChatConfig::default()),
         }
@@ -121,10 +121,7 @@ impl Config {
         match self.command {
             Command::Serve => {
                 if self.serve.is_none() {
-                    return Err(ConfigError::MissingCommandSection(
-                        "serve",
-                        "serve config",
-                    ));
+                    return Err(ConfigError::MissingCommandSection("serve", "serve config"));
                 }
                 if let Some(serve) = self.serve.as_ref() {
                     if serve.host.trim().is_empty() {
@@ -137,10 +134,7 @@ impl Config {
             }
             Command::Chat => {
                 if self.chat.is_none() {
-                    return Err(ConfigError::MissingCommandSection(
-                        "chat",
-                        "chat config",
-                    ));
+                    return Err(ConfigError::MissingCommandSection("chat", "chat config"));
                 }
             }
         }
@@ -166,12 +160,12 @@ impl Config {
         Ok(ResolvedConfig {
             command: self.command,
             model: ResolvedModelConfig {
-                raw: self.model.clone(),
+                raw_config: self.model.clone(),
                 served_model_name: self
                     .model
                     .served_model_name
                     .clone()
-                    .unwrap_or_else(|| super::types::infer_served_model_name(&self.model.model)),
+                    .unwrap_or_else(|| super::config_types::infer_served_model_name(&self.model.model)),
                 effective_tokenizer: self
                     .model
                     .tokenizer

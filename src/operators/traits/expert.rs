@@ -1,10 +1,10 @@
-pub trait ExpertsDownTrait<T> {
+pub trait ExpertDownTrait<T> {
     fn compute1(&self, a_tile: *const T, b_panel: *const T, acc: *mut T);
 
     fn compute2(&self, out_row: *mut T, acc_row: *const T, factor: *const T, len: usize);
 }
 
-pub trait ExpertsSiluTrait<T> {
+pub trait ExpertSiluTrait<T> {
     fn compute1(
         &self,
         a_tile: *const T,

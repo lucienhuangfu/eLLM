@@ -4,11 +4,10 @@
 #![feature(min_specialization)]
 #![feature(sync_unsafe_cell)]
 
-pub mod common;
 pub mod config;
-pub mod num_traits;
 pub mod kernel;
 pub mod mem_mgr;
+pub mod num_traits;
 pub mod operators;
 pub mod runtime;
 pub mod serving;

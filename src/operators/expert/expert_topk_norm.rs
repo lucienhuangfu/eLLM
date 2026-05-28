@@ -2,15 +2,15 @@ use std::f16;
 use std::ops::{AddAssign, Div};
 use std::sync::atomic::Ordering;
 
-use crate::operators::experts::expert_routing::ExpertRouting;
+use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::assign::assign;
-use crate::operators::traits::ExpertsTopkNormTrait;
+use crate::operators::traits::ExpertTopkNormTrait;
 
 #[derive(Clone)]
-pub struct ExpertsTopkNorm<T> {
+pub struct ExpertTopkNorm<T> {
     ptr1: ConstPtr<T>,
     topk_values_ptr: MutPtr<T>,
     routing: ExpertRouting<T>,
@@ -19,7 +19,7 @@ pub struct ExpertsTopkNorm<T> {
     decode_only_flag: bool,
 }
 
-impl<T: Copy + Default> ExpertsTopkNorm<T> {
+impl<T: Copy + Default> ExpertTopkNorm<T> {
     pub fn new(
         ptr1: *const T,
         routing: ExpertRouting<T>,
@@ -46,7 +46,7 @@ impl<T: Copy + Default> ExpertsTopkNorm<T> {
     }
 }
 
-impl<T> ExpertsTopkNorm<T>
+impl<T> ExpertTopkNorm<T>
 where
     T: Copy + PartialOrd + PartialEq + Default + AddAssign + Div<Output = T>,
 {
@@ -92,7 +92,7 @@ where
     }
 }
 
-impl<T> ExpertsTopkNormTrait<T> for ExpertsTopkNorm<T>
+impl<T> ExpertTopkNormTrait<T> for ExpertTopkNorm<T>
 where
     T: Copy + PartialOrd + PartialEq + Default + AddAssign + Div<Output = T>,
 {
@@ -114,7 +114,7 @@ where
     }
 }
 
-impl ExpertsTopkNormTrait<f16> for ExpertsTopkNorm<f16> {
+impl ExpertTopkNormTrait<f16> for ExpertTopkNorm<f16> {
     fn compute(
         &self,
         ptr1: *const f16,
@@ -133,7 +133,7 @@ impl ExpertsTopkNormTrait<f16> for ExpertsTopkNorm<f16> {
     }
 }
 
-impl ExpertsTopkNormTrait<f32> for ExpertsTopkNorm<f32> {
+impl ExpertTopkNormTrait<f32> for ExpertTopkNorm<f32> {
     fn compute(
         &self,
         ptr1: *const f32,

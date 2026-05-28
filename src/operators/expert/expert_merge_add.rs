@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::assign::assign;
-use crate::operators::experts::expert_routing::ExpertRouting;
+use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::operators::traits::MoeMergeTrait;
 
 // Variable naming used in this operator:
@@ -34,7 +34,7 @@ use crate::operators::traits::MoeMergeTrait;
 /// SIMD selection is delegated to MoeMergeTrait::merge_add.
 /// 是否使用 SIMD 由 MoeMergeTrait::merge_add 决定。
 #[derive(Clone)]
-pub struct ExpertsMergeAdd<T> {
+pub struct ExpertMergeAdd<T> {
     pub input_ptr: ConstPtr<T>, // Expert outputs: [num_tokens,K,H]. expert 输出。
     pub residual_ptr: ConstPtr<T>, // Residual rows: [num_tokens,H]. residual 行。
     pub output_ptr: MutPtr<T>,  // Merged output: [num_tokens,H]. 合并后的输出。
@@ -54,7 +54,7 @@ pub struct ExpertsMergeAdd<T> {
     pub decode_only_flag: bool,
 }
 
-impl<T> ExpertsMergeAdd<T>
+impl<T> ExpertMergeAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -151,7 +151,7 @@ where
 /* ------------------ MoeMergeTrait default implementation: generic scalar path ------------------ */
 /* ------------------ MoeMergeTrait 默认实现：generic 标量路径 ------------------ */
 
-impl<T> MoeMergeTrait<T> for ExpertsMergeAdd<T>
+impl<T> MoeMergeTrait<T> for ExpertMergeAdd<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -169,7 +169,7 @@ where
 /* ------------------ MoeMergeTrait<f16> specialization: AVX-512 path ------------------ */
 /* ------------------ MoeMergeTrait<f16> 特化：AVX-512 路径 ------------------ */
 
-impl MoeMergeTrait<f16> for ExpertsMergeAdd<f16> {
+impl MoeMergeTrait<f16> for ExpertMergeAdd<f16> {
     fn merge_add(&self, out_row: *mut f16, add_row: *const f16, len: usize) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
@@ -211,7 +211,7 @@ mod tests {
 
     fn test_routing(num_experts: usize, num_tokens: usize, num_topk: usize) -> ExpertRouting<f16> {
         unsafe {
-            crate::operators::experts::expert_routing::empty_routing(
+            crate::operators::expert::expert_routing::empty_routing(
                 num_experts,
                 num_tokens,
                 num_topk,
@@ -257,7 +257,7 @@ mod tests {
             }
         }
 
-        let runner = ExpertsMergeAdd::<f16>::new(
+        let runner = ExpertMergeAdd::<f16>::new(
             input.as_ptr(),
             residual.as_ptr(),
             test_routing(num_experts, num_tokens, K),
@@ -309,7 +309,7 @@ mod tests {
             }
         }
 
-        let runner = ExpertsMergeAdd::<f16>::new(
+        let runner = ExpertMergeAdd::<f16>::new(
             input.as_ptr(),
             residual.as_ptr(),
             test_routing(num_experts, num_tokens, K),
@@ -361,7 +361,7 @@ mod tests {
             }
         }
 
-        let runner = ExpertsMergeAdd::<f16>::new(
+        let runner = ExpertMergeAdd::<f16>::new(
             input.as_ptr(),
             residual.as_ptr(),
             test_routing(num_experts, num_tokens, K),
@@ -399,7 +399,7 @@ mod tests {
             set_all_counts(routing, num_tokens);
         }
 
-        let runner = ExpertsMergeAdd::<f16>::new(
+        let runner = ExpertMergeAdd::<f16>::new(
             input.as_ptr(),
             residual.as_ptr(),
             routing,
@@ -463,7 +463,7 @@ mod tests {
         }
 
         unsafe {
-            let op = ExpertsMergeAdd::new(
+            let op = ExpertMergeAdd::new(
                 input.as_ptr(),
                 residual.as_ptr(),
                 routing,
@@ -542,7 +542,7 @@ mod tests {
 
         let num_experts = 4usize;
 
-        let op = ExpertsMergeAdd::<f16>::new(
+        let op = ExpertMergeAdd::<f16>::new(
             input.as_ptr(),
             residual.as_ptr(),
             test_routing(num_experts, num_tokens_cap, k),

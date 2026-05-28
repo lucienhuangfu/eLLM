@@ -6,11 +6,11 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 use std::sync::atomic::Ordering;
 
-use crate::common::matmul_params::MatMulParams;
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::operators::assign::assign;
-use crate::operators::experts::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
+use crate::operators::expert::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::ExpertsSiluTrait;
+use crate::operators::traits::ExpertSiluTrait;
 
 // Variable naming used in this operator:
 // - token_block_rows / token_block_start: routed-token macro block inside one expert.
@@ -28,7 +28,7 @@ use crate::operators::traits::ExpertsSiluTrait;
 // - token_offset_in_block：compact routed-token block 内的位置。
 
 #[derive(Clone)]
-pub struct ExpertsMatMulSilu<T> {
+pub struct ExpertMatMulSilu<T> {
     pub input_ptr: ConstPtr<T>, // Input hidden states: [B,H]. 输入 hidden states。
 
     // Gate/up weights are expected in NT layout: [E][I x H], row stride = H.
@@ -85,7 +85,7 @@ pub struct ExpertsMatMulSilu<T> {
     _marker: PhantomData<T>,
 }
 
-impl<T> ExpertsMatMulSilu<T>
+impl<T> ExpertMatMulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -518,10 +518,10 @@ where
     }
 }
 
-/* -------------------- ExpertsSiluTrait default implementation -------------------- */
-/* -------------------- ExpertsSiluTrait 默认实现 -------------------- */
+/* -------------------- ExpertSiluTrait default implementation -------------------- */
+/* -------------------- ExpertSiluTrait 默认实现 -------------------- */
 
-impl<T> ExpertsSiluTrait<T> for ExpertsMatMulSilu<T>
+impl<T> ExpertSiluTrait<T> for ExpertMatMulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -542,7 +542,7 @@ where
 /* -------------------- f16 specialization: AVX-512 FP16 -------------------- */
 /* -------------------- f16 特化实现：AVX-512 FP16 -------------------- */
 
-impl ExpertsSiluTrait<f16> for ExpertsMatMulSilu<f16> {
+impl ExpertSiluTrait<f16> for ExpertMatMulSilu<f16> {
     fn compute1(
         &self,
         a_tile: *const f16,
@@ -620,7 +620,7 @@ mod tests {
         let scores = vec![1.0f16; num_experts * batch];
         let topk = vec![0usize; batch];
         unsafe {
-            crate::operators::experts::expert_routing::routing_from_dense(
+            crate::operators::expert::expert_routing::routing_from_dense(
                 num_experts,
                 batch,
                 1,
@@ -687,7 +687,7 @@ mod tests {
         out
     }
 
-    fn run_all_threads(runner: &ExpertsMatMulSilu<f16>, batch: usize, cpu_num: usize) {
+    fn run_all_threads(runner: &ExpertMatMulSilu<f16>, batch: usize, cpu_num: usize) {
         for tid in 0..cpu_num {
             runner.run(batch, 0, cpu_num, tid);
         }
@@ -739,7 +739,7 @@ mod tests {
         let w_up_nt = transpose_expert_kxn_to_nt(&w_up, E, H, I);
 
         let runner = unsafe {
-            ExpertsMatMulSilu::<f16>::new(
+            ExpertMatMulSilu::<f16>::new(
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
@@ -830,7 +830,7 @@ mod tests {
         let w_up_nt = transpose_expert_kxn_to_nt(&w_up, E, H, I);
 
         let runner = unsafe {
-            ExpertsMatMulSilu::<f16>::new(
+            ExpertMatMulSilu::<f16>::new(
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
@@ -919,7 +919,7 @@ mod tests {
         let w_up_nt = transpose_expert_kxn_to_nt(&w_up, E, H, I);
 
         let runner = unsafe {
-            ExpertsMatMulSilu::<f16>::new(
+            ExpertMatMulSilu::<f16>::new(
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
@@ -1012,7 +1012,7 @@ mod tests {
         let w_up_nt = transpose_expert_kxn_to_nt(&w_up, E, H, I);
 
         let runner = unsafe {
-            ExpertsMatMulSilu::<f16>::new(
+            ExpertMatMulSilu::<f16>::new(
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
@@ -1105,7 +1105,7 @@ mod tests {
         let w_up_nt = transpose_expert_kxn_to_nt(&w_up, E, H, I);
 
         let runner = unsafe {
-            ExpertsMatMulSilu::<f16>::new(
+            ExpertMatMulSilu::<f16>::new(
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
@@ -1190,7 +1190,7 @@ mod tests {
         let w_up_nt = transpose_expert_kxn_to_nt(&w_up, E, H, I);
 
         let runner = unsafe {
-            ExpertsMatMulSilu::<f16>::new(
+            ExpertMatMulSilu::<f16>::new(
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
@@ -1273,7 +1273,7 @@ mod tests {
         let mut output = vec![0.0 as f16; num_experts * batch * inter];
 
         unsafe {
-            let op = ExpertsMatMulSilu::new(
+            let op = ExpertMatMulSilu::new(
                 input.as_ptr(),
                 gate_weights_nt.as_ptr(),
                 up_weights_nt.as_ptr(),
@@ -1430,7 +1430,7 @@ mod tests {
         let mut out = vec![0.0f16; E * B_CAP * I];
 
         let op = unsafe {
-            ExpertsMatMulSilu::<f16>::new(
+            ExpertMatMulSilu::<f16>::new(
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
@@ -1528,7 +1528,7 @@ mod tests {
         let mut out = vec![0.0f16; E * B_CAP * I];
 
         let runner = unsafe {
-            ExpertsMatMulSilu::<f16>::new(
+            ExpertMatMulSilu::<f16>::new(
                 a.as_ptr(),
                 w_gate_nt.as_ptr(),
                 w_up_nt.as_ptr(),
@@ -1638,7 +1638,7 @@ mod tests {
         let mut output = vec![0.0 as f16; num_experts * batch * inter];
 
         unsafe {
-            let op = ExpertsMatMulSilu::new(
+            let op = ExpertMatMulSilu::new(
                 input.as_ptr(),
                 gate_weights_nt.as_ptr(),
                 up_weights_nt.as_ptr(),

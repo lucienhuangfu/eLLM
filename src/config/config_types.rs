@@ -93,7 +93,7 @@ pub struct Config {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedModelConfig {
-    pub raw: ModelConfig,
+    pub raw_config: ModelConfig,
     pub served_model_name: String,
     pub effective_tokenizer: String,
 }

@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
-use crate::common::matmul_params::MatMulParams;
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::kernel;
 use crate::num_traits::Sigmoid;
 use crate::operators::assign::assign;

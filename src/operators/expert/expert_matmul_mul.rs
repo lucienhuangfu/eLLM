@@ -1,11 +1,11 @@
 // === compiler/mul/experts_matmul_mul.rs ===
 #![allow(non_snake_case)]
 
-use crate::common::matmul_params::MatMulParams;
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::operators::assign::assign;
-use crate::operators::experts::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
+use crate::operators::expert::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::ExpertsDownTrait;
+use crate::operators::traits::ExpertDownTrait;
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
@@ -38,7 +38,7 @@ use std::sync::atomic::Ordering;
 /// This operator does not add residual.
 /// 该算子不做 residual 累加。
 #[derive(Clone)]
-pub struct ExpertsMatMulDown<T> {
+pub struct ExpertMatMulDown<T> {
     pub nonlin_ptr: ConstPtr<T>, // Nonlinear input: [E, B, Hmid]. 非线性输入。
     pub wdown_nt_ptr: ConstPtr<T>, // Down weight NT: [E, H, Hmid]. down 权重 NT 布局。
 
@@ -87,7 +87,7 @@ pub struct ExpertsMatMulDown<T> {
     routed_stride: usize, // num_experts * capacity_per_expert
 }
 
-impl<T> ExpertsMatMulDown<T>
+impl<T> ExpertMatMulDown<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -539,10 +539,10 @@ where
     }
 }
 
-/* ---------------- ExpertsDownTrait default implementation ---------------- */
-/* ---------------- ExpertsDownTrait 默认实现 ---------------- */
+/* ---------------- ExpertDownTrait default implementation ---------------- */
+/* ---------------- ExpertDownTrait 默认实现 ---------------- */
 
-impl<T> ExpertsDownTrait<T> for ExpertsMatMulDown<T>
+impl<T> ExpertDownTrait<T> for ExpertMatMulDown<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -565,7 +565,7 @@ where
 /* ---------------- f16 specialization: AVX-512 FP16 ---------------- */
 /* ---------------- f16 专用实现：AVX-512 FP16 ---------------- */
 
-impl ExpertsDownTrait<f16> for ExpertsMatMulDown<f16> {
+impl ExpertDownTrait<f16> for ExpertMatMulDown<f16> {
     /// compute1: acc += A_tile * B_panel with the 3x32 micro-kernel.
     /// compute1：使用 3x32 微内核执行 acc += A_tile * B_panel。
     fn compute1(&self, a_tile: *const f16, b_panel: *const f16, acc: *mut f16) {
@@ -644,7 +644,7 @@ mod tests {
         topk: &[usize],
     ) -> ExpertRouting<f16> {
         unsafe {
-            crate::operators::experts::expert_routing::routing_from_dense(
+            crate::operators::expert::expert_routing::routing_from_dense(
                 num_experts,
                 num_token,
                 num_topk,
@@ -775,7 +775,7 @@ mod tests {
         }
 
         let runner = unsafe {
-            ExpertsMatMulDown::<f16>::new(
+            ExpertMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
                 test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
@@ -863,7 +863,7 @@ mod tests {
         }
 
         let runner = unsafe {
-            ExpertsMatMulDown::<f16>::new(
+            ExpertMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
                 test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
@@ -966,7 +966,7 @@ mod tests {
         }
 
         let runner = unsafe {
-            ExpertsMatMulDown::<f16>::new(
+            ExpertMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
                 test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
@@ -1076,7 +1076,7 @@ mod tests {
         }
 
         let runner = unsafe {
-            ExpertsMatMulDown::<f16>::new(
+            ExpertMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
                 test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
@@ -1242,7 +1242,7 @@ mod tests {
         // 运行
         // -----------------------
         let runner = unsafe {
-            ExpertsMatMulDown::<f16>::new(
+            ExpertMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(), // 如果你的 new() 现在接受的是 wdown_nt_ptr(已经转置)，那这里要传入转置后的；但你这份代码仍按 K×N 传进来更合理
                 test_routing_from_dense(E, B_CAP, KTOP, &indice, &weight, &topk),
@@ -1365,7 +1365,7 @@ mod tests {
         let mut out = vec![f16_from_f32(0.0); B_CAP * KTOP * H];
 
         let runner = unsafe {
-            ExpertsMatMulDown::<f16>::new(
+            ExpertMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown_nt.as_ptr(), // ✅ 直接传 NT
                 test_routing_from_dense(E, B_CAP, KTOP, &indice, &weight, &topk),
@@ -1483,7 +1483,7 @@ mod tests {
         }
 
         let runner = unsafe {
-            ExpertsMatMulDown::<f16>::new(
+            ExpertMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
                 test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
@@ -1576,7 +1576,7 @@ mod tests {
         }
 
         let runner = unsafe {
-            ExpertsMatMulDown::<f16>::new(
+            ExpertMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
                 test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),
@@ -1669,7 +1669,7 @@ mod tests {
         }
 
         let runner = unsafe {
-            ExpertsMatMulDown::<f16>::new(
+            ExpertMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown.as_ptr(),
                 test_routing_from_dense(num_experts, num_token, num_topk, &indice, &weight, &topk),

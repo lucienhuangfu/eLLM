@@ -1,4 +1,4 @@
-use super::types::{ChatConfig, Command, Config, ModelDtype, SchedulingPolicy, ServeConfig};
+use super::config_types::{ChatConfig, Command, Config, ModelDtype, SchedulingPolicy, ServeConfig};
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -18,7 +18,7 @@ pub enum CliCommand {
 
 #[derive(Debug, Clone, Default, Args)]
 pub struct SharedArgs {
-    #[arg(long = "min-p", default_value = "0.0")]
+    #[arg(long = "min_p", default_value = "0.0")]
     pub min_p: Option<f64>,
     #[arg(long = "model")]
     pub model: Option<String>,
@@ -26,31 +26,31 @@ pub struct SharedArgs {
     pub tokenizer: Option<String>,
     #[arg(long = "dtype", value_enum)]
     pub dtype: Option<ModelDtype>,
-    #[arg(long = "max-model-len")]
+    #[arg(long = "max_model_len")]
     pub max_model_len: Option<usize>,
-    #[arg(long = "trust-remote-code", num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long = "trust_remote_code", num_args = 0..=1, default_missing_value = "true")]
     pub trust_remote_code: Option<bool>,
     #[arg(long = "quantization")]
     pub quantization: Option<String>,
-    #[arg(long = "kv-cache-dtype")]
+    #[arg(long = "kv_cache_dtype")]
     pub kv_cache_dtype: Option<String>,
-    #[arg(long = "served-model-name")]
+    #[arg(long = "served_model_name")]
     pub served_model_name: Option<String>,
     #[arg(long = "revision")]
     pub revision: Option<String>,
-    #[arg(long = "tokenizer-revision")]
+    #[arg(long = "tokenizer_revision")]
     pub tokenizer_revision: Option<String>,
-    #[arg(long = "download-dir")]
+    #[arg(long = "download_dir")]
     pub download_dir: Option<String>,
-    #[arg(long = "max-num-seqs")]
+    #[arg(long = "max_num_seqs")]
     pub max_num_seqs: Option<usize>,
-    #[arg(long = "max-num-batched-tokens")]
+    #[arg(long = "max_num_batched_tokens")]
     pub max_num_batched_tokens: Option<usize>,
-    #[arg(long = "enable-continuous-batching", num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long = "enable_continuous_batching", num_args = 0..=1, default_missing_value = "true")]
     pub enable_continuous_batching: Option<bool>,
-    #[arg(long = "prefill-chunk-size")]
+    #[arg(long = "prefill_chunk_size")]
     pub prefill_chunk_size: Option<usize>,
-    #[arg(long = "scheduling-policy", value_enum)]
+    #[arg(long = "scheduling_policy", value_enum)]
     pub scheduling_policy: Option<SchedulingPolicy>,
 }
 
@@ -64,9 +64,9 @@ pub struct ServeArgs {
     pub host: Option<String>,
     #[arg(long = "port")]
     pub port: Option<u16>,
-    #[arg(long = "log-requests", num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long = "log_requests", num_args = 0..=1, default_missing_value = "true")]
     pub log_requests: Option<bool>,
-    #[arg(long = "api-key")]
+    #[arg(long = "api_key")]
     pub api_key: Option<String>,
 }
 
@@ -76,11 +76,11 @@ pub struct ChatArgs {
     pub shared: SharedArgs,
     #[arg(long = "config")]
     pub config: Option<PathBuf>,
-    #[arg(long = "system-prompt")]
+    #[arg(long = "system_prompt")]
     pub system_prompt: Option<String>,
     #[arg(long = "stream", num_args = 0..=1, default_missing_value = "true")]
     pub stream: Option<bool>,
-    #[arg(long = "max-turns")]
+    #[arg(long = "max_turns")]
     pub max_turns: Option<usize>,
 }
 

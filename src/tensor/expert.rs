@@ -1,11 +1,11 @@
 use std::ops::{AddAssign, Neg, Sub};
 
-use crate::common::matmul_params::MatMulParams;
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
-use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
-use crate::operators::experts::expert_routing::ExpertRouting;
+use crate::operators::expert::expert_routing::ExpertRouting;
+use crate::operators::moe::{ExpertMatMulDown, ExpertMatMulSilu, ExpertMergeAdd};
 use crate::operators::operator::Operator;
 
 use super::{GlobalOperatorQueue, Tensor};
@@ -37,7 +37,7 @@ where
 
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
 
-        let operator = Operator::ExpertsMergeAdd(ExpertsMergeAdd::new(
+        let operator = Operator::ExpertMergeAdd(ExpertMergeAdd::new(
             self.data,
             residual.data,
             routing,
@@ -70,8 +70,8 @@ where
 
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
 
-        let operator = Operator::ExpertsMatMulDown(unsafe {
-            ExpertsMatMulDown::new(
+        let operator = Operator::ExpertMatMulDown(unsafe {
+            ExpertMatMulDown::new(
                 self.data,
                 down_weights.data,
                 routing,
@@ -105,8 +105,8 @@ where
 
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
 
-        let operator = Operator::ExpertsMatMulSilu(unsafe {
-            ExpertsMatMulSilu::new(
+        let operator = Operator::ExpertMatMulSilu(unsafe {
+            ExpertMatMulSilu::new(
                 self.data,
                 gate_weights.data,
                 up_weights.data,

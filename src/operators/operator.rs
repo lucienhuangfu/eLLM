@@ -4,8 +4,8 @@ use crate::operators::fake_echo::FakeEcho;
 use crate::runtime::{SequenceSlice, SequenceState};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
-use crate::operators::routing::ExpertsSoftmaxNorm;
-use crate::operators::routing::ExpertsTopkNorm;
+use crate::operators::routing::ExpertSoftmaxNorm;
+use crate::operators::routing::ExpertTopkNorm;
 use crate::operators::routing::MatMulSigmoid;
 use crate::operators::transform::LookupRMSMap;
 
@@ -13,7 +13,7 @@ use crate::operators::routing::TopKSoftmax;
 // Add missing imports for zip map operations
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 // use super::mul::matmul_silu_mul_matmul::MatMulSilu;
-use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
+use crate::operators::moe::{ExpertMatMulDown, ExpertMatMulSilu, ExpertMergeAdd};
 use crate::operators::movement::LiftVector;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddZipMap;
@@ -35,12 +35,12 @@ pub enum Operator<T>
     AddZipMap(AddZipMap<T>),
     Attention(Attention<T>),
     // ComplexZipMap(ComplexZipMap<T>),
-    ExpertsMatMulDown(ExpertsMatMulDown<T>),
-    ExpertsMatMulSilu(ExpertsMatMulSilu<T>),
-    ExpertsMergeAdd(ExpertsMergeAdd<T>),
+    ExpertMatMulDown(ExpertMatMulDown<T>),
+    ExpertMatMulSilu(ExpertMatMulSilu<T>),
+    ExpertMergeAdd(ExpertMergeAdd<T>),
     MatMulSigmoid(MatMulSigmoid<T>),
-    ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
-    ExpertsTopkNorm(ExpertsTopkNorm<T>),
+    ExpertSoftmaxNorm(ExpertSoftmaxNorm<T>),
+    ExpertTopkNorm(ExpertTopkNorm<T>),
     LiftVector(LiftVector<T>),
     LookupRMSMap(LookupRMSMap<T>),
     MatMul(MatMul<T>),
@@ -101,23 +101,23 @@ where
                 operator.run(prefill_size, decode_size, decode_list, cpu_num, thread_id);
             }
 
-            Self::ExpertsMatMulDown(operator) => {
+            Self::ExpertMatMulDown(operator) => {
                 run_simple!(operator);
             }
 
-            Self::ExpertsMatMulSilu(operator) => {
+            Self::ExpertMatMulSilu(operator) => {
                 run_simple!(operator);
             }
-            Self::ExpertsMergeAdd(operator) => {
+            Self::ExpertMergeAdd(operator) => {
                 run_simple!(operator);
             }
             Self::MatMulSigmoid(operator) => {
                 run_simple!(operator);
             }
-            Self::ExpertsSoftmaxNorm(operator) => {
+            Self::ExpertSoftmaxNorm(operator) => {
                 run_simple!(operator);
             }
-            Self::ExpertsTopkNorm(operator) => {
+            Self::ExpertTopkNorm(operator) => {
                 run_simple!(operator);
             }
             Self::LiftVector(operator) => {
@@ -199,7 +199,7 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 mod test {
     use super::*;
     use crate::kernel::matmul_params::MatMulParams;
-    use crate::operators::experts::expert_routing::ExpertRouting;
+    use crate::operators::expert::expert_routing::ExpertRouting;
     use crate::runtime::SequenceSlice;
     use crate::runtime::{BatchScheduler, Phase, SequenceState};
     use approx::assert_ulps_eq;
@@ -217,7 +217,7 @@ mod test {
         num_topk: usize,
     ) -> ExpertRouting<T> {
         unsafe {
-            crate::operators::experts::expert_routing::empty_routing(
+            crate::operators::expert::expert_routing::empty_routing(
                 num_experts,
                 num_tokens,
                 num_topk,
@@ -244,7 +244,7 @@ mod test {
         topk: &[usize],
     ) -> ExpertRouting<f16> {
         unsafe {
-            crate::operators::experts::expert_routing::routing_from_dense(
+            crate::operators::expert::expert_routing::routing_from_dense(
                 num_experts,
                 num_tokens,
                 num_topk,
@@ -1316,7 +1316,7 @@ mod test {
 
         let routing = empty_routing::<f32>(num_experts, num_tokens, num_topk);
 
-        let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::<f32>::new(
+        let operator = Operator::ExpertSoftmaxNorm(ExpertSoftmaxNorm::<f32>::new(
             input_data.as_ptr(),
             routing,
             batch_size,
@@ -1919,7 +1919,7 @@ mod test {
         }
 
         unsafe {
-            let runner = crate::operators::expert::ExpertsMatMulSilu::<f16>::new(
+            let runner = crate::operators::expert::ExpertMatMulSilu::<f16>::new(
                 a.as_ptr(),
                 w_gate_nt.as_ptr(), // ✅ 传 NT
                 w_up_nt.as_ptr(),   // ✅ 传 NT
@@ -1937,7 +1937,7 @@ mod test {
                 false,
             );
 
-            let op = Operator::ExpertsMatMulSilu(runner);
+            let op = Operator::ExpertMatMulSilu(runner);
             run_operator_all_threads(&op, B, cpu_num);
         }
 
@@ -2028,7 +2028,7 @@ mod test {
         }
 
         unsafe {
-            let runner = crate::operators::expert::ExpertsMatMulSilu::<f16>::new(
+            let runner = crate::operators::expert::ExpertMatMulSilu::<f16>::new(
                 a.as_ptr(),
                 w_gate_nt.as_ptr(), // ✅ NT
                 w_up_nt.as_ptr(),   // ✅ NT
@@ -2046,7 +2046,7 @@ mod test {
                 false,
             );
 
-            let op = Operator::ExpertsMatMulSilu(runner);
+            let op = Operator::ExpertMatMulSilu(runner);
             run_operator_all_threads(&op, B, cpu_num);
         }
 
@@ -2262,7 +2262,7 @@ mod test {
         }
 
         unsafe {
-            let runner = crate::operators::expert::ExpertsMatMulDown::<f16>::new(
+            let runner = crate::operators::expert::ExpertMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown_nt.as_ptr(), // ✅ NT
                 dense_routing(e, b, ktop, &indice, &weight, &topk),
@@ -2276,7 +2276,7 @@ mod test {
                 false,
             );
 
-            let op = Operator::ExpertsMatMulDown(runner);
+            let op = Operator::ExpertMatMulDown(runner);
             run_operator_all_threads(&op, b, 1);
         }
 
@@ -2365,7 +2365,7 @@ mod test {
         }
 
         unsafe {
-            let runner = crate::operators::expert::ExpertsMatMulDown::<f16>::new(
+            let runner = crate::operators::expert::ExpertMatMulDown::<f16>::new(
                 nonlin.as_ptr(),
                 wdown_nt.as_ptr(), // ✅ NT
                 dense_routing(e, b, ktop, &indice, &weight, &topk),
@@ -2379,7 +2379,7 @@ mod test {
                 false,
             );
 
-            let op = Operator::ExpertsMatMulDown(runner);
+            let op = Operator::ExpertMatMulDown(runner);
             run_operator_all_threads(&op, b, 1);
         }
 
@@ -2475,7 +2475,7 @@ mod test {
         }
 
         unsafe {
-            let runner = crate::operators::expert::ExpertsMergeAdd::<f16>::new(
+            let runner = crate::operators::expert::ExpertMergeAdd::<f16>::new(
                 input.as_ptr(),
                 residual.as_ptr(),
                 empty_routing::<f16>(num_experts, num_tokens, k),
@@ -2489,7 +2489,7 @@ mod test {
                 false,
             );
 
-            let op = Operator::ExpertsMergeAdd(runner);
+            let op = Operator::ExpertMergeAdd(runner);
             run_operator_all_threads(&op, batch, 1);
         }
 
@@ -2540,7 +2540,7 @@ mod test {
         }
 
         unsafe {
-            let runner = crate::operators::expert::ExpertsMergeAdd::<f16>::new(
+            let runner = crate::operators::expert::ExpertMergeAdd::<f16>::new(
                 input.as_ptr(),
                 residual.as_ptr(),
                 empty_routing::<f16>(num_experts, num_tokens, k),
@@ -2554,7 +2554,7 @@ mod test {
                 false,
             );
 
-            let op = Operator::ExpertsMergeAdd(runner);
+            let op = Operator::ExpertMergeAdd(runner);
             run_operator_all_threads(&op, batch, 1);
         }
 
@@ -2615,7 +2615,7 @@ mod test {
         }
 
         unsafe {
-            let runner = crate::operators::expert::ExpertsMergeAdd::<f16>::new(
+            let runner = crate::operators::expert::ExpertMergeAdd::<f16>::new(
                 input.as_ptr(),
                 residual.as_ptr(),
                 routing,
@@ -2629,7 +2629,7 @@ mod test {
                 false,
             );
 
-            let op = Operator::ExpertsMergeAdd(runner);
+            let op = Operator::ExpertMergeAdd(runner);
 
             for tid in 0..num_threads {
                 op.run(batch_size, 0, num_threads, tid, &[], &[], &mut Vec::new());

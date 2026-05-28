@@ -12,18 +12,18 @@ pub mod elementwise {
     pub mod silu_mul_zip;
 }
 
-pub mod experts {
+pub mod expert {
+    pub mod expert_matmul_mul;
+    pub mod expert_matmul_silu_mul_matmul;
+    pub mod expert_merge_add;
     pub mod expert_routing;
-    pub mod experts_matmul_mul;
-    pub mod experts_matmul_silu_mul_matmul;
-    pub mod experts_merge_add;
-    pub mod experts_topk_norm;
+    pub mod expert_topk_norm;
 }
 
-pub mod expert {
-    pub use super::experts::experts_matmul_mul::ExpertsMatMulDown;
-    pub use super::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
-    pub use super::experts::experts_merge_add::ExpertsMergeAdd;
+pub mod moe {
+    pub use super::expert::expert_matmul_mul::ExpertMatMulDown;
+    pub use super::expert::expert_matmul_silu_mul_matmul::ExpertMatMulSilu;
+    pub use super::expert::expert_merge_add::ExpertMergeAdd;
 }
 
 pub mod left_vector;
@@ -59,10 +59,10 @@ pub mod normalization {
 }
 
 pub mod routing {
-    pub use super::experts::experts_topk_norm::ExpertsTopkNorm;
+    pub use super::expert::expert_topk_norm::ExpertTopkNorm;
     pub use super::matmul::matmul_sigmoid::MatMulSigmoid;
     pub use super::matmul::matmul_topk::MatMulTopK;
-    pub use super::softmax::softmax_norm::ExpertsSoftmaxNorm;
+    pub use super::softmax::softmax_norm::ExpertSoftmaxNorm;
     pub use super::softmax::topk_softmax::TopKSoftmax;
 }
 
@@ -86,10 +86,10 @@ pub mod traits {
     pub mod map;
     pub mod softmax;
 
-    pub use expert::{ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait};
+    pub use expert::{ExpertDownTrait, ExpertSiluTrait, MoeMergeTrait};
     pub use linear::{
         AttentionTrait, MatMulAddTrait, MatMulSigmoidTrait, MatMulTrait, MatMulkqvTrait,
     };
     pub use map::{MapTrait, ZipMapTrait};
-    pub use softmax::{ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
+    pub use softmax::{ExpertTopkNormTrait, MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
 }
