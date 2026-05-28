@@ -2,10 +2,10 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use crate::common::matmul_params::MatMulParams;
-use crate::common::num_traits::Sigmoid;
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
+use crate::num_traits::Sigmoid;
 use crate::operators::assign::assign;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 
 // Variable naming used in this operator:
 // - input_rows / input_row_start: rows from the input matrix and sigmoid output.

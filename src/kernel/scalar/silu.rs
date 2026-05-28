@@ -1,4 +1,4 @@
-use crate::common::num_traits::Sigmoid;
+use crate::num_traits::Sigmoid;
 use std::ops::{Add, Div, Mul, Neg};
 
 pub fn silu<T>(input_ptr: *const T, output_ptr: *mut T, length: usize)

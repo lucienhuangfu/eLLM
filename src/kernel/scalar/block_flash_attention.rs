@@ -1,6 +1,6 @@
 use std::ops::{Add, Div, Mul, Sub};
 
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 
 pub fn block_flash_attention<T>(
     q_head_ptr: *const T,

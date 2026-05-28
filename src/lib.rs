@@ -6,6 +6,7 @@
 
 pub mod common;
 pub mod config;
+pub mod num_traits;
 pub mod kernel;
 pub mod mem_mgr;
 pub mod operators;

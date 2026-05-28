@@ -1,6 +1,6 @@
 #![feature(f16)]
 
-use ellm::common::send_sync_ptr::SharedMut;
+use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;

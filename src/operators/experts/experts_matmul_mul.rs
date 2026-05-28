@@ -1,12 +1,10 @@
 // === compiler/mul/experts_matmul_mul.rs ===
 #![allow(non_snake_case)]
 
-use crate::common::{
-    matmul_params::MatMulParams,
-    send_sync_ptr::{ConstPtr, MutPtr},
-};
+use crate::common::matmul_params::MatMulParams;
 use crate::operators::assign::assign;
 use crate::operators::experts::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::ExpertsDownTrait;
 use std::f16;
 use std::marker::PhantomData;
@@ -631,7 +629,7 @@ mod tests {
     use std::arch::is_x86_feature_detected;
     use std::mem;
 
-    use crate::common::num_traits::FromNumber;
+    use crate::num_traits::FromNumber;
 
     // ========================================================================
     // Helpers
@@ -1161,7 +1159,7 @@ mod tests {
             return;
         }
 
-        use crate::common::num_traits::FromNumber;
+        use crate::num_traits::FromNumber;
 
         #[inline]
         fn f16_from_f32(x: f32) -> f16 {
@@ -1306,7 +1304,7 @@ mod tests {
             return;
         }
 
-        use crate::common::num_traits::FromNumber;
+        use crate::num_traits::FromNumber;
         #[inline]
         fn f16_from_f32(x: f32) -> f16 {
             <f16 as FromNumber>::from_f32(x)

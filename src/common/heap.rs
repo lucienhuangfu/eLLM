@@ -233,7 +233,6 @@ mod tests {
         assert_eq!(heap.len(), 2);
         heap.sort_desc();
 
-        // Expect (1.0, 2) and (1.0, 1) because they are "larger" than (1.0, 0) due to index tie-breaking
         assert_ulps_eq!(values[0], 1.0);
         assert_eq!(indices[0], 2);
         assert_ulps_eq!(values[1], 1.0);

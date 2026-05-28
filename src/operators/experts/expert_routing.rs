@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicUsize;
 
-use crate::common::send_sync_ptr::MutPtr;
+use crate::operators::send_sync_ptr::MutPtr;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ExpertTaskMeta {
@@ -75,7 +75,7 @@ pub unsafe fn routing_from_dense<T: Copy + Default>(
 ) -> ExpertRouting<T> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::common::send_sync_ptr::MutPtr;
+    use crate::operators::send_sync_ptr::MutPtr;
     use crate::mem_mgr::allocator::AlignedBox;
 
     let expert_counts_box = AlignedBox::<AtomicUsize>::allocate(num_experts);
@@ -132,7 +132,7 @@ pub unsafe fn empty_routing<T: Copy + Default>(
 ) -> ExpertRouting<T> {
     use std::sync::atomic::AtomicUsize;
 
-    use crate::common::send_sync_ptr::MutPtr;
+    use crate::operators::send_sync_ptr::MutPtr;
     use crate::mem_mgr::allocator::AlignedBox;
 
     let expert_counts_box = AlignedBox::<AtomicUsize>::allocate(num_experts);

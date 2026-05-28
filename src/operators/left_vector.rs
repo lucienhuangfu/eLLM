@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::common::send_sync_ptr::MutPtr;
+use crate::operators::send_sync_ptr::MutPtr;
 use crate::runtime::SequenceSlice;
 use crate::operators::assign::assign;
 

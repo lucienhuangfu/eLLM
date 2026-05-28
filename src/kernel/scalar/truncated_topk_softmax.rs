@@ -1,6 +1,6 @@
 use crate::common::heap::FixedMinHeap;
-use crate::common::num_traits::Exp;
-use crate::common::num_traits::NegInfinity;
+use crate::num_traits::Exp;
+use crate::num_traits::NegInfinity;
 use std::ops::{AddAssign, Div, Mul, Sub};
 use std::ptr;
 

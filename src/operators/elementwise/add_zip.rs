@@ -4,7 +4,7 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 // use axum::http::HeaderName;
 
 // removed custom Sigmoid trait; kernel provides per-type implementations
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::operators::assign::assign;
 use crate::operators::traits::ZipMapTrait;

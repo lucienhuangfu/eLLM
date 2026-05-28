@@ -2,6 +2,7 @@ pub mod assign;
 pub mod attention;
 pub mod fake_echo;
 pub mod operator;
+pub mod send_sync_ptr;
 pub use operator::Operator;
 
 pub mod elementwise {
@@ -16,6 +17,7 @@ pub mod experts {
     pub mod experts_matmul_mul;
     pub mod experts_matmul_silu_mul_matmul;
     pub mod experts_merge_add;
+    pub mod experts_topk_norm;
 }
 
 pub mod expert {
@@ -57,16 +59,15 @@ pub mod normalization {
 }
 
 pub mod routing {
+    pub use super::experts::experts_topk_norm::ExpertsTopkNorm;
     pub use super::matmul::matmul_sigmoid::MatMulSigmoid;
     pub use super::matmul::matmul_topk::MatMulTopK;
     pub use super::softmax::softmax_norm::ExpertsSoftmaxNorm;
-    pub use super::softmax::topk_norm::ExpertsTopkNorm;
     pub use super::softmax::topk_softmax::TopKSoftmax;
 }
 
 pub mod softmax {
     pub mod softmax_norm;
-    pub mod topk_norm;
     pub mod topk_softmax;
 }
 

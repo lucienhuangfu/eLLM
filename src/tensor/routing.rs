@@ -1,13 +1,13 @@
 use std::ops::{AddAssign, Neg, Sub};
 use std::sync::atomic::AtomicUsize;
 
-use crate::operators::experts::expert_routing::ExpertRouting;
 use crate::common::matmul_params::MatMulParams;
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::num_traits::Sigmoid;
+use crate::num_traits::Sqrt;
+use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::operators::experts::expert_routing::ExpertRouting;
 use crate::operators::operator::Operator;
 use crate::operators::routing::{ExpertsSoftmaxNorm, ExpertsTopkNorm, MatMulSigmoid, TopKSoftmax};
 
@@ -151,10 +151,10 @@ where
             ptr
         };
         ExpertRouting {
-            expert_counts: crate::common::send_sync_ptr::MutPtr { ptr: expert_counts },
-            index_tensor: crate::common::send_sync_ptr::MutPtr { ptr: index_tensor },
-            score_tensor: crate::common::send_sync_ptr::MutPtr { ptr: score_tensor },
-            topk_indices: crate::common::send_sync_ptr::MutPtr { ptr: topk_indices },
+            expert_counts: crate::operators::send_sync_ptr::MutPtr { ptr: expert_counts },
+            index_tensor: crate::operators::send_sync_ptr::MutPtr { ptr: index_tensor },
+            score_tensor: crate::operators::send_sync_ptr::MutPtr { ptr: score_tensor },
+            topk_indices: crate::operators::send_sync_ptr::MutPtr { ptr: topk_indices },
             num_experts,
             num_tokens,
             num_topk,

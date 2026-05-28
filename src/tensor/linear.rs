@@ -1,8 +1,8 @@
 use std::ops::{AddAssign, Neg, Sub};
 
 use crate::common::matmul_params::MatMulParams;
-use crate::common::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 use crate::operators::operator::Operator;
 use crate::operators::routing::MatMulTopK;

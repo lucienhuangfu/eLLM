@@ -5,7 +5,7 @@ use std::time::Duration;
 use super::sequence_slice::{DecodeList, SequenceSlice};
 use super::slice_scheduler::{PrefillCandidate, SliceScheduler};
 use super::state::{Phase, SequenceState};
-use crate::common::send_sync_ptr::SharedMut;
+use crate::operators::send_sync_ptr::SharedMut;
 
 pub struct BatchScheduler {
     pub prefill_list: Vec<Vec<SequenceSlice>>,

@@ -1,6 +1,5 @@
 use std::cell::SyncUnsafeCell;
 
-// define a struct for storing the parameters of the matrix multiplication
 pub struct ConstPtr<T> {
     pub ptr: *const T,
 }

@@ -2,8 +2,8 @@ use std::f16;
 use std::ops::{AddAssign, Sub};
 use std::sync::atomic::Ordering;
 
-use crate::common::num_traits::{exp::Exp, sqrt::Sqrt};
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::num_traits::{exp::Exp, sqrt::Sqrt};
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::scalar;
 use crate::kernel::x86_64;
 use crate::mem_mgr::allocator::AlignedBox;

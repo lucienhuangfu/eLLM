@@ -1,7 +1,7 @@
 use std::ops::{Add, Div, Mul, Sub};
 
-use crate::common::num_traits::NegInfinity;
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::num_traits::NegInfinity;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::runtime::SequenceSlice;
 use crate::operators::traits::AttentionTrait;
 
@@ -149,7 +149,7 @@ where
         + Div<Output = T>
         + PartialOrd
         + NegInfinity
-        + crate::common::num_traits::Exp,
+        + crate::num_traits::Exp,
 {
     /// Visit aligned row ranges for attention computation
     #[inline(always)]

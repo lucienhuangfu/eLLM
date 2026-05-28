@@ -6,12 +6,10 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
 use crate::common::heap::FixedMinHeap;
-use crate::common::{
-    matmul_params::MatMulParams,
-    send_sync_ptr::{ConstPtr, MutPtr},
-};
+use crate::common::matmul_params::MatMulParams;
 use crate::kernel;
 use crate::operators::assign::assign;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::MatMulTopKTrait;
 
 // Variable naming used in this operator:

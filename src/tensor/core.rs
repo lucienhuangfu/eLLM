@@ -1,6 +1,6 @@
 use std::ops::{AddAssign, Neg, Sub};
 
-use crate::common::num_traits::NegInfinity;
+use crate::num_traits::NegInfinity;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::operator::Operator;

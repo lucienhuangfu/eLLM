@@ -2,11 +2,11 @@ use std::f16;
 use std::ops::{AddAssign, Div, Mul, Sub};
 use std::ptr;
 
-use crate::common::num_traits::Exp;
-use crate::common::num_traits::FromNumber;
-use crate::common::num_traits::NegInfinity;
-use crate::common::num_traits::Sqrt;
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::num_traits::Exp;
+use crate::num_traits::FromNumber;
+use crate::num_traits::NegInfinity;
+use crate::num_traits::Sqrt;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::runtime::SequenceSlice;
 use crate::kernel;
 use crate::operators::assign::assign;

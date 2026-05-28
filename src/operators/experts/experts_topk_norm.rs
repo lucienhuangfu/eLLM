@@ -3,7 +3,7 @@ use std::ops::{AddAssign, Div};
 use std::sync::atomic::Ordering;
 
 use crate::operators::experts::expert_routing::ExpertRouting;
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::assign::assign;

@@ -6,12 +6,10 @@ use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 use std::sync::atomic::Ordering;
 
-use crate::common::{
-    matmul_params::MatMulParams,
-    send_sync_ptr::{ConstPtr, MutPtr},
-};
+use crate::common::matmul_params::MatMulParams;
 use crate::operators::assign::assign;
 use crate::operators::experts::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::ExpertsSiluTrait;
 
 // Variable naming used in this operator:

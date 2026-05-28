@@ -5,7 +5,7 @@ use std::f16;
 use std::ops::{Add, Mul};
 use std::sync::atomic::Ordering;
 
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::assign::assign;
 use crate::operators::experts::expert_routing::ExpertRouting;
 use crate::operators::traits::MoeMergeTrait;
@@ -496,7 +496,7 @@ mod tests {
             return;
         }
 
-        use crate::common::num_traits::FromNumber;
+        use crate::num_traits::FromNumber;
 
         #[inline]
         fn f16_from_f32(x: f32) -> f16 {

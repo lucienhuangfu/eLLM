@@ -1,4 +1,4 @@
-use super::super::super::common::matmul_params::MatMulParams;
+use crate::common::matmul_params::MatMulParams;
 use std::ops::{Add, Mul};
 
 /// 通用微核（与 AVX-512 版本对齐的“广播式”语义）
