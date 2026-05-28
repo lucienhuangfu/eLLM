@@ -5,7 +5,7 @@ use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::BatchSequence;
-use ellm::runtime::{BatchScheduler, Phase, Runner, SequenceState};
+use ellm::runtime::{BatchScheduler, Phase, Runner, SchedulingMode, SequenceState};
 use ellm::serving;
 use std::sync::Arc;
 
@@ -31,8 +31,13 @@ fn build_fake_runner(
         .map(|ids| ids.len())
         .unwrap_or(1);
 
-    let mut batch_scheduler =
-        BatchScheduler::new(sequence_length, batch_size, chunk_size, thread_num);
+    let mut batch_scheduler = BatchScheduler::with_mode(
+        sequence_length,
+        batch_size,
+        chunk_size,
+        thread_num,
+        SchedulingMode::ContinuousService,
+    );
     batch_scheduler.batch_list = batch_states;
 
     let operator_queue = vec![Operator::FakeEcho(FakeEcho)];

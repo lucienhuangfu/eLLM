@@ -2,11 +2,11 @@ use std::f16;
 use std::ops::{AddAssign, Div};
 use std::sync::atomic::Ordering;
 
-use crate::operators::expert::expert_routing::ExpertRouting;
-use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::assign::assign;
+use crate::operators::expert::expert_routing::ExpertRouting;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::ExpertTopkNormTrait;
 
 #[derive(Clone)]

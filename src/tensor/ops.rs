@@ -6,6 +6,7 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::operators::expert::expert_routing::ExpertRouting;
+use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 use crate::operators::moe::{ExpertMatMulDown, ExpertMatMulSilu, ExpertMergeAdd};
 use crate::operators::movement::LiftVector;
 use crate::operators::operator::Operator;
@@ -13,7 +14,6 @@ use crate::operators::routing::{
     ExpertSoftmaxNorm, ExpertTopkNorm, MatMulSigmoid, MatMulTopK, TopKSoftmax,
 };
 use crate::operators::transform::{AddRMSZipMap, AddZipMap, LookupRMSMap, RMSMap, SigmoidMap};
-use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 
 use super::core::leaked_aligned_ptr;
 use super::{GlobalOperatorQueue, Tensor};

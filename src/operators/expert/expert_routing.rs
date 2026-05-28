@@ -75,8 +75,8 @@ pub unsafe fn routing_from_dense<T: Copy + Default>(
 ) -> ExpertRouting<T> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::operators::send_sync_ptr::MutPtr;
     use crate::mem_mgr::allocator::AlignedBox;
+    use crate::operators::send_sync_ptr::MutPtr;
 
     let expert_counts_box = AlignedBox::<AtomicUsize>::allocate(num_experts);
     let expert_counts = expert_counts_box.as_mut_ptr();
@@ -132,8 +132,8 @@ pub unsafe fn empty_routing<T: Copy + Default>(
 ) -> ExpertRouting<T> {
     use std::sync::atomic::AtomicUsize;
 
-    use crate::operators::send_sync_ptr::MutPtr;
     use crate::mem_mgr::allocator::AlignedBox;
+    use crate::operators::send_sync_ptr::MutPtr;
 
     let expert_counts_box = AlignedBox::<AtomicUsize>::allocate(num_experts);
     let expert_counts = expert_counts_box.as_mut_ptr();

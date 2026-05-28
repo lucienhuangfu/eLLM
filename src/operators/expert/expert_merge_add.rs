@@ -5,9 +5,9 @@ use std::f16;
 use std::ops::{Add, Mul};
 use std::sync::atomic::Ordering;
 
-use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::ExpertRouting;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::MoeMergeTrait;
 
 // Variable naming used in this operator:

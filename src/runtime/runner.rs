@@ -1,7 +1,6 @@
 use core_affinity;
 use std::cell::SyncUnsafeCell;
 use std::ops::{AddAssign, Neg, Sub};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
@@ -19,7 +18,6 @@ use crate::runtime::BatchScheduler;
 pub struct Runner<T> {
     operator_queue: Vec<Operator<T>>,
     batch_scheduler: BatchScheduler,
-    stop_flag: Arc<AtomicBool>,
 }
 
 impl<T> Runner<T>
@@ -42,7 +40,6 @@ where
         Self {
             operator_queue,
             batch_scheduler,
-            stop_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -53,18 +50,18 @@ where
         let operator_queue: Arc<[Operator<T>]> = self.operator_queue.into();
 
         let barrier = Arc::new(Barrier::new(thread_num));
-        let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
+        let shared_round = Arc::new(SyncUnsafeCell::new(
+            crate::runtime::BatchScheduleStep::default(),
+        ));
         let shared_scheduler = Arc::new(SyncUnsafeCell::new(self.batch_scheduler));
-        let stop_flag = self.stop_flag;
 
         let mut handles = Vec::with_capacity(thread_num);
 
         for thread_id in 0..thread_num {
             let barrier = Arc::clone(&barrier);
             let queue = Arc::clone(&operator_queue);
-            let shared_sizes = Arc::clone(&shared_sizes);
+            let shared_round = Arc::clone(&shared_round);
             let shared_scheduler = Arc::clone(&shared_scheduler);
-            let stop_flag = Arc::clone(&stop_flag);
             let core_id = core_ids.get(thread_id).copied();
 
             let handle = thread::spawn(move || {
@@ -72,24 +69,27 @@ where
                     core_affinity::set_for_current(core_id);
                 }
 
-                let sizes_ptr = shared_sizes.get();
+                let round_ptr = shared_round.get();
                 let scheduler_ptr = shared_scheduler.get();
 
                 loop {
-                    if stop_flag.load(Ordering::Relaxed) {
-                        break;
-                    }
-
                     if thread_id == 0 {
                         unsafe {
                             let scheduler = &mut *scheduler_ptr;
-                            *sizes_ptr = scheduler.schedule_batch();
+                            *round_ptr = scheduler.schedule_batch_step();
                         }
                     }
 
                     barrier.wait();
 
-                    let (prefill_size, decode_size) = unsafe { *sizes_ptr };
+                    let round = unsafe { *round_ptr };
+                    if round.stop_requested {
+                        break;
+                    }
+
+                    let prefill_size = round.prefill_tokens;
+                    let decode_size = round.decode_tokens;
+                    let continuous_service = unsafe { (&*scheduler_ptr).is_continuous_service() };
                     let (prefill_list, decode_list, batch_list) = unsafe {
                         let scheduler = &mut *scheduler_ptr;
                         (
@@ -113,14 +113,20 @@ where
                     }
 
                     if thread_id == 0 {
-                        let all_eos = batch_list
+                        let all_done = batch_list
                             .iter()
                             .all(|s| matches!(s.phase, crate::runtime::Phase::Eos));
-                        if all_eos && !batch_list.is_empty() {
-                            stop_flag.store(true, Ordering::Relaxed);
+                        if !continuous_service && all_done && !batch_list.is_empty() {
+                            unsafe {
+                                (*round_ptr).stop_requested = true;
+                            }
                         }
                     }
                     barrier.wait();
+
+                    if unsafe { (*round_ptr).stop_requested } {
+                        break;
+                    }
                 }
             });
 

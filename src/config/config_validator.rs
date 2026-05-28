@@ -161,11 +161,9 @@ impl Config {
             command: self.command,
             model: ResolvedModelConfig {
                 raw_config: self.model.clone(),
-                served_model_name: self
-                    .model
-                    .served_model_name
-                    .clone()
-                    .unwrap_or_else(|| super::config_types::infer_served_model_name(&self.model.model)),
+                served_model_name: self.model.served_model_name.clone().unwrap_or_else(|| {
+                    super::config_types::infer_served_model_name(&self.model.model)
+                }),
                 effective_tokenizer: self
                     .model
                     .tokenizer

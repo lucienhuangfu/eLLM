@@ -2,8 +2,8 @@ use std::ops::{Add, Div, Mul, Sub};
 
 use crate::num_traits::NegInfinity;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::runtime::SequenceSlice;
 use crate::operators::traits::AttentionTrait;
+use crate::runtime::SequenceSlice;
 
 use super::scratch::{AttentionScratch, AttentionScratchSlice};
 use super::utils::{split_sequence_by_triangle, RowVisitPlan};

@@ -13,7 +13,8 @@ pub use crate::config::{
 pub use io::{load_tiktoken, BatchSequence, ChatTemplate, FromSafetensors, SafeTensorsLoader};
 pub use runner::Runner;
 pub use scheduling::{
-    BatchScheduler, DecodeList, DecodeLookupResult, Phase, SequenceSlice, SequenceState,
+    BatchScheduleStep, BatchScheduler, DecodeList, DecodeLookupResult, Phase, SchedulingMode,
+    SequenceSlice, SequenceState,
 };
 
 #[cfg(test)]

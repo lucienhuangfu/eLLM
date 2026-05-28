@@ -250,17 +250,16 @@ mod tests {
 
     #[test]
     fn test_load_qwen3_tokenizer_json() {
-        let tokenizer =
-            match load_tiktoken(QWEN3_TOKENIZER_PATH, QWEN3_TOKENIZER_CONFIG_PATH) {
-                Ok(tokenizer) => tokenizer,
-                Err(e) => {
-                    eprintln!(
-                        "Skip: qwen3 tokenizer json is not loadable in this environment: {}",
-                        e
-                    );
-                    return;
-                }
-            };
+        let tokenizer = match load_tiktoken(QWEN3_TOKENIZER_PATH, QWEN3_TOKENIZER_CONFIG_PATH) {
+            Ok(tokenizer) => tokenizer,
+            Err(e) => {
+                eprintln!(
+                    "Skip: qwen3 tokenizer json is not loadable in this environment: {}",
+                    e
+                );
+                return;
+            }
+        };
 
         let text = "<|im_start|>user\nhello<|im_end|>";
         let token_ids = tokenizer.encode_with_special_tokens(text);

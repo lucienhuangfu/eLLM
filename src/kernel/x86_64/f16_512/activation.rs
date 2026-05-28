@@ -1,12 +1,11 @@
 use std::arch::x86_64::{
-    __m512h, _mm512_abs_ph, _mm512_add_epi16, _mm512_add_ph, _mm512_and_si512,
-    _mm512_andnot_si512, _mm512_castph_si512, _mm512_castsi512_ph, _mm512_cvttph_epi16,
-    _mm512_div_ph, _mm512_fmadd_ph, _mm512_fnmadd_ph, _mm512_max_epi16, _mm512_max_ph,
-    _mm512_min_ph, _mm512_mul_ph, _mm512_or_si512, _mm512_roundscale_round_ph, _mm512_set1_epi16,
-    _mm512_set1_ph, _mm512_setzero_si512, _mm512_slli_epi16, _mm512_sub_ph, _MM_FROUND_NO_EXC,
+    __m512h, _mm512_abs_ph, _mm512_add_epi16, _mm512_add_ph, _mm512_and_si512, _mm512_andnot_si512,
+    _mm512_castph_si512, _mm512_castsi512_ph, _mm512_cvttph_epi16, _mm512_div_ph, _mm512_fmadd_ph,
+    _mm512_fnmadd_ph, _mm512_max_epi16, _mm512_max_ph, _mm512_min_ph, _mm512_mul_ph,
+    _mm512_or_si512, _mm512_roundscale_round_ph, _mm512_set1_epi16, _mm512_set1_ph,
+    _mm512_setzero_si512, _mm512_slli_epi16, _mm512_sub_ph, _MM_FROUND_NO_EXC,
     _MM_FROUND_TO_NEAREST_INT,
 };
-
 
 #[inline]
 pub unsafe fn exp512(x: __m512h) -> __m512h {

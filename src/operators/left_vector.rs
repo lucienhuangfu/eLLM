@@ -1,8 +1,8 @@
 use std::ptr;
 
+use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::MutPtr;
 use crate::runtime::SequenceSlice;
-use crate::operators::assign::assign;
 
 #[derive(Clone)]
 pub struct LiftVector<T> {

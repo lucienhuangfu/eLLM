@@ -1,8 +1,6 @@
 // === kernel/x86_64/f16_512/moe_silu.rs ===
 #![allow(non_snake_case)]
 
-
-
 /// update: MR=3, NR=32 固定
 /// - A_tile: 3×kc（紧凑，行距=kc）
 /// - gate_panel/up_panel: kc×32（行距=32）

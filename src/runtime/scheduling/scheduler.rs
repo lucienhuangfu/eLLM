@@ -14,6 +14,19 @@ struct PrefillCandidate {
     remaining: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulingMode {
+    ContinuousService,
+    Single,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BatchScheduleStep {
+    pub prefill_tokens: usize,
+    pub decode_tokens: usize,
+    pub stop_requested: bool,
+}
+
 pub struct BatchScheduler {
     pub prefill_list: Vec<Vec<SequenceSlice>>,
     pub decode_list: DecodeList,
@@ -22,6 +35,7 @@ pub struct BatchScheduler {
     max_prefill_size: usize,
     max_decode_size: usize,
     thread_num: usize,
+    scheduling_mode: SchedulingMode,
 }
 
 enum BatchPlan {
@@ -39,6 +53,7 @@ impl BatchScheduler {
         batch_size: usize,
         chunk_size: usize,
         thread_num: usize,
+        scheduling_mode: SchedulingMode,
     ) -> Self {
         let build_prefill_list = || {
             let mut prefill_list = Vec::with_capacity(thread_num);
@@ -56,6 +71,7 @@ impl BatchScheduler {
             prefill_scheduler: SliceScheduler::new(batch_size * thread_num),
             prefill_list: build_prefill_list(),
             decode_list: DecodeList::with_capacity(batch_size),
+            scheduling_mode,
         }
     }
 
@@ -114,11 +130,41 @@ impl BatchScheduler {
         chunk_size: usize,
         thread_num: usize,
     ) -> Self {
-        Self::build(sequence_length, batch_size, chunk_size, thread_num.max(1))
+        Self::build(
+            sequence_length,
+            batch_size,
+            chunk_size,
+            thread_num.max(1),
+            SchedulingMode::ContinuousService,
+        )
+    }
+
+    pub fn with_mode(
+        sequence_length: usize,
+        batch_size: usize,
+        chunk_size: usize,
+        thread_num: usize,
+        scheduling_mode: SchedulingMode,
+    ) -> Self {
+        Self::build(
+            sequence_length,
+            batch_size,
+            chunk_size,
+            thread_num.max(1),
+            scheduling_mode,
+        )
     }
 
     pub fn thread_num(&self) -> usize {
         self.thread_num
+    }
+
+    pub fn scheduling_mode(&self) -> SchedulingMode {
+        self.scheduling_mode
+    }
+
+    pub fn is_continuous_service(&self) -> bool {
+        matches!(self.scheduling_mode, SchedulingMode::ContinuousService)
     }
 
     fn schedule_decode_round(&mut self, decode_candidates: Vec<(usize, usize)>) -> usize {
@@ -186,7 +232,7 @@ impl BatchScheduler {
         prefill_count
     }
 
-    pub fn schedule_batch(&mut self) -> (usize, usize) {
+    pub fn schedule_batch_step(&mut self) -> BatchScheduleStep {
         let prefill_task_count = self.thread_num.min(self.prefill_list.len());
 
         self.prefill_scheduler.set_task_count(prefill_task_count);
@@ -195,20 +241,42 @@ impl BatchScheduler {
             match self.plan_next_round() {
                 BatchPlan::Decode(decode_candidates) => {
                     let decode_count = self.schedule_decode_round(decode_candidates);
-                    return (0, decode_count);
+                    return BatchScheduleStep {
+                        prefill_tokens: 0,
+                        decode_tokens: decode_count,
+                        stop_requested: false,
+                    };
                 }
                 BatchPlan::Prefill {
                     candidates,
                     total_tokens,
                 } => {
                     let prefill_count = self.schedule_prefill_round(candidates, total_tokens);
-                    return (prefill_count, self.decode_list.len());
+                    return BatchScheduleStep {
+                        prefill_tokens: prefill_count,
+                        decode_tokens: self.decode_list.len(),
+                        stop_requested: false,
+                    };
                 }
                 BatchPlan::Idle => {
-                    thread::sleep(Duration::from_millis(1));
+                    if self.is_continuous_service() {
+                        thread::sleep(Duration::from_millis(1));
+                        continue;
+                    }
+
+                    return BatchScheduleStep {
+                        prefill_tokens: 0,
+                        decode_tokens: 0,
+                        stop_requested: true,
+                    };
                 }
             }
         }
+    }
+
+    pub fn schedule_batch(&mut self) -> (usize, usize) {
+        let step = self.schedule_batch_step();
+        (step.prefill_tokens, step.decode_tokens)
     }
 }
 
@@ -248,16 +316,28 @@ mod tests {
     }
 
     #[test]
+    fn single_mode_returns_stop_request_for_empty_batch() {
+        let mut scheduler = BatchScheduler::with_mode(16, 4, 8, 3, SchedulingMode::Single);
+
+        let step = scheduler.schedule_batch_step();
+
+        assert_eq!(step.prefill_tokens, 0);
+        assert_eq!(step.decode_tokens, 0);
+        assert!(step.stop_requested);
+    }
+
+    #[test]
     fn schedule_decode_round_uses_one_decode_sequence() {
         let mut scheduler = BatchScheduler::new(16, 4, 8, 3);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(decode_state(100, 128));
         });
 
-        let (prefill, decode_tokens) = scheduler.schedule_batch();
+        let step = scheduler.schedule_batch_step();
 
-        assert_eq!(prefill, 0);
-        assert_eq!(decode_tokens, 1);
+        assert_eq!(step.prefill_tokens, 0);
+        assert_eq!(step.decode_tokens, 1);
+        assert!(!step.stop_requested);
 
         assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
         assert_eq!(scheduler.decode_list.len(), 1);
@@ -277,10 +357,11 @@ mod tests {
             batch_list.push(prefill_state(0, 23));
         });
 
-        let (prefill_tokens, decode_slices) = scheduler.schedule_batch();
+        let step = scheduler.schedule_batch_step();
 
-        assert_eq!(prefill_tokens, 8);
-        assert_eq!(decode_slices, 1);
+        assert_eq!(step.prefill_tokens, 8);
+        assert_eq!(step.decode_tokens, 1);
+        assert!(!step.stop_requested);
         assert_eq!(scheduler.decode_list.len(), 1);
 
         let attention_slice = &scheduler.decode_list[0];
@@ -321,10 +402,11 @@ mod tests {
             batch_list.push(prefill_state(0, 13));
         });
 
-        let (prefill_tokens, decode_slices) = scheduler.schedule_batch();
+        let step = scheduler.schedule_batch_step();
 
-        assert_eq!(prefill_tokens, 5);
-        assert_eq!(decode_slices, 1);
+        assert_eq!(step.prefill_tokens, 5);
+        assert_eq!(step.decode_tokens, 1);
+        assert!(!step.stop_requested);
         assert_eq!(scheduler.decode_list.len(), 1);
 
         let attention_slice = &scheduler.decode_list[0];
@@ -362,10 +444,11 @@ mod tests {
             batch_list.push(prefill_state(32, 3));
         });
 
-        let (prefill_tokens, decode_tokens) = scheduler.schedule_batch();
+        let step = scheduler.schedule_batch_step();
 
-        assert_eq!(prefill_tokens, 0);
-        assert_eq!(decode_tokens, 1);
+        assert_eq!(step.prefill_tokens, 0);
+        assert_eq!(step.decode_tokens, 1);
+        assert!(!step.stop_requested);
         assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
         assert_eq!(scheduler.decode_list.len(), 1);
 
