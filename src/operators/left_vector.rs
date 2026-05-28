@@ -26,10 +26,6 @@ impl<T> LiftVector<T> {
         thread_num: usize,
         thread_id: usize,
     ) {
-        if prefill_size > 0 {
-            return;
-        }
-
         let total_tokens = decode_list.len();
         let Some((begin, end)) = assign(total_tokens, thread_num, thread_id) else {
             return;

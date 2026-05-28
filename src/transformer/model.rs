@@ -164,6 +164,10 @@ where
             format!("{}.norm_hidden", self.scope_name),
         );
 
+        // Lift: copy last prefill token's norm to batch position, so MatMulTopK
+        // processes the correct token during both prefill and decode.
+        norm_state.lift_vector();
+
         if trace_alignment {
             eprintln!("building lm_head/topk");
         }
