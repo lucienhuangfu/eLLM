@@ -123,15 +123,12 @@ fn main() {
             let ids: Vec<u32> = (input_len..gen_end).map(|i| {
                 unsafe { *sequences_ptr.add(slot * sequence_length + i) as u32 }
             }).collect();
-            let first5: Vec<u32> = ids.iter().take(5).copied().collect();
-            // Try individual token decode for first few tokens
-            let mut preview = String::new();
-            for &tid in ids.iter().take(20) {
-                if let Ok(s) = tokenizer.decode(vec![tid]) { preview.push_str(&s); }
-            }
+            // Decode all tokens individually (tiktoken batch decode can fail on special tokens)
+            let full_text: String = ids.iter()
+                .filter_map(|&tid| tokenizer.decode(vec![tid]).ok())
+                .collect();
             println!("Slot {slot} [{p}]: {gen_len} tokens", p = prompts[slot]);
-            println!("  first5 ids: {first5:?}");
-            println!("  preview: {preview:?}");
+            println!("  {full_text:?}");
             println!();
         }
     });
