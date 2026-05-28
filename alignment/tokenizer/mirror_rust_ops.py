@@ -208,6 +208,22 @@ def main() -> None:
 
     # Final norm
     final_norm = rms_norm_f16(hidden, model.model.norm.weight.data, eps)
+    final_norm_np = final_norm.float().numpy()
+    np.save(str(out_dir / "hf_final_norm.npy"), final_norm_np)
+
+    # Load and compare Rust final norm dump if it exists
+    rust_final_bin = out_dir / "rust_final_norm.bin"
+    if rust_final_bin.exists():
+        rust_final = torch.from_numpy(
+            np.frombuffer(rust_final_bin.read_bytes(), dtype=np.float16)
+            .reshape(seq_len, hidden_size)
+            .astype(np.float32)
+        )
+        diff = (final_norm.float() - rust_final).abs()
+        cos = torch.dot(
+            final_norm.float().ravel(), rust_final.ravel()
+        ) / (torch.norm(final_norm.float().ravel()) * torch.norm(rust_final.ravel()))
+        print(f"Final norm: max_err={diff.max():.4e} mean_err={diff.mean():.4e} cos={cos:.10f}")
 
     # LM head
     lm_head = model.lm_head.weight.data  # [151936, 1024]

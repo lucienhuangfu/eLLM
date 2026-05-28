@@ -83,9 +83,9 @@ pub struct MatMul3<T> {
     // Input and Q/K/V output states.
     // 输入以及 Q/K/V 输出状态。
     hidden_ptr: ConstPtr<T>, // A[input_rows, reduction_cols]
-    q_state_ptr: MutPtr<T>,  // Query state. query 输出。
-    k_state_ptr: MutPtr<T>,  // Key cache/state. key cache/state。
-    v_state_ptr: MutPtr<T>,  // Value cache/state. value cache/state。
+    pub q_state_ptr: MutPtr<T>,  // Query state. query 输出。
+    pub k_state_ptr: MutPtr<T>,  // Key cache/state. key cache/state。
+    pub v_state_ptr: MutPtr<T>,  // Value cache/state. value cache/state。
     q_norm_weight: ConstPtr<T>,
     k_norm_weight: ConstPtr<T>,
 

@@ -68,7 +68,7 @@ where
         config: &Config,
         layer_idx: usize,
         chunk_size: usize,
-        _sequence_length: usize,
+        sequence_length: usize,
         batch_size: usize,
         word_embedding: Rc<Tensor<T>>,
         position_embedding: Rc<Tensor<T>>,
@@ -79,12 +79,14 @@ where
             AttentionKind::Full => AttentionBlock::Full(Attention::<T>::new(
                 config,
                 chunk_size,
+                sequence_length,
                 batch_size,
                 names.attention.clone(),
             )),
             AttentionKind::SlidingWindow => AttentionBlock::SlidingWindow(Attention::<T>::new(
                 config,
                 chunk_size,
+                sequence_length,
                 batch_size,
                 names.attention.clone(),
             )),
@@ -127,7 +129,7 @@ where
 
         Self {
             chunk_size: chunk_size,
-            sequence_length: _sequence_length,
+            sequence_length: sequence_length,
             batch_size: batch_size,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             layer_idx: layer_idx,

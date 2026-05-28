@@ -151,7 +151,8 @@ fn main() -> anyhow::Result<()> {
         .position(|op| matches!(op, Operator::MatMulTopK(_)))
         .unwrap_or(operator_queue.len());
 
-    // Phase 1: Layer operators + final RMS norm (pure prefill)
+    // Phase 1: Layer operators + final RMS norm (simulating scheduler's prefill round)
+    let dump_dir = std::path::Path::new("alignment/tokenizer/dump");
     for (index, operator) in operator_queue.iter().enumerate().take(phase2_start) {
         eprintln!("running operator[{index}] {}", operator_name(operator));
         operator.run(
@@ -163,9 +164,23 @@ fn main() -> anyhow::Result<()> {
             &decode_list,
             &mut batch_list,
         );
-
-        // Dump skipped during phase debugging
     }
+
+    // Dump final norm BEFORE manual lift (all 15 tokens intact)
+    f16::with_global(|pool| {
+        let norm_size = token_count * 1024;
+        let norm_ptr = pool.get("model.norm_hidden.output", &vec![norm_size]);
+        let byte_size = norm_size * std::mem::size_of::<f16>();
+        let first_val = unsafe { *norm_ptr };
+        let last_val = unsafe { *norm_ptr.add(norm_size - 1) };
+        eprintln!(
+            "dumping final norm: {norm_size} elements, first={first_val:.4?}, last={last_val:.4?}"
+        );
+        unsafe {
+            let bytes: &[u8] = std::slice::from_raw_parts(norm_ptr as *const u8, byte_size);
+            std::fs::write(dump_dir.join("rust_final_norm.bin"), bytes).ok();
+        }
+    });
 
     // Manual LiftVector: copy last token's normed hidden state to position 0
     // This simulates what LiftVector does during real decode, so MatMulTopK

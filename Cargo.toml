@@ -27,6 +27,18 @@ path = "alignment/rms_map/rms_map_alignment.rs"
 name = "qwen3_one_token_alignment"
 path = "alignment/tokenizer/qwen3_one_token_alignment.rs"
 
+[[bin]]
+name = "multi_token_alignment"
+path = "alignment/tokenizer/multi_token_alignment.rs"
+
+[[bin]]
+name = "multi_batch_alignment"
+path = "alignment/tokenizer/multi_batch_alignment.rs"
+
+[[bin]]
+name = "multi_batch_test"
+path = "alignment/tokenizer/multi_batch_test.rs"
+
 [dependencies]
 anyhow = "1.0.72"
 async-stream = "0.3.6"

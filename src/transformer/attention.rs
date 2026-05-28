@@ -50,6 +50,7 @@ where
     pub fn new(
         config: &Config,
         chunk_size: usize,
+        sequence_length: usize,
         batch_size: usize,
         names: AttentionTensorNames,
     ) -> Self {
@@ -58,7 +59,7 @@ where
 
         Self {
             chunk_size,
-            sequence_length: config.max_position_embeddings,
+            sequence_length,
             batch_size: batch_size,
             num_attention_heads: config.num_attention_heads,
             num_key_value_heads: config.num_key_value_heads,
@@ -236,6 +237,7 @@ mod test {
         let self_attention = Attention::<f32>::new(
             &config,
             sequence_length,
+            sequence_length,
             batch_size,
             crate::transformer::names::AttentionTensorNames {
                 scope: String::from("model.layers.1.self_attn"),
@@ -305,6 +307,7 @@ mod test {
 
         let self_attention = Attention::<f16>::new(
             &config,
+            sequence_length,
             sequence_length,
             batch_size,
             AttentionTensorNames {

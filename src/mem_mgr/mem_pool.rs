@@ -408,7 +408,12 @@ where
                 }
                 2 => {
                     if let Some(captures) = LAYER_SHARED_REGEX.captures(name) {
-                        let key_name = captures.get(1).unwrap().as_str().to_string();
+                        let suffix = captures.get(1).unwrap().as_str();
+                        // K/V projection outputs must be per-layer (KV cache persistence)
+                        if suffix.contains("k_proj.output") || suffix.contains("v_proj.output") {
+                            return self.get_or_allocate_full(name, size, None);
+                        }
+                        let key_name = suffix.to_string();
                         return self.get_or_allocate_full(&key_name, size, None);
                     } else {
                         return self.get_or_allocate_full(name, size, None);

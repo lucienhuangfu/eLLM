@@ -13,11 +13,11 @@ use crate::common::sequence_slice::SequenceSlice;
 // Fuse embedding lookup with RMS normalization
 #[derive(Clone)]
 pub struct LookupRMSMap<T> {
-    sequences_ptr: ConstPtr<usize>,
+    pub sequences_ptr: ConstPtr<usize>,
     word_embedding: ConstPtr<T>,
     norm_weight: ConstPtr<T>,
-    output_hidden_ptr: MutPtr<T>,
-    output_normal_ptr: MutPtr<T>,
+    pub output_hidden_ptr: MutPtr<T>,
+    pub output_normal_ptr: MutPtr<T>,
     sequence_stride: usize,
     hidden_size: usize,
     eps: T,
@@ -53,7 +53,6 @@ impl<T: Sqrt> LookupRMSMap<T> {
         }
     }
 
-    // Run the map for a given batch size and thread ID
     pub fn run(
         &self,
         prefill_size: usize,
