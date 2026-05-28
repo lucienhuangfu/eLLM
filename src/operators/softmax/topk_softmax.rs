@@ -7,7 +7,7 @@ use crate::common::num_traits::FromNumber;
 use crate::common::num_traits::NegInfinity;
 use crate::common::num_traits::Sqrt;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::common::sequence_slice::SequenceSlice;
+use crate::runtime::SequenceSlice;
 use crate::kernel;
 use crate::operators::assign::assign;
 use crate::operators::traits::TopKSoftmaxTrait;
@@ -450,7 +450,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::common::sequence_slice::SequenceSlice;
+    use crate::runtime::SequenceSlice;
     use crate::runtime::{Phase, SequenceState};
     use approx::assert_ulps_eq;
     use std::mem::size_of;

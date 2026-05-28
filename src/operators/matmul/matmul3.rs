@@ -11,7 +11,7 @@ use crate::common::{
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 
-use crate::common::sequence_slice::SequenceSlice;
+use crate::runtime::SequenceSlice;
 use crate::operators::assign::{assign, KqvPath};
 use crate::operators::traits::MatMulkqvTrait;
 

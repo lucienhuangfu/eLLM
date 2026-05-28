@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashMap, fs::File, io::BufReader, path::Path};
+use std::{collections::HashMap, fs::File, io::BufReader, mem::size_of, path::Path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationConfig {
@@ -12,8 +12,6 @@ pub struct GenerationConfig {
     pub temperature: Option<f64>,
     #[serde(default)]
     pub top_p: Option<f64>,
-    #[serde(default)]
-    pub min_p: Option<f64>,
     #[serde(default)]
     pub top_k: Option<usize>,
     #[serde(default)]
@@ -39,6 +37,16 @@ pub struct GenerationConfig {
 
 impl GenerationConfig {
     #[inline]
+    pub fn avx512_simd_width<T>() -> usize {
+        match size_of::<T>() {
+            2 => 32, // f16: 512-bit / 16-bit = 32 elements
+            4 => 16, // f32: 512-bit / 32-bit = 16 elements
+            8 => 8,  // f64: 512-bit / 64-bit = 8 elements
+            _ => 32, // default: 32 elements
+        }
+    }
+
+    #[inline]
     pub fn align_top_k(top_k: usize, simd_width: usize) -> usize {
         if simd_width == 0 {
             top_k
@@ -48,8 +56,15 @@ impl GenerationConfig {
     }
 
     #[inline]
-    pub fn top_k_simd(&self, default_top_k: usize, simd_width: usize) -> usize {
+    pub fn top_k_simd<T>(&self, default_top_k: usize) -> usize {
         let top_k = self.top_k.unwrap_or(default_top_k);
+        let simd_width = Self::avx512_simd_width::<T>();
+        Self::align_top_k(top_k, simd_width)
+    }
+
+    #[inline]
+    pub fn top_k_simd_static<T>(top_k: usize) -> usize {
+        let simd_width = Self::avx512_simd_width::<T>();
         Self::align_top_k(top_k, simd_width)
     }
 

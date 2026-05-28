@@ -210,8 +210,8 @@ mod test {
     use super::*;
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
-    use crate::common::sequence_slice::SequenceSlice;
     use crate::mem_mgr::allocator::AlignedBox;
+    use crate::runtime::SequenceSlice;
     use crate::runtime::{Phase, SequenceState};
     use std::collections::HashMap;
     use std::mem::size_of;

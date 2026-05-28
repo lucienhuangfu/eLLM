@@ -1,5 +1,7 @@
 mod scheduler;
+mod sequence_slice;
 mod slice_scheduler;
+mod state;
 
 pub mod batch_sequence;
 pub mod chat_template;
@@ -15,7 +17,8 @@ pub use crate::config::{
     SchedulingPolicy, ServeConfig, ServeArgs, SharedArgs,
 };
 
-pub use crate::common::state::{Phase, SequenceState};
+pub use sequence_slice::{DecodeList, DecodeLookupResult, SequenceSlice};
+pub use state::{Phase, SequenceState};
 pub use runner::ServingRunner;
 pub use scheduler::BatchScheduler;
 

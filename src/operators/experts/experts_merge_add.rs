@@ -5,11 +5,9 @@ use std::f16;
 use std::ops::{Add, Mul};
 use std::sync::atomic::Ordering;
 
-use crate::common::{
-    expert_routing::ExpertRouting,
-    send_sync_ptr::{ConstPtr, MutPtr},
-};
+use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::assign::assign;
+use crate::operators::experts::expert_routing::ExpertRouting;
 use crate::operators::traits::MoeMergeTrait;
 
 // Variable naming used in this operator:
@@ -212,7 +210,13 @@ mod tests {
     }
 
     fn test_routing(num_experts: usize, num_tokens: usize, num_topk: usize) -> ExpertRouting<f16> {
-        unsafe { crate::common::expert_routing::empty_routing(num_experts, num_tokens, num_topk) }
+        unsafe {
+            crate::operators::experts::expert_routing::empty_routing(
+                num_experts,
+                num_tokens,
+                num_topk,
+            )
+        }
     }
 
     unsafe fn set_all_counts(routing: ExpertRouting<f16>, count: usize) {

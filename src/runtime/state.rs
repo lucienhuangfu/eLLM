@@ -10,7 +10,7 @@ pub struct SequenceState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)] // 优化: 显式指定为 u8，确保只占 1 字节
+#[repr(u8)]
 /// ```mermaid
 /// stateDiagram-v2
 ///     [*] --> Start

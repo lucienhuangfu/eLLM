@@ -1,8 +1,7 @@
 use crate::common::num_traits::NegInfinity;
 use crate::common::num_traits::{Exp, FromNumber, Sigmoid, Sqrt};
-use crate::common::sequence_slice::SequenceSlice;
 use crate::operators::fake_echo::FakeEcho;
-use crate::runtime::SequenceState;
+use crate::runtime::{SequenceSlice, SequenceState};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::operators::routing::ExpertsSoftmaxNorm;
@@ -199,9 +198,9 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::common::expert_routing::ExpertRouting;
     use crate::common::matmul_params::MatMulParams;
-    use crate::common::sequence_slice::SequenceSlice;
+    use crate::operators::experts::expert_routing::ExpertRouting;
+    use crate::runtime::SequenceSlice;
     use crate::runtime::{BatchScheduler, Phase, SequenceState};
     use approx::assert_ulps_eq;
     use std::mem::size_of;
@@ -217,7 +216,13 @@ mod test {
         num_tokens: usize,
         num_topk: usize,
     ) -> ExpertRouting<T> {
-        unsafe { crate::common::expert_routing::empty_routing(num_experts, num_tokens, num_topk) }
+        unsafe {
+            crate::operators::experts::expert_routing::empty_routing(
+                num_experts,
+                num_tokens,
+                num_topk,
+            )
+        }
     }
 
     fn top_k_simd_for<T>(top_k: usize) -> usize {
@@ -239,7 +244,7 @@ mod test {
         topk: &[usize],
     ) -> ExpertRouting<f16> {
         unsafe {
-            crate::common::expert_routing::routing_from_dense(
+            crate::operators::experts::expert_routing::routing_from_dense(
                 num_experts,
                 num_tokens,
                 num_topk,

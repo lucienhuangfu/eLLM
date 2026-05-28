@@ -2,11 +2,11 @@
 #![allow(non_snake_case)]
 
 use crate::common::{
-    expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta},
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
 use crate::operators::assign::assign;
+use crate::operators::experts::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
 use crate::operators::traits::ExpertsDownTrait;
 use std::f16;
 use std::marker::PhantomData;
@@ -646,7 +646,7 @@ mod tests {
         topk: &[usize],
     ) -> ExpertRouting<f16> {
         unsafe {
-            crate::common::expert_routing::routing_from_dense(
+            crate::operators::experts::expert_routing::routing_from_dense(
                 num_experts,
                 num_token,
                 num_topk,

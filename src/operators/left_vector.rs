@@ -1,7 +1,7 @@
 use std::ptr;
 
 use crate::common::send_sync_ptr::MutPtr;
-use crate::common::sequence_slice::SequenceSlice;
+use crate::runtime::SequenceSlice;
 use crate::operators::assign::assign;
 
 #[derive(Clone)]
@@ -53,7 +53,7 @@ impl<T> LiftVector<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::common::sequence_slice::SequenceSlice;
+    use crate::runtime::SequenceSlice;
 
     #[test]
     fn test_lift_vector() {

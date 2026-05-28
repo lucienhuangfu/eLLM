@@ -12,6 +12,7 @@ pub mod elementwise {
 }
 
 pub mod experts {
+    pub mod expert_routing;
     pub mod experts_matmul_mul;
     pub mod experts_matmul_silu_mul_matmul;
     pub mod experts_merge_add;

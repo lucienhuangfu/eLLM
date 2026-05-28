@@ -1,4 +1,4 @@
-use crate::common::expert_routing::ExpertRouting;
+use crate::operators::experts::expert_routing::ExpertRouting;
 use crate::common::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::tensor::{GlobalOperatorQueue, Tensor};

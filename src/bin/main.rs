@@ -7,11 +7,10 @@ use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::runtime::batch_sequence::BatchSequence;
 use ellm::runtime::model_loader::SafeTensorsLoader;
 use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
-use ellm::transformer::config::Config;
 use ellm::tensor::GlobalOperatorQueue;
+use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
-use std::mem::size_of;
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,17 +49,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .max(1);
     let top_k_simd = generation_config.as_ref().map_or_else(
-        || GenerationConfig::align_top_k(top_k, if size_of::<f16>() == 2 { 32 } else { 8 }),
-        |cfg| cfg.top_k_simd(top_k, if size_of::<f16>() == 2 { 32 } else { 8 }),
+        || GenerationConfig::top_k_simd_static::<f16>(top_k),
+        |cfg| cfg.top_k_simd::<f16>(top_k),
     );
     let top_p = generation_config
         .as_ref()
         .and_then(|cfg| cfg.top_p)
         .unwrap_or(1.0) as f32;
-    let min_p = generation_config
-        .as_ref()
-        .and_then(|cfg| cfg.min_p)
-        .unwrap_or(0.0) as f32;
+    let min_p: f32 = 0.0;
     let do_sample = generation_config
         .as_ref()
         .and_then(|cfg| cfg.do_sample)

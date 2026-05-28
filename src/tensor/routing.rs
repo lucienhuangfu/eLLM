@@ -1,7 +1,7 @@
 use std::ops::{AddAssign, Neg, Sub};
 use std::sync::atomic::AtomicUsize;
 
-use crate::common::expert_routing::ExpertRouting;
+use crate::operators::experts::expert_routing::ExpertRouting;
 use crate::common::matmul_params::MatMulParams;
 use crate::common::num_traits::Sigmoid;
 use crate::common::num_traits::Sqrt;

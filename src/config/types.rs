@@ -27,6 +27,9 @@ pub enum SchedulingPolicy {
 pub struct ModelConfig {
     #[serde(alias = "model-path")]
     pub model: String,
+    #[serde(default = "default_min_p")]
+    #[serde(alias = "min-p")]
+    pub min_p: f64,
     #[serde(default)]
     #[serde(alias = "tokenizer-path")]
     pub tokenizer: Option<String>,
@@ -170,6 +173,7 @@ impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             model: String::new(),
+            min_p: default_min_p(),
             tokenizer: None,
             dtype: default_dtype(),
             max_model_len: None,
@@ -186,6 +190,10 @@ impl Default for ModelConfig {
 
 pub(crate) fn default_command() -> Command {
     Command::Serve
+}
+
+pub(crate) fn default_min_p() -> f64 {
+    0.0
 }
 
 pub(crate) fn default_dtype() -> ModelDtype {

@@ -2,7 +2,7 @@ use std::ops::{Add, Div, Mul, Sub};
 
 use crate::common::num_traits::NegInfinity;
 use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::common::sequence_slice::SequenceSlice;
+use crate::runtime::SequenceSlice;
 use crate::operators::traits::AttentionTrait;
 
 use super::scratch::{AttentionScratch, AttentionScratchSlice};
@@ -503,7 +503,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::Attention;
-    use crate::common::sequence_slice::SequenceSlice;
+    use crate::runtime::SequenceSlice;
 
     fn naive_attention_row(
         q: &[f32],

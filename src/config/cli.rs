@@ -18,6 +18,8 @@ pub enum CliCommand {
 
 #[derive(Debug, Clone, Default, Args)]
 pub struct SharedArgs {
+    #[arg(long = "min-p", default_value = "0.0")]
+    pub min_p: Option<f64>,
     #[arg(long = "model")]
     pub model: Option<String>,
     #[arg(long = "tokenizer")]
@@ -84,6 +86,9 @@ pub struct ChatArgs {
 
 impl Config {
     fn apply_shared_args(&mut self, shared: &SharedArgs) {
+        if let Some(min_p) = shared.min_p {
+            self.model.min_p = min_p;
+        }
         if let Some(model) = &shared.model {
             self.model.model = model.clone();
         }
