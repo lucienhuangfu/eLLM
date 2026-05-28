@@ -135,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let thread_num = core_ids.len().max(1).min(thread_num);
     let mut batch_scheduler: BatchScheduler =
-        BatchScheduler::new(sequence_length, batch_size, thread_num);
+        BatchScheduler::new(sequence_length, batch_size, chunk_size, thread_num);
     let mut batch_list = Vec::with_capacity(batch_size);
     batch_list.extend(
         written_lengths

@@ -28,7 +28,12 @@ enum BatchPlan {
 }
 
 impl BatchScheduler {
-    fn build(sequence_length: usize, batch_size: usize, thread_num: usize) -> Self {
+    fn build(
+        _sequence_length: usize,
+        batch_size: usize,
+        chunk_size: usize,
+        thread_num: usize,
+    ) -> Self {
         // The prefill buffers are built once and then cleared/reused every round.
         // Each thread gets a preallocated slice buffer, so the total reserved
         // capacity is thread_num * batch_size.
@@ -42,7 +47,10 @@ impl BatchScheduler {
 
         Self {
             max_decode_size: batch_size,
-            max_prefill_size: sequence_length * batch_size,
+            // Prefill is limited by the model chunk size, not the full sequence
+            // capacity. This keeps each round bounded to the chunk that the
+            // model forward pass can consume.
+            max_prefill_size: chunk_size,
             batch_list: Arc::new(SharedMut::new(Vec::with_capacity(batch_size))),
             thread_num,
             prefill_scheduler: SliceScheduler::new(batch_size * thread_num),
@@ -101,8 +109,13 @@ impl BatchScheduler {
         })
     }
 
-    pub fn new(sequence_length: usize, batch_size: usize, thread_num: usize) -> Self {
-        Self::build(sequence_length, batch_size, thread_num.max(1))
+    pub fn new(
+        sequence_length: usize,
+        batch_size: usize,
+        chunk_size: usize,
+        thread_num: usize,
+    ) -> Self {
+        Self::build(sequence_length, batch_size, chunk_size, thread_num.max(1))
     }
 
     pub fn thread_num(&self) -> usize {
@@ -227,7 +240,7 @@ mod tests {
 
     #[test]
     fn plan_next_round_returns_idle_for_empty_batch() {
-        let scheduler = BatchScheduler::new(16, 4, 3);
+        let scheduler = BatchScheduler::new(16, 4, 8, 3);
 
         match scheduler.plan_next_round() {
             BatchPlan::Idle => {}
@@ -237,7 +250,7 @@ mod tests {
 
     #[test]
     fn schedule_decode_round_uses_one_decode_sequence() {
-        let mut scheduler = BatchScheduler::new(16, 4, 3);
+        let mut scheduler = BatchScheduler::new(16, 4, 8, 3);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(decode_state(100, 128));
         });
@@ -260,14 +273,14 @@ mod tests {
 
     #[test]
     fn schedule_prefill_round_limits_one_sequence_to_max_prefill_size() {
-        let mut scheduler = BatchScheduler::new(8, 4, 3);
+        let mut scheduler = BatchScheduler::new(8, 4, 8, 3);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 23));
         });
 
         let (prefill_tokens, decode_slices) = scheduler.schedule_batch();
 
-        assert_eq!(prefill_tokens, 23.min(8 * 4));
+        assert_eq!(prefill_tokens, 8);
         assert_eq!(decode_slices, 1);
         // Prefill rounds still populate decode_list: the last token path is
         // consumed by the attention/decode side of the pipeline.
@@ -277,8 +290,8 @@ mod tests {
         assert_eq!(attention_slice.batch_index, 0);
         assert_eq!(attention_slice.sequence_index, 0);
         assert_eq!(attention_slice.token_start_index, 0);
-        assert_eq!(attention_slice.length, 23);
-        assert!(attention_slice.last_token_flag);
+        assert_eq!(attention_slice.length, 8);
+        assert!(!attention_slice.last_token_flag);
 
         assert_eq!(scheduler.prefill_list.len(), 3);
         assert_eq!(scheduler.prefill_list[0].len(), 1);
@@ -289,31 +302,31 @@ mod tests {
         assert_eq!(t0.batch_index, 0);
         assert_eq!(t0.sequence_index, 0);
         assert_eq!(t0.token_start_index, 0);
-        assert_eq!(t0.length, 8);
+        assert_eq!(t0.length, 3);
 
         let t1 = &scheduler.prefill_list[1][0];
         assert_eq!(t1.batch_index, 0);
-        assert_eq!(t1.sequence_index, 8);
-        assert_eq!(t1.token_start_index, 8);
-        assert_eq!(t1.length, 8);
+        assert_eq!(t1.sequence_index, 3);
+        assert_eq!(t1.token_start_index, 3);
+        assert_eq!(t1.length, 3);
 
         let t2 = &scheduler.prefill_list[2][0];
         assert_eq!(t2.batch_index, 0);
-        assert_eq!(t2.sequence_index, 16);
-        assert_eq!(t2.token_start_index, 16);
-        assert_eq!(t2.length, 7);
+        assert_eq!(t2.sequence_index, 6);
+        assert_eq!(t2.token_start_index, 6);
+        assert_eq!(t2.length, 2);
     }
 
     #[test]
     fn schedule_prefill_round_truncates_to_max_prefill_size() {
-        let mut scheduler = BatchScheduler::new(5, 2, 2);
+        let mut scheduler = BatchScheduler::new(5, 2, 5, 2);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 13));
         });
 
         let (prefill_tokens, decode_slices) = scheduler.schedule_batch();
 
-        assert_eq!(prefill_tokens, 10);
+        assert_eq!(prefill_tokens, 5);
         assert_eq!(decode_slices, 1);
         // Even when prefill is truncated, the returned decode_list carries the
         // slice for the last-token path of that prefill request.
@@ -323,7 +336,7 @@ mod tests {
         assert_eq!(attention_slice.batch_index, 0);
         assert_eq!(attention_slice.sequence_index, 0);
         assert_eq!(attention_slice.token_start_index, 0);
-        assert_eq!(attention_slice.length, 10);
+        assert_eq!(attention_slice.length, 5);
         assert!(!attention_slice.last_token_flag);
 
         assert_eq!(scheduler.prefill_list.len(), 2);
@@ -334,20 +347,20 @@ mod tests {
         assert_eq!(first.batch_index, 0);
         assert_eq!(first.sequence_index, 0);
         assert_eq!(first.token_start_index, 0);
-        assert_eq!(first.length, 5);
+        assert_eq!(first.length, 3);
         assert!(!first.last_token_flag);
 
         let second = &scheduler.prefill_list[1][0];
         assert_eq!(second.batch_index, 0);
-        assert_eq!(second.sequence_index, 5);
-        assert_eq!(second.token_start_index, 5);
-        assert_eq!(second.length, 5);
+        assert_eq!(second.sequence_index, 3);
+        assert_eq!(second.token_start_index, 3);
+        assert_eq!(second.length, 2);
         assert!(!second.last_token_flag);
     }
 
     #[test]
     fn schedule_batch_prefers_decode_when_both_phases_exist() {
-        let mut scheduler = BatchScheduler::new(16, 4, 3);
+        let mut scheduler = BatchScheduler::new(16, 4, 8, 3);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 6));
             batch_list.push(decode_state(100, 128));

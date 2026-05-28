@@ -70,10 +70,12 @@ fn build_batch_sequence(
 fn build_batch_scheduler(
     sequence_length: usize,
     batch_size: usize,
+    chunk_size: usize,
     thread_num: usize,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
 ) -> BatchScheduler {
-    let mut batch_scheduler = BatchScheduler::new(sequence_length, batch_size, thread_num);
+    let mut batch_scheduler =
+        BatchScheduler::new(sequence_length, batch_size, chunk_size, thread_num);
     batch_scheduler.batch_list = batch_states;
     batch_scheduler
 }
@@ -142,6 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_scheduler = build_batch_scheduler(
         sequence_length,
         batch_size,
+        chunk_size,
         thread_num,
         Arc::clone(&batch_states),
     );

@@ -347,7 +347,8 @@ mod test {
         sequences[0..SEQUENCE_LENGTH].copy_from_slice(&[1, 2, 3, 0, 0]);
         sequences[SEQUENCE_LENGTH..SEQUENCE_LENGTH * 2].copy_from_slice(&[4, 5, 6, 7, 0]);
 
-        let mut scheduler = BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM);
+        let mut scheduler =
+            BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, SEQUENCE_LENGTH * BATCH_SIZE, THREAD_NUM);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 3));
             batch_list.push(prefill_state(0, 4));
@@ -582,7 +583,12 @@ mod test {
 
         fn run_chain(thread_num: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
             let sequences = vec![1usize, 2, 3, 0, 0, 0, 4, 5, 6, 7, 0, 0];
-            let mut scheduler = BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, thread_num);
+            let mut scheduler = BatchScheduler::new(
+                SEQUENCE_LENGTH,
+                BATCH_SIZE,
+                SEQUENCE_LENGTH * BATCH_SIZE,
+                thread_num,
+            );
             scheduler.batch_list.with_mut(|batch_list| {
                 batch_list.push(prefill_state(0, 3));
                 batch_list.push(prefill_state(0, 4));
@@ -694,7 +700,8 @@ mod test {
         sequences[0..SEQUENCE_LENGTH].copy_from_slice(&[1, 2, 3, 42, 0, 0]);
         sequences[SEQUENCE_LENGTH..SEQUENCE_LENGTH * 2].copy_from_slice(&[4, 5, 6, 7, 77, 0]);
 
-        let mut scheduler = BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM);
+        let mut scheduler =
+            BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, SEQUENCE_LENGTH * BATCH_SIZE, THREAD_NUM);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(decode_state(3, 4));
             batch_list.push(decode_state(4, 5));
@@ -912,7 +919,8 @@ mod test {
         const TOPK: usize = 8;
 
         let mut sequences = vec![10usize, 11, 12, 0, 0, 0];
-        let mut scheduler = BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM);
+        let mut scheduler =
+            BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, SEQUENCE_LENGTH * BATCH_SIZE, THREAD_NUM);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 3));
         });

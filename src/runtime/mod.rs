@@ -44,7 +44,7 @@ mod tests {
             phase: Phase::Decode,
             notify: Arc::new(Notify::new()),
         };
-        let scheduler = BatchScheduler::new(8, 2, 1);
+        let scheduler = BatchScheduler::new(8, 2, 8, 1);
         let runner = ServingRunner::<f32>::new(Vec::new(), scheduler);
 
         assert_eq!(prefill_state.sequence_index, 8);
