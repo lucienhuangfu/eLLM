@@ -10,9 +10,9 @@ pub mod tokenizer_loader;
 pub use crate::tensor;
 
 pub use crate::config::{
-    ChatArgs, ChatConfig, Cli, CliCommand, Command, Config, ConfigError, GenerationConfig,
-    HfConfig, ModelConfig, ModelDtype, ResolvedConfig, ResolvedModelConfig, SchedulerConfig,
-    SchedulingPolicy, ServeArgs, ServeConfig, SharedArgs,
+    ChatConfig, ChatArgs, Cli, CliCommand, Command, Config, ConfigError, GenerationConfig, HfConfig,
+    ModelConfig, ModelDtype, ResolvedConfig, ResolvedModelConfig, SchedulerConfig,
+    SchedulingPolicy, ServeConfig, ServeArgs, SharedArgs,
 };
 
 pub use crate::common::state::{Phase, SequenceState};

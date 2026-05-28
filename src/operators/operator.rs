@@ -221,7 +221,12 @@ mod test {
     }
 
     fn top_k_simd_for<T>(top_k: usize) -> usize {
-        let simd_width = if size_of::<T>() == 2 { 32 } else { 8 };
+        let simd_width = match size_of::<T>() {
+            2 => 32, // f16: 512-bit / 16-bit = 32 elements
+            4 => 16, // f32: 512-bit / 32-bit = 16 elements
+            8 => 8,  // f64: 512-bit / 64-bit = 8 elements
+            _ => 32, // default: 32 elements
+        };
         top_k.div_ceil(simd_width) * simd_width
     }
 
@@ -1404,7 +1409,6 @@ mod test {
         let operator = Operator::TopKSoftmax(TopKSoftmax::<f32>::new(
             input_indices.as_ptr(),
             input_values.as_ptr(),
-            // sums.as_ptr(),
             output_indices.as_mut_ptr(),
             output_values.as_mut_ptr(),
             output_sequences.as_mut_ptr(),
@@ -1412,6 +1416,7 @@ mod test {
             sequence_length,
             top_k,
             top_k_simd_for::<f32>(top_k),
+            thread_num,
             1.0f32,
             0.0f32,
             false,

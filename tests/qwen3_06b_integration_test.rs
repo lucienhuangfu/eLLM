@@ -2,7 +2,8 @@
 
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::runtime::{model_loader::SafeTensorsLoader, Config};
+use ellm::runtime::model_loader::SafeTensorsLoader;
+use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::mem::size_of;
@@ -29,6 +30,7 @@ fn test_define_and_load_qwen3_06b() {
     let sequence_length = 128;
     let batch_size = 1;
     let top_k = 8;
+    let thread_num = 1;
     let top_k_simd = if size_of::<f32>() == 2 { 32 } else { 8 };
     let eos_id = config.eos_token_id;
 
@@ -44,10 +46,11 @@ fn test_define_and_load_qwen3_06b() {
     let model = Model::<f32>::new(
         &config,
         position_vec,
-        sequence_length, // chunk_size
-        sequence_length, // sequence_length
+        sequence_length,
+        sequence_length,
         batch_size,
         top_k,
+        thread_num,
         top_k_simd,
         1.0f32,
         0.0f32,
@@ -93,6 +96,7 @@ fn test_define_and_load_qwen3_06b_f16() {
     let sequence_length = 128;
     let batch_size = 1;
     let top_k = 8;
+    let thread_num = 1;
     let top_k_simd = if size_of::<f16>() == 2 { 32 } else { 8 };
     let eos_id = config.eos_token_id;
 
@@ -108,10 +112,11 @@ fn test_define_and_load_qwen3_06b_f16() {
     let model = Model::<f16>::new(
         &config,
         position_vec,
-        sequence_length, // chunk_size
-        sequence_length, // sequence_length
+        sequence_length,
+        sequence_length,
         batch_size,
         top_k,
+        thread_num,
         top_k_simd,
         1.0f16,
         0.0f16,

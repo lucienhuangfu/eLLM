@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
 use std::arch::x86_64::{
-    _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_set1_ph, _mm512_setzero_ph,
+    _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_set1_ph,
     _mm512_storeu_ph,
 };
 use std::f16;

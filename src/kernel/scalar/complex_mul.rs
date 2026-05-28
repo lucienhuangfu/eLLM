@@ -1,5 +1,4 @@
 use std::ops::{Add, Mul, Sub};
-use std::ptr;
 pub fn complex_mul<T>(input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T, length: usize)
 where
     T: Copy + Add<Output = T> + Sub<Output = T> + Mul<Output = T>,

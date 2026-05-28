@@ -123,7 +123,7 @@ where
         num_tokens: usize,
         num_topk: usize,
     ) -> ExpertRouting<T> {
-        let mut expert_counts_box = AlignedBox::<AtomicUsize>::allocate(num_experts);
+        let expert_counts_box = AlignedBox::<AtomicUsize>::allocate(num_experts);
         let expert_counts = expert_counts_box.as_mut_ptr();
         std::mem::forget(expert_counts_box);
         for e in 0..num_experts {
@@ -131,20 +131,20 @@ where
         }
 
         let capacity_per_expert = num_tokens * num_topk;
-        let mut index_tensor = AlignedBox::allocate_init(num_experts * capacity_per_expert, 0usize);
+        let index_tensor = AlignedBox::allocate_init(num_experts * capacity_per_expert, 0usize);
         let index_tensor = {
             let ptr = index_tensor.as_mut_ptr();
             std::mem::forget(index_tensor);
             ptr
         };
-        let mut score_tensor =
+        let score_tensor =
             AlignedBox::allocate_init(num_experts * capacity_per_expert, T::default());
         let score_tensor = {
             let ptr = score_tensor.as_mut_ptr();
             std::mem::forget(score_tensor);
             ptr
         };
-        let mut topk_indices = AlignedBox::allocate_init(num_tokens * num_topk, 0usize);
+        let topk_indices = AlignedBox::allocate_init(num_tokens * num_topk, 0usize);
         let topk_indices = {
             let ptr = topk_indices.as_mut_ptr();
             std::mem::forget(topk_indices);

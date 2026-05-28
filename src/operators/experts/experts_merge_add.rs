@@ -9,7 +9,6 @@ use crate::common::{
     expert_routing::ExpertRouting,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
-use crate::kernel;
 use crate::operators::assign::assign;
 use crate::operators::traits::MoeMergeTrait;
 

@@ -31,13 +31,13 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
         num_topk: usize,
         decode_only_flag: bool,
     ) -> Self {
-        let length = (batch_size * num_topk);
+        let length = batch_size * num_topk ;
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
 
             topk_values_ptr: MutPtr {
                 ptr: {
-                    let mut boxed = AlignedBox::allocate_init(length, T::default());
+                    let boxed = AlignedBox::allocate_init(length, T::default());
                     let ptr = boxed.as_mut_ptr();
                     std::mem::forget(boxed);
                     ptr

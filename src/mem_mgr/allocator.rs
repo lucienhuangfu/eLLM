@@ -31,7 +31,7 @@ impl<T> AlignedBox<T> {
     where
         T: Copy,
     {
-        let mut boxed = Self::allocate(length);
+        let boxed = Self::allocate(length);
         unsafe {
             let mut p = boxed.ptr;
             for _ in 0..length {
@@ -119,7 +119,7 @@ unsafe impl<T: Sync> Sync for AlignedBox<T> {}
 
 impl<T: Clone> Clone for AlignedBox<T> {
     fn clone(&self) -> Self {
-        let mut cloned = Self::allocate(self.length);
+        let cloned = Self::allocate(self.length);
         unsafe {
             ptr::copy_nonoverlapping(self.ptr, cloned.ptr, self.length);
         }

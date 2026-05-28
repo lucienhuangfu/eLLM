@@ -1,12 +1,7 @@
 // === kernel/x86_64/f16_512/moe_silu.rs ===
 #![allow(non_snake_case)]
 
-use std::arch::x86_64::{
-    _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_set1_ph, _mm512_storeu_ph,
-};
-use std::f16;
 
-use crate::kernel::x86_64::f16_512::activation::sigmoid512;
 
 /// update: MR=3, NR=32 固定
 /// - A_tile: 3×kc（紧凑，行距=kc）

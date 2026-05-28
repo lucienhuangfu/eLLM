@@ -62,9 +62,9 @@ where
         if let Some((begin, end)) = assign(total_len, cpu_num, thread_id) {
             println!("thread_id: {}, begin: {}, end: {}, ", thread_id, begin, end,);
 
-            let mut ptr1 = self.ptr1.ptr;
-            let mut ptr2 = self.ptr2.ptr;
-            let mut output_ptr = self.output_ptr.ptr;
+            let ptr1 = self.ptr1.ptr;
+            let ptr2 = self.ptr2.ptr;
+            let output_ptr = self.output_ptr.ptr;
 
             // 遍历每个chunk
             for index in begin..end {

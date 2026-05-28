@@ -32,7 +32,7 @@ impl<T: Copy + Default> ExpertsTopkNorm<T> {
             ptr1: ConstPtr { ptr: ptr1 },
             topk_values_ptr: MutPtr {
                 ptr: {
-                    let mut boxed = AlignedBox::allocate_init(batch_size * num_topk, T::default());
+                    let boxed = AlignedBox::allocate_init(batch_size * num_topk, T::default());
                     let ptr = boxed.as_mut_ptr();
                     std::mem::forget(boxed);
                     ptr

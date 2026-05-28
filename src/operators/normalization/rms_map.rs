@@ -46,8 +46,8 @@ impl<T: Sqrt> RMSMap<T> {
         };
 
         if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
-            let mut ptr1 = self.ptr1.ptr;
-            let mut output_ptr = self.output_ptr.ptr;
+            let ptr1 = self.ptr1.ptr;
+            let output_ptr = self.output_ptr.ptr;
 
             for index in begin..end {
                 unsafe {

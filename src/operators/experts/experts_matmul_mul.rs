@@ -6,7 +6,6 @@ use crate::common::{
     matmul_params::MatMulParams,
     send_sync_ptr::{ConstPtr, MutPtr},
 };
-use crate::kernel;
 use crate::operators::assign::assign;
 use crate::operators::traits::ExpertsDownTrait;
 use std::f16;
@@ -576,7 +575,7 @@ impl ExpertsDownTrait<f16> for ExpertsMatMulDown<f16> {
         let micro_tile_rows = self.params.a_row_step_micro.max(1);
         let micro_tile_cols = self.params.b_row_step_micro.max(1);
 
-        let call_param = MatMulParams {
+        let _call_param = MatMulParams {
             // Map packed tile layout to the generic matmul kernel parameters.
             // 将 packed tile 的布局映射到通用 matmul kernel 参数。
             a_row_step_macro: reduction_block_cols,

@@ -62,7 +62,7 @@ where
         }
     }
 
-    pub fn run(&self, prefill_size: usize, cpu_num: usize, thread_id: usize) {
+    pub fn run(&self, _prefill_size: usize, cpu_num: usize, thread_id: usize) {
         let stride = self.head_num;
 
         if let Some((begin, end)) = assign(stride, cpu_num, thread_id) {
@@ -172,7 +172,7 @@ impl ZipMapTrait<f32> for ComplexZipMap<f32> {
     }
 }
 impl ZipMapTrait<f64> for ComplexZipMap<f64> {
-    fn compute(&self, input_ptr1: *const f64, input_ptr2: *const f64, output_ptr: *mut f64) {
+    fn compute(&self, _input_ptr1: *const f64, _input_ptr2: *const f64, _output_ptr: *mut f64) {
         //print!("f64 runner\n");
         // complex_mul_block(input_ptr1 , input_ptr2 , output_ptr , self.head_size);
     }

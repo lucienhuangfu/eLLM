@@ -65,9 +65,9 @@ where
         };
 
         if let Some((begin, end)) = assign(active_rows, thread_num, thread_id) {
-            let mut ptr1 = self.ptr1.ptr;
-            let mut ptr2 = self.ptr2.ptr;
-            let mut output_ptr = self.output_ptr.ptr;
+            let ptr1 = self.ptr1.ptr;
+            let ptr2 = self.ptr2.ptr;
+            let output_ptr = self.output_ptr.ptr;
 
             for index in begin..end {
                 unsafe {
@@ -134,7 +134,7 @@ impl ZipMapTrait<f32> for AddRMSZipMap<f32> {
     }
 }
 impl ZipMapTrait<f64> for AddRMSZipMap<f64> {
-    fn compute(&self, input_ptr1: *const f64, input_ptr2: *const f64, output_ptr: *mut f64) {
+    fn compute(&self, _input_ptr1: *const f64, _input_ptr2: *const f64, _output_ptr: *mut f64) {
         /*
         add_rms_norm_block(
             input_ptr1,
