@@ -7,8 +7,7 @@ use std::f16;
 use std::sync::Arc;
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::batch_sequence::BatchSequence;
-use crate::runtime::SequenceState;
+use crate::runtime::{BatchSequence, SequenceState};
 
 use handlers::chat_completions;
 

@@ -1,30 +1,24 @@
-mod scheduler;
-mod sequence_slice;
-mod slice_scheduler;
-mod state;
-
-pub mod batch_sequence;
-pub mod chat_template;
-pub mod model_loader;
+mod io;
 pub mod runner;
-pub mod tokenizer_loader;
+mod scheduling;
 
 pub use crate::tensor;
 
 pub use crate::config::{
-    ChatConfig, ChatArgs, Cli, CliCommand, Command, Config, ConfigError, GenerationConfig, HfConfig,
-    ModelConfig, ModelDtype, ResolvedConfig, ResolvedModelConfig, SchedulerConfig,
-    SchedulingPolicy, ServeConfig, ServeArgs, SharedArgs,
+    ChatArgs, ChatConfig, Cli, CliCommand, Command, Config, ConfigError, GenerationConfig,
+    HfConfig, ModelConfig, ModelDtype, ResolvedConfig, ResolvedModelConfig, SchedulerConfig,
+    SchedulingPolicy, ServeArgs, ServeConfig, SharedArgs,
 };
 
-pub use sequence_slice::{DecodeList, DecodeLookupResult, SequenceSlice};
-pub use state::{Phase, SequenceState};
-pub use runner::ServingRunner;
-pub use scheduler::BatchScheduler;
+pub use io::{load_tiktoken, BatchSequence, ChatTemplate, FromSafetensors, SafeTensorsLoader};
+pub use runner::Runner;
+pub use scheduling::{
+    BatchScheduler, DecodeList, DecodeLookupResult, Phase, SequenceSlice, SequenceState,
+};
 
 #[cfg(test)]
 mod tests {
-    use super::{BatchScheduler, Phase, SequenceState, ServingRunner};
+    use super::{BatchScheduler, Phase, Runner, SequenceState};
     use std::sync::Arc;
     use tokio::sync::Notify;
 
@@ -45,7 +39,7 @@ mod tests {
             notify: Arc::new(Notify::new()),
         };
         let scheduler = BatchScheduler::new(8, 2, 8, 1);
-        let runner = ServingRunner::<f32>::new(Vec::new(), scheduler);
+        let runner = Runner::<f32>::new(Vec::new(), scheduler);
 
         assert_eq!(prefill_state.sequence_index, 8);
         assert_eq!(prefill_state.kv_index, 12);

@@ -7,14 +7,12 @@ pub fn get_strides(shape: &Vec<usize>) -> Vec<usize> {
         }
     }
     for k in 0..(len - 1) {
-        // let product = ((k+1)..len).map(|x| shape[x]).product();
         let product = shape[(k + 1)..len].iter().product();
         strides[k] = product;
     }
     strides
 }
 
-// 计算对齐的步幅
 pub fn get_aligned_strides(shape: &Vec<usize>, broadcast_shape: &Vec<usize>) -> Vec<usize> {
     let mut strides = vec![0; broadcast_shape.len()];
     if shape.len() > broadcast_shape.len() {
@@ -71,45 +69,12 @@ pub fn get_broadcast_shape(a_shape: &Vec<usize>, b_shape: &Vec<usize>) -> Vec<us
     result_shape
 }
 
-/*
-pub fn iterate_with_broadcast<F>(
-    a_data: *const T,
-    b_data: *const T,
-    broadcast_shape: Vec<usize>,
-    a_shape: Vec<usize>,
-    b_shape: Vec<usize>,
-    mut f: F,
-) where F: FnMut(*const T, *const T) {
-    let a_strides = Self::get_aligned_strides(&a_shape, &broadcast_shape);
-    let b_strides = Self::get_aligned_strides(&b_shape, &broadcast_shape);
-
-    let mut a_index = 0;
-    let mut b_index = 0;
-
-    for i in 0..broadcast_shape.iter().product::<usize>() {
-        f(unsafe { a_data.add(a_index) }, unsafe { b_data.add(b_index) });
-
-        let mut carry = 1;
-        for (dim, (a_stride, b_stride)) in broadcast_shape.iter().zip(a_strides.iter().zip(b_strides.iter())).rev() {
-            if carry == 0 {
-                break;
-            }
-
-            a_index += a_stride * carry;
-            b_index += b_stride * carry;
-
-            carry = (i + 1) % dim;
-        }
-    }
-}
- */
-
 #[cfg(test)]
 mod test {
     use super::*;
+
     #[test]
     fn test_get_strides() {
-        // 3 * 4
         let high = 2;
         let row = 3;
         let col = 4;
@@ -129,7 +94,6 @@ mod test {
         let strides2: Vec<usize> = vec![4, 1];
         let shape2 = get_strides(&shape2);
         assert_eq!(strides2, shape2);
-        // println!("broadcast_shape {:?}", broadcast_shape);
     }
 
     #[test]
@@ -139,14 +103,6 @@ mod test {
 
         let result_shape = get_broadcast_shape(&vec![1, 1024], &vec![512, 1024]);
         assert_eq!(result_shape, vec![512, 1024]);
-
-        /*
-        vec![
-            config.max_position_embeddings,
-            1,
-            1,
-            config.attention_head_size,
-        ]*/
 
         let sequence_length = 8;
         let batch_size = 4;
@@ -158,7 +114,6 @@ mod test {
             &vec![sequence_length, 1, 1, head_size],
         );
         assert_eq!(result_shape, vec![8, 4, 64, 128]);
-        println!("{:?}", result_shape);
     }
 
     #[test]

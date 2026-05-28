@@ -1,11 +1,11 @@
 #![feature(f16)]
 
-use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::operators::operator::Operator;
+use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
-use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
+use ellm::runtime::BatchSequence;
+use ellm::runtime::{BatchScheduler, Phase, Runner, SequenceState};
 use ellm::serving;
 use std::sync::Arc;
 
@@ -26,7 +26,7 @@ fn build_fake_runner(
     batch_size: usize,
     chunk_size: usize,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-) -> ServingRunner<f16> {
+) -> Runner<f16> {
     let thread_num = core_affinity::get_core_ids()
         .map(|ids| ids.len())
         .unwrap_or(1);
@@ -36,7 +36,7 @@ fn build_fake_runner(
     batch_scheduler.batch_list = batch_states;
 
     let operator_queue = vec![Operator::FakeEcho(FakeEcho)];
-    ServingRunner::new(operator_queue, batch_scheduler)
+    Runner::new(operator_queue, batch_scheduler)
 }
 
 #[tokio::main(flavor = "current_thread")]

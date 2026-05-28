@@ -1,4 +1,3 @@
-use crate::num_traits::FromNumber;
 use crate::num_traits::Sqrt;
 // use std::ops::{Add, Div, Mul};
 use std::ptr;
@@ -52,7 +51,7 @@ mod tests {
     #[test]
     fn test_rms_norm() {
         let v1: Vec<f32> = (1..19).map(|x| x as f32).collect();
-        let weight = [1.0f32; 18];
+        let _weight = [1.0f32; 18];
         let mut output = [0.0f32; 18];
         rms_norm(
             v1.as_ptr(),
@@ -89,7 +88,7 @@ mod tests {
     fn test_add_rms_norm() {
         let v1: Vec<f32> = (0..18).map(|x| x as f32).collect();
         let v2 = [1.0f32; 18];
-        let weight = [1.0f32; 18];
+        let _weight = [1.0f32; 18];
         let mut output = [0.0f32; 18];
         add_rms_norm(
             v1.as_ptr(),

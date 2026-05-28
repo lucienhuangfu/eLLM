@@ -1,12 +1,12 @@
 use std::ops::{AddAssign, Neg, Sub};
 
-use crate::num_traits::NegInfinity;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::num_traits::NegInfinity;
 use crate::operators::operator::Operator;
-use crate::tensor::get_strides;
 
-use super::GlobalOperatorQueue;
+use super::queue::GlobalOperatorQueue;
+use super::utils::get_strides;
 
 #[derive(Clone)]
 pub struct Tensor<T>

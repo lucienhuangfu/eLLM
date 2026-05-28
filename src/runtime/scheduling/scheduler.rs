@@ -2,14 +2,20 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use super::sequence_slice::{DecodeList, SequenceSlice};
-use super::slice_scheduler::{PrefillCandidate, SliceScheduler};
-use super::state::{Phase, SequenceState};
 use crate::operators::send_sync_ptr::SharedMut;
+
+use super::state::{DecodeList, Phase, SequenceSlice, SequenceState};
+use super::task_allocator::SliceScheduler;
+
+#[derive(Clone, Copy)]
+struct PrefillCandidate {
+    batch_index: usize,
+    sequence_index: usize,
+    remaining: usize,
+}
 
 pub struct BatchScheduler {
     pub prefill_list: Vec<Vec<SequenceSlice>>,
-    /// Attention/decode slices for the current round.
     pub decode_list: DecodeList,
     pub batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     prefill_scheduler: SliceScheduler,
@@ -34,9 +40,6 @@ impl BatchScheduler {
         chunk_size: usize,
         thread_num: usize,
     ) -> Self {
-        // The prefill buffers are built once and then cleared/reused every round.
-        // Each thread gets a preallocated slice buffer, so the total reserved
-        // capacity is thread_num * batch_size.
         let build_prefill_list = || {
             let mut prefill_list = Vec::with_capacity(thread_num);
             for _ in 0..thread_num {
@@ -47,9 +50,6 @@ impl BatchScheduler {
 
         Self {
             max_decode_size: batch_size,
-            // Prefill is limited by the model chunk size, not the full sequence
-            // capacity. This keeps each round bounded to the chunk that the
-            // model forward pass can consume.
             max_prefill_size: chunk_size,
             batch_list: Arc::new(SharedMut::new(Vec::with_capacity(batch_size))),
             thread_num,
@@ -60,7 +60,6 @@ impl BatchScheduler {
     }
 
     fn clear_round_outputs(&mut self) {
-        // Reuse the already allocated output buffers for the next scheduling round.
         for task in self.prefill_list.iter_mut() {
             task.clear();
         }
@@ -282,8 +281,6 @@ mod tests {
 
         assert_eq!(prefill_tokens, 8);
         assert_eq!(decode_slices, 1);
-        // Prefill rounds still populate decode_list: the last token path is
-        // consumed by the attention/decode side of the pipeline.
         assert_eq!(scheduler.decode_list.len(), 1);
 
         let attention_slice = &scheduler.decode_list[0];
@@ -328,8 +325,6 @@ mod tests {
 
         assert_eq!(prefill_tokens, 5);
         assert_eq!(decode_slices, 1);
-        // Even when prefill is truncated, the returned decode_list carries the
-        // slice for the last-token path of that prefill request.
         assert_eq!(scheduler.decode_list.len(), 1);
 
         let attention_slice = &scheduler.decode_list[0];

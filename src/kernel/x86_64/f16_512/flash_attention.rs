@@ -30,8 +30,8 @@ unsafe fn scalar_vector_mul_and_acc(
 #[inline(always)]
 pub fn flash_attention(
     q: *const f16,
-    K: *const f16,
-    V: *const f16,
+    k: *const f16,
+    v: *const f16,
     o: *mut f16,
     inverse_sqrt_head: f16,
     length: usize,
@@ -40,10 +40,10 @@ pub fn flash_attention(
 ) {
     unsafe {
         // 预取下一块数据 (4 cache lines ahead)
-        _mm_prefetch(K as *const i8, _MM_HINT_T2);
-        _mm_prefetch(K.add(64) as *const i8, _MM_HINT_T2);
-        _mm_prefetch(V as *const i8, _MM_HINT_T2);
-        _mm_prefetch(V.add(64) as *const i8, _MM_HINT_T2);
+        _mm_prefetch(k as *const i8, _MM_HINT_T2);
+        _mm_prefetch(k.add(64) as *const i8, _MM_HINT_T2);
+        _mm_prefetch(v as *const i8, _MM_HINT_T2);
+        _mm_prefetch(v.add(64) as *const i8, _MM_HINT_T2);
 
         let mut m_i_1 = f16::NEG_INFINITY;
         let mut d_i_1: f16 = 0.0;
@@ -61,14 +61,14 @@ pub fn flash_attention(
             // 提前预取下一次循环的数据
             if offset < end {
                 let next_offset = offset + stride;
-                _mm_prefetch(K.add(next_offset) as *const i8, _MM_HINT_T2);
-                _mm_prefetch(K.add(next_offset + 64) as *const i8, _MM_HINT_T2);
-                _mm_prefetch(V.add(next_offset) as *const i8, _MM_HINT_T2);
-                _mm_prefetch(V.add(next_offset + 64) as *const i8, _MM_HINT_T2);
+                _mm_prefetch(k.add(next_offset) as *const i8, _MM_HINT_T2);
+                _mm_prefetch(k.add(next_offset + 64) as *const i8, _MM_HINT_T2);
+                _mm_prefetch(v.add(next_offset) as *const i8, _MM_HINT_T2);
+                _mm_prefetch(v.add(next_offset + 64) as *const i8, _MM_HINT_T2);
             }
 
             // dot product
-            let x_i = _dot_product(q, K.add(offset), length);
+            let x_i = _dot_product(q, k.add(offset), length);
             // 计算缩放后的 x_i
             let x_i = x_i * inverse_sqrt_head;
             let m_i = if x_i > m_i_1 { x_i } else { m_i_1 };
@@ -80,7 +80,7 @@ pub fn flash_attention(
             let u = update_exp / d_i;
             let a = add_exp / d_i;
 
-            scalar_vector_mul_and_acc(u, &mut o_chunks, a, V.add(offset));
+            scalar_vector_mul_and_acc(u, &mut o_chunks, a, v.add(offset));
 
             m_i_1 = m_i;
             d_i_1 = d_i;
@@ -243,12 +243,12 @@ mod tests {
         }
         for i in 0..4 {
             // let mut res: Vec<f16> = [0.0; 32].into_iter().map(|x| x).collect();
-            let mut res = AlignedBox::allocate_init(length, 0.0f16);
+            let res = AlignedBox::allocate_init(length, 0.0f16);
             let res_slice = unsafe { slice::from_raw_parts(res.as_ptr(), 32) };
             unsafe {
                 _mm512_store_ph(res.as_mut_ptr(), o[i]);
             }
-            let mut exp: Vec<f16> = vec![5.0; 32];
+            let exp: Vec<f16> = vec![5.0; 32];
             // unsafe {
             //    _mm512_store_ph(exp.as_mut_ptr(), expected[i]);
             // }
@@ -269,14 +269,14 @@ mod tests {
         // let mut o: Vec<f16> = vec![0.0; length];
 
         let q = AlignedBox::allocate_init(length, 1.0f16);
-        let K = AlignedBox::allocate_init(row_size * length, 1.0f16);
-        let V = AlignedBox::allocate_init(row_size * length, 1.0f16);
-        let mut o = AlignedBox::allocate_init(length, 0.0f16);
+        let k = AlignedBox::allocate_init(row_size * length, 1.0f16);
+        let v = AlignedBox::allocate_init(row_size * length, 1.0f16);
+        let o = AlignedBox::allocate_init(length, 0.0f16);
         let o_slice = unsafe { slice::from_raw_parts(o.as_ptr(), length) };
         flash_attention(
             q.as_ptr(),
-            K.as_ptr(),
-            V.as_ptr(),
+            k.as_ptr(),
+            v.as_ptr(),
             o.as_mut_ptr(),
             1.0,
             length,

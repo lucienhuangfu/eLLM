@@ -1,12 +1,12 @@
 #![feature(f16)]
 
-use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::model_loader::SafeTensorsLoader;
-use ellm::runtime::{BatchScheduler, SequenceState, ServingRunner};
+use ellm::operators::send_sync_ptr::SharedMut;
+use ellm::runtime::{
+    BatchScheduler, BatchSequence, Phase, Runner, SafeTensorsLoader, SequenceState,
+};
 use ellm::serving;
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
@@ -29,7 +29,7 @@ fn build_sequence_state(batch_size: usize) -> Vec<SequenceState> {
             filling_length: 0,
             sequence_index: usize::MAX,
             kv_index: usize::MAX,
-            phase: ellm::runtime::Phase::Start,
+            phase: Phase::Start,
             notify: Arc::new(tokio::sync::Notify::new()),
         })
         .collect()
@@ -39,13 +39,7 @@ fn build_batch_sequence(
     model_dir: &str,
     batch_size: usize,
     sequence_length: usize,
-) -> Result<
-    (
-        AlignedBox<usize>,
-        Arc<SharedMut<BatchSequence<f16>>>,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<(AlignedBox<usize>, Arc<SharedMut<BatchSequence<f16>>>), Box<dyn std::error::Error>> {
     let tokenizer_path = format!("{}/tokenizer.json", model_dir);
     let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);
     let chat_template_path = format!("{}/chat_template.jinja", model_dir);
@@ -178,11 +172,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eos_token_id_list,
     );
 
-    let batch_temperature_ptr = batch_sequences
-        .with_mut(|batch_sequence| batch_sequence.batch_temperature.as_mut_ptr());
+    let batch_temperature_ptr =
+        batch_sequences.with_mut(|batch_sequence| batch_sequence.batch_temperature.as_mut_ptr());
     let _ = model.forward(sequences_ptr, batch_temperature_ptr);
 
-    let runner = ServingRunner::new(f16::take_operator_queue(), batch_scheduler);
+    let runner = Runner::new(f16::take_operator_queue(), batch_scheduler);
     let serving_batch_states = Arc::clone(&batch_states);
 
     std::thread::spawn(move || {

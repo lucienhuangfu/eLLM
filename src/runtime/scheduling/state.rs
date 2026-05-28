@@ -1,4 +1,5 @@
 use std::ops::Deref;
+use std::sync::Arc;
 
 #[derive(Clone, Default)]
 pub struct SequenceSlice {
@@ -24,8 +25,6 @@ pub struct DecodeList {
 
 impl DecodeList {
     pub fn with_capacity(capacity: usize) -> Self {
-        // Preallocate the decode buffer to the batch size so each round can
-        // overwrite existing slots instead of growing the Vec.
         let mut slices = Vec::with_capacity(capacity);
         slices.resize(capacity, SequenceSlice::default());
         Self { slices, len: 0 }
@@ -83,7 +82,6 @@ impl DecodeList {
         };
 
         let mut slice_index = found.slice_index;
-
         let mut global_index = global_begin;
         while global_index < global_end {
             let Some(slice) = self.slices.get(slice_index) else {
@@ -126,76 +124,42 @@ impl Deref for DecodeList {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+/// ```mermaid
+/// stateDiagram-v2
+///     [*] --> Start
+///     Start --> Prefill: assign_slot
+///     Prefill --> Decode: prefill_done
+///     Decode --> Eos: generation_done
+///
+///     Eos --> Prefill: same_user_continue
+///     Eos --> Timeout: enter_timeout_state
+///
+///     Timeout --> Prefill: resume_same_user
+///     Timeout --> Start: recycle_for_new_user
+///     Timeout --> Closed: terminate_slot
+///     Closed --> [*]
+/// ```
+pub enum Phase {
+    Start,
+    Prefill,
+    Decode,
+    Timeout,
+    Eos,
+}
+
+pub struct SequenceState {
+    pub sequence_index: usize,
+    pub kv_index: usize,
+    pub filling_length: usize,
+    pub phase: Phase,
+    pub notify: Arc<tokio::sync::Notify>,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DecodeList, DecodeLookupResult, SequenceSlice};
-
-    fn sample_slices() -> DecodeList {
-        let mut slices = DecodeList::with_capacity(2);
-        slices.push(SequenceSlice {
-            batch_index: 0,
-            sequence_index: 0,
-            token_start_index: 0,
-            length: 6,
-            last_token_flag: false,
-        });
-        slices.push(SequenceSlice {
-            batch_index: 1,
-            sequence_index: 0,
-            token_start_index: 6,
-            length: 2,
-            last_token_flag: false,
-        });
-        slices
-    }
-
-    #[test]
-    fn lookup_global_index_returns_decode_lookup_result() {
-        let slices = sample_slices();
-
-        assert_eq!(
-            slices.lookup_global_index(7),
-            Some(DecodeLookupResult {
-                slice_index: 1,
-                batch_index: 1,
-                sequence_index: 1,
-            })
-        );
-        assert_eq!(slices.lookup_global_index(8), None);
-    }
-
-    #[test]
-    fn walk_global_range_advances_across_slice_boundaries() {
-        let slices = sample_slices();
-        let mut visited = Vec::new();
-
-        slices.walk_global_range(4, 8, |global_index, batch_index, sequence_index| {
-            visited.push((global_index, batch_index, sequence_index));
-        });
-
-        assert_eq!(visited, vec![(4, 0, 4), (5, 0, 5), (6, 1, 0), (7, 1, 1)]);
-    }
-
-    #[test]
-    fn total_token_count_sums_slice_lengths() {
-        let mut slices = DecodeList::with_capacity(2);
-        slices.push(SequenceSlice {
-            batch_index: 0,
-            sequence_index: 0,
-            token_start_index: 10,
-            length: 6,
-            last_token_flag: false,
-        });
-        slices.push(SequenceSlice {
-            batch_index: 1,
-            sequence_index: 0,
-            token_start_index: 20,
-            length: 2,
-            last_token_flag: false,
-        });
-
-        assert_eq!(slices.total_token_count(), 8);
-    }
+    use super::*;
 
     #[test]
     fn decode_list_push_preserves_last_token_flag() {

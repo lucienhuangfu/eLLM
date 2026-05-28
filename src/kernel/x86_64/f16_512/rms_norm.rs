@@ -84,7 +84,6 @@ pub fn add_rms_norm(
 mod tests {
     // use approx::assert_ulps_eq;
     use std::ptr;
-    use std::slice;
 
     use super::*;
     use crate::kernel;
@@ -102,26 +101,22 @@ mod tests {
                 ptr::write(v1_box.as_mut_ptr().wrapping_add(i), i as f16);
             }
         }
-        let weight_box = AlignedBox::allocate_init(length, 1.0);
-        let mut output_box = AlignedBox::allocate_init(length, 0.0);
+        let _weight_box = AlignedBox::allocate_init(length, 1.0);
+        let output_box = AlignedBox::allocate_init(length, 0.0);
 
-        unsafe {
-            rms_norm(v1_box.as_ptr(), output_box.as_mut_ptr(), length, 1e-6);
-        }
+        rms_norm(v1_box.as_ptr(), output_box.as_mut_ptr(), length, 1e-6);
         let output_slice = output_box.as_slice();
         println!("{:?}", output_slice);
 
         // let mut expected: Vec<f16> = vec![0.0; 64];
-        let mut expected_box = AlignedBox::allocate_init(length, 0.0);
+        let expected_box = AlignedBox::allocate_init(length, 0.0);
 
-        unsafe {
-            kernel::scalar::rms_norm::rms_norm(
-                v1_box.as_ptr(),
-                expected_box.as_mut_ptr(),
-                length,
-                1e-6,
-            );
-        }
+        kernel::scalar::rms_norm::rms_norm(
+            v1_box.as_ptr(),
+            expected_box.as_mut_ptr(),
+            length,
+            1e-6,
+        );
         let expected_slice = expected_box.as_slice();
 
         for j in 0..length {
@@ -144,33 +139,29 @@ mod tests {
             }
         }
         let v2_box = AlignedBox::allocate_init(length, 1.0);
-        let weight_box = AlignedBox::allocate_init(length, 1.0);
-        let mut output_box = AlignedBox::allocate_init(length, 0.0);
+        let _weight_box = AlignedBox::allocate_init(length, 1.0);
+        let output_box = AlignedBox::allocate_init(length, 0.0);
 
-        unsafe {
-            add_rms_norm(
-                v1_box.as_ptr(),
-                v2_box.as_ptr(),
-                output_box.as_mut_ptr(),
-                length,
-                1e-6,
-            );
-        }
+        add_rms_norm(
+            v1_box.as_ptr(),
+            v2_box.as_ptr(),
+            output_box.as_mut_ptr(),
+            length,
+            1e-6,
+        );
         let output_slice = output_box.as_slice();
         println!("{:?}", output_slice);
 
         // let mut expected: Vec<f16> = vec![0.0; 64];
-        let mut expected_box = AlignedBox::allocate_init(length, 0.0);
+        let expected_box = AlignedBox::allocate_init(length, 0.0);
 
-        unsafe {
-            kernel::scalar::rms_norm::add_rms_norm(
-                v1_box.as_ptr(),
-                v2_box.as_ptr(),
-                expected_box.as_mut_ptr(),
-                length,
-                1e-6,
-            );
-        }
+        kernel::scalar::rms_norm::add_rms_norm(
+            v1_box.as_ptr(),
+            v2_box.as_ptr(),
+            expected_box.as_mut_ptr(),
+            length,
+            1e-6,
+        );
         let expected_slice = expected_box.as_slice();
 
         for j in 0..length {

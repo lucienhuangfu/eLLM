@@ -4,11 +4,6 @@ use once_cell::sync::Lazy;
 
 use crate::operators::operator::Operator;
 
-static GLOBAL_OPERATOR_QUEUE_F32: Lazy<Mutex<Vec<Operator<f32>>>> =
-    Lazy::new(|| Mutex::new(Vec::new()));
-static GLOBAL_OPERATOR_QUEUE_F16: Lazy<Mutex<Vec<Operator<f16>>>> =
-    Lazy::new(|| Mutex::new(Vec::new()));
-
 pub trait GlobalOperatorQueue: Copy + PartialOrd {
     fn init_operator_queue();
     fn take_operator_queue() -> Vec<Operator<Self>>;
@@ -16,6 +11,11 @@ pub trait GlobalOperatorQueue: Copy + PartialOrd {
     where
         F: FnOnce(&mut Vec<Operator<Self>>) -> R;
 }
+
+static GLOBAL_OPERATOR_QUEUE_F32: Lazy<Mutex<Vec<Operator<f32>>>> =
+    Lazy::new(|| Mutex::new(Vec::new()));
+static GLOBAL_OPERATOR_QUEUE_F16: Lazy<Mutex<Vec<Operator<f16>>>> =
+    Lazy::new(|| Mutex::new(Vec::new()));
 
 impl GlobalOperatorQueue for f32 {
     fn init_operator_queue() {

@@ -8,23 +8,21 @@ use std::thread;
 
 use crate::operators::operator::Operator;
 
-use crate::num_traits::{
-    exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt,
-};
+use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
 use crate::runtime::BatchScheduler;
 
-/// Runs the inference serving loop.
+/// Runs the inference loop.
 ///
 /// This initializes a thread pool where Thread 0 schedules tasks by monitoring
 /// user request phases (Prefill/Decode) and populating the token list. All threads
 /// then synchronize to execute the operators in the queue for the current batch.
-pub struct ServingRunner<T> {
+pub struct Runner<T> {
     operator_queue: Vec<Operator<T>>,
     batch_scheduler: BatchScheduler,
     stop_flag: Arc<AtomicBool>,
 }
 
-impl<T> ServingRunner<T>
+impl<T> Runner<T>
 where
     T: Copy
         + Default
@@ -137,7 +135,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::ServingRunner;
+    use super::Runner;
     use crate::runtime::BatchScheduler;
 
     #[test]
@@ -145,7 +143,7 @@ mod tests {
         let operator_queue = Vec::<crate::operators::operator::Operator<f32>>::new();
         let batch_scheduler = BatchScheduler::new(16, 4, 16, 3);
 
-        let runner = ServingRunner::new(operator_queue, batch_scheduler);
+        let runner = Runner::new(operator_queue, batch_scheduler);
 
         assert_eq!(runner.operator_queue.len(), 0);
         assert_eq!(runner.batch_scheduler.prefill_list.len(), 3);

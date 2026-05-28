@@ -1,12 +1,12 @@
 #![feature(f16)]
 
-use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::model_loader::SafeTensorsLoader;
-use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
+use ellm::operators::send_sync_ptr::SharedMut;
+use ellm::runtime::{
+    BatchScheduler, BatchSequence, Phase, Runner, SafeTensorsLoader, SequenceState,
+};
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
@@ -153,7 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_list_ref = Arc::clone(&batch_scheduler.batch_list);
 
     println!("Starting serving runner...");
-    let runner = ServingRunner::new(f16::take_operator_queue(), batch_scheduler);
+    let runner = Runner::new(f16::take_operator_queue(), batch_scheduler);
     runner.start();
 
     println!("\n=== Generated Output ===");

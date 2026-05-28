@@ -198,7 +198,7 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::kernel::matmul_params::MatMulParams;
+    use crate::kernel::common::matmul_params::MatMulParams;
     use crate::operators::expert::expert_routing::ExpertRouting;
     use crate::runtime::SequenceSlice;
     use crate::runtime::{BatchScheduler, Phase, SequenceState};
@@ -1526,7 +1526,7 @@ mod test {
             }
         }
 
-        let params = crate::kernel::matmul_params::MatMulParams {
+        let params = crate::kernel::common::matmul_params::MatMulParams {
             a_row_step_macro: M,  // MB
             b_row_step_macro: N,  // NB
             column_step_macro: K, // KC
@@ -2200,7 +2200,7 @@ mod test {
         let h = 64usize;
         let ktop = 2usize;
 
-        let params = crate::kernel::matmul_params::MatMulParams {
+        let params = crate::kernel::common::matmul_params::MatMulParams {
             a_row_step_macro: 3,
             b_row_step_macro: 32,
             column_step_macro: 32,
@@ -2325,7 +2325,7 @@ mod test {
         let h = 48usize;
         let ktop = 1usize;
 
-        let params = crate::kernel::matmul_params::MatMulParams {
+        let params = crate::kernel::common::matmul_params::MatMulParams {
             a_row_step_macro: 3,
             b_row_step_macro: 48,
             column_step_macro: 16,
@@ -2690,7 +2690,7 @@ mod test {
             }
         }
 
-        let params = crate::kernel::matmul_params::MatMulParams {
+        let params = crate::kernel::common::matmul_params::MatMulParams {
             a_row_step_macro: M,  // MB
             b_row_step_macro: N,  // NB
             column_step_macro: K, // KC

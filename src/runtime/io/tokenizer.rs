@@ -1,7 +1,8 @@
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::sync::OnceLock;
+
+use serde::Deserialize;
 use tiktoken_rs::CoreBPE;
 
 #[derive(Debug, Deserialize)]
@@ -243,14 +244,14 @@ pub fn load_tiktoken(
 mod tests {
     use super::load_tiktoken;
 
-    const QWEN3_TOKENIZER_JSON_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
-    const QWEN3_TOKENIZER_CONFIG_JSON_PATH: &str =
+    const QWEN3_TOKENIZER_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
+    const QWEN3_TOKENIZER_CONFIG_PATH: &str =
         "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer_config.json";
 
     #[test]
     fn test_load_qwen3_tokenizer_json() {
         let tokenizer =
-            match load_tiktoken(QWEN3_TOKENIZER_JSON_PATH, QWEN3_TOKENIZER_CONFIG_JSON_PATH) {
+            match load_tiktoken(QWEN3_TOKENIZER_PATH, QWEN3_TOKENIZER_CONFIG_PATH) {
                 Ok(tokenizer) => tokenizer,
                 Err(e) => {
                     eprintln!(

@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::batch_sequence::BatchSequence;
+use crate::runtime::BatchSequence;
 use crate::runtime::{Phase, SequenceState};
 
 #[derive(Clone)]

@@ -31,7 +31,7 @@ impl FakeEcho {
         batch_list: &mut Vec<SequenceState>,
         thread_id: usize,
     ) {
-        // ServingRunner 的 thread_id 从 0 开始，0 号线程负责推进 fake 完成。
+        // Runner 的 thread_id 从 0 开始，0 号线程负责推进 fake 完成。
         if thread_id != 0 {
             return;
         }
