@@ -13,10 +13,11 @@ use crate::common::sequence_slice::SequenceSlice;
 // Fuse embedding lookup with RMS normalization
 #[derive(Clone)]
 pub struct LookupRMSMap<T> {
-    sequences_ptr: ConstPtr<usize>,
+    pub sequences_ptr: ConstPtr<usize>,
     word_embedding: ConstPtr<T>,
-    output_hidden_ptr: MutPtr<T>,
-    output_normal_ptr: MutPtr<T>,
+    norm_weight: ConstPtr<T>,
+    pub output_hidden_ptr: MutPtr<T>,
+    pub output_normal_ptr: MutPtr<T>,
     sequence_stride: usize,
     hidden_size: usize,
     eps: T,
@@ -27,6 +28,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
     pub fn new(
         sequences_ptr: *const usize,
         word_embedding: *const T,
+        norm_weight: *const T,
         output_hidden_ptr: *mut T,
         output_normal_ptr: *mut T,
         sequence_stride: usize,
@@ -46,11 +48,11 @@ impl<T: Sqrt> LookupRMSMap<T> {
             word_embedding: ConstPtr {
                 ptr: word_embedding,
             },
+            norm_weight: ConstPtr { ptr: norm_weight },
             eps,
         }
     }
 
-    // Run the map for a given batch size and thread ID
     pub fn run(
         &self,
         prefill_size: usize,
@@ -142,7 +144,10 @@ impl<T: Sqrt> LookupRMSMap<T> {
 impl<T: Sqrt> MapTrait<T> for LookupRMSMap<T> {
     default fn compute(&self, input_ptr: *const T, output_ptr: *mut T, length: usize) {
         kernel::scalar::rms_norm::rms_norm(
-            input_ptr, output_ptr, length, // self.weight.ptr,
+            input_ptr,
+            self.norm_weight.ptr,
+            output_ptr,
+            length,
             self.eps,
         );
     }
@@ -153,12 +158,21 @@ impl MapTrait<f16> for LookupRMSMap<f16> {
     fn compute(&self, input_ptr: *const f16, output_ptr: *mut f16, length: usize) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::rms_norm::rms_norm(
-            input_ptr, output_ptr, length, // self.weight.ptr,
+            input_ptr,
+            self.norm_weight.ptr,
+            output_ptr,
+            length,
             self.eps,
         );
 
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        kernel::scalar::rms_norm::rms_norm(input_ptr, output_ptr, length, self.eps);
+        kernel::scalar::rms_norm::rms_norm(
+            input_ptr,
+            self.norm_weight.ptr,
+            output_ptr,
+            length,
+            self.eps,
+        );
     }
 }
 
@@ -209,7 +223,7 @@ mod test {
             .take(vocab_size * hidden_size)
             .map(|x| x as f32)
             .collect();
-        // let weight = vec![1.0f32; hidden_size];
+        let weight = vec![1.0f32; hidden_size];
         let mut output_hidden_data: Vec<f32> = vec![0.0; length];
         let mut output_normal_data: Vec<f32> = vec![0.0; length];
 
@@ -217,6 +231,7 @@ mod test {
         let o = LookupRMSMap::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
+            weight.as_ptr(),
             output_hidden_data.as_mut_ptr(),
             output_normal_data.as_mut_ptr(),
             batch_size,
@@ -279,6 +294,7 @@ mod test {
         ];
         let mut output_hidden_data: Vec<f32> = vec![0.0; batch_size * hidden_size];
         let mut output_normal_data: Vec<f32> = vec![0.0; batch_size * hidden_size];
+        let weight = vec![1.0f32; hidden_size];
 
         let decode_list = vec![
             SequenceSlice {
@@ -314,6 +330,7 @@ mod test {
         let operator = LookupRMSMap::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
+            weight.as_ptr(),
             output_hidden_data.as_mut_ptr(),
             output_normal_data.as_mut_ptr(),
             1,
@@ -360,6 +377,7 @@ mod test {
         ];
         let mut output_hidden_data = vec![0.0f32; 4 * hidden_size];
         let mut output_normal_data = vec![0.0f32; 4 * hidden_size];
+        let weight = vec![1.0f32; hidden_size];
         let prefill_list = vec![vec![
             SequenceSlice {
                 batch_index: 0,
@@ -380,6 +398,7 @@ mod test {
         let operator = LookupRMSMap::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
+            weight.as_ptr(),
             output_hidden_data.as_mut_ptr(),
             output_normal_data.as_mut_ptr(),
             sequence_stride,

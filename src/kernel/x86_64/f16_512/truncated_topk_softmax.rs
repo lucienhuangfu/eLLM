@@ -26,16 +26,36 @@ pub fn truncated_topk_softmax(
         let mut heap = FixedMinHeap::new(output_values_ptr, output_indices_ptr, topk_size);
         for i in 0..total_candidates {
             let value = *input_values_ptr.add(i);
+            if !(value as f32).is_finite() {
+                continue;
+            }
             let index = *input_indices_ptr.add(i);
             heap.push(value, index);
         }
 
+        let len = heap.len();
+        if len == 0 {
+            for i in 0..topk_size {
+                *output_values_ptr.add(i) = f16::NAN;
+                *output_indices_ptr.add(i) = 0;
+            }
+            return;
+        }
+
         heap.sort_desc();
 
-        let len = heap.len();
         let max_val = *output_values_ptr;
+        let temperature = if (temperature as f32) <= 0.0 {
+            1.0f16
+        } else {
+            temperature
+        };
 
-        let mut buffer = [f16::NEG_INFINITY; 32];
+        // Pad to 32 elements for 512-bit SIMD; ensure capacity for any topk_size
+        let simd_width = 32usize;
+        let padded_len = len.max(simd_width);
+        let mut buffer: Vec<f16> = Vec::with_capacity(padded_len);
+        buffer.resize(padded_len, f16::NEG_INFINITY);
         ptr::copy_nonoverlapping(output_values_ptr, buffer.as_mut_ptr(), len);
 
         let max_broadcast = _mm512_set1_ph(max_val);

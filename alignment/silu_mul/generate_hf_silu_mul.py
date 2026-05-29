@@ -30,9 +30,9 @@ def main():
     dump_dir = Path(__file__).parent / "dump"
     dump_dir.mkdir(parents=True, exist_ok=True)
     
-    np.save(str(dump_dir / "python_silu_mul_x1.npy"), x1)
-    np.save(str(dump_dir / "python_silu_mul_x2.npy"), x2)
-    np.save(str(dump_dir / "python_silu_mul_output.npy"), y)
+    np.save(str(dump_dir / "python_silu_mul_x1.npy"), x1.ravel())
+    np.save(str(dump_dir / "python_silu_mul_x2.npy"), x2.ravel())
+    np.save(str(dump_dir / "python_silu_mul_output.npy"), y.ravel())
 
     print(f"x1 shape: {x1.shape}")
     print(f"x2 shape: {x2.shape}")

@@ -10,6 +10,7 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::operator::Operator;
 use crate::operators::routing::{ExpertsSoftmaxNorm, ExpertsTopkNorm, MatMulSigmoid, TopKSoftmax};
+use crate::runtime::generation_config::EosTokenIds;
 
 use super::core::leaked_aligned_ptr;
 use super::{GlobalOperatorQueue, Tensor};
@@ -36,14 +37,14 @@ where
         decode_only_flag: bool,
         _scope_name: String,
     ) -> ExpertRouting<T> {
-        let routing = unsafe {
-            Self::allocate_expert_routing(num_experts, self.shape[0], num_experts_per_tok)
-        };
+        let token_count = self.row_count();
+        let routing =
+            unsafe { Self::allocate_expert_routing(num_experts, token_count, num_experts_per_tok) };
 
         let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
             self.data,
             routing,
-            self.shape[0],
+            token_count,
             num_experts,
             num_experts_per_tok,
             decode_only_flag,
@@ -67,7 +68,9 @@ where
             );
         }
 
-        let output_shape = vec![self.shape[0], gate_weight.shape[0]];
+        let token_count = self.row_count();
+        let hidden_size = self.last_dim();
+        let output_shape = vec![token_count, gate_weight.shape[0]];
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
 
         let params = MatMulParams {
@@ -84,9 +87,9 @@ where
                 bias_tensor.map(|tensor| tensor.data as *const T),
                 output_tensor.data,
                 params,
-                self.shape[0],
+                token_count,
                 gate_weight.shape[0],
-                self.shape[1],
+                hidden_size,
                 bias_tensor.is_some(),
                 decode_only_flag,
             )
@@ -102,14 +105,14 @@ where
         decode_only_flag: bool,
         _scope_name: String,
     ) -> ExpertRouting<T> {
-        let routing = unsafe {
-            Self::allocate_expert_routing(num_experts, self.shape[0], num_experts_per_tok)
-        };
+        let token_count = self.row_count();
+        let routing =
+            unsafe { Self::allocate_expert_routing(num_experts, token_count, num_experts_per_tok) };
 
         let operator = Operator::ExpertsTopkNorm(ExpertsTopkNorm::new(
             self.data,
             routing,
-            self.shape[0],
+            token_count,
             num_experts,
             num_experts_per_tok,
             decode_only_flag,
@@ -170,7 +173,7 @@ where
         batch_temperature: *mut T,
         sequence_stride: usize,
         num_topk: usize,
-        eos_id: usize,
+        eos_ids: EosTokenIds,
         scope_name: String,
     ) -> (*const usize, Self) {
         let output_shape = vec![self.shape[0], num_topk];
@@ -188,7 +191,7 @@ where
             batch_temperature,
             sequence_stride,
             num_topk,
-            eos_id,
+            eos_ids,
         ));
 
         Self::enqueue(operator);

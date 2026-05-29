@@ -7,6 +7,8 @@ use std::{
     path::Path,
 };
 
+use super::generation_config::TokenIdOrIds;
+
 /// Raw Hugging Face `config.json` shape: strings, numbers, and options only — no runtime enums.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct HfConfig {
@@ -17,7 +19,7 @@ pub struct HfConfig {
     #[serde(default = "default_decoder_sparse_step")]
     pub(crate) decoder_sparse_step: usize,
     #[serde(default)]
-    pub(crate) eos_token_id: usize,
+    pub(crate) eos_token_id: TokenIdOrIds,
     pub(crate) head_dim: Option<usize>,
     #[serde(default)]
     pub(crate) hidden_act: String,

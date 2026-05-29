@@ -9,6 +9,7 @@ use crate::operators::traits::MapTrait;
 #[derive(Clone)]
 pub struct RMSMap<T> {
     ptr1: ConstPtr<T>,
+    weight: ConstPtr<T>,
     output_ptr: MutPtr<T>,
     hidden_size: usize,
     eps: T,
@@ -18,6 +19,7 @@ pub struct RMSMap<T> {
 impl<T: Sqrt> RMSMap<T> {
     pub fn new(
         ptr1: *const T,
+        weight: *const T,
         output_ptr: *mut T,
         hidden_size: usize,
         eps: T,
@@ -25,6 +27,7 @@ impl<T: Sqrt> RMSMap<T> {
     ) -> Self {
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
+            weight: ConstPtr { ptr: weight },
             output_ptr: MutPtr { ptr: output_ptr },
             hidden_size,
             eps: eps,
@@ -39,7 +42,7 @@ impl<T: Sqrt> RMSMap<T> {
         thread_num: usize,
         thread_id: usize,
     ) {
-        let task_size = if prefill_size == 0 || self.decode_only_flag {
+        let task_size = if prefill_size == 0 {
             decode_size
         } else {
             prefill_size
@@ -62,7 +65,10 @@ impl<T: Sqrt> RMSMap<T> {
 impl<T: Sqrt> MapTrait<T> for RMSMap<T> {
     default fn compute(&self, input_ptr: *const T, output_ptr: *mut T, length: usize) {
         kernel::scalar::rms_norm::rms_norm(
-            input_ptr, output_ptr, length, // self.weight.ptr,
+            input_ptr,
+            self.weight.ptr,
+            output_ptr,
+            length,
             self.eps,
         );
     }
@@ -72,13 +78,19 @@ impl MapTrait<f16> for RMSMap<f16> {
     fn compute(&self, input_ptr: *const f16, output_ptr: *mut f16, length: usize) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::rms_norm::rms_norm(
-            input_ptr, output_ptr, length, // self.weight.ptr,
+            input_ptr,
+            self.weight.ptr,
+            output_ptr,
+            length,
             self.eps,
         );
 
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::scalar::rms_norm::rms_norm(
-            input_ptr, output_ptr, length, // self.weight.ptr,
+            input_ptr,
+            self.weight.ptr,
+            output_ptr,
+            length,
             self.eps,
         );
     }
@@ -87,7 +99,10 @@ impl MapTrait<f16> for RMSMap<f16> {
 impl MapTrait<f32> for RMSMap<f32> {
     fn compute(&self, input_ptr: *const f32, output_ptr: *mut f32, length: usize) {
         kernel::scalar::rms_norm::rms_norm(
-            input_ptr, output_ptr, length, // self.weight.ptr,
+            input_ptr,
+            self.weight.ptr,
+            output_ptr,
+            length,
             self.eps,
         );
     }
@@ -96,7 +111,10 @@ impl MapTrait<f32> for RMSMap<f32> {
 impl MapTrait<f64> for RMSMap<f64> {
     fn compute(&self, input_ptr: *const f64, output_ptr: *mut f64, length: usize) {
         kernel::scalar::rms_norm::rms_norm(
-            input_ptr, output_ptr, length, // self.weight.ptr,
+            input_ptr,
+            self.weight.ptr,
+            output_ptr,
+            length,
             self.eps,
         );
     }
@@ -131,9 +149,9 @@ mod test {
         // 使用这些块和长度初始化 ArgmaxMap
         let mut operator = RMSMap::new(
             input_data.as_ptr(),
+            weight.as_ptr(),
             output_data.as_mut_ptr(),
             hidden_size,
-            // weight.as_ptr(),
             eps,
             false,
         );

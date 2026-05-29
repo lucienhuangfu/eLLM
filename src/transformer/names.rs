@@ -16,6 +16,8 @@ pub struct AttentionTensorNames {
     pub k_proj: String,
     pub v_proj: String,
     pub o_proj: String,
+    pub q_norm: String,
+    pub k_norm: String,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +49,8 @@ pub struct LayerTensorNames {
     pub scope: String,
     pub attention: AttentionTensorNames,
     pub ffn: FfnTensorNames,
+    pub input_layernorm: String,
+    pub post_attention_layernorm: String,
 }
 
 pub fn model_tensor_names(config: &Config) -> ModelTensorNames {
@@ -86,6 +90,8 @@ pub fn layer_tensor_names(config: &Config, layer_idx: usize) -> LayerTensorNames
         k_proj: format!("{}.k_proj.weight", attention_scope),
         v_proj: format!("{}.v_proj.weight", attention_scope),
         o_proj: format!("{}.o_proj.weight", attention_scope),
+        q_norm: format!("{}.q_norm.weight", attention_scope),
+        k_norm: format!("{}.k_norm.weight", attention_scope),
     };
 
     let ffn = match &config.layers[layer_idx].ffn {
@@ -118,6 +124,8 @@ pub fn layer_tensor_names(config: &Config, layer_idx: usize) -> LayerTensorNames
     };
 
     LayerTensorNames {
+        input_layernorm: format!("{}.input_layernorm.weight", scope),
+        post_attention_layernorm: format!("{}.post_attention_layernorm.weight", scope),
         scope,
         attention,
         ffn,

@@ -1,6 +1,15 @@
 use minijinja::context;
+use minijinja::value::{from_args, Value};
 use minijinja::Environment;
+use minijinja::{Error as MiniJinjaError, ErrorKind, State};
+use serde::Deserialize;
 use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize)]
+struct TokenizerConfigTemplate {
+    chat_template: String,
+}
 
 pub struct ChatTemplate {
     _env: &'static Environment<'static>,
@@ -9,8 +18,47 @@ pub struct ChatTemplate {
 
 impl ChatTemplate {
     pub fn new(template_path: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let mut env = Environment::new();
         let chat_template = std::fs::read_to_string(template_path)?;
+        Self::from_template_source(chat_template)
+    }
+
+    pub fn from_tokenizer_config(
+        tokenizer_config_path: &str,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let content = std::fs::read_to_string(tokenizer_config_path)?;
+        let config: TokenizerConfigTemplate = serde_json::from_str(&content)?;
+        Self::from_template_source(config.chat_template)
+    }
+
+    pub fn from_model_files(
+        chat_template_path: &str,
+        tokenizer_config_path: &str,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        if Path::new(chat_template_path).exists() {
+            return Self::new(chat_template_path);
+        }
+
+        Self::from_tokenizer_config(tokenizer_config_path)
+    }
+
+    fn from_template_source(
+        chat_template: String,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let mut env = Environment::new();
+        env.set_unknown_method_callback(
+            |_state: &State, value: &Value, method: &str, args: &[Value]| {
+                let Some(input) = value.as_str() else {
+                    return Err(MiniJinjaError::from(ErrorKind::UnknownMethod));
+                };
+                let (needle,): (String,) = from_args(args)?;
+
+                match method {
+                    "startswith" => Ok(Value::from(input.starts_with(&needle))),
+                    "endswith" => Ok(Value::from(input.ends_with(&needle))),
+                    _ => Err(MiniJinjaError::from(ErrorKind::UnknownMethod)),
+                }
+            },
+        );
         let chat_template = Box::leak(chat_template.into_boxed_str());
         let template_name = "chat";
 

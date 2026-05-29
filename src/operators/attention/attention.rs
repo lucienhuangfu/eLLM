@@ -26,6 +26,7 @@ pub struct Attention<T> {
     pub(super) v_batch_stride: usize,
     pub(super) v_head_stride: usize,
     pub(super) v_seq_stride: usize,
+    pub(super) q_seq_stride: usize,
     pub(super) head_size: usize,
     pub(super) inverse_sqrt_head: T,
     pub(super) row_step: usize,
@@ -61,6 +62,7 @@ where
         v_batch_stride: usize,
         v_head_stride: usize,
         v_seq_stride: usize,
+        q_seq_stride: usize,
         row_step: usize,
         col_step: usize,
         head_size: usize,
@@ -85,6 +87,7 @@ where
             v_batch_stride,
             v_head_stride,
             v_seq_stride,
+            q_seq_stride,
             sequence_length,
             row_step,
             col_step,
@@ -180,9 +183,9 @@ where
             scratch.clear();
 
             for row in row_chunk..visible_row_end {
-                let row_offset = row * self.head_size;
+                let q_offset = row * self.q_seq_stride;
                 for index in 0..self.head_size {
-                    *output_head_ptr.add(row_offset + index) = T::default();
+                    *output_head_ptr.add(q_offset + index) = T::default();
                 }
             }
 
@@ -202,6 +205,7 @@ where
                     sequence_index,
                     self.k_seq_stride,
                     self.v_seq_stride,
+                    self.q_seq_stride,
                     scratch.running_max,
                     scratch.running_denom,
                     scratch.scores,
@@ -230,9 +234,9 @@ where
         }
 
         for row in row_begin..visible_row_end {
-            let row_offset = row * self.head_size;
+            let q_offset = row * self.q_seq_stride;
             for index in 0..self.head_size {
-                *output_head_ptr.add(row_offset + index) = T::default();
+                *output_head_ptr.add(q_offset + index) = T::default();
             }
         }
 
@@ -257,6 +261,7 @@ where
                 sequence_index,
                 self.k_seq_stride,
                 self.v_seq_stride,
+                self.q_seq_stride,
                 scratch.running_max,
                 scratch.running_denom,
                 scratch.scores,
@@ -575,6 +580,7 @@ mod tests {
             3 * head_size,
             3 * head_size,
             head_size,
+            head_size,
             1,
             1,
             2,
@@ -644,6 +650,7 @@ mod tests {
             kv_heads * head_size,
             head_size,
             batch_size * kv_heads * head_size,
+            head_size,
             1,
             2,
             head_size,

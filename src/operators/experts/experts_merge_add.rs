@@ -99,7 +99,7 @@ where
         unsafe {
             let thread_num = thread_num.max(1);
 
-            let active_size = if prefill_size == 0 || self.decode_only_flag {
+            let active_size = if prefill_size == 0 {
                 decode_size
             } else {
                 prefill_size

@@ -1,9 +1,36 @@
-use crate::common::num_traits::FromNumber;
 use crate::common::num_traits::Sqrt;
 // use std::ops::{Add, Div, Mul};
 use std::ptr;
 
-pub fn rms_norm<T>(input_ptr: *const T, output_ptr: *mut T, length: usize, eps: T)
+pub fn rms_norm<T>(
+    input_ptr: *const T,
+    weight_ptr: *const T,
+    output_ptr: *mut T,
+    length: usize,
+    eps: T,
+)
+where
+    T: Sqrt,
+{
+    unsafe {
+        let variance = {
+            let sum = (0..length)
+                .map(|x| *input_ptr.add(x))
+                .map(|x| x * x)
+                .reduce(|acc, e| acc + e)
+                .unwrap();
+            sum / T::from_usize(length)
+        };
+        let rrms = T::from_usize(1) / (variance + eps).sqrt();
+        for (vptr, wptr, optr) in
+            (0..length).map(|x| (input_ptr.add(x), weight_ptr.add(x), output_ptr.add(x)))
+        {
+            ptr::write(optr, *vptr * rrms * *wptr);
+        }
+    }
+}
+
+pub fn rms_norm_unit<T>(input_ptr: *const T, output_ptr: *mut T, length: usize, eps: T)
 where
     T: Sqrt,
 {
@@ -40,7 +67,7 @@ pub fn add_rms_norm<T>(
             let y = *input1 + *input2;
             ptr::write(output, y);
         }
-        rms_norm(output_ptr, output_ptr, length, eps);
+        rms_norm_unit(output_ptr, output_ptr, length, eps);
     }
 }
 
@@ -56,9 +83,9 @@ mod tests {
         let mut output = [0.0f32; 18];
         rms_norm(
             v1.as_ptr(),
+            weight.as_ptr(),
             output.as_mut_ptr(),
             v1.len(),
-            // weight.as_ptr(),
             1e-6,
         );
         let result = [

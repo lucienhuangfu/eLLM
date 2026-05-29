@@ -1,9 +1,9 @@
 {
   "bos_token_id": 200019,
-  "do_sample": true,
+  "do_sample": false,
   "eos_token_id": 200020,
   "temperature": 1.0,
-  "top_p": 0.95,
-  "top_k": 40,
+  "top_p": 1.0,
+  "top_k": 1,
   "transformers_version": "4.46.1"
 }

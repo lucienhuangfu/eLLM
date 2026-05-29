@@ -107,7 +107,8 @@ where
             b_row_step_micro,
         };
 
-        let m_max = a_row;
+        let micro_tile_rows_tmp = a_row_step_micro.max(1);
+        let m_max = a_row.div_ceil(micro_tile_rows_tmp) * micro_tile_rows_tmp;
         let n_max = b_row;
         let k_max = column;
 
@@ -116,8 +117,8 @@ where
         let thread_max = Self::detect_threads();
 
         let reduction_block_cols = params.column_step_macro.max(1);
-        let micro_tile_cols = params.b_row_step_micro.max(1);
-        let micro_tile_rows = params.a_row_step_micro.max(1);
+        let micro_tile_cols = b_row_step_micro.max(1);
+        let micro_tile_rows = micro_tile_rows_tmp;
 
         let packed_panel_stride = reduction_block_cols * micro_tile_cols;
         let packed_b = Self::pack_b_panels(
@@ -257,10 +258,10 @@ where
         thread_id: usize,
     ) {
         unsafe {
-            let active_input_rows = if decode_size > 0 {
-                decode_size
-            } else {
+            let active_input_rows = if prefill_size > 0 {
                 prefill_size
+            } else {
+                decode_size
             };
 
             assert!(active_input_rows <= self.batch_max);

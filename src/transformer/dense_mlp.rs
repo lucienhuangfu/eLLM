@@ -36,9 +36,9 @@ where
 {
     pub fn new(hidden_size: usize, intermediate_size: usize, names: DenseMlpTensorNames) -> Self {
         Self {
-            gate_weight: Tensor::zeros(vec![hidden_size, intermediate_size], names.gate_proj),
-            up_weight: Tensor::zeros(vec![hidden_size, intermediate_size], names.up_proj),
-            down_weight: Tensor::zeros(vec![intermediate_size, hidden_size], names.down_proj),
+            gate_weight: Tensor::zeros(vec![intermediate_size, hidden_size], names.gate_proj),
+            up_weight: Tensor::zeros(vec![intermediate_size, hidden_size], names.up_proj),
+            down_weight: Tensor::zeros(vec![hidden_size, intermediate_size], names.down_proj),
             scope_name: names.scope,
         }
     }
@@ -78,7 +78,7 @@ where
             format!("{}.up_proj.output", self.scope_name),
         );
 
-        let nonlinear_product = gate_product.add(
+        let nonlinear_product = gate_product.silu_mul(
             &up_product,
             decode_only_flag,
             format!("{}.intermediate", self.scope_name),

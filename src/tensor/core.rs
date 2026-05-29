@@ -64,6 +64,20 @@ where
         self.shape.iter().product()
     }
 
+    #[inline]
+    pub fn row_count(&self) -> usize {
+        let last_dim = self.last_dim();
+        self.element_count() / last_dim
+    }
+
+    #[inline]
+    pub fn last_dim(&self) -> usize {
+        *self
+            .shape
+            .last()
+            .expect("Tensor shape must have at least one dimension")
+    }
+
     pub fn from_mem_pool(shape: Vec<usize>, tensor_name: String) -> Self {
         Self::from_pool(shape, tensor_name)
     }
@@ -122,12 +136,7 @@ where
     }
 
     pub fn zeros(shape: Vec<usize>, tensor_name: String) -> Self {
-        let length: usize = shape.iter().product();
-        let v = Self::from_mem_pool(shape, tensor_name);
-        unsafe {
-            std::slice::from_raw_parts_mut(v.data, length).fill(T::default());
-        }
-        v
+        Self::from_mem_pool(shape, tensor_name)
     }
 
     fn _view(&self, shape: Vec<usize>, strides: Vec<usize>) -> Self {

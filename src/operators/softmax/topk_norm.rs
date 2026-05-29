@@ -57,13 +57,23 @@ where
         thread_num: usize,
         thread_id: usize,
     ) {
-        let task_size = if prefill_size == 0 || self.decode_only_flag {
+        if thread_id != 0 {
+            return;
+        }
+
+        for expert in 0..self.num_experts {
+            unsafe {
+                (&*self.routing.expert_counts.ptr.add(expert)).store(0, Ordering::Release);
+            }
+        }
+
+        let task_size = if prefill_size == 0 {
             decode_size
         } else {
             prefill_size
         };
 
-        if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
+        if let Some((begin, end)) = assign(task_size, 1, 0) {
             for token_index in begin..end {
                 unsafe {
                     let input_offset = token_index * self.num_experts;

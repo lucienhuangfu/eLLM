@@ -10,7 +10,7 @@ use std::arch::x86_64::{
 use std::f16;
 
 use crate::kernel::x86_64::f16_512::complex_mul::complex_mul;
-use crate::kernel::x86_64::f16_512::rms_norm::rms_norm;
+use crate::kernel::x86_64::f16_512::rms_norm::rms_norm_unit;
 
 /// 3×32 in-place 累加：每个 kc 面板把 A×B_panel 直接加到 C 上并写回
 ///
@@ -85,9 +85,9 @@ pub unsafe fn matmul_finalize_rmsnorm_rope_inplace_3x128(
     debug_assert_eq!(nr, 128);
 
     // 对 3 行分别做 in-place RMSNorm（长度 128）
-    rms_norm(c.add(0 * ldc), c.add(0 * ldc), 128, eps);
-    rms_norm(c.add(1 * ldc), c.add(1 * ldc), 128, eps);
-    rms_norm(c.add(2 * ldc), c.add(2 * ldc), 128, eps);
+    rms_norm_unit(c.add(0 * ldc), c.add(0 * ldc), 128, eps);
+    rms_norm_unit(c.add(1 * ldc), c.add(1 * ldc), 128, eps);
+    rms_norm_unit(c.add(2 * ldc), c.add(2 * ldc), 128, eps);
 
     // 然后对 3 行分别做 in-place RoPE 复数乘（长度 128）
     complex_mul(c.add(0 * ldc), rope_ptr, c.add(0 * ldc), 128);
@@ -268,7 +268,7 @@ mod tests {
         // 手动参考路径：逐行调用 rms_norm + complex_mul
         unsafe {
             // row 0
-            rms_norm(c_ref_box.as_ptr(), c_ref_box.as_mut_ptr(), 128, eps);
+            rms_norm_unit(c_ref_box.as_ptr(), c_ref_box.as_mut_ptr(), 128, eps);
             complex_mul(
                 c_ref_box.as_ptr(),
                 rope_box.as_ptr(),
@@ -277,7 +277,7 @@ mod tests {
             );
 
             // row 1
-            rms_norm(
+            rms_norm_unit(
                 c_ref_box.as_ptr().add(1 * LDC),
                 c_ref_box.as_mut_ptr().add(1 * LDC),
                 128,
@@ -291,7 +291,7 @@ mod tests {
             );
 
             // row 2
-            rms_norm(
+            rms_norm_unit(
                 c_ref_box.as_ptr().add(2 * LDC),
                 c_ref_box.as_mut_ptr().add(2 * LDC),
                 128,

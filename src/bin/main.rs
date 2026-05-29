@@ -32,8 +32,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);
     let chat_template_path = format!("{}/chat_template.jinja", model_dir);
 
-    let sequence_length = 128;
-    let top_k = 8;
+    let sequence_length = 32;
+    let top_k = generation_config
+        .as_ref()
+        .map(|gen_cfg| gen_cfg.effective_top_k(8))
+        .unwrap_or(1);
+    let temperature = generation_config
+        .as_ref()
+        .map(|gen_cfg| gen_cfg.effective_temperature(1.0))
+        .unwrap_or(1.0);
 
     let fixed_prompts = [
         "Hello from a fixed runner.",
@@ -66,11 +73,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (slot, prompt) in fixed_prompts.iter().enumerate().take(batch_size) {
         let messages: [(&str, &str); 1] = [("user", prompt)];
         let write_len = batch_seq
-            .write_prompts(slot, &messages, 1.0)
+            .write_prompts(slot, &messages, temperature)
             .map_err(|e| format!("failed to write prompt: {}", e))?;
         written_lengths.push(write_len);
     }
-
     let position_vec = RotaryEmbedding::new(
         config.head_dim,
         config.rotary_dim,
@@ -80,8 +86,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .forward::<f16>();
 
-    // Use eos id from model config or default to known value
-    let eos_id = config.eos_token_id;
+    let eos_ids = generation_config
+        .as_ref()
+        .and_then(GenerationConfig::eos_token_ids)
+        .filter(|ids| !ids.is_empty())
+        .unwrap_or(config.eos_token_ids);
 
     let mut model = Model::<f16>::new(
         &config,
@@ -90,11 +99,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sequence_length,
         batch_size,
         top_k,
-        eos_id,
+        eos_ids,
     );
 
     // Run the model forward pass to populate the operator queue
-    let (_output_indices, _output_tensor) =
+    let (output_indices, output_tensor) =
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
 
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -122,12 +131,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.start();
 
     println!("\n=== Generated Output ===");
+    let _ = (output_indices, output_tensor);
     batch_list_ref.with(|list| {
         for (slot, record) in list.iter().enumerate() {
-            let text = batch_seq.decode_generated_text(slot, record);
-            if !text.is_empty() {
-                println!("Slot {}: {}", slot, text);
-            }
+            let generated_begin = written_lengths[slot].min(sequence_length);
+            let generated_end = record.kv_index.min(sequence_length);
+            let token_ids = batch_seq.token_ids(slot, generated_begin, generated_end);
+            let text = batch_seq.decode_token_span(slot, generated_begin, generated_end);
+            println!("Slot {} token ids: {:?}", slot, token_ids);
+            println!("Slot {} ({:?}): {}", slot, record.phase, text);
         }
     });
 

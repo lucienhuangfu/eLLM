@@ -106,7 +106,7 @@ where
         thread_id: usize,
     ) {
         unsafe {
-            let active_input_rows = if prefill_size == 0 || self.decode_only_flag {
+            let active_input_rows = if prefill_size == 0 {
                 decode_size
             } else {
                 prefill_size

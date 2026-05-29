@@ -17,6 +17,7 @@ pub struct SiluMulZipMap<T> {
     // max_batch_size: usize,
     head_num: usize,
     head_size: usize,
+    decode_only_flag: bool,
     // cpu_num: usize
 }
 
@@ -41,6 +42,17 @@ where
         head_size: usize,
         // cpu_num: usize
     ) -> Self {
+        Self::new_with_decode_only(ptr1, ptr2, output_ptr, head_num, head_size, false)
+    }
+
+    pub fn new_with_decode_only(
+        ptr1: *const T,
+        ptr2: *const T,
+        output_ptr: *mut T,
+        head_num: usize,
+        head_size: usize,
+        decode_only_flag: bool,
+    ) -> Self {
         Self {
             // chunks: vec![],
             ptr1: ConstPtr { ptr: ptr1 },
@@ -49,6 +61,7 @@ where
             // max_batch_size: max_batch_size,
             head_num: head_num,
             head_size: head_size,
+            decode_only_flag,
             // cpu_num: cpu_num
         }
     }
@@ -58,13 +71,26 @@ where
     // }
 
     pub fn run(&self, prefill_size: usize, cpu_num: usize, thread_id: usize) {
-        let total_len = prefill_size * self.head_num;
-        if let Some((begin, end)) = assign(total_len, cpu_num, thread_id) {
-            println!("thread_id: {}, begin: {}, end: {}, ", thread_id, begin, end,);
+        self.run_scheduled(prefill_size, 0, cpu_num, thread_id);
+    }
 
-            let mut ptr1 = self.ptr1.ptr;
-            let mut ptr2 = self.ptr2.ptr;
-            let mut output_ptr = self.output_ptr.ptr;
+    pub fn run_scheduled(
+        &self,
+        prefill_size: usize,
+        decode_size: usize,
+        cpu_num: usize,
+        thread_id: usize,
+    ) {
+        let active_rows = if prefill_size == 0 {
+            decode_size
+        } else {
+            prefill_size
+        };
+        let total_len = active_rows * self.head_num;
+        if let Some((begin, end)) = assign(total_len, cpu_num, thread_id) {
+            let ptr1 = self.ptr1.ptr;
+            let ptr2 = self.ptr2.ptr;
+            let output_ptr = self.output_ptr.ptr;
 
             // 遍历每个chunk
             for index in begin..end {

@@ -20,7 +20,7 @@ impl<T> LiftVector<T> {
 
     pub fn run(
         &self,
-        _prefill_size: usize,
+        prefill_size: usize,
         _decode_size: usize,
         decode_list: &[SequenceSlice],
         thread_num: usize,

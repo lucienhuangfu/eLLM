@@ -10,6 +10,7 @@ use crate::common::sequence_slice::SequenceSlice;
 use crate::kernel;
 use crate::operators::assign::assign;
 use crate::operators::traits::TopKSoftmaxTrait;
+use crate::runtime::generation_config::EosTokenIds;
 use crate::runtime::{Phase, SequenceState};
 
 #[derive(Clone)]
@@ -22,7 +23,7 @@ pub struct TopKSoftmax<T> {
     batch_temperature: MutPtr<T>,
     sequence_stride: usize,
     topk_size: usize,
-    eos_id: usize,
+    eos_ids: EosTokenIds,
 }
 
 impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> TopKSoftmax<T> {
@@ -35,7 +36,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
         batch_temperature: *mut T,
         sequence_stride: usize,
         topk_size: usize,
-        eos_id: usize,
+        eos_ids: EosTokenIds,
     ) -> Self {
         Self {
             input_indices_ptr: ConstPtr {
@@ -58,7 +59,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
             },
             sequence_stride,
             topk_size,
-            eos_id,
+            eos_ids,
         }
     }
 
@@ -121,7 +122,10 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
 
                 let input_stride = row_index * self.topk_size * thread_num;
                 let output_stride = row_index * self.topk_size;
-                let batch_temperature = *self.batch_temperature.ptr.add(batch_index);
+                let mut batch_temperature = *self.batch_temperature.ptr.add(batch_index);
+                if batch_temperature <= T::default() {
+                    batch_temperature = T::from_f32(1.0);
+                }
 
                 self.compute(
                     input_indices_ptr.add(input_stride),
@@ -133,18 +137,31 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
                     self.topk_size,
                 );
 
-                let predict_token = *output_indices_ptr.add(output_stride);
+                let mut predict_token = *output_indices_ptr.add(output_stride);
+                let predict_value = *output_values_ptr.add(output_stride);
+                if predict_value != predict_value {
+                    predict_token = self.primary_eos_id();
+                    ptr::write(output_indices_ptr.add(output_stride), predict_token);
+                }
                 let out_offset = batch_index * self.sequence_stride + write_sequence_index;
                 ptr::write(output_sequences_ptr.add(out_offset), predict_token);
 
                 record.sequence_index = write_sequence_index;
                 record.kv_index = record.kv_index.saturating_add(1);
-                if predict_token == self.eos_id {
+                if self.is_eos(predict_token) {
                     record.phase = Phase::Eos;
                     record.notify.notify_one();
                 }
             }
         }
+    }
+
+    fn primary_eos_id(&self) -> usize {
+        self.eos_ids.primary()
+    }
+
+    fn is_eos(&self, token_id: usize) -> bool {
+        self.eos_ids.contains(token_id)
     }
 }
 impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> TopKSoftmaxTrait<T>
@@ -188,26 +205,58 @@ impl TopKSoftmaxTrait<f16> for TopKSoftmax<f16> {
         topk_size: usize,
     ) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-        kernel::x86_64::f16_512::truncated_topk_softmax::truncated_topk_softmax(
-            input_values_ptr,
-            input_indices_ptr,
-            temperature,
-            // sums_ptr,
-            output_values_ptr,
-            output_indices_ptr,
-            // output_token_ptr,
-            thread_num,
-            topk_size,
-        );
-        /*
+        {
+            kernel::x86_64::f16_512::truncated_topk_softmax::truncated_topk_softmax(
+                input_values_ptr,
+                input_indices_ptr,
+                temperature,
+                output_values_ptr,
+                output_indices_ptr,
+                thread_num,
+                topk_size,
+            );
+        }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
-        kernel::scalar::softmax::softmax(
-            input_ptr,
-            sum_ptr.ptr,
-            max_ptr.ptr,
-            output_ptr,
-            length,
-        );*/
+        {
+            // Scalar fallback: convert to f32 for arithmetic, store as f16
+            let temp = temperature as f32;
+            let total_candidates = thread_num * topk_size;
+            let mut heap = crate::common::heap::FixedMinHeap::new(
+                output_values_ptr,
+                output_indices_ptr,
+                topk_size,
+            );
+            unsafe {
+                for i in 0..total_candidates {
+                    let value = *input_values_ptr.add(i);
+                    if !(value as f32).is_finite() {
+                        continue;
+                    }
+                    let index = *input_indices_ptr.add(i);
+                    heap.push(value, index);
+                }
+            }
+            let len = heap.len();
+            if len == 0 {
+                return;
+            }
+            heap.sort_desc();
+
+            unsafe {
+                let max_val = (*output_values_ptr.add(0)) as f32;
+                let mut total_sum = 0.0f32;
+                for i in 0..len {
+                    let val = ((*output_values_ptr.add(i)) as f32 - max_val) / temp;
+                    let exp_val = val.exp();
+                    *output_values_ptr.add(i) = exp_val as f16;
+                    total_sum += exp_val;
+                }
+                for i in 0..len {
+                    let val = *output_values_ptr.add(i) as f32;
+                    *output_values_ptr.add(i) = (val / total_sum) as f16;
+                }
+            }
+        }
     }
 }
 
@@ -309,7 +358,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         );
 
         for i in 0..thread_num {
@@ -408,7 +457,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         );
 
         operator.run(1, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -463,7 +512,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         );
 
         operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -520,7 +569,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         );
 
         operator.run(0, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -582,7 +631,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         );
 
         operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -635,7 +684,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         );
 
         operator.run(2, 0, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -723,7 +772,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            eos_id,
+            EosTokenIds::single(eos_id),
         );
 
         for i in 0..thread_num {

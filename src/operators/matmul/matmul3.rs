@@ -18,7 +18,33 @@ use crate::operators::traits::MatMulkqvTrait;
 // Generic scalar helpers used by fallback paths.
 // fallback 路径使用的通用标量 helper。
 use crate::kernel::scalar::complex_mul::complex_mul;
-use crate::kernel::scalar::rms_norm::rms_norm;
+use crate::kernel::scalar::rms_norm::{rms_norm, rms_norm_unit};
+
+#[inline(always)]
+fn rotate_half_rope<T>(head: *mut T, rope: *const T, length: usize)
+where
+    T: Copy + Add<Output = T> + Sub<Output = T> + Mul<Output = T>,
+{
+    let half = length / 2;
+    let mut rotated = Vec::with_capacity(length);
+    unsafe {
+        for i in 0..half {
+            let x1 = *head.add(i);
+            let x2 = *head.add(i + half);
+            let cos = *rope.add(2 * i);
+            let sin = *rope.add(2 * i + 1);
+            rotated.push(x1 * cos - x2 * sin);
+        }
+        for i in 0..half {
+            let x1 = *head.add(i);
+            let x2 = *head.add(i + half);
+            let cos = *rope.add(2 * i);
+            let sin = *rope.add(2 * i + 1);
+            rotated.push(x2 * cos + x1 * sin);
+        }
+        head.copy_from_nonoverlapping(rotated.as_ptr(), length);
+    }
+}
 
 // Variable naming used in this operator:
 // - input_rows / input_row_start: token rows from hidden states.
@@ -57,9 +83,11 @@ pub struct MatMul3<T> {
     // Input and Q/K/V output states.
     // 输入以及 Q/K/V 输出状态。
     hidden_ptr: ConstPtr<T>, // A[input_rows, reduction_cols]
-    q_state_ptr: MutPtr<T>,  // Query state. query 输出。
-    k_state_ptr: MutPtr<T>,  // Key cache/state. key cache/state。
-    v_state_ptr: MutPtr<T>,  // Value cache/state. value cache/state。
+    pub q_state_ptr: MutPtr<T>,  // Query state. query 输出。
+    pub k_state_ptr: MutPtr<T>,  // Key cache/state. key cache/state。
+    pub v_state_ptr: MutPtr<T>,  // Value cache/state. value cache/state。
+    q_norm_weight: ConstPtr<T>,
+    k_norm_weight: ConstPtr<T>,
 
     // RoPE table; caller guarantees layout compatibility.
     // RoPE 表；布局由外部保证一致。
@@ -69,6 +97,7 @@ pub struct MatMul3<T> {
     kv_head_num: usize,
     group_num: usize,
     head_dim: usize,
+    use_qk_norm: bool,
     m_row: usize,
     col: usize,
     // b_q_row: usize,  // Nq
@@ -100,6 +129,8 @@ where
         k_state_ptr: *mut T,
         v_weight_ptr_nt: *const T, // Wv_nt[key_value_cols, reduction_cols]
         v_state_ptr: *mut T,
+        q_norm_weight: *const T,
+        k_norm_weight: *const T,
         rope_ptr: *const T,
         sequence_length: usize,
         batch_size: usize,
@@ -108,6 +139,7 @@ where
         kv_head_num: usize,
         group_num: usize,
         head_dim: usize,
+        use_qk_norm: bool,
         m_row: usize,
         col: usize,
         // b_q_row: usize,
@@ -148,6 +180,8 @@ where
             q_state_ptr: MutPtr { ptr: q_state_ptr },
             k_state_ptr: MutPtr { ptr: k_state_ptr },
             v_state_ptr: MutPtr { ptr: v_state_ptr },
+            q_norm_weight: ConstPtr { ptr: q_norm_weight },
+            k_norm_weight: ConstPtr { ptr: k_norm_weight },
 
             rope_ptr: ConstPtr { ptr: rope_ptr },
             sequence_length,
@@ -155,6 +189,7 @@ where
             kv_head_num,
             group_num,
             head_dim,
+            use_qk_norm,
             m_row,
             col,
             params: MatMulParams {
@@ -419,8 +454,11 @@ where
         n_total: usize,
         head_index: usize,
         apply_rope: bool,
+        norm_weight: *const T,
         sequence_index: usize,
-    ) {
+    ) where
+        Self: MatMulkqvTrait<T>,
+    {
         let reduction_cols = self.col;
         let reduction_block_cols = self.params.column_step_macro.max(1);
         let micro_tile_cols = self.params.b_row_step_micro.max(1);
@@ -432,35 +470,28 @@ where
         }
 
         let head_col0 = head_index * self.head_dim;
-        for head_col in (0..self.head_dim).step_by(micro_tile_cols) {
-            let global_col = head_col0 + head_col;
-
-            let mut reduction_col_start = 0usize;
-            while reduction_col_start < reduction_cols {
-                let reduction_cols_this =
-                    reduction_block_cols.min(reduction_cols - reduction_col_start);
-                let weight_panel =
-                    self.packed_panel_ptr(packed_b, n_total, global_col, reduction_col_start);
-
-                for reduction_lane in 0..reduction_cols_this {
-                    let input_value = *a_row.add(reduction_col_start + reduction_lane);
-                    for output_lane in 0..micro_tile_cols {
-                        let dst = dst_head.add(head_col + output_lane);
-                        *dst = *dst
-                            + input_value
-                                * *weight_panel.add(reduction_lane * micro_tile_cols + output_lane);
-                    }
-                }
-
-                reduction_col_start += reduction_cols_this;
-            }
-        }
+        let head_output_panel0 = head_col0 / micro_tile_cols;
+        let output_panel_count = n_total.div_ceil(micro_tile_cols);
+        self.compute_head_gemv(
+            a_row,
+            dst_head,
+            packed_b.as_ptr(),
+            head_output_panel0,
+            output_panel_count,
+            reduction_cols,
+            reduction_block_cols,
+            micro_tile_cols,
+            self.head_dim,
+        );
 
         if apply_rope {
             let eps = T::from_f32(1e-6);
-            rms_norm(dst_head, dst_head, self.head_dim, eps);
             let rope_ptr = self.rope_ptr.ptr.add(sequence_index * self.head_dim);
-            complex_mul(dst_head, rope_ptr, dst_head, self.head_dim);
+            if self.use_qk_norm {
+                self.compute_norm_rope(dst_head, norm_weight, rope_ptr, self.head_dim, eps);
+            } else {
+                rotate_half_rope(dst_head, rope_ptr, self.head_dim);
+            }
         }
     }
 
@@ -552,6 +583,7 @@ where
                                 key_value_output_cols,
                                 head_index,
                                 false,
+                                self.k_norm_weight.ptr,
                                 rope_sequence_index,
                             );
                         }
@@ -566,6 +598,7 @@ where
                                 key_value_output_cols,
                                 head_index,
                                 true,
+                                self.k_norm_weight.ptr,
                                 rope_sequence_index,
                             );
                         }
@@ -579,6 +612,7 @@ where
                                 query_output_cols,
                                 head_index,
                                 true,
+                                self.q_norm_weight.ptr,
                                 rope_sequence_index,
                             );
                         }
@@ -591,7 +625,7 @@ where
 
 impl<T> MatMulkqvTrait<T> for MatMul3<T>
 where
-    T: Copy + Add<Output = T> + Mul<Output = T> + Default,
+    T: Copy + Add<Output = T> + Mul<Output = T> + Sub<Output = T> + Default + Sqrt,
 {
     #[inline]
     default fn compute1(
@@ -609,6 +643,61 @@ where
     #[inline]
     default fn compute2(&self, _c_head: *mut T, _rope_head: *const T, _ldc: usize) {
         // generic 占位
+    }
+
+    #[inline]
+    default fn compute_norm_rope(
+        &self,
+        c_head: *mut T,
+        norm_weight: *const T,
+        rope_head: *const T,
+        length: usize,
+        eps: T,
+    ) {
+        rms_norm(c_head, norm_weight, c_head, length, eps);
+        rotate_half_rope(c_head, rope_head, length);
+    }
+
+    #[inline]
+    default fn compute_head_gemv(
+        &self,
+        a_row: *const T,
+        dst_head: *mut T,
+        packed_b: *const T,
+        head_output_panel: usize,
+        output_panel_count: usize,
+        reduction_cols: usize,
+        reduction_block_cols: usize,
+        micro_tile_cols: usize,
+        head_dim: usize,
+    ) {
+        unsafe {
+            for head_col in (0..head_dim).step_by(micro_tile_cols) {
+                let output_panel = head_output_panel + head_col / micro_tile_cols;
+                let mut reduction_col_start = 0usize;
+                while reduction_col_start < reduction_cols {
+                    let reduction_cols_this =
+                        reduction_block_cols.min(reduction_cols - reduction_col_start);
+                    let reduction_panel = reduction_col_start / reduction_block_cols;
+                    let weight_panel = packed_b.add(
+                        (reduction_panel * output_panel_count + output_panel)
+                            * reduction_block_cols
+                            * micro_tile_cols,
+                    );
+                    for reduction_lane in 0..reduction_cols_this {
+                        let input_value = *a_row.add(reduction_col_start + reduction_lane);
+                        for output_lane in 0..micro_tile_cols {
+                            let dst = dst_head.add(head_col + output_lane);
+                            *dst = *dst
+                                + input_value
+                                    * *weight_panel
+                                        .add(reduction_lane * micro_tile_cols + output_lane);
+                        }
+                    }
+                    reduction_col_start += reduction_cols_this;
+                }
+            }
+        }
     }
 }
 
@@ -663,8 +752,72 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
             let eps = 1e-6f32 as f16;
             for r in 0..self.params.a_row_step_micro {
                 let row_ptr = c_head.add(r * ldc);
-                rms_norm(row_ptr, row_ptr, self.head_dim, eps);
+                rms_norm_unit(row_ptr, row_ptr, self.head_dim, eps);
                 complex_mul(row_ptr, rope_head, row_ptr, self.head_dim);
+            }
+        }
+    }
+
+    #[inline]
+    fn compute_norm_rope(
+        &self,
+        c_head: *mut f16,
+        norm_weight: *const f16,
+        rope_head: *const f16,
+        length: usize,
+        eps: f16,
+    ) {
+        crate::kernel::x86_64::f16_512::rms_norm::rms_norm(
+            c_head,
+            norm_weight,
+            c_head,
+            length,
+            eps,
+        );
+        rotate_half_rope(c_head, rope_head, length);
+    }
+
+    #[inline]
+    fn compute_head_gemv(
+        &self,
+        a_row: *const f16,
+        dst_head: *mut f16,
+        packed_b: *const f16,
+        head_output_panel: usize,
+        output_panel_count: usize,
+        reduction_cols: usize,
+        reduction_block_cols: usize,
+        micro_tile_cols: usize,
+        head_dim: usize,
+    ) {
+        unsafe {
+            for head_col in (0..head_dim).step_by(micro_tile_cols) {
+                let output_panel = head_output_panel + head_col / micro_tile_cols;
+                let mut acc = [0.0f32; 32];
+                let mut reduction_col_start = 0usize;
+                while reduction_col_start < reduction_cols {
+                    let reduction_cols_this =
+                        reduction_block_cols.min(reduction_cols - reduction_col_start);
+                    let reduction_panel = reduction_col_start / reduction_block_cols;
+                    let weight_panel = packed_b.add(
+                        (reduction_panel * output_panel_count + output_panel)
+                            * reduction_block_cols
+                            * micro_tile_cols,
+                    );
+                    for reduction_lane in 0..reduction_cols_this {
+                        let input_value = *a_row.add(reduction_col_start + reduction_lane) as f32;
+                        for output_lane in 0..micro_tile_cols {
+                            acc[output_lane] += input_value
+                                * (*weight_panel.add(reduction_lane * micro_tile_cols + output_lane)
+                                    as f32);
+                        }
+                    }
+                    reduction_col_start += reduction_cols_this;
+                }
+
+                for output_lane in 0..micro_tile_cols {
+                    *dst_head.add(head_col + output_lane) = acc[output_lane] as f16;
+                }
             }
         }
     }
@@ -704,10 +857,23 @@ impl MatMulkqvTrait<f32> for MatMul3<f32> {
             let eps = 1e-6;
             for r in 0..3 {
                 let row_ptr = c_head.add(r * ldc);
-                rms_norm(row_ptr, row_ptr, 128, eps);
+                rms_norm_unit(row_ptr, row_ptr, 128, eps);
                 complex_mul(row_ptr, rope_head, row_ptr, 128);
             }
         }
+    }
+
+    #[inline]
+    fn compute_norm_rope(
+        &self,
+        c_head: *mut f32,
+        norm_weight: *const f32,
+        rope_head: *const f32,
+        length: usize,
+        eps: f32,
+    ) {
+        rms_norm(c_head, norm_weight, c_head, length, eps);
+        rotate_half_rope(c_head, rope_head, length);
     }
 }
 
@@ -747,7 +913,7 @@ mod tests {
                 for h_base in (0..n).step_by(head_dim) {
                     let ptr = c.as_mut_ptr().add(i * n + h_base);
                     let rope_ptr = rope.as_ptr().add(h_base);
-                    rms_norm(ptr, ptr, head_dim, eps);
+                    rms_norm_unit(ptr, ptr, head_dim, eps);
                     complex_mul(ptr, rope_ptr, ptr, head_dim);
                 }
             }
@@ -849,6 +1015,8 @@ mod tests {
         let mut cv = vec![0.0f32; m * n_kv];
         let mut cv_ref = vec![0.0f32; m * n_kv];
 
+        let q_norm = vec![1.0f32; head_dim];
+        let k_norm = vec![1.0f32; head_dim];
         let mut rope = vec![1.0f32; n_q.max(n_kv)];
 
         for i in 0..m * k {
@@ -883,12 +1051,15 @@ mod tests {
                 ck.as_mut_ptr(),
                 wv_nt.as_ptr(),
                 cv.as_mut_ptr(),
+                q_norm.as_ptr(),
+                k_norm.as_ptr(),
                 rope.as_ptr(),
                 sequence_length, // sequence_length
                 1,               // batch_size
                 n_kv / head_dim, // kv_head_num
                 n_q / n_kv,      // group_num
                 head_dim,        // head_dim
+                true,            // use_qk_norm
                 m,               // m_row
                 k,               // col
                 24,              // a_row_step_macro
@@ -954,6 +1125,8 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
+        let q_norm = vec![1.0f16; HEAD_DIM];
+        let k_norm = vec![1.0f16; HEAD_DIM];
         let mut rope = vec![0.0f16; NQ.max(NKV)];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
@@ -986,12 +1159,15 @@ mod tests {
             ck.as_mut_ptr(),
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
+            q_norm.as_ptr(),
+            k_norm.as_ptr(),
             rope.as_ptr(),
             HEAD_DIM,       // sequence_length
             1,              // batch_size
             NKV / HEAD_DIM, // kv_head_num
             NQ / NKV,       // group_num
             HEAD_DIM,       // head_dim
+            true,           // use_qk_norm
             M,              // m_row
             K,              // col
             3,              // a_row_step_macro
@@ -1051,6 +1227,8 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
+        let q_norm = vec![1.0f16; HEAD_DIM];
+        let k_norm = vec![1.0f16; HEAD_DIM];
         let mut rope = vec![0.0f16; NQ.max(NKV)];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
@@ -1081,12 +1259,15 @@ mod tests {
             ck.as_mut_ptr(),
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
+            q_norm.as_ptr(),
+            k_norm.as_ptr(),
             rope.as_ptr(),
             HEAD_DIM,       // sequence_length
             1,              // batch_size
             NKV / HEAD_DIM, // kv_head_num
             NQ / NKV,       // group_num
             HEAD_DIM,       // head_dim
+            true,           // use_qk_norm
             M,              // m_row
             K,              // col
             6,              // a_row_step_macro
@@ -1138,6 +1319,8 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
+        let q_norm = vec![1.0f16; HEAD_DIM];
+        let k_norm = vec![1.0f16; HEAD_DIM];
         let mut rope = vec![0.0f16; NQ.max(NKV)];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
@@ -1168,12 +1351,15 @@ mod tests {
             ck.as_mut_ptr(),
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
+            q_norm.as_ptr(),
+            k_norm.as_ptr(),
             rope.as_ptr(),
             HEAD_DIM,       // sequence_length
             1,              // batch_size
             NKV / HEAD_DIM, // kv_head_num
             NQ / NKV,       // group_num
             HEAD_DIM,       // head_dim
+            true,           // use_qk_norm
             M,              // m_row
             K,              // col
             3,              // a_row_step_macro
@@ -1225,6 +1411,8 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
+        let q_norm = vec![1.0f16; HEAD_DIM];
+        let k_norm = vec![1.0f16; HEAD_DIM];
         let mut rope = vec![0.0f16; NQ.max(NKV)];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
@@ -1255,12 +1443,15 @@ mod tests {
             ck.as_mut_ptr(),
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
+            q_norm.as_ptr(),
+            k_norm.as_ptr(),
             rope.as_ptr(),
             HEAD_DIM,       // sequence_length
             1,              // batch_size
             NKV / HEAD_DIM, // kv_head_num
             NQ / NKV,       // group_num
             HEAD_DIM,       // head_dim
+            true,           // use_qk_norm
             M,              // m_row
             K,              // col
             24,             // a_row_step_macro
@@ -1337,6 +1528,8 @@ mod tests {
         let mut ck = vec![0.0f16; M_MAX * NKV];
         let mut cv = vec![0.0f16; M_MAX * NKV];
 
+        let q_norm = vec![1.0f16; HEAD_DIM];
+        let k_norm = vec![1.0f16; HEAD_DIM];
         let mut rope = vec![0.0f16; HEAD_DIM.max(NQ).max(NKV)];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
@@ -1351,12 +1544,15 @@ mod tests {
             ck.as_mut_ptr(),
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
+            q_norm.as_ptr(),
+            k_norm.as_ptr(),
             rope.as_ptr(),
             HEAD_DIM,       // sequence_length
             1,              // batch_size
             NKV / HEAD_DIM, // kv_head_num
             NQ / NKV,       // group_num
             HEAD_DIM,       // head_dim
+            true,           // use_qk_norm
             M_MAX,          // m_row 当 capacity 用
             K,              // col
             6,              // a_row_step_macro

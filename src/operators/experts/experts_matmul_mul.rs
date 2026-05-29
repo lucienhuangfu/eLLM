@@ -406,7 +406,7 @@ where
         thread_id: usize,
     ) {
         unsafe {
-            let active_token_count = if prefill_size == 0 || self.decode_only_flag {
+            let active_token_count = if prefill_size == 0 {
                 decode_size
             } else {
                 prefill_size
@@ -522,6 +522,9 @@ where
                                 );
 
                                 let acc_row = acc.add(row_in_tile * micro_tile_cols) as *const T;
+                                for col_in_tile in 0..output_cols_this {
+                                    *out_row.add(col_in_tile) = T::default();
+                                }
 
                                 self.compute2(
                                     out_row,

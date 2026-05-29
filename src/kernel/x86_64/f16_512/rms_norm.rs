@@ -1,6 +1,7 @@
 use std::arch::x86_64::{
-    _mm512_add_ph, _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_reduce_add_ph,
-    _mm512_set1_ph, _mm512_setzero_ph, _mm512_storeu_ph,
+    _mm512_abs_ph, _mm512_add_ph, _mm512_div_ph, _mm512_fmadd_ph, _mm512_loadu_ph,
+    _mm512_max_ph, _mm512_mul_ph, _mm512_reduce_add_ph, _mm512_reduce_max_ph, _mm512_set1_ph,
+    _mm512_setzero_ph, _mm512_storeu_ph,
 };
 use std::f16;
 
@@ -10,6 +11,31 @@ fn sum_square(input_ptr: *const f16, length: usize) -> f16 {
         let mut chunks_simd = _mm512_setzero_ph();
         for ptr in (0..length).step_by(32).map(|x| input_ptr.add(x)) {
             let x = _mm512_loadu_ph(ptr);
+            chunks_simd = _mm512_fmadd_ph(x, x, chunks_simd);
+        }
+        _mm512_reduce_add_ph(chunks_simd)
+    }
+}
+
+#[inline(always)]
+fn max_abs(input_ptr: *const f16, length: usize) -> f16 {
+    unsafe {
+        let mut chunks_simd = _mm512_setzero_ph();
+        for ptr in (0..length).step_by(32).map(|x| input_ptr.add(x)) {
+            let x = _mm512_abs_ph(_mm512_loadu_ph(ptr));
+            chunks_simd = _mm512_max_ph(chunks_simd, x);
+        }
+        _mm512_reduce_max_ph(chunks_simd)
+    }
+}
+
+#[inline(always)]
+fn scaled_sum_square(input_ptr: *const f16, length: usize, scale: f16) -> f16 {
+    unsafe {
+        let mut chunks_simd = _mm512_setzero_ph();
+        let scale_vec = _mm512_set1_ph(scale);
+        for ptr in (0..length).step_by(32).map(|x| input_ptr.add(x)) {
+            let x = _mm512_div_ph(_mm512_loadu_ph(ptr), scale_vec);
             chunks_simd = _mm512_fmadd_ph(x, x, chunks_simd);
         }
         _mm512_reduce_add_ph(chunks_simd)
@@ -59,12 +85,55 @@ pub fn norm(input_ptr: *const f16, output_ptr: *mut f16, length: usize, denomina
     }
 }
 #[inline(always)]
-pub fn rms_norm(input_ptr: *const f16, output_ptr: *mut f16, length: usize, eps: f16) {
-    let sum = sum_square(input_ptr, length);
-    let variance = sum / length as f16;
-    let square_root = f16::sqrt(variance + eps);
-    let denominator = square_root.recip();
-    norm(input_ptr, output_ptr, length, denominator);
+pub fn rms_norm(
+    input_ptr: *const f16,
+    weight_ptr: *const f16,
+    output_ptr: *mut f16,
+    length: usize,
+    eps: f16,
+) {
+    let mut sum = 0.0f32;
+    unsafe {
+        for index in 0..length {
+            let value = *input_ptr.add(index) as f32;
+            sum += value * value;
+        }
+    }
+    if sum == 0.0 {
+        unsafe { std::ptr::write_bytes(output_ptr, 0, length) };
+        return;
+    }
+
+    let rrms = (sum / length as f32 + eps as f32).sqrt().recip();
+    unsafe {
+        for index in 0..length {
+            *output_ptr.add(index) = ((*input_ptr.add(index) as f32)
+                * rrms
+                * (*weight_ptr.add(index) as f32)) as f16;
+        }
+    }
+}
+
+#[inline(always)]
+pub fn rms_norm_unit(input_ptr: *const f16, output_ptr: *mut f16, length: usize, eps: f16) {
+    let mut sum = 0.0f32;
+    unsafe {
+        for index in 0..length {
+            let value = *input_ptr.add(index) as f32;
+            sum += value * value;
+        }
+    }
+    if sum == 0.0 {
+        unsafe { std::ptr::write_bytes(output_ptr, 0, length) };
+        return;
+    }
+
+    let rrms = (sum / length as f32 + eps as f32).sqrt().recip();
+    unsafe {
+        for index in 0..length {
+            *output_ptr.add(index) = ((*input_ptr.add(index) as f32) * rrms) as f16;
+        }
+    }
 }
 
 pub fn add_rms_norm(
@@ -74,11 +143,22 @@ pub fn add_rms_norm(
     length: usize,
     eps: f16,
 ) {
-    let sum = add_sum_square(input_ptr1, input_ptr2, output_ptr, length);
-    let variance = sum / length as f16;
-    let square_root = f16::sqrt(variance + eps);
-    let denominator = square_root.recip();
-    norm(output_ptr, output_ptr, length, denominator);
+    let mut sum = 0.0f32;
+    unsafe {
+        for index in 0..length {
+            let value = (*input_ptr1.add(index) as f32) + (*input_ptr2.add(index) as f32);
+            *output_ptr.add(index) = value as f16;
+            sum += value * value;
+        }
+        if sum == 0.0 {
+            std::ptr::write_bytes(output_ptr, 0, length);
+            return;
+        }
+        let rrms = (sum / length as f32 + eps as f32).sqrt().recip();
+        for index in 0..length {
+            *output_ptr.add(index) = ((*output_ptr.add(index) as f32) * rrms) as f16;
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -106,26 +186,23 @@ mod tests {
         let mut output_box = AlignedBox::allocate_init(length, 0.0);
 
         unsafe {
-            rms_norm(v1_box.as_ptr(), output_box.as_mut_ptr(), length, 1e-6);
-        }
-        let output_slice = output_box.as_slice();
-        println!("{:?}", output_slice);
-
-        // let mut expected: Vec<f16> = vec![0.0; 64];
-        let mut expected_box = AlignedBox::allocate_init(length, 0.0);
-
-        unsafe {
-            kernel::scalar::rms_norm::rms_norm(
+            rms_norm(
                 v1_box.as_ptr(),
-                expected_box.as_mut_ptr(),
+                weight_box.as_ptr(),
+                output_box.as_mut_ptr(),
                 length,
                 1e-6,
             );
         }
-        let expected_slice = expected_box.as_slice();
+        let output_slice = output_box.as_slice();
+        println!("{:?}", output_slice);
+
+        let sum_square: f32 = (0..length).map(|i| (i as f32) * (i as f32)).sum();
+        let rrms = (sum_square / length as f32 + 1e-6f32).sqrt().recip();
 
         for j in 0..length {
-            assert!(f16::abs(output_slice[j] - expected_slice[j]) < 1e-6);
+            let expected = (j as f32 * rrms) as f16;
+            assert!(f16::abs(output_slice[j] - expected) < 2e-3);
         }
     }
 

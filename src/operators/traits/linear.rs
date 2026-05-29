@@ -1,4 +1,5 @@
 pub trait AttentionTrait<T> {
+    #[allow(clippy::too_many_arguments)]
     fn compute(
         &self,
         q_ptr1: *const T,
@@ -13,6 +14,7 @@ pub trait AttentionTrait<T> {
         sequence_index: usize,
         k_seq_stride: usize,
         v_seq_stride: usize,
+        q_seq_stride: usize,
         running_max: &mut [T],
         running_denom: &mut [T],
         scores: &mut [T],
@@ -58,4 +60,26 @@ pub trait MatMulkqvTrait<T> {
     );
 
     fn compute2(&self, c_head: *mut T, rope_head: *const T, ldc: usize);
+
+    fn compute_norm_rope(
+        &self,
+        c_head: *mut T,
+        norm_weight: *const T,
+        rope_head: *const T,
+        length: usize,
+        eps: T,
+    );
+
+    fn compute_head_gemv(
+        &self,
+        a_row: *const T,
+        dst_head: *mut T,
+        packed_b: *const T,
+        head_output_panel: usize,
+        output_panel_count: usize,
+        reduction_cols: usize,
+        reduction_block_cols: usize,
+        micro_tile_cols: usize,
+        head_dim: usize,
+    );
 }
