@@ -11,6 +11,7 @@ pub trait TopKSoftmaxTrait<T> {
         output_indices_ptr: *mut usize,
         output_values_ptr: *mut T,
         thread_num: usize,
+        input_topk_size: usize,
         topk_size: usize,
     );
 }

@@ -15,6 +15,8 @@ pub struct GenerationConfig {
     #[serde(default)]
     pub top_k: Option<usize>,
     #[serde(default)]
+    pub top_k_simd: Option<usize>,
+    #[serde(default)]
     pub repetition_penalty: Option<f64>,
     #[serde(default)]
     pub do_sample: Option<bool>,
@@ -56,14 +58,15 @@ impl GenerationConfig {
     }
 
     #[inline]
-    pub fn top_k_simd<T>(&self, default_top_k: usize) -> usize {
+    pub fn resolved_top_k_simd<T>(&self, default_top_k: usize) -> usize {
         let top_k = self.top_k.unwrap_or(default_top_k);
+        let top_k_simd = self.top_k_simd.unwrap_or(top_k);
         let simd_width = Self::avx512_simd_width::<T>();
-        Self::align_top_k(top_k, simd_width)
+        Self::align_top_k(top_k_simd, simd_width)
     }
 
     #[inline]
-    pub fn top_k_simd_static<T>(top_k: usize) -> usize {
+    pub fn resolved_top_k_simd_static<T>(top_k: usize) -> usize {
         let simd_width = Self::avx512_simd_width::<T>();
         Self::align_top_k(top_k, simd_width)
     }

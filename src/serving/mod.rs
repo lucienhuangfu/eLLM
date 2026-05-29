@@ -6,7 +6,7 @@ use axum::{routing::post, Json, Router};
 use std::f16;
 use std::sync::Arc;
 
-use crate::common::send_sync_ptr::SharedMut;
+use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::batch_sequence::BatchSequence;
 use crate::runtime::SequenceState;
 

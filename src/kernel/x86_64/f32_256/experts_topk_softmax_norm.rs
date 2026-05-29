@@ -1,5 +1,5 @@
 use super::activation::exp256;
-use crate::common::heap::FixedMinHeap;
+use crate::kernel::common::heap::FixedMinHeap;
 use std::arch::x86_64::*;
 
 use crate::kernel::x86_64::f32_256::bitonic_sort::bitonic_sort_f32x8_desc;

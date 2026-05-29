@@ -6,9 +6,9 @@ use crate::operators::assign::assign;
 use crate::operators::traits::MapTrait;
 
 // use crate::runtime::inference::state::TaskList;
-use crate::common::num_traits::Sqrt;
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::common::sequence_slice::SequenceSlice;
+use crate::num_traits::Sqrt;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::runtime::scheduling::SequenceSlice;
 
 // Fuse embedding lookup with RMS normalization
 #[derive(Clone)]
@@ -179,7 +179,7 @@ impl MapTrait<f16> for LookupRMSMap<f16> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::common::sequence_slice::SequenceSlice;
+    use crate::runtime::scheduling::SequenceSlice;
     use approx::assert_ulps_eq;
 
     #[test]

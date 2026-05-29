@@ -1,7 +1,7 @@
 use std::f16;
 use std::ops::{Add, Div, Mul, Sub};
 
-use crate::common::num_traits::{Exp, NegInfinity};
+use crate::num_traits::{Exp, NegInfinity};
 use crate::kernel;
 use crate::operators::traits::AttentionTrait;
 

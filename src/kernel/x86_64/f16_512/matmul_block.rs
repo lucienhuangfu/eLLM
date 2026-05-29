@@ -3,7 +3,7 @@
 
 use std::f16;
 
-use crate::common::matmul_params::MatMulParams;
+use crate::kernel::common::matmul_params::MatMulParams;
 
 /// 广播式 3x32 FP16 AVX-512 微核：
 /// 约定把 (lda/ldc/kc) 映射进 matmulParams 的 5 字段中：

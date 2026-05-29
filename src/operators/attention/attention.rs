@@ -1,9 +1,9 @@
 use std::ops::{Add, Div, Mul, Sub};
 
-use crate::common::num_traits::NegInfinity;
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::common::sequence_slice::SequenceSlice;
+use crate::num_traits::NegInfinity;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::AttentionTrait;
+use crate::runtime::scheduling::SequenceSlice;
 
 use super::scratch::{AttentionScratch, AttentionScratchSlice};
 use super::utils::{split_sequence_by_triangle, RowVisitPlan};
@@ -152,7 +152,7 @@ where
         + Div<Output = T>
         + PartialOrd
         + NegInfinity
-        + crate::common::num_traits::Exp,
+        + crate::num_traits::Exp,
 {
     /// Visit aligned row ranges for attention computation
     #[inline(always)]
@@ -508,7 +508,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::Attention;
-    use crate::common::sequence_slice::SequenceSlice;
+    use crate::runtime::scheduling::SequenceSlice;
 
     fn naive_attention_row(
         q: &[f32],

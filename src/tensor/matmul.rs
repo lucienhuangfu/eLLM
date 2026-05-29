@@ -1,13 +1,13 @@
 use std::ops::{AddAssign, Neg, Sub};
 
-use crate::common::matmul_params::MatMulParams;
-use crate::common::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 use crate::operators::operator::Operator;
 use crate::operators::routing::MatMulTopK;
 
-use super::core::leaked_aligned_ptr;
+use super::storage::leaked_aligned_ptr;
 use super::{GlobalOperatorQueue, Tensor};
 
 impl<T> Tensor<T>
@@ -206,22 +206,20 @@ where
         &self,
         tensor2: &Tensor<T>,
         params: MatMulParams,
-        topk: usize,
+        top_k_simd: usize,
+        thread_num: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
         let trace_alignment = std::env::var_os("ELLM_ALIGN_TRACE").is_some();
         let n = tensor2.shape[0];
-        let thread_num = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
         let m = self.row_count();
         let k = self.last_dim();
         if trace_alignment {
             eprintln!(
-                "building matmul_local_topk m={m} n={n} k={k} topk={topk} threads={thread_num}"
+                "building matmul_local_topk m={m} n={n} k={k} topk_simd={top_k_simd} threads={thread_num}"
             );
         }
-        let output_shape = vec![m, thread_num * topk];
+        let output_shape = vec![m, thread_num * top_k_simd];
 
         let indice_ptr = leaked_aligned_ptr(output_shape.iter().product(), 0usize);
 
@@ -247,7 +245,8 @@ where
                 params.a_row_step_micro,
                 params.b_row_step_micro,
                 m,
-                topk,
+                thread_num,
+                top_k_simd,
             ))
         };
 

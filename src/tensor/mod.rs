@@ -1,14 +1,13 @@
-mod core;
-mod expert;
-mod linear;
+mod moe;
+mod matmul;
+mod ops;
 mod queue;
-mod routing;
-mod tensor_utils;
-mod transform;
+mod shape;
+mod storage;
 
 #[cfg(test)]
 mod tests;
 
-pub use core::Tensor;
 pub use queue::GlobalOperatorQueue;
-pub use tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
+pub use shape::{get_aligned_strides, get_broadcast_shape, get_strides};
+pub use storage::Tensor;

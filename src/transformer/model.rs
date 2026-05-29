@@ -8,18 +8,16 @@ use std::rc::Rc;
 
 use super::config::Config;
 use super::names::model_tensor_names;
-use crate::common::num_traits::FromNumber;
-// removed custom Sigmoid/Sqrt traits; use standard numeric ops instead
-use crate::common::num_traits::NegInfinity;
-use crate::common::num_traits::{Exp, Sigmoid, Sqrt};
+use crate::num_traits::FromNumber;
+use crate::num_traits::NegInfinity;
+use crate::num_traits::{Exp, Sigmoid, Sqrt};
 
 // use super::super::operators::map::rms_map::RMSMap;
-use super::super::common::matmul_params::MatMulParams;
-use super::super::mem_mgr::mem_pool::GlobalMemPool;
+use crate::kernel::common::matmul_params::MatMulParams;
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
 use super::decoder_layer::DecoderLayer;
-use crate::runtime::generation_config::EosTokenIds;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 // use crate::runtime::inference::state::TokenRecord;
 
@@ -40,11 +38,12 @@ where
     pub batch_size: usize,
     pub hidden_size: usize,
     pub topk_size: usize,
+    pub topk_simd_size: usize,
     pub top_p: T,
     pub min_p: T,
     pub do_sample: bool,
     pub eos_id: usize,
-    pub eos_ids: EosTokenIds,
+    pub eos_ids: Vec<usize>,
     scope_name: String,
 }
 
@@ -74,11 +73,21 @@ where
         sequence_length: usize,
         batch_size: usize,
         topk_size: usize,
-        eos_ids: EosTokenIds,
+        topk_simd_size: usize,
+        eos_ids: Vec<usize>,
     ) -> Self {
         Self::with_sampling(
-            config, position_vec, chunk_size, sequence_length, batch_size, topk_size,
-            T::from_f32(1.0), T::default(), false, eos_ids,
+            config,
+            position_vec,
+            chunk_size,
+            sequence_length,
+            batch_size,
+            topk_size,
+            topk_simd_size,
+            T::from_f32(1.0),
+            T::default(),
+            false,
+            eos_ids,
         )
     }
 
@@ -90,10 +99,11 @@ where
         sequence_length: usize,
         batch_size: usize,
         topk_size: usize,
+        topk_simd_size: usize,
         top_p: T,
         min_p: T,
         do_sample: bool,
-        eos_ids: EosTokenIds,
+        eos_ids: Vec<usize>,
     ) -> Self {
         let model_names = model_tensor_names(config);
         let scope_name = model_names.scope.clone();
@@ -126,7 +136,7 @@ where
             ));
         }
 
-        let eos_id = eos_ids.primary();
+        let eos_id = eos_ids.first().copied().unwrap_or(0);
 
         Self {
             lm_head_weight: Tensor::zeros(
@@ -140,6 +150,7 @@ where
             batch_size: batch_size,
             hidden_size: config.hidden_size,
             topk_size: topk_size,
+            topk_simd_size: topk_simd_size,
             top_p,
             min_p,
             do_sample,
@@ -206,7 +217,10 @@ where
                 a_row_step_micro: 3,
                 b_row_step_micro: 32,
             },
-            self.topk_size,
+            self.topk_simd_size,
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
             format!("{}.lm_head", self.scope_name),
         );
 
@@ -215,11 +229,12 @@ where
             input_sequences,
             batch_temperature,
             self.sequence_length,
+            self.topk_simd_size,
             self.topk_size,
             self.top_p,
             self.min_p,
             self.do_sample,
-            self.eos_ids,
+            self.eos_ids.clone(),
             format!("{}.softmax", self.scope_name),
         );
 
@@ -237,8 +252,8 @@ mod test {
     use super::*;
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
-    use crate::common::sequence_slice::SequenceSlice;
     use crate::mem_mgr::allocator::AlignedBox;
+    use crate::runtime::scheduling::SequenceSlice;
     use crate::runtime::{Phase, SequenceState};
     use std::collections::HashMap;
 
@@ -312,7 +327,8 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
-            EosTokenIds::single(eos_id),
+            topk_size,
+            vec![eos_id],
         );
 
         // let mut sequences: Vec<usize> = vec![0; (config.max_position_embeddings + 1)*config.batch_size];
@@ -388,7 +404,8 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
-            EosTokenIds::single(eos_id),
+            topk_size,
+            vec![eos_id],
         );
 
         let mut sequences_box =
@@ -459,7 +476,8 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
-            EosTokenIds::single(eos_id),
+            topk_size,
+            vec![eos_id],
         );
 
         assert_eq!(model.layers.len(), config.num_hidden_layers);
@@ -507,7 +525,8 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
-            EosTokenIds::single(eos_id),
+            topk_size,
+            vec![eos_id],
         );
 
         assert_eq!(model.layers.len(), config.num_hidden_layers);

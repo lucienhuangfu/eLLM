@@ -1,11 +1,11 @@
 #![feature(f16)]
 
-use ellm::common::sequence_slice::SequenceSlice;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::operator::Operator;
 use ellm::runtime::chat_template::ChatTemplate;
 use ellm::runtime::model_loader::SafeTensorsLoader;
+use ellm::runtime::sequence_slice::SequenceSlice;
 use ellm::runtime::tokenizer_loader::load_tiktoken;
 use ellm::runtime::{Config, GenerationConfig, Phase, SequenceState};
 use ellm::tensor::GlobalOperatorQueue;
@@ -54,14 +54,13 @@ fn main() -> anyhow::Result<()> {
     let chat_template_path = format!("{model_dir}/chat_template.jinja");
 
     let messages = [("user", "你好，请用一句话介绍 Rust。")];
-    let chat_template =
-        ChatTemplate::from_model_files(&chat_template_path, &tokenizer_config_path)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let chat_template = ChatTemplate::from_model_files(&chat_template_path, &tokenizer_config_path)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let prompt = chat_template
         .apply_chat_template(&messages, true)
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let tokenizer = load_tiktoken(&tokenizer_path, &tokenizer_config_path)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let tokenizer =
+        load_tiktoken(&tokenizer_path, &tokenizer_config_path).map_err(|e| anyhow::anyhow!(e))?;
     let input_ids = tokenizer.encode_with_special_tokens(&prompt);
 
     let sequence_length = input_ids.len() + 1;
@@ -86,9 +85,9 @@ fn main() -> anyhow::Result<()> {
 
     let eos_ids = generation_config
         .as_ref()
-        .and_then(GenerationConfig::eos_token_ids)
+        .and_then(|g| g.eos_token_id_list.clone())
         .filter(|ids| !ids.is_empty())
-        .unwrap_or(config.eos_token_ids);
+        .unwrap_or(config.eos_token_ids.clone());
 
     eprintln!("building model graph");
     let mut model = Model::<f16>::new(
@@ -97,6 +96,7 @@ fn main() -> anyhow::Result<()> {
         chunk_size,
         sequence_length,
         batch_size,
+        top_k,
         top_k,
         eos_ids,
     );
@@ -136,7 +136,12 @@ fn main() -> anyhow::Result<()> {
 
     // Dump helper is kept for debugging purposes but not currently used
     #[allow(dead_code)]
-    fn dump_tensor(pool: &mut ellm::mem_mgr::mem_pool::MemPool<f16>, name: &str, size: usize, path: &std::path::Path) {
+    fn dump_tensor(
+        pool: &mut ellm::mem_mgr::mem_pool::MemPool<f16>,
+        name: &str,
+        size: usize,
+        path: &std::path::Path,
+    ) {
         let data_ptr = pool.get(name, &vec![size]);
         let byte_size = size * std::mem::size_of::<f16>();
         unsafe {
@@ -201,15 +206,7 @@ fn main() -> anyhow::Result<()> {
     // Phase 2: MatMulTopK + TopKSoftmax (decode mode)
     for (index, operator) in operator_queue.iter().enumerate().skip(phase2_start) {
         eprintln!("running operator[{index}] {}", operator_name(operator));
-        operator.run(
-            0,
-            1,
-            1,
-            0,
-            &prefill_list,
-            &decode_list,
-            &mut batch_list,
-        );
+        operator.run(0, 1, 1, 0, &prefill_list, &decode_list, &mut batch_list);
     }
 
     let next_token_id = unsafe { *sequences.as_mut_ptr().add(input_ids.len()) };

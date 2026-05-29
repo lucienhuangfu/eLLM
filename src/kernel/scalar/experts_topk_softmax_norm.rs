@@ -1,5 +1,5 @@
-use crate::common::heap::FixedMinHeap;
-use crate::common::num_traits::Exp;
+use crate::kernel::common::heap::FixedMinHeap;
+use crate::num_traits::Exp;
 use std::ops::{AddAssign, Div, Sub};
 
 pub fn experts_topk_softmax_norm<

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::common::num_traits::FromNumber;
+use crate::num_traits::FromNumber;
 use serde_json::Value;
 
 #[inline]
