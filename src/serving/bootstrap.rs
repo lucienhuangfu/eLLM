@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Semaphore};
 
-use crate::common::send_sync_ptr::SharedMut;
+use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::batch_sequence::BatchSequence;
 use crate::runtime::{Phase, SequenceState};
 

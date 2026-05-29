@@ -1,6 +1,6 @@
 use std::ops::{Add, Div, Mul, Neg};
 
-use crate::common::num_traits::Sigmoid;
+use crate::num_traits::Sigmoid;
 
 pub fn sigmoid<T>(input_ptr: *const T, output_ptr: *mut T, length: usize)
 where

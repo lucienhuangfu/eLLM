@@ -1,9 +1,8 @@
-use crate::common::matmul_params::MatMulParams;
-use crate::common::sequence_slice::SequenceSlice;
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::linear::{MatMul, MatMulAdd};
 use crate::operators::operator::Operator;
-use crate::runtime::generation_config::EosTokenIds;
+use crate::runtime::sequence_slice::SequenceSlice;
 use crate::runtime::{Phase, SequenceState};
 
 use super::Tensor;
@@ -11,8 +10,8 @@ use super::Tensor;
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::common::expert_routing::routing_from_dense;
     use crate::mem_mgr::mem_pool::GlobalMemPool;
+    use crate::operators::expert::expert_routing::routing_from_dense;
     use crate::tensor::GlobalOperatorQueue;
     use approx::{assert_abs_diff_eq, assert_ulps_eq};
     use std::collections::HashMap;
@@ -244,7 +243,7 @@ mod test {
             1.0f32,
             0.0f32,
             false,
-            EosTokenIds::single(eos_id),
+            vec![eos_id],
             "model.layers.0.topk_softmax".to_string(),
         );
 
@@ -400,7 +399,7 @@ mod test {
             1.0f16,
             0.0f16,
             false,
-            EosTokenIds::single(eos_id),
+            vec![eos_id],
             "model.layers.0.topk_softmax".to_string(),
         );
 

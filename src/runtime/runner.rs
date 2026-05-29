@@ -8,9 +8,7 @@ use std::thread;
 
 use crate::operators::operator::Operator;
 
-use crate::common::num_traits::{
-    exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt,
-};
+use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
 use crate::runtime::BatchScheduler;
 
 /// Runs the inference serving loop.

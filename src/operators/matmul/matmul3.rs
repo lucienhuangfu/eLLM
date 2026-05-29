@@ -5,13 +5,11 @@ use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul, Sub};
 
-use crate::common::{
-    matmul_params::MatMulParams,
-    num_traits::{FromNumber, Sqrt},
-    send_sync_ptr::{ConstPtr, MutPtr},
-};
+use crate::kernel::common::matmul_params::MatMulParams;
+use crate::num_traits::{FromNumber, Sqrt};
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 
-use crate::common::sequence_slice::SequenceSlice;
+use crate::runtime::sequence_slice::SequenceSlice;
 use crate::operators::assign::{assign, KqvPath};
 use crate::operators::traits::MatMulkqvTrait;
 

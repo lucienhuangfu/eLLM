@@ -1,4 +1,4 @@
-use crate::common::heap::FixedMinHeap;
+use crate::kernel::common::heap::FixedMinHeap;
 use std::ops::{AddAssign, Div};
 
 pub fn experts_topk_norm<T>(

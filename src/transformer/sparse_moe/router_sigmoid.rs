@@ -1,5 +1,5 @@
-use crate::common::expert_routing::ExpertRouting;
-use crate::common::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
+use crate::operators::expert::expert_routing::ExpertRouting;
+use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 use std::ops::{AddAssign, Neg, Sub};

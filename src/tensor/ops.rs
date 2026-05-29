@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicUsize;
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::common::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
+use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 use crate::operators::moe::{ExpertMatMulDown, ExpertMatMulSilu, ExpertMergeAdd};

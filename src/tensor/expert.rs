@@ -1,9 +1,9 @@
 use std::ops::{AddAssign, Neg, Sub};
 
-use crate::common::expert_routing::ExpertRouting;
-use crate::common::matmul_params::MatMulParams;
-use crate::common::num_traits::NegInfinity;
-use crate::common::num_traits::{Exp, Sigmoid, Sqrt};
+use crate::operators::expert::expert_routing::ExpertRouting;
+use crate::kernel::common::matmul_params::MatMulParams;
+use crate::num_traits::NegInfinity;
+use crate::num_traits::{Exp, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
 use crate::operators::operator::Operator;

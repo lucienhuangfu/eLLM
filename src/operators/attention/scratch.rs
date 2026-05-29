@@ -1,4 +1,4 @@
-use crate::common::num_traits::NegInfinity;
+use crate::num_traits::NegInfinity;
 
 #[derive(Clone)]
 pub(super) struct AttentionScratch<T> {

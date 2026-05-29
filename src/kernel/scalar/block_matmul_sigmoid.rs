@@ -1,7 +1,7 @@
 use std::ops::{Add, Mul};
 
-use crate::common::matmul_params::MatMulParams;
-use crate::common::num_traits::Sigmoid;
+use crate::kernel::common::matmul_params::MatMulParams;
+use crate::num_traits::Sigmoid;
 
 pub fn matmul_sigmoid<T>(
     a_ptr: *const T,

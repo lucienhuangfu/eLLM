@@ -1,7 +1,7 @@
-use crate::common::num_traits::NegInfinity;
-use crate::common::num_traits::{Exp, FromNumber, Sigmoid, Sqrt};
-use crate::common::sequence_slice::SequenceSlice;
+use crate::num_traits::NegInfinity;
+use crate::num_traits::{Exp, FromNumber, Sigmoid, Sqrt};
 use crate::operators::fake_echo::FakeEcho;
+use crate::runtime::sequence_slice::SequenceSlice;
 use crate::runtime::SequenceState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
@@ -23,7 +23,7 @@ use crate::operators::transform::SiluMulZipMap;
 use crate::operators::transform::{AddRMSZipMap, RMSMap};
 // use super::zip_map::complex_zip::ComplexZipMap;
 // use super::zip_map::silu_mul_zip::SiluMulZipMap;
-// use crate::common::matmul_params::MatMulParams;
+// use crate::kernel::common::matmul_params::MatMulParams;
 // use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
@@ -201,10 +201,9 @@ unsafe impl<T> Sync for Operator<T> where T: PartialOrd + Copy {}
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::runtime::generation_config::EosTokenIds;
-    use crate::common::expert_routing::ExpertRouting;
-    use crate::common::matmul_params::MatMulParams;
-    use crate::common::sequence_slice::SequenceSlice;
+    use crate::kernel::common::matmul_params::MatMulParams;
+    use crate::operators::expert::expert_routing::ExpertRouting;
+    use crate::runtime::sequence_slice::SequenceSlice;
     use crate::runtime::{BatchScheduler, Phase, SequenceState};
     use approx::assert_ulps_eq;
     use std::sync::atomic::Ordering;
@@ -219,7 +218,13 @@ mod test {
         num_tokens: usize,
         num_topk: usize,
     ) -> ExpertRouting<T> {
-        unsafe { crate::common::expert_routing::empty_routing(num_experts, num_tokens, num_topk) }
+        unsafe {
+            crate::operators::expert::expert_routing::empty_routing(
+                num_experts,
+                num_tokens,
+                num_topk,
+            )
+        }
     }
 
     fn dense_routing(
@@ -231,7 +236,7 @@ mod test {
         topk: &[usize],
     ) -> ExpertRouting<f16> {
         unsafe {
-            crate::common::expert_routing::routing_from_dense(
+            crate::operators::expert::expert_routing::routing_from_dense(
                 num_experts,
                 num_tokens,
                 num_topk,
@@ -536,7 +541,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
-            EosTokenIds::single(VOCAB_SIZE - 1),
+            vec![VOCAB_SIZE - 1],
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -875,7 +880,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
-            EosTokenIds::single(VOCAB_SIZE - 1),
+            vec![VOCAB_SIZE - 1],
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -1092,7 +1097,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
-            EosTokenIds::single(VOCAB_SIZE - 1),
+            vec![VOCAB_SIZE - 1],
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -1252,7 +1257,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
-            EosTokenIds::single(VOCAB_SIZE - 1),
+            vec![VOCAB_SIZE - 1],
         ));
 
         scheduler.batch_list.with_mut(|batch_list| {
@@ -1425,7 +1430,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            EosTokenIds::single(eos_id),
+            vec![eos_id],
         ));
 
         for i in 0..thread_num {
@@ -1506,7 +1511,7 @@ mod test {
             }
         }
 
-        let params = crate::common::matmul_params::MatMulParams {
+        let params = crate::kernel::common::matmul_params::MatMulParams {
             a_row_step_macro: M,  // MB
             b_row_step_macro: N,  // NB
             column_step_macro: K, // KC
@@ -2180,7 +2185,7 @@ mod test {
         let h = 64usize;
         let ktop = 2usize;
 
-        let params = crate::common::matmul_params::MatMulParams {
+        let params = crate::kernel::common::matmul_params::MatMulParams {
             a_row_step_macro: 3,
             b_row_step_macro: 32,
             column_step_macro: 32,
@@ -2305,7 +2310,7 @@ mod test {
         let h = 48usize;
         let ktop = 1usize;
 
-        let params = crate::common::matmul_params::MatMulParams {
+        let params = crate::kernel::common::matmul_params::MatMulParams {
             a_row_step_macro: 3,
             b_row_step_macro: 48,
             column_step_macro: 16,
@@ -2670,7 +2675,7 @@ mod test {
             }
         }
 
-        let params = crate::common::matmul_params::MatMulParams {
+        let params = crate::kernel::common::matmul_params::MatMulParams {
             a_row_step_macro: M,  // MB
             b_row_step_macro: N,  // NB
             column_step_macro: K, // KC

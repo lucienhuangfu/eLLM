@@ -1,12 +1,11 @@
 #![feature(f16)]
 
 use ellm::config::GenerationConfig;
-use ellm::runtime::generation_config::EosTokenIds;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::common::send_sync_ptr::SharedMut;
+use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
-    BatchScheduler, BatchSequence, Phase, Runner, SafeTensorsLoader, SchedulingMode, SequenceState,
+    BatchScheduler, BatchSequence, Phase, Runner, SafeTensorsLoader, SequenceState,
 };
 use ellm::serving;
 use ellm::tensor::GlobalOperatorQueue;
@@ -68,15 +67,9 @@ fn build_batch_scheduler(
     chunk_size: usize,
     thread_num: usize,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    scheduling_mode: SchedulingMode,
 ) -> BatchScheduler {
-    let mut batch_scheduler = BatchScheduler::with_mode(
-        sequence_length,
-        batch_size,
-        chunk_size,
-        thread_num,
-        scheduling_mode,
-    );
+    let mut batch_scheduler =
+        BatchScheduler::with_mode(sequence_length, batch_size, chunk_size, thread_num);
     batch_scheduler.batch_list = batch_states;
     batch_scheduler
 }
@@ -148,7 +141,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         chunk_size,
         thread_num,
         Arc::clone(&batch_states),
-        SchedulingMode::Single,
     );
 
     let position_vec = RotaryEmbedding::new(
@@ -175,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         top_p as f16,
         min_p as f16,
         do_sample,
-        EosTokenIds::from_slice(&eos_token_id_list),
+        eos_token_id_list,
     );
 
     let batch_temperature_ptr =

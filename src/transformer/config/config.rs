@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::runtime::{generation_config::EosTokenIds, HfConfig};
+use crate::runtime::HfConfig;
 
 use super::ffn_kind::FfnResolveParams;
 use super::layer_plan::LayerPlan;
@@ -29,7 +29,7 @@ pub struct Config {
     pub use_qk_norm: bool,
     pub rope_scaling: Option<HashMap<String, Value>>,
     pub eos_token_id: usize,
-    pub eos_token_ids: EosTokenIds,
+    pub eos_token_ids: Vec<usize>,
     pub max_window_layers: usize,
     pub use_sliding_window: bool,
     pub sliding_window: Option<usize>,
@@ -81,8 +81,8 @@ impl Config {
             use_routing_bias,
         );
 
-        let eos_token_ids = hf.eos_token_id.to_eos_token_ids();
-        let eos_token_id = hf.eos_token_id.first().unwrap_or(0);
+        let eos_token_ids = vec![hf.eos_token_id];
+        let eos_token_id = hf.eos_token_id;
 
         Self {
             family,

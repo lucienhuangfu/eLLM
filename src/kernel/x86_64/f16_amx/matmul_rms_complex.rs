@@ -2,7 +2,7 @@
 
 use std::f16;
 
-use crate::common::matmul_params::MatMulParams;
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::kernel::x86_64::f16_amx::matmul_block::matmul_block;
 
 /// AMX-FP16 version of

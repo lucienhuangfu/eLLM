@@ -2,7 +2,7 @@
 
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::runtime::{generation_config::EosTokenIds, model_loader::SafeTensorsLoader, Config};
+use ellm::runtime::{model_loader::SafeTensorsLoader, Config};
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 
@@ -46,7 +46,7 @@ fn test_define_and_load_qwen3_06b() {
         sequence_length, // sequence_length
         batch_size,
         topk_size,
-        EosTokenIds::single(eos_id),
+        vec![eos_id],
     );
 
     println!("Model defined successfully");
@@ -105,7 +105,7 @@ fn test_define_and_load_qwen3_06b_f16() {
         sequence_length, // sequence_length
         batch_size,
         topk_size,
-        EosTokenIds::single(eos_id),
+        vec![eos_id],
     );
 
     println!("Model defined successfully");

@@ -1,7 +1,7 @@
 use std::f16;
 
-use crate::common::num_traits::Sqrt;
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
+use crate::num_traits::Sqrt;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
 use crate::operators::assign::assign;
 use crate::operators::traits::MapTrait;

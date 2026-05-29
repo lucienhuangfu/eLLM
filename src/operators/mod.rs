@@ -2,6 +2,7 @@ pub mod assign;
 pub mod attention;
 pub mod fake_echo;
 pub mod operator;
+pub mod send_sync_ptr;
 pub use operator::Operator;
 
 pub mod elementwise {
@@ -11,16 +12,28 @@ pub mod elementwise {
     pub mod silu_mul_zip;
 }
 
-pub mod experts {
-    pub mod experts_matmul_mul;
-    pub mod experts_matmul_silu_mul_matmul;
-    pub mod experts_merge_add;
+pub mod expert {
+    pub mod expert_matmul_mul;
+    pub mod expert_matmul_silu_mul_matmul;
+    pub mod expert_merge_add;
+    pub mod expert_routing;
+    pub mod expert_topk_norm;
+
+    #[allow(non_snake_case)]
+    pub use expert_matmul_mul::ExpertMatMulDown as ExpertsMatMulDown;
+    #[allow(non_snake_case)]
+    pub use expert_matmul_silu_mul_matmul::ExpertMatMulSilu as ExpertsMatMulSilu;
+    #[allow(non_snake_case)]
+    pub use expert_merge_add::ExpertMergeAdd as ExpertsMergeAdd;
 }
 
-pub mod expert {
-    pub use super::experts::experts_matmul_mul::ExpertsMatMulDown;
-    pub use super::experts::experts_matmul_silu_mul_matmul::ExpertsMatMulSilu;
-    pub use super::experts::experts_merge_add::ExpertsMergeAdd;
+pub mod expert_imports {
+    #[allow(non_snake_case)]
+    pub use super::expert::expert_matmul_mul::ExpertMatMulDown as ExpertsMatMulDown;
+    #[allow(non_snake_case)]
+    pub use super::expert::expert_matmul_silu_mul_matmul::ExpertMatMulSilu as ExpertsMatMulSilu;
+    #[allow(non_snake_case)]
+    pub use super::expert::expert_merge_add::ExpertMergeAdd as ExpertsMergeAdd;
 }
 
 pub mod left_vector;
@@ -56,16 +69,18 @@ pub mod normalization {
 }
 
 pub mod routing {
+    pub use super::expert::expert_topk_norm::ExpertTopkNorm;
     pub use super::matmul::matmul_sigmoid::MatMulSigmoid;
     pub use super::matmul::matmul_topk::MatMulTopK;
     pub use super::softmax::softmax_norm::ExpertsSoftmaxNorm;
-    pub use super::softmax::topk_norm::ExpertsTopkNorm;
     pub use super::softmax::topk_softmax::TopKSoftmax;
+
+    #[allow(non_snake_case)]
+    pub use super::expert::expert_topk_norm::ExpertTopkNorm as ExpertsTopkNorm;
 }
 
 pub mod softmax {
     pub mod softmax_norm;
-    pub mod topk_norm;
     pub mod topk_softmax;
 }
 

@@ -2,13 +2,13 @@ use std::f16;
 use std::ops::{AddAssign, Sub};
 use std::sync::atomic::Ordering;
 
-use crate::common::expert_routing::ExpertRouting;
-use crate::common::num_traits::{exp::Exp, sqrt::Sqrt};
-use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel::scalar;
 use crate::kernel::x86_64;
 use crate::mem_mgr::allocator::AlignedBox;
+use crate::num_traits::{exp::Exp, sqrt::Sqrt};
 use crate::operators::assign::assign;
+use crate::operators::expert::expert_routing::ExpertRouting;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::SoftmaxTrait;
 
 #[derive(Clone)]
@@ -190,7 +190,13 @@ mod test {
         num_tokens: usize,
         num_topk: usize,
     ) -> ExpertRouting<T> {
-        unsafe { crate::common::expert_routing::empty_routing(num_experts, num_tokens, num_topk) }
+        unsafe {
+            crate::operators::expert::expert_routing::empty_routing(
+                num_experts,
+                num_tokens,
+                num_topk,
+            )
+        }
     }
 
     unsafe fn compact_score<T: Copy>(

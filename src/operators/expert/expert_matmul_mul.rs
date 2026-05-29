@@ -5,7 +5,7 @@ use crate::kernel::common::matmul_params::MatMulParams;
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::ExpertDownTrait;
+use crate::operators::traits::ExpertsDownTrait;
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
@@ -545,7 +545,7 @@ where
 /* ---------------- ExpertDownTrait default implementation ---------------- */
 /* ---------------- ExpertDownTrait 默认实现 ---------------- */
 
-impl<T> ExpertDownTrait<T> for ExpertMatMulDown<T>
+impl<T> ExpertsDownTrait<T> for ExpertMatMulDown<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -568,7 +568,7 @@ where
 /* ---------------- f16 specialization: AVX-512 FP16 ---------------- */
 /* ---------------- f16 专用实现：AVX-512 FP16 ---------------- */
 
-impl ExpertDownTrait<f16> for ExpertMatMulDown<f16> {
+impl ExpertsDownTrait<f16> for ExpertMatMulDown<f16> {
     /// compute1: acc += A_tile * B_panel with the 3x32 micro-kernel.
     /// compute1：使用 3x32 微内核执行 acc += A_tile * B_panel。
     fn compute1(&self, a_tile: *const f16, b_panel: *const f16, acc: *mut f16) {

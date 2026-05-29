@@ -1,16 +1,15 @@
 use std::ops::{AddAssign, Neg, Sub};
 use std::sync::atomic::AtomicUsize;
 
-use crate::common::expert_routing::ExpertRouting;
-use crate::common::matmul_params::MatMulParams;
-use crate::common::num_traits::Sigmoid;
-use crate::common::num_traits::Sqrt;
-use crate::common::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::num_traits::Sigmoid;
+use crate::num_traits::Sqrt;
+use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity};
+use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::operators::operator::Operator;
 use crate::operators::routing::{ExpertsSoftmaxNorm, ExpertsTopkNorm, MatMulSigmoid, TopKSoftmax};
-use crate::runtime::generation_config::EosTokenIds;
 
 use super::core::leaked_aligned_ptr;
 use super::{GlobalOperatorQueue, Tensor};
@@ -154,10 +153,10 @@ where
             ptr
         };
         ExpertRouting {
-            expert_counts: crate::common::send_sync_ptr::MutPtr { ptr: expert_counts },
-            index_tensor: crate::common::send_sync_ptr::MutPtr { ptr: index_tensor },
-            score_tensor: crate::common::send_sync_ptr::MutPtr { ptr: score_tensor },
-            topk_indices: crate::common::send_sync_ptr::MutPtr { ptr: topk_indices },
+            expert_counts: crate::operators::send_sync_ptr::MutPtr { ptr: expert_counts },
+            index_tensor: crate::operators::send_sync_ptr::MutPtr { ptr: index_tensor },
+            score_tensor: crate::operators::send_sync_ptr::MutPtr { ptr: score_tensor },
+            topk_indices: crate::operators::send_sync_ptr::MutPtr { ptr: topk_indices },
             num_experts,
             num_tokens,
             num_topk,
@@ -175,7 +174,7 @@ where
         top_p: T,
         min_p: T,
         do_sample: bool,
-        eos_ids: EosTokenIds,
+        eos_ids: Vec<usize>,
         scope_name: String,
     ) -> (*const usize, Self) {
         let output_shape = vec![self.shape[0], num_topk];

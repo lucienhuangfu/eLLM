@@ -1,11 +1,11 @@
 #![feature(f16)]
 
-use ellm::common::sequence_slice::SequenceSlice;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::operator::Operator;
 use ellm::runtime::chat_template::ChatTemplate;
 use ellm::runtime::model_loader::SafeTensorsLoader;
+use ellm::runtime::sequence_slice::SequenceSlice;
 use ellm::runtime::tokenizer_loader::load_tiktoken;
 use ellm::runtime::{Config, GenerationConfig, Phase, SequenceState};
 use ellm::tensor::GlobalOperatorQueue;
@@ -34,11 +34,10 @@ fn main() -> anyhow::Result<()> {
     let tokenizer_config_path = format!("{model_dir}/tokenizer_config.json");
     let chat_template_path = format!("{model_dir}/chat_template.jinja");
 
-    let chat_template =
-        ChatTemplate::from_model_files(&chat_template_path, &tokenizer_config_path)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let tokenizer = load_tiktoken(&tokenizer_path, &tokenizer_config_path)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let chat_template = ChatTemplate::from_model_files(&chat_template_path, &tokenizer_config_path)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let tokenizer =
+        load_tiktoken(&tokenizer_path, &tokenizer_config_path).map_err(|e| anyhow::anyhow!(e))?;
 
     // Two different prompts
     let messages_batch = [
@@ -62,7 +61,9 @@ fn main() -> anyhow::Result<()> {
     let chunk_size = max_input_len + max_tokens;
     let top_k = 1;
 
-    eprintln!("Batch size: {batch_size}, max input len: {max_input_len}, seq_len: {sequence_length}");
+    eprintln!(
+        "Batch size: {batch_size}, max input len: {max_input_len}, seq_len: {sequence_length}"
+    );
 
     eprintln!("loading f16 weights");
     let params = SafeTensorsLoader::new(&model_dir)?.load_all_weights_f16()?;
@@ -80,9 +81,9 @@ fn main() -> anyhow::Result<()> {
 
     let eos_ids = generation_config
         .as_ref()
-        .and_then(GenerationConfig::eos_token_ids)
+        .and_then(|g| g.eos_token_id_list.clone())
         .filter(|ids| !ids.is_empty())
-        .unwrap_or(config.eos_token_ids);
+        .unwrap_or(config.eos_token_ids.clone());
 
     eprintln!("building model graph");
     let mut model = Model::<f16>::new(
@@ -100,7 +101,9 @@ fn main() -> anyhow::Result<()> {
     for (batch_idx, ids) in all_input_ids.iter().enumerate() {
         for (pos, token_id) in ids.iter().enumerate() {
             unsafe {
-                *sequences.as_mut_ptr().add(batch_idx * sequence_length + pos) = *token_id as usize;
+                *sequences
+                    .as_mut_ptr()
+                    .add(batch_idx * sequence_length + pos) = *token_id as usize;
             }
         }
     }
@@ -149,7 +152,15 @@ fn main() -> anyhow::Result<()> {
 
     // ============ Prefill ============
     for (index, operator) in operator_queue.iter().enumerate().take(phase2_start) {
-        operator.run(total_prefill_tokens, batch_size, thread_num, 0, &prefill_list, &decode_list, &mut batch_list);
+        operator.run(
+            total_prefill_tokens,
+            batch_size,
+            thread_num,
+            0,
+            &prefill_list,
+            &decode_list,
+            &mut batch_list,
+        );
     }
 
     // Manual lift for each batch: copy last token's norm to position 0
@@ -168,16 +179,30 @@ fn main() -> anyhow::Result<()> {
 
     // Phase 2
     for (index, operator) in operator_queue.iter().enumerate().skip(phase2_start) {
-        operator.run(0, batch_size, thread_num, 0, &prefill_list, &decode_list, &mut batch_list);
+        operator.run(
+            0,
+            batch_size,
+            thread_num,
+            0,
+            &prefill_list,
+            &decode_list,
+            &mut batch_list,
+        );
     }
 
     // Read first tokens
     for batch_idx in 0..batch_size {
         let input_len = all_input_ids[batch_idx].len();
-        let token = unsafe { *sequences.as_mut_ptr().add(batch_idx * sequence_length + input_len) };
+        let token = unsafe {
+            *sequences
+                .as_mut_ptr()
+                .add(batch_idx * sequence_length + input_len)
+        };
         generated_tokens[batch_idx].push(token);
-        eprintln!("Batch {batch_idx} Token 1: {token} ({})",
-            tokenizer.decode(vec![token as u32]).unwrap_or_default());
+        eprintln!(
+            "Batch {batch_idx} Token 1: {token} ({})",
+            tokenizer.decode(vec![token as u32]).unwrap_or_default()
+        );
     }
 
     // ============ Decode ============
@@ -207,18 +232,38 @@ fn main() -> anyhow::Result<()> {
         let empty_prefill: Vec<Vec<SequenceSlice>> = vec![];
 
         for (index, operator) in operator_queue.iter().enumerate().take(phase2_start) {
-            operator.run(0, decode_count, thread_num, 0, &empty_prefill, &step_decode_slices, &mut batch_list);
+            operator.run(
+                0,
+                decode_count,
+                thread_num,
+                0,
+                &empty_prefill,
+                &step_decode_slices,
+                &mut batch_list,
+            );
         }
 
         for (index, operator) in operator_queue.iter().enumerate().skip(phase2_start) {
-            operator.run(0, decode_count, thread_num, 0, &empty_prefill, &step_decode_slices, &mut batch_list);
+            operator.run(
+                0,
+                decode_count,
+                thread_num,
+                0,
+                &empty_prefill,
+                &step_decode_slices,
+                &mut batch_list,
+            );
         }
 
         for batch_idx in 0..batch_size {
             if matches!(batch_list[batch_idx].phase, Phase::Eos) {
                 continue;
             }
-            let token = unsafe { *sequences.as_mut_ptr().add(batch_list[batch_idx].sequence_index) };
+            let token = unsafe {
+                *sequences
+                    .as_mut_ptr()
+                    .add(batch_list[batch_idx].sequence_index)
+            };
             generated_tokens[batch_idx].push(token);
             let decoded = tokenizer.decode(vec![token as u32]).unwrap_or_default();
             eprintln!("Batch {batch_idx} Token {}: {token} ({decoded})", step + 1);

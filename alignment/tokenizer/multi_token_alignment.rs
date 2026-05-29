@@ -1,11 +1,11 @@
 #![feature(f16)]
 
-use ellm::common::sequence_slice::SequenceSlice;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::operator::Operator;
 use ellm::runtime::chat_template::ChatTemplate;
 use ellm::runtime::model_loader::SafeTensorsLoader;
+use ellm::runtime::sequence_slice::SequenceSlice;
 use ellm::runtime::tokenizer_loader::load_tiktoken;
 use ellm::runtime::{Config, GenerationConfig, Phase, SequenceState};
 use ellm::tensor::GlobalOperatorQueue;
@@ -35,14 +35,13 @@ fn main() -> anyhow::Result<()> {
     let chat_template_path = format!("{model_dir}/chat_template.jinja");
 
     let messages = [("user", "你好，请用一句话介绍 Rust。")];
-    let chat_template =
-        ChatTemplate::from_model_files(&chat_template_path, &tokenizer_config_path)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let chat_template = ChatTemplate::from_model_files(&chat_template_path, &tokenizer_config_path)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let prompt = chat_template
         .apply_chat_template(&messages, true)
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let tokenizer = load_tiktoken(&tokenizer_path, &tokenizer_config_path)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let tokenizer =
+        load_tiktoken(&tokenizer_path, &tokenizer_config_path).map_err(|e| anyhow::anyhow!(e))?;
     let input_ids = tokenizer.encode_with_special_tokens(&prompt);
 
     let sequence_length = input_ids.len() + max_tokens + 1;
@@ -50,7 +49,12 @@ fn main() -> anyhow::Result<()> {
     let chunk_size = input_ids.len() + max_tokens;
     let top_k = 1;
 
-    eprintln!("Prompt tokens: {} | max output: {} | seq_len: {}", input_ids.len(), max_tokens, sequence_length);
+    eprintln!(
+        "Prompt tokens: {} | max output: {} | seq_len: {}",
+        input_ids.len(),
+        max_tokens,
+        sequence_length
+    );
 
     eprintln!("loading f16 weights");
     let params = SafeTensorsLoader::new(&model_dir)?.load_all_weights_f16()?;
@@ -68,9 +72,9 @@ fn main() -> anyhow::Result<()> {
 
     let eos_ids = generation_config
         .as_ref()
-        .and_then(GenerationConfig::eos_token_ids)
+        .and_then(|g| g.eos_token_id_list.clone())
         .filter(|ids| !ids.is_empty())
-        .unwrap_or(config.eos_token_ids);
+        .unwrap_or(config.eos_token_ids.clone());
 
     eprintln!("building model graph");
     let mut model = Model::<f16>::new(
@@ -80,7 +84,7 @@ fn main() -> anyhow::Result<()> {
         sequence_length,
         batch_size,
         top_k,
-        eos_ids,
+        eos_ids.clone(),
     );
 
     let sequences = AlignedBox::allocate_init(sequence_length * batch_size, 0usize);
@@ -123,7 +127,15 @@ fn main() -> anyhow::Result<()> {
 
     // ============ Prefill ============
     for (index, operator) in operator_queue.iter().enumerate().take(phase2_start) {
-        operator.run(prefill_len, 1, 1, 0, &prefill_list, &decode_list, &mut batch_list);
+        operator.run(
+            prefill_len,
+            1,
+            1,
+            0,
+            &prefill_list,
+            &decode_list,
+            &mut batch_list,
+        );
     }
 
     f16::with_global(|pool| {
@@ -140,7 +152,10 @@ fn main() -> anyhow::Result<()> {
 
     let token = unsafe { *sequences.as_mut_ptr().add(prefill_len) };
     generated_tokens.push(token);
-    eprintln!("Token 1: {token} ({})", tokenizer.decode(vec![token as u32]).unwrap_or_default());
+    eprintln!(
+        "Token 1: {token} ({})",
+        tokenizer.decode(vec![token as u32]).unwrap_or_default()
+    );
 
     // ============ Decode ============
     for step in 1..max_tokens {
@@ -158,11 +173,27 @@ fn main() -> anyhow::Result<()> {
         let empty_prefill: Vec<Vec<SequenceSlice>> = vec![];
 
         for (index, operator) in operator_queue.iter().enumerate().take(phase2_start) {
-            operator.run(0, 1, 1, 0, &empty_prefill, &[decode_slice.clone()], &mut batch_list);
+            operator.run(
+                0,
+                1,
+                1,
+                0,
+                &empty_prefill,
+                &[decode_slice.clone()],
+                &mut batch_list,
+            );
         }
 
         for (index, operator) in operator_queue.iter().enumerate().skip(phase2_start) {
-            operator.run(0, 1, 1, 0, &empty_prefill, &[decode_slice.clone()], &mut batch_list);
+            operator.run(
+                0,
+                1,
+                1,
+                0,
+                &empty_prefill,
+                &[decode_slice.clone()],
+                &mut batch_list,
+            );
         }
 
         let token = unsafe { *sequences.as_mut_ptr().add(batch_list[0].sequence_index) };
@@ -171,12 +202,18 @@ fn main() -> anyhow::Result<()> {
         let decoded = tokenizer.decode(vec![token as u32]).unwrap_or_default();
         eprintln!("Token {}: {token} ({decoded})", step + 1);
 
-        if eos_ids.contains(token) {
+        if eos_ids.contains(&token) {
             break;
         }
     }
 
-    let all_text = tokenizer.decode(generated_tokens.iter().map(|t| *t as u32).collect::<Vec<_>>())
+    let all_text = tokenizer
+        .decode(
+            generated_tokens
+                .iter()
+                .map(|t| *t as u32)
+                .collect::<Vec<_>>(),
+        )
         .unwrap_or_default();
     eprintln!("Generated: {all_text}");
 

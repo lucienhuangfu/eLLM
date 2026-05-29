@@ -10,7 +10,7 @@ use crate::kernel::common::matmul_params::MatMulParams;
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::ExpertSiluTrait;
+use crate::operators::traits::ExpertsSiluTrait;
 
 // Variable naming used in this operator:
 // - token_block_rows / token_block_start: routed-token macro block inside one expert.
@@ -521,7 +521,7 @@ where
 /* -------------------- ExpertSiluTrait default implementation -------------------- */
 /* -------------------- ExpertSiluTrait 默认实现 -------------------- */
 
-impl<T> ExpertSiluTrait<T> for ExpertMatMulSilu<T>
+impl<T> ExpertsSiluTrait<T> for ExpertMatMulSilu<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T> + Default,
 {
@@ -542,7 +542,7 @@ where
 /* -------------------- f16 specialization: AVX-512 FP16 -------------------- */
 /* -------------------- f16 特化实现：AVX-512 FP16 -------------------- */
 
-impl ExpertSiluTrait<f16> for ExpertMatMulSilu<f16> {
+impl ExpertsSiluTrait<f16> for ExpertMatMulSilu<f16> {
     fn compute1(
         &self,
         a_tile: *const f16,

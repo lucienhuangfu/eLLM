@@ -8,7 +8,7 @@
 //! The goal is to prove that the runtime executed an operator without needing
 //! a full model forward pass or any operator-owned state.
 
-use crate::common::sequence_slice::SequenceSlice;
+use crate::runtime::sequence_slice::SequenceSlice;
 use crate::runtime::{Phase, SequenceState};
 
 /// A tiny testing operator that completes prefill requests immediately.
@@ -51,7 +51,7 @@ impl FakeEcho {
 #[cfg(test)]
 mod tests {
     use super::FakeEcho;
-    use crate::common::sequence_slice::SequenceSlice;
+    use crate::runtime::sequence_slice::SequenceSlice;
     use crate::runtime::{Phase, SequenceState};
     use std::sync::Arc;
 
