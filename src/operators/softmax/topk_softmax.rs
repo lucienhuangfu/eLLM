@@ -43,7 +43,27 @@ impl<
             + FromNumber,
     > TopKSoftmax<T>
 {
+    /// Backward-compatible constructor (greedy, no sampling).
     pub fn new(
+        input_indices_ptr: *const usize,
+        input_values_ptr: *const T,
+        output_indices_ptr: *mut usize,
+        output_values_ptr: *mut T,
+        output_sequences: *mut usize,
+        batch_temperature: *mut T,
+        sequence_stride: usize,
+        topk_size: usize,
+        eos_ids: EosTokenIds,
+    ) -> Self {
+        Self::with_sampling(
+            input_indices_ptr, input_values_ptr, output_indices_ptr, output_values_ptr,
+            output_sequences, batch_temperature, sequence_stride, topk_size,
+            T::from_f32(1.0), T::default(), false, eos_ids,
+        )
+    }
+
+    /// Full constructor with sampling parameters.
+    pub fn with_sampling(
         input_indices_ptr: *const usize,
         input_values_ptr: *const T,
         output_indices_ptr: *mut usize,
@@ -479,7 +499,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
+            EosTokenIds::single(eos_id),
         );
 
         for i in 0..thread_num {
@@ -578,7 +598,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
+            EosTokenIds::single(eos_id),
         );
 
         operator.run(1, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -633,7 +653,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
+            EosTokenIds::single(eos_id),
         );
 
         operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -690,7 +710,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
+            EosTokenIds::single(eos_id),
         );
 
         operator.run(0, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -752,7 +772,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
+            EosTokenIds::single(eos_id),
         );
 
         operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -805,7 +825,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
+            EosTokenIds::single(eos_id),
         );
 
         operator.run(2, 0, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -893,7 +913,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
+            EosTokenIds::single(eos_id),
         );
 
         for i in 0..thread_num {

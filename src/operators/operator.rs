@@ -1425,7 +1425,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            EosTokenIds::single(1.0f32, 0.0f32, false, eos_id),
+            EosTokenIds::single(eos_id),
         ));
 
         for i in 0..thread_num {

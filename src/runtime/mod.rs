@@ -3,6 +3,8 @@ mod slice_scheduler;
 
 pub mod generation_config;
 pub mod huggingface_config;
+pub mod io;
+pub mod scheduling;
 
 pub mod batch_sequence;
 pub mod chat_template;
@@ -16,9 +18,13 @@ pub use crate::transformer::config::Config;
 pub use generation_config::GenerationConfig;
 pub use huggingface_config::HfConfig;
 
+pub use batch_sequence::BatchSequence;
 pub use crate::common::state::{Phase, SequenceState};
+pub use model_loader::SafeTensorsLoader;
 pub use runner::ServingRunner;
-pub use scheduler::BatchScheduler;
+/// Compatibility alias matching sample's Runner name.
+pub use runner::ServingRunner as Runner;
+pub use scheduler::{BatchScheduler, SchedulingMode};
 
 #[cfg(test)]
 mod tests {

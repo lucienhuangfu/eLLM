@@ -92,7 +92,7 @@ fn main() {
         .and_then(|g| g.do_sample).unwrap_or(false);
 
     println!("Building model graph...");
-    let mut model = Model::<f16>::new(
+    let mut model = Model::<f16>::with_sampling(
         &config, position_vec, chunk_size, sequence_length,
         batch_size, top_k, top_p as f16, min_p as f16, do_sample, eos_ids,
     );

@@ -1,9 +1,10 @@
 #![feature(f16)]
 
 use ellm::config::GenerationConfig;
+use ellm::runtime::generation_config::EosTokenIds;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::operators::send_sync_ptr::SharedMut;
+use ellm::common::send_sync_ptr::SharedMut;
 use ellm::runtime::{
     BatchScheduler, BatchSequence, Phase, Runner, SafeTensorsLoader, SchedulingMode, SequenceState,
 };
@@ -113,19 +114,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|cfg| cfg.eos_token_id_list.clone())
         .unwrap_or_else(|| vec![config.eos_token_id]);
 
-    let mut model = Model::<f16>::new(
+    let mut model = Model::<f16>::with_sampling(
         &config,
         position_vec,
         chunk_size,
         sequence_length,
         batch_size,
         top_k,
-        thread_num,
-        top_k_simd,
         top_p as f16,
         min_p as f16,
         do_sample,
-        eos_token_id_list,
+        EosTokenIds::from_slice(&eos_token_id_list),
     );
 
     // Run the model forward pass to populate the operator queue

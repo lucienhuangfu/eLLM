@@ -66,7 +66,24 @@ where
         + GlobalMemPool
         + GlobalOperatorQueue,
 {
+    /// Backward-compatible constructor (greedy, no sampling).
     pub fn new(
+        config: &Config,
+        position_vec: Vec<T>,
+        chunk_size: usize,
+        sequence_length: usize,
+        batch_size: usize,
+        topk_size: usize,
+        eos_ids: EosTokenIds,
+    ) -> Self {
+        Self::with_sampling(
+            config, position_vec, chunk_size, sequence_length, batch_size, topk_size,
+            T::from_f32(1.0), T::default(), false, eos_ids,
+        )
+    }
+
+    /// Full constructor with sampling parameters.
+    pub fn with_sampling(
         config: &Config,
         position_vec: Vec<T>,
         chunk_size: usize,

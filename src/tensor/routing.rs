@@ -184,7 +184,7 @@ where
         let value_tensor =
             Self::from_mem_pool(output_shape, format!("{}.output_value.output", scope_name));
 
-        let operator = Operator::TopKSoftmax(TopKSoftmax::new(
+        let operator = Operator::TopKSoftmax(TopKSoftmax::with_sampling(
             indices_ptr,
             self.data,
             indice_ptr,

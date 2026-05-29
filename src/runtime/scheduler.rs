@@ -7,6 +7,13 @@ use crate::common::send_sync_ptr::SharedMut;
 use crate::common::sequence_slice::{DecodeList, SequenceSlice};
 use crate::common::state::{Phase, SequenceState};
 
+/// Scheduling mode: continuous service or single-run batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulingMode {
+    ContinuousService,
+    Single,
+}
+
 pub struct BatchScheduler {
     pub prefill_list: Vec<Vec<SequenceSlice>>,
     /// Attention/decode slices for the current round.
@@ -102,6 +109,17 @@ impl BatchScheduler {
     }
 
     pub fn new(sequence_length: usize, batch_size: usize, thread_num: usize) -> Self {
+        Self::build(sequence_length, batch_size, thread_num)
+    }
+
+    /// Compatibility constructor matching sample's API.
+    pub fn with_mode(
+        sequence_length: usize,
+        batch_size: usize,
+        _chunk_size: usize,
+        thread_num: usize,
+        _mode: SchedulingMode,
+    ) -> Self {
         Self::build(sequence_length, batch_size, thread_num)
     }
 

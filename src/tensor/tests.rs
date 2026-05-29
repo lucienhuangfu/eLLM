@@ -241,6 +241,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             1,
             num_topk,
+            1.0f32,
+            0.0f32,
+            false,
             EosTokenIds::single(eos_id),
             "model.layers.0.topk_softmax".to_string(),
         );
@@ -394,6 +397,9 @@ mod test {
             batch_temperature.as_mut_ptr(),
             1,
             num_topk,
+            1.0f16,
+            0.0f16,
+            false,
             EosTokenIds::single(eos_id),
             "model.layers.0.topk_softmax".to_string(),
         );

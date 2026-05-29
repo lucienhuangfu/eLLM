@@ -79,7 +79,7 @@ fn main() -> anyhow::Result<()> {
         chunk_size,
         sequence_length,
         batch_size,
-        top_k, 1.0f16, 0.0f16, false,
+        top_k,
         eos_ids,
     );
 
