@@ -44,6 +44,7 @@ anyhow = "1.0.72"
 async-stream = "0.3.6"
 axum = "0.8.4"
 core_affinity = "0.8.1"
+clap = { version = "4.5.20", features = ["derive"] }
 itertools = "0.14.0"
 memmap2 = "0.9.4"
 minijinja = "2.12.0"
@@ -57,6 +58,7 @@ regex = "1.10.2"
 safetensors = "0.4.1"
 serde = {version = "1.0.226", features = ["derive"]}
 serde_json = "1.0.108"
+serde_yaml = "0.9"
 tiktoken-rs = "0.6"
 thiserror = "1.0"
 tokio = { version = "1.52.3", features = ["sync", "net", "rt", "macros"] }

@@ -99,6 +99,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sequence_length,
         batch_size,
         top_k,
+        1.0f16,
+        0.0f16,
+        false,
         eos_ids,
     );
 
