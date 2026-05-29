@@ -4,9 +4,9 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::chat_template::ChatTemplate;
-use ellm::runtime::model_loader::SafeTensorsLoader;
-use ellm::runtime::tokenizer_loader::load_tiktoken;
+use ellm::runtime::io::load_tiktoken;
+use ellm::runtime::io::ChatTemplate;
+use ellm::runtime::io::SafeTensorsLoader;
 use ellm::runtime::{
     BatchScheduler, Config, GenerationConfig, Phase, SequenceState, ServingRunner,
 };
@@ -102,6 +102,10 @@ fn main() {
     }
 
     let top_k = gen_cfg.as_ref().and_then(|g| g.top_k).unwrap_or(1);
+    let top_k_simd = gen_cfg.as_ref().map_or_else(
+        || GenerationConfig::resolved_top_k_simd_static::<f16>(top_k),
+        |cfg| cfg.resolved_top_k_simd::<f16>(top_k),
+    );
     let top_p = gen_cfg.as_ref().and_then(|g| g.top_p).unwrap_or(1.0) as f32;
     let min_p: f32 = 0.0;
     let do_sample = gen_cfg.as_ref().and_then(|g| g.do_sample).unwrap_or(false);
@@ -114,6 +118,7 @@ fn main() {
         sequence_length,
         batch_size,
         top_k,
+        top_k_simd,
         top_p as f16,
         min_p as f16,
         do_sample,

@@ -38,6 +38,7 @@ where
     pub batch_size: usize,
     pub hidden_size: usize,
     pub topk_size: usize,
+    pub topk_simd_size: usize,
     pub top_p: T,
     pub min_p: T,
     pub do_sample: bool,
@@ -72,6 +73,7 @@ where
         sequence_length: usize,
         batch_size: usize,
         topk_size: usize,
+        topk_simd_size: usize,
         eos_ids: Vec<usize>,
     ) -> Self {
         Self::with_sampling(
@@ -81,6 +83,7 @@ where
             sequence_length,
             batch_size,
             topk_size,
+            topk_simd_size,
             T::from_f32(1.0),
             T::default(),
             false,
@@ -96,6 +99,7 @@ where
         sequence_length: usize,
         batch_size: usize,
         topk_size: usize,
+        topk_simd_size: usize,
         top_p: T,
         min_p: T,
         do_sample: bool,
@@ -146,6 +150,7 @@ where
             batch_size: batch_size,
             hidden_size: config.hidden_size,
             topk_size: topk_size,
+            topk_simd_size: topk_simd_size,
             top_p,
             min_p,
             do_sample,
@@ -212,7 +217,10 @@ where
                 a_row_step_micro: 3,
                 b_row_step_micro: 32,
             },
-            self.topk_size,
+            self.topk_simd_size,
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
             format!("{}.lm_head", self.scope_name),
         );
 
@@ -221,6 +229,7 @@ where
             input_sequences,
             batch_temperature,
             self.sequence_length,
+            self.topk_simd_size,
             self.topk_size,
             self.top_p,
             self.min_p,
@@ -244,7 +253,7 @@ mod test {
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::mem_mgr::allocator::AlignedBox;
-    use crate::runtime::sequence_slice::SequenceSlice;
+    use crate::runtime::scheduling::SequenceSlice;
     use crate::runtime::{Phase, SequenceState};
     use std::collections::HashMap;
 
@@ -317,6 +326,7 @@ mod test {
             sequence_length, // chunk_size
             sequence_length, // sequence_length
             batch_size,
+            topk_size,
             topk_size,
             vec![eos_id],
         );
@@ -394,6 +404,7 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
+            topk_size,
             vec![eos_id],
         );
 
@@ -465,6 +476,7 @@ mod test {
             sequence_length, // sequence_length
             batch_size,
             topk_size,
+            topk_size,
             vec![eos_id],
         );
 
@@ -512,6 +524,7 @@ mod test {
             sequence_length, // chunk_size
             sequence_length, // sequence_length
             batch_size,
+            topk_size,
             topk_size,
             vec![eos_id],
         );

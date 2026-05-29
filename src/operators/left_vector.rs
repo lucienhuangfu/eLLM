@@ -2,7 +2,7 @@ use std::ptr;
 
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::MutPtr;
-use crate::runtime::sequence_slice::SequenceSlice;
+use crate::runtime::scheduling::SequenceSlice;
 
 #[derive(Clone)]
 pub struct LiftVector<T> {
@@ -53,7 +53,7 @@ impl<T> LiftVector<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::runtime::sequence_slice::SequenceSlice;
+    use crate::runtime::scheduling::SequenceSlice;
 
     #[test]
     fn test_lift_vector() {

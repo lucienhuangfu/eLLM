@@ -49,8 +49,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .max(1);
     let top_k_simd = generation_config.as_ref().map_or_else(
-        || GenerationConfig::top_k_simd_static::<f16>(top_k),
-        |cfg| cfg.top_k_simd::<f16>(top_k),
+        || GenerationConfig::resolved_top_k_simd_static::<f16>(top_k),
+        |cfg| cfg.resolved_top_k_simd::<f16>(top_k),
     );
     let top_p = generation_config
         .as_ref()
@@ -120,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sequence_length,
         batch_size,
         top_k,
+        top_k_simd,
         top_p as f16,
         min_p as f16,
         do_sample,

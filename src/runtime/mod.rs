@@ -1,18 +1,10 @@
-mod scheduler;
-mod slice_scheduler;
-pub mod state;
+pub mod batch_sequence;
+pub mod io;
+pub mod runner;
+pub mod scheduling;
 
 pub use crate::config::generation_config;
 pub use crate::config::huggingface_config;
-pub mod io;
-pub mod scheduling;
-
-pub mod batch_sequence;
-pub mod chat_template;
-pub mod model_loader;
-pub mod runner;
-pub mod sequence_slice;
-pub mod tokenizer_loader;
 
 pub use crate::tensor;
 
@@ -21,12 +13,32 @@ pub use generation_config::GenerationConfig;
 pub use huggingface_config::HfConfig;
 
 pub use batch_sequence::BatchSequence;
-pub use model_loader::SafeTensorsLoader;
+pub use io::load_tiktoken;
+pub use io::ChatTemplate;
+pub use io::SafeTensorsLoader;
 pub use runner::ServingRunner;
+pub use scheduling::BatchScheduler;
+pub use scheduling::{Phase, SequenceState};
+
 /// Compatibility alias matching sample's Runner name.
 pub use runner::ServingRunner as Runner;
-pub use scheduler::BatchScheduler;
-pub use state::{Phase, SequenceState};
+
+/// Compatibility modules for existing imports
+pub mod chat_template {
+    pub use super::io::ChatTemplate;
+}
+
+pub mod tokenizer_loader {
+    pub use super::io::load_tiktoken;
+}
+
+pub mod model_loader {
+    pub use super::io::SafeTensorsLoader;
+}
+
+pub mod sequence_slice {
+    pub use super::scheduling::sequence_slice::*;
+}
 
 #[cfg(test)]
 mod tests {

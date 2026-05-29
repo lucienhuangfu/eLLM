@@ -27,10 +27,11 @@ pub fn truncated_topk_softmax<
     // [1]
     //output_token_ptr: *mut usize,
     thread_num: usize,
+    input_topk_size: usize,
     topk_size: usize,
 ) {
     unsafe {
-        let total_candidates = thread_num * topk_size;
+        let total_candidates = thread_num * input_topk_size;
         let mut heap = FixedMinHeap::new(output_values_ptr, output_indices_ptr, topk_size);
         for i in 0..total_candidates {
             let value = *input_values_ptr.add(i);
@@ -92,6 +93,7 @@ mod tests {
                 out_idx.as_mut_ptr(),
                 // &mut out_token,
                 thread_num,
+                topk_size,
                 topk_size,
             );
         }

@@ -9,9 +9,9 @@ use crate::kernel::common::matmul_params::MatMulParams;
 use crate::num_traits::{FromNumber, Sqrt};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 
-use crate::runtime::sequence_slice::SequenceSlice;
 use crate::operators::assign::{assign, KqvPath};
 use crate::operators::traits::MatMulkqvTrait;
+use crate::runtime::scheduling::SequenceSlice;
 
 // Generic scalar helpers used by fallback paths.
 // fallback 路径使用的通用标量 helper。
@@ -80,10 +80,10 @@ where
 pub struct MatMul3<T> {
     // Input and Q/K/V output states.
     // 输入以及 Q/K/V 输出状态。
-    hidden_ptr: ConstPtr<T>, // A[input_rows, reduction_cols]
-    pub q_state_ptr: MutPtr<T>,  // Query state. query 输出。
-    pub k_state_ptr: MutPtr<T>,  // Key cache/state. key cache/state。
-    pub v_state_ptr: MutPtr<T>,  // Value cache/state. value cache/state。
+    hidden_ptr: ConstPtr<T>,    // A[input_rows, reduction_cols]
+    pub q_state_ptr: MutPtr<T>, // Query state. query 输出。
+    pub k_state_ptr: MutPtr<T>, // Key cache/state. key cache/state。
+    pub v_state_ptr: MutPtr<T>, // Value cache/state. value cache/state。
     q_norm_weight: ConstPtr<T>,
     k_norm_weight: ConstPtr<T>,
 
@@ -623,7 +623,7 @@ where
 
 impl<T> MatMulkqvTrait<T> for MatMul3<T>
 where
-    T: Copy + Add<Output = T> + Mul<Output = T> + Sub<Output = T> + Default + Sqrt,
+    T: Copy + Add<Output = T> + Mul<Output = T> + Sub<Output = T> + Default + Sqrt + FromNumber,
 {
     #[inline]
     default fn compute1(
@@ -872,6 +872,50 @@ impl MatMulkqvTrait<f32> for MatMul3<f32> {
     ) {
         rms_norm(c_head, norm_weight, c_head, length, eps);
         rotate_half_rope(c_head, rope_head, length);
+    }
+
+    #[inline]
+    fn compute_head_gemv(
+        &self,
+        a_row: *const f32,
+        dst_head: *mut f32,
+        packed_b: *const f32,
+        head_output_panel: usize,
+        output_panel_count: usize,
+        reduction_cols: usize,
+        reduction_block_cols: usize,
+        micro_tile_cols: usize,
+        head_dim: usize,
+    ) {
+        unsafe {
+            for head_col in (0..head_dim).step_by(micro_tile_cols) {
+                let output_panel = head_output_panel + head_col / micro_tile_cols;
+                let mut acc = [0.0f32; 32];
+                let mut reduction_col_start = 0usize;
+                while reduction_col_start < reduction_cols {
+                    let reduction_cols_this =
+                        reduction_block_cols.min(reduction_cols - reduction_col_start);
+                    let reduction_panel = reduction_col_start / reduction_block_cols;
+                    let weight_panel = packed_b.add(
+                        (reduction_panel * output_panel_count + output_panel)
+                            * reduction_block_cols
+                            * micro_tile_cols,
+                    );
+                    for reduction_lane in 0..reduction_cols_this {
+                        let input_value = *a_row.add(reduction_col_start + reduction_lane);
+                        for output_lane in 0..micro_tile_cols {
+                            acc[output_lane] += input_value
+                                * *weight_panel.add(reduction_lane * micro_tile_cols + output_lane);
+                        }
+                    }
+                    reduction_col_start += reduction_cols_this;
+                }
+
+                for output_lane in 0..micro_tile_cols {
+                    *dst_head.add(head_col + output_lane) = acc[output_lane];
+                }
+            }
+        }
     }
 }
 

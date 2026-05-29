@@ -4,12 +4,11 @@ use std::time::Duration;
 
 use super::slice_scheduler::{PrefillCandidate, SliceScheduler};
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::sequence_slice::{DecodeList, SequenceSlice};
-use crate::runtime::state::{Phase, SequenceState};
+use crate::runtime::scheduling::sequence_slice::{DecodeList, SequenceSlice};
+use crate::runtime::scheduling::state::{Phase, SequenceState};
 
 pub struct BatchScheduler {
     pub prefill_list: Vec<Vec<SequenceSlice>>,
-    /// Attention/decode slices for the current round.
     pub decode_list: DecodeList,
     pub batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     prefill_scheduler: SliceScheduler,
@@ -54,7 +53,6 @@ impl BatchScheduler {
     }
 
     fn clear_round_outputs(&mut self) {
-        // Reuse the already allocated output buffers for the next scheduling round.
         for task in self.prefill_list.iter_mut() {
             task.clear();
         }
@@ -112,7 +110,6 @@ impl BatchScheduler {
         )
     }
 
-    /// Compatibility constructor matching sample's API.
     pub fn with_mode(
         sequence_length: usize,
         batch_size: usize,
@@ -282,8 +279,6 @@ mod tests {
 
         assert_eq!(prefill_tokens, 23.min(8 * 4));
         assert_eq!(decode_slices, 1);
-        // Prefill rounds still populate decode_list: the last token path is
-        // consumed by the attention/decode side of the pipeline.
         assert_eq!(scheduler.decode_list.len(), 1);
 
         let attention_slice = &scheduler.decode_list[0];
@@ -328,8 +323,6 @@ mod tests {
 
         assert_eq!(prefill_tokens, 10);
         assert_eq!(decode_slices, 1);
-        // Even when prefill is truncated, the returned decode_list carries the
-        // slice for the last-token path of that prefill request.
         assert_eq!(scheduler.decode_list.len(), 1);
 
         let attention_slice = &scheduler.decode_list[0];

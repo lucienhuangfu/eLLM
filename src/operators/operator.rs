@@ -1,7 +1,7 @@
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, FromNumber, Sigmoid, Sqrt};
 use crate::operators::fake_echo::FakeEcho;
-use crate::runtime::sequence_slice::SequenceSlice;
+use crate::runtime::scheduling::SequenceSlice;
 use crate::runtime::SequenceState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
@@ -203,7 +203,7 @@ mod test {
     use super::*;
     use crate::kernel::common::matmul_params::MatMulParams;
     use crate::operators::expert::expert_routing::ExpertRouting;
-    use crate::runtime::sequence_slice::SequenceSlice;
+    use crate::runtime::scheduling::SequenceSlice;
     use crate::runtime::{BatchScheduler, Phase, SequenceState};
     use approx::assert_ulps_eq;
     use std::sync::atomic::Ordering;
@@ -540,6 +540,7 @@ mod test {
             sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
+            TOPK,
             TOPK,
             vec![VOCAB_SIZE - 1],
         ));
@@ -880,6 +881,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
+            TOPK,
             vec![VOCAB_SIZE - 1],
         ));
 
@@ -1097,6 +1099,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
             TOPK,
+            TOPK,
             vec![VOCAB_SIZE - 1],
         ));
 
@@ -1256,6 +1259,7 @@ mod test {
             sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
             SEQUENCE_LENGTH,
+            TOPK,
             TOPK,
             vec![VOCAB_SIZE - 1],
         ));
@@ -1429,6 +1433,7 @@ mod test {
             output_sequences.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
             sequence_length,
+            topk_size,
             topk_size,
             vec![eos_id],
         ));
@@ -1660,6 +1665,7 @@ mod test {
                 MR,
                 NR,
                 M,
+                thread_max,
                 TOPK,
             );
 
@@ -1756,6 +1762,7 @@ mod test {
                 MR,
                 NR,
                 M,
+                thread_max,
                 TOPK,
             );
 

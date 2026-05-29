@@ -84,6 +84,7 @@ fn main() -> anyhow::Result<()> {
         sequence_length,
         batch_size,
         top_k,
+        top_k,
         eos_ids.clone(),
     );
 

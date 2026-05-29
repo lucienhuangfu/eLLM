@@ -24,8 +24,6 @@ pub struct DecodeList {
 
 impl DecodeList {
     pub fn with_capacity(capacity: usize) -> Self {
-        // Preallocate the decode buffer to the batch size so each round can
-        // overwrite existing slots instead of growing the Vec.
         let mut slices = Vec::with_capacity(capacity);
         slices.resize(capacity, SequenceSlice::default());
         Self { slices, len: 0 }

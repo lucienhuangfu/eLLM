@@ -46,6 +46,7 @@ fn test_define_and_load_qwen3_06b() {
         sequence_length, // sequence_length
         batch_size,
         topk_size,
+        topk_size,
         vec![eos_id],
     );
 
@@ -104,6 +105,7 @@ fn test_define_and_load_qwen3_06b_f16() {
         sequence_length, // chunk_size
         sequence_length, // sequence_length
         batch_size,
+        topk_size,
         topk_size,
         vec![eos_id],
     );

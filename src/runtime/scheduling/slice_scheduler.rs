@@ -1,4 +1,4 @@
-use crate::runtime::sequence_slice::SequenceSlice;
+use crate::runtime::scheduling::sequence_slice::SequenceSlice;
 
 pub(super) struct FairTaskAllocator {
     task_count: usize,
@@ -181,7 +181,7 @@ pub(super) struct PrefillCandidate {
 #[cfg(test)]
 mod tests {
     use super::{FairTaskAllocator, SliceScheduler};
-    use crate::runtime::sequence_slice::SequenceSlice;
+    use crate::runtime::scheduling::sequence_slice::SequenceSlice;
 
     #[test]
     fn init_balances_a_long_run_across_tasks() {

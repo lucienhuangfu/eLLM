@@ -5,11 +5,11 @@ use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
+use crate::kernel;
 use crate::kernel::common::heap::FixedMinHeap;
 use crate::kernel::common::matmul_params::MatMulParams;
-use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::kernel;
 use crate::operators::assign::assign;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::MatMulTopKTrait;
 
 // Variable naming used in this operator:
@@ -44,7 +44,7 @@ pub struct MatMulTopK<T> {
 
     pub params: MatMulParams,
 
-    topk: usize,
+    topk_simd: usize,
     batch_max: usize,
 
     // Internal thread capacity used by scratch tiles and heaps.
@@ -95,7 +95,8 @@ where
         a_row_step_micro: usize,
         b_row_step_micro: usize,
         batch_max: usize,
-        topk: usize,
+        thread_num: usize,
+        topk_simd: usize,
     ) -> Self {
         let params = MatMulParams {
             a_row_step_macro,
@@ -112,7 +113,7 @@ where
 
         // Detect thread capacity once; run() only validates against it.
         // 只在 new() 中确定线程容量；run() 中只做校验。
-        let thread_max = Self::detect_threads();
+        let thread_max = thread_num;
 
         let reduction_block_cols = params.column_step_macro.max(1);
         let micro_tile_cols = b_row_step_micro.max(1);
@@ -133,8 +134,8 @@ where
 
         // Bind heaps directly to caller-provided output buffers.
         // heap 直接绑定到外部传入的输出 buffer。
-        let stride_thread = topk;
-        let stride_batch = thread_max * topk;
+        let stride_thread = topk_simd;
+        let stride_batch = thread_max * topk_simd;
 
         let mut heaps_vec: Vec<FixedMinHeap<T>> = Vec::with_capacity(batch_max * thread_max);
 
@@ -142,7 +143,7 @@ where
             for tid in 0..thread_max {
                 let values_base = value_ptr.add(b * stride_batch + tid * stride_thread);
                 let indices_base = indice_ptr.add(b * stride_batch + tid * stride_thread);
-                heaps_vec.push(FixedMinHeap::new(values_base, indices_base, topk));
+                heaps_vec.push(FixedMinHeap::new(values_base, indices_base, topk_simd));
             }
         }
 
@@ -157,7 +158,7 @@ where
             column: k_max,
 
             params,
-            topk,
+            topk_simd,
             batch_max,
             thread_max,
 
@@ -561,6 +562,7 @@ mod tests {
                 3,
                 32,
                 M,
+                thread_max,
                 TOPK,
             );
 
@@ -630,6 +632,7 @@ mod tests {
                 3,
                 32,
                 M,
+                thread_max,
                 TOPK,
             );
 
@@ -697,6 +700,7 @@ mod tests {
                 3,
                 32,
                 M,
+                thread_max,
                 TOPK,
             );
 
@@ -771,6 +775,7 @@ mod tests {
                 3,     // MR
                 32,    // NR
                 M_MAX, // batch_max (capacity)
+                thread_max,
                 TOPK,
             );
 

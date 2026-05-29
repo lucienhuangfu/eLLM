@@ -1,6 +1,6 @@
 #![feature(f16)]
 
-use ellm::runtime::model_loader::SafeTensorsLoader;
+use ellm::runtime::io::SafeTensorsLoader;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
@@ -12,10 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut worst_non_finite = 0usize;
 
     for (name, data) in &params {
-        let bad = data
-            .iter()
-            .filter(|v| !((**v as f32).is_finite()))
-            .count();
+        let bad = data.iter().filter(|v| !((**v as f32).is_finite())).count();
         if bad > worst_non_finite {
             worst_non_finite = bad;
             worst_name = name.clone();
