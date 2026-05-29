@@ -65,7 +65,7 @@ fn main() {
 
     let mut model = Model::<f16>::new(
         &config, position_vec, chunk_size, sequence_length,
-        batch_size, top_k, eos_ids,
+        batch_size, top_k, 1.0f16, 0.0f16, false, eos_ids,
     );
 
     let mut sequences = AlignedBox::allocate_init(sequence_length * batch_size, 0usize);

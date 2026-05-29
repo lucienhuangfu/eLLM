@@ -168,11 +168,13 @@ where
     pub fn topk_softmax(
         &self,
         indices_ptr: *const usize,
-        // sums_tensor: &Tensor<T>,
         output_sequences: *mut usize,
         batch_temperature: *mut T,
         sequence_stride: usize,
         num_topk: usize,
+        top_p: T,
+        min_p: T,
+        do_sample: bool,
         eos_ids: EosTokenIds,
         scope_name: String,
     ) -> (*const usize, Self) {
@@ -191,6 +193,9 @@ where
             batch_temperature,
             sequence_stride,
             num_topk,
+            top_p,
+            min_p,
+            do_sample,
             eos_ids,
         ));
 

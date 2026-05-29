@@ -1,5 +1,5 @@
 use std::f16;
-use std::ops::{AddAssign, Sub};
+use std::ops::{AddAssign, Div, Mul, Sub};
 use std::ptr;
 
 use crate::common::num_traits::Exp;
@@ -12,6 +12,7 @@ use crate::operators::assign::assign;
 use crate::operators::traits::TopKSoftmaxTrait;
 use crate::runtime::generation_config::EosTokenIds;
 use crate::runtime::{Phase, SequenceState};
+use rand::Rng;
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {
@@ -23,10 +24,25 @@ pub struct TopKSoftmax<T> {
     batch_temperature: MutPtr<T>,
     sequence_stride: usize,
     topk_size: usize,
+    top_p: T,
+    min_p: T,
+    do_sample: bool,
     eos_ids: EosTokenIds,
 }
 
-impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> TopKSoftmax<T> {
+impl<
+        T: Sqrt
+            + Exp
+            + Default
+            + AddAssign
+            + Div<Output = T>
+            + Mul<Output = T>
+            + Sub<Output = T>
+            + PartialOrd
+            + Copy
+            + FromNumber,
+    > TopKSoftmax<T>
+{
     pub fn new(
         input_indices_ptr: *const usize,
         input_values_ptr: *const T,
@@ -36,6 +52,9 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
         batch_temperature: *mut T,
         sequence_stride: usize,
         topk_size: usize,
+        top_p: T,
+        min_p: T,
+        do_sample: bool,
         eos_ids: EosTokenIds,
     ) -> Self {
         Self {
@@ -59,6 +78,9 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
             },
             sequence_stride,
             topk_size,
+            top_p,
+            min_p,
+            do_sample,
             eos_ids,
         }
     }
@@ -137,12 +159,11 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
                     self.topk_size,
                 );
 
-                let mut predict_token = *output_indices_ptr.add(output_stride);
-                let predict_value = *output_values_ptr.add(output_stride);
-                if predict_value != predict_value {
-                    predict_token = self.primary_eos_id();
-                    ptr::write(output_indices_ptr.add(output_stride), predict_token);
-                }
+                let predict_token = self.filter_and_sample(
+                    output_indices_ptr.add(output_stride),
+                    output_values_ptr.add(output_stride),
+                    self.topk_size,
+                );
                 let out_offset = batch_index * self.sequence_stride + write_sequence_index;
                 ptr::write(output_sequences_ptr.add(out_offset), predict_token);
 
@@ -163,8 +184,108 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> 
     fn is_eos(&self, token_id: usize) -> bool {
         self.eos_ids.contains(token_id)
     }
+
+    unsafe fn filter_and_sample(
+        &self,
+        output_indices_ptr: *mut usize,
+        output_values_ptr: *mut T,
+        len: usize,
+    ) -> usize {
+        if len == 0 {
+            return self.eos_ids.primary();
+        }
+
+        let zero = T::default();
+        let one = T::from_f32(1.0);
+        let top_p_enabled = self.top_p > zero && self.top_p < one;
+        let min_p_enabled = self.min_p > zero;
+
+        let max_prob = *output_values_ptr;
+        let min_prob_threshold = if min_p_enabled {
+            max_prob * self.min_p
+        } else {
+            zero
+        };
+
+        let mut kept_mass = zero;
+        for i in 0..len {
+            let prob = *output_values_ptr.add(i);
+            if prob >= min_prob_threshold {
+                kept_mass += prob;
+            } else {
+                ptr::write(output_values_ptr.add(i), zero);
+            }
+        }
+
+        if kept_mass <= zero {
+            ptr::write(output_values_ptr, one);
+            for i in 1..len {
+                ptr::write(output_values_ptr.add(i), zero);
+            }
+            return *output_indices_ptr;
+        }
+
+        let mut cutoff = len;
+        if top_p_enabled {
+            let target_mass = kept_mass * self.top_p;
+            let mut cumulative = zero;
+            for i in 0..len {
+                let prob = *output_values_ptr.add(i);
+                if prob <= zero {
+                    continue;
+                }
+                cumulative += prob;
+                if cumulative >= target_mass {
+                    cutoff = i + 1;
+                    break;
+                }
+            }
+            if cutoff == 0 {
+                cutoff = 1;
+            }
+        }
+
+        let mut selected_mass = zero;
+        for i in 0..cutoff {
+            selected_mass += *output_values_ptr.add(i);
+        }
+
+        if selected_mass <= zero {
+            ptr::write(output_values_ptr, one);
+            for i in 1..len {
+                ptr::write(output_values_ptr.add(i), zero);
+            }
+            return *output_indices_ptr;
+        }
+
+        let inv_mass = one / selected_mass;
+        for i in 0..len {
+            let prob = if i < cutoff {
+                *output_values_ptr.add(i) * inv_mass
+            } else {
+                zero
+            };
+            ptr::write(output_values_ptr.add(i), prob);
+        }
+
+        if !self.do_sample {
+            return *output_indices_ptr;
+        }
+
+        let mut rng = rand::thread_rng();
+        let sample = T::from_f32(rng.gen::<f32>());
+        let mut cumulative = zero;
+        for i in 0..cutoff {
+            cumulative += *output_values_ptr.add(i);
+            if sample <= cumulative || i + 1 == cutoff {
+                return *output_indices_ptr.add(i);
+            }
+        }
+
+        *output_indices_ptr
+    }
 }
-impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy + FromNumber> TopKSoftmaxTrait<T>
+impl<T: Sqrt + Exp + Default + AddAssign + Div<Output = T> + Mul<Output = T> + Sub<Output = T> + PartialOrd + Copy + FromNumber> TopKSoftmaxTrait<T>
     for TopKSoftmax<T>
 {
     default fn compute(
@@ -358,7 +479,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            EosTokenIds::single(eos_id),
+            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
         );
 
         for i in 0..thread_num {
@@ -457,7 +578,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            EosTokenIds::single(eos_id),
+            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
         );
 
         operator.run(1, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -512,7 +633,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            EosTokenIds::single(eos_id),
+            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
         );
 
         operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -569,7 +690,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            EosTokenIds::single(eos_id),
+            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
         );
 
         operator.run(0, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -631,7 +752,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            EosTokenIds::single(eos_id),
+            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
         );
 
         operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -684,7 +805,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            EosTokenIds::single(eos_id),
+            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
         );
 
         operator.run(2, 0, thread_num, 0, &[], &decode_list, &mut batch_list);
@@ -772,7 +893,7 @@ mod test {
             batch_temperature.as_mut_ptr(),
             sequence_length,
             topk_size,
-            EosTokenIds::single(eos_id),
+            1.0f32, 0.0f32, false, 1.0f16, 0.0f16, false, EosTokenIds::single(eos_id),
         );
 
         for i in 0..thread_num {

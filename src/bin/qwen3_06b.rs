@@ -82,10 +82,19 @@ fn main() {
         written_lengths.push(write_len);
     }
 
+    let top_k = gen_cfg.as_ref()
+        .and_then(|g| g.top_k).unwrap_or(1);
+    let top_p = gen_cfg.as_ref()
+        .and_then(|g| g.top_p).unwrap_or(1.0) as f32;
+    let min_p = gen_cfg.as_ref()
+        .and_then(|g| g.min_p).unwrap_or(0.0) as f32;
+    let do_sample = gen_cfg.as_ref()
+        .and_then(|g| g.do_sample).unwrap_or(false);
+
     println!("Building model graph...");
     let mut model = Model::<f16>::new(
         &config, position_vec, chunk_size, sequence_length,
-        batch_size, 1, eos_ids,
+        batch_size, top_k, top_p as f16, min_p as f16, do_sample, eos_ids,
     );
 
     let (_indices, _values) = model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
