@@ -1,6 +1,7 @@
 // === operators/experts/experts_merge_add.rs ===
 #![allow(non_snake_case)]
 
+use crate::kernel;
 use std::f16;
 use std::ops::{Add, Mul};
 use std::sync::atomic::Ordering;

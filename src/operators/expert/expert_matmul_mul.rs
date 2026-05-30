@@ -1,6 +1,7 @@
 // === compiler/mul/experts_matmul_mul.rs ===
 #![allow(non_snake_case)]
 
+use crate::kernel;
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
@@ -576,7 +577,7 @@ impl ExpertsDownTrait<f16> for ExpertMatMulDown<f16> {
         let micro_tile_rows = self.params.a_row_step_micro.max(1);
         let micro_tile_cols = self.params.b_row_step_micro.max(1);
 
-        let _call_param = MatMulParams {
+        let call_param = MatMulParams {
             // Map packed tile layout to the generic matmul kernel parameters.
             // 将 packed tile 的布局映射到通用 matmul kernel 参数。
             a_row_step_macro: reduction_block_cols,

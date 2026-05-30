@@ -24,7 +24,7 @@ use crate::operators::transform::{AddRMSZipMap, RMSMap};
 // use super::zip_map::complex_zip::ComplexZipMap;
 // use super::zip_map::silu_mul_zip::SiluMulZipMap;
 // use crate::kernel::common::matmul_params::MatMulParams;
-// use crate::common::send_sync_ptr::{ConstPtr, MutPtr};
+// use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 // use super::map::softmax_map::SoftmaxMap;
 // use super::reduce::argmax_reduce::ArgmaxReduce;
 
