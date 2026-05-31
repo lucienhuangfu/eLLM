@@ -7,6 +7,11 @@ use std::ops::{Add, Mul};
 use std::sync::atomic::Ordering;
 
 use crate::kernel::common::matmul_params::MatMulParams;
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+use std::arch::x86_64::{
+    _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_set1_ph, _mm512_storeu_ph,
+};
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
@@ -554,8 +559,22 @@ impl ExpertsSiluTrait<f16> for ExpertMatMulSilu<f16> {
     ) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            crate::kernel::x86_64::f16_512::moe_silu::moe_silu_update_3x32(
-                a_tile, gate_panel, up_panel, gate_acc, up_acc, kc,
+            let nr = 32usize;
+            // Map compact A tile layout: a_row_step_macro = lda = kc, b_row_step_macro = ldc_acc = 32
+            let call_param = MatMulParams {
+                a_row_step_macro: kc, // lda = kc (A tile stored compact, row stride = kc)
+                b_row_step_macro: nr, // ldc_acc = 32
+                column_step_macro: kc,
+                a_row_step_micro: 3,
+                b_row_step_micro: nr,
+            };
+            crate::kernel::x86_64::f16_512::fused_gate_up_silu_mul_block::fused_update_gate_up_acc_block(
+                a_tile,
+                gate_panel,
+                up_panel,
+                gate_acc,
+                up_acc,
+                &call_param,
             );
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
@@ -588,9 +607,18 @@ impl ExpertsSiluTrait<f16> for ExpertMatMulSilu<f16> {
     fn compute2(&self, gate_row: *const f16, up_row: *const f16, c_row: *mut f16) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            crate::kernel::x86_64::f16_512::moe_silu::moe_silu_finalize_row_32(
-                gate_row, up_row, c_row,
-            );
+            // SiLU(g) * u using AVX-512 FP16: load, compute sigmoid, multiply.
+            // Use the fused kernel that does sigmoid + silu + mul in one pass.
+            // Since this is a single-row finalize, we call the block finalize
+            // with a 1-row "block" — it only processes row 0 with stride 32.
+            let gate = _mm512_loadu_ph(gate_row);
+            let up = _mm512_loadu_ph(up_row);
+            // sigmoid(g) = 1 / (1 + exp(-g)). We approximate via g * sigmoid(g).
+            // Use the existing sigmoid512 kernel.
+            let s = crate::kernel::x86_64::f16_512::activation::sigmoid512(gate);
+            let silu_g = _mm512_mul_ph(gate, s);
+            let result = _mm512_mul_ph(silu_g, up);
+            _mm512_storeu_ph(c_row, result);
         }
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         unsafe {

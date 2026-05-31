@@ -3,11 +3,11 @@ use std::cell::SyncUnsafeCell;
 use std::ops::{AddAssign, Neg, Sub};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::Barrier;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::operators::operator::Operator;
+use crate::runtime::spin_barrier::SpinBarrier;
 
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
 use crate::runtime::BatchScheduler;
@@ -48,7 +48,16 @@ where
     }
 
     pub fn start(self) {
-        let core_ids = core_affinity::get_core_ids().unwrap_or_default();
+        let all_core_ids = core_affinity::get_core_ids().unwrap_or_default();
+        // Filter to physical cores only: skip hyperthread siblings to avoid
+        // AVX-512 execution-unit contention. 每个物理核只用一条超线程,
+        // 避免 AVX-512 执行单元竞争.
+        let core_ids: Vec<_> = all_core_ids
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 0)
+            .map(|(_, &id)| id)
+            .collect();
         let requested_thread_num = self.batch_scheduler.thread_num().max(1);
         let thread_num = if core_ids.is_empty() {
             requested_thread_num
@@ -58,7 +67,7 @@ where
 
         let operator_queue: Arc<[Operator<T>]> = self.operator_queue.into();
 
-        let barrier = Arc::new(Barrier::new(thread_num));
+        let barrier = Arc::new(SpinBarrier::new(thread_num));
         let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
         let shared_scheduler = Arc::new(SyncUnsafeCell::new(self.batch_scheduler));
         let stop_flag = self.stop_flag;
