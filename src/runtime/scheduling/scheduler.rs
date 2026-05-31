@@ -123,6 +123,18 @@ impl BatchScheduler {
         self.thread_num
     }
 
+    pub fn set_thread_num(&mut self, thread_num: usize) {
+        let thread_num = thread_num.max(1);
+        self.thread_num = thread_num;
+        if self.prefill_list.len() > thread_num {
+            self.prefill_list.truncate(thread_num);
+        } else {
+            self.prefill_list
+                .resize_with(thread_num, || Vec::with_capacity(self.max_decode_size));
+        }
+        self.prefill_scheduler.set_task_count(thread_num);
+    }
+
     fn schedule_decode_round(&mut self, decode_candidates: Vec<(usize, usize)>) -> usize {
         self.clear_round_outputs();
         let mut decode_count = 0usize;
@@ -270,6 +282,21 @@ mod tests {
         assert_eq!(slice.token_start_index, 0);
         assert_eq!(slice.length, 1);
         assert!(slice.last_token_flag);
+    }
+
+    #[test]
+    fn set_thread_num_resizes_prefill_work_lists() {
+        let mut scheduler = BatchScheduler::new(16, 4, 6);
+
+        scheduler.set_thread_num(3);
+
+        assert_eq!(scheduler.thread_num(), 3);
+        assert_eq!(scheduler.prefill_list.len(), 3);
+
+        scheduler.set_thread_num(5);
+
+        assert_eq!(scheduler.thread_num(), 5);
+        assert_eq!(scheduler.prefill_list.len(), 5);
     }
 
     #[test]

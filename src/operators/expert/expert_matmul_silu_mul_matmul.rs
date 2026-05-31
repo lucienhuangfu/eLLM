@@ -8,14 +8,14 @@ use std::sync::atomic::Ordering;
 
 use crate::kernel::common::matmul_params::MatMulParams;
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
-use std::arch::x86_64::{
-    _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_set1_ph, _mm512_storeu_ph,
-};
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::ExpertsSiluTrait;
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+use std::arch::x86_64::{
+    _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_set1_ph, _mm512_storeu_ph,
+};
 
 // Variable naming used in this operator:
 // - token_block_rows / token_block_start: routed-token macro block inside one expert.
@@ -456,18 +456,6 @@ where
 
                             let mut reduction_col_start = 0usize;
                             while reduction_col_start < reduction_cols {
-                                Self::pack_a_tile_mrkc(
-                                    input_base,
-                                    input_row_stride,
-                                    idx_buf,
-                                    token_offset_in_block,
-                                    valid_rows,
-                                    reduction_col_start,
-                                    reduction_block_cols,
-                                    a_tile,
-                                    micro_tile_rows,
-                                );
-
                                 let gate_panel = self.packed_panel_ptr(
                                     &self.packed_gate,
                                     expert_id,
@@ -481,14 +469,62 @@ where
                                     reduction_col_start,
                                 );
 
-                                self.compute1(
-                                    a_tile as *const T,
-                                    gate_panel,
-                                    up_panel,
-                                    gate_acc as *mut T,
-                                    up_acc as *mut T,
-                                    reduction_block_cols,
-                                );
+                                if valid_rows == 1 {
+                                    let token_id = *idx_buf.add(token_offset_in_block);
+                                    let input_row = input_base
+                                        .add(token_id * input_row_stride + reduction_col_start);
+                                    self.compute1_single(
+                                        input_row,
+                                        gate_panel,
+                                        up_panel,
+                                        gate_acc as *mut T,
+                                        up_acc as *mut T,
+                                        reduction_block_cols,
+                                    );
+                                } else if valid_rows < micro_tile_rows {
+                                    Self::pack_a_tile_mrkc(
+                                        input_base,
+                                        input_row_stride,
+                                        idx_buf,
+                                        token_offset_in_block,
+                                        valid_rows,
+                                        reduction_col_start,
+                                        reduction_block_cols,
+                                        a_tile,
+                                        micro_tile_rows,
+                                    );
+
+                                    self.compute1_rows(
+                                        a_tile as *const T,
+                                        gate_panel,
+                                        up_panel,
+                                        gate_acc as *mut T,
+                                        up_acc as *mut T,
+                                        reduction_block_cols,
+                                        valid_rows,
+                                    );
+                                } else {
+                                    Self::pack_a_tile_mrkc(
+                                        input_base,
+                                        input_row_stride,
+                                        idx_buf,
+                                        token_offset_in_block,
+                                        valid_rows,
+                                        reduction_col_start,
+                                        reduction_block_cols,
+                                        a_tile,
+                                        micro_tile_rows,
+                                    );
+
+                                    self.compute1(
+                                        a_tile as *const T,
+                                        gate_panel,
+                                        up_panel,
+                                        gate_acc as *mut T,
+                                        up_acc as *mut T,
+                                        reduction_block_cols,
+                                    );
+                                }
 
                                 reduction_col_start += reduction_block_cols;
                             }
@@ -541,6 +577,63 @@ where
     ) {
     }
 
+    default fn compute1_single(
+        &self,
+        input_row: *const T,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+    ) {
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            for col_in_tile in 0..micro_tile_cols {
+                let mut gate = *gate_acc.add(col_in_tile);
+                let mut up = *up_acc.add(col_in_tile);
+                for reduction_lane in 0..kc {
+                    let input = *input_row.add(reduction_lane);
+                    gate = gate
+                        + input * *gate_panel.add(reduction_lane * micro_tile_cols + col_in_tile);
+                    up = up + input * *up_panel.add(reduction_lane * micro_tile_cols + col_in_tile);
+                }
+                *gate_acc.add(col_in_tile) = gate;
+                *up_acc.add(col_in_tile) = up;
+            }
+        }
+    }
+
+    default fn compute1_rows(
+        &self,
+        a_tile: *const T,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+        rows: usize,
+    ) {
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            for row_in_tile in 0..rows {
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut gate = *gate_acc.add(row_in_tile * micro_tile_cols + col_in_tile);
+                    let mut up = *up_acc.add(row_in_tile * micro_tile_cols + col_in_tile);
+                    for reduction_lane in 0..kc {
+                        let input = *a_tile.add(row_in_tile * kc + reduction_lane);
+                        gate = gate
+                            + input
+                                * *gate_panel.add(reduction_lane * micro_tile_cols + col_in_tile);
+                        up = up
+                            + input * *up_panel.add(reduction_lane * micro_tile_cols + col_in_tile);
+                    }
+                    *gate_acc.add(row_in_tile * micro_tile_cols + col_in_tile) = gate;
+                    *up_acc.add(row_in_tile * micro_tile_cols + col_in_tile) = up;
+                }
+            }
+        }
+    }
+
     default fn compute2(&self, _gate_row: *const T, _up_row: *const T, _c_row: *mut T) {}
 }
 
@@ -590,6 +683,108 @@ impl ExpertsSiluTrait<f16> for ExpertMatMulSilu<f16> {
                     for reduction_lane in 0..reduction_block_cols {
                         let input =
                             *a_tile.add(row_in_tile * reduction_block_cols + reduction_lane) as f32;
+                        gate += input
+                            * (*gate_panel.add(reduction_lane * micro_tile_cols + col_in_tile)
+                                as f32);
+                        up += input
+                            * (*up_panel.add(reduction_lane * micro_tile_cols + col_in_tile)
+                                as f32);
+                    }
+                    *gate_acc.add(row_in_tile * micro_tile_cols + col_in_tile) = gate as f16;
+                    *up_acc.add(row_in_tile * micro_tile_cols + col_in_tile) = up as f16;
+                }
+            }
+        }
+    }
+
+    fn compute1_single(
+        &self,
+        input_row: *const f16,
+        gate_panel: *const f16,
+        up_panel: *const f16,
+        gate_acc: *mut f16,
+        up_acc: *mut f16,
+        kc: usize,
+    ) {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            let mut gate = _mm512_loadu_ph(gate_acc);
+            let mut up = _mm512_loadu_ph(up_acc);
+            for reduction_lane in 0..kc {
+                let a = _mm512_set1_ph(*input_row.add(reduction_lane));
+                let gate_w = _mm512_loadu_ph(gate_panel.add(reduction_lane * 32));
+                let up_w = _mm512_loadu_ph(up_panel.add(reduction_lane * 32));
+                gate = _mm512_fmadd_ph(a, gate_w, gate);
+                up = _mm512_fmadd_ph(a, up_w, up);
+            }
+            _mm512_storeu_ph(gate_acc, gate);
+            _mm512_storeu_ph(up_acc, up);
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            for col_in_tile in 0..micro_tile_cols {
+                let mut gate = *gate_acc.add(col_in_tile) as f32;
+                let mut up = *up_acc.add(col_in_tile) as f32;
+                for reduction_lane in 0..kc {
+                    let input = *input_row.add(reduction_lane) as f32;
+                    gate += input
+                        * (*gate_panel.add(reduction_lane * micro_tile_cols + col_in_tile) as f32);
+                    up += input
+                        * (*up_panel.add(reduction_lane * micro_tile_cols + col_in_tile) as f32);
+                }
+                *gate_acc.add(col_in_tile) = gate as f16;
+                *up_acc.add(col_in_tile) = up as f16;
+            }
+        }
+    }
+
+    fn compute1_rows(
+        &self,
+        a_tile: *const f16,
+        gate_panel: *const f16,
+        up_panel: *const f16,
+        gate_acc: *mut f16,
+        up_acc: *mut f16,
+        kc: usize,
+        rows: usize,
+    ) {
+        let nr = 32usize;
+        let call_param = MatMulParams {
+            a_row_step_macro: kc,
+            b_row_step_macro: nr,
+            column_step_macro: kc,
+            a_row_step_micro: rows,
+            b_row_step_micro: nr,
+        };
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            // Use matmul_block (mr <= 3 aware) instead of fused_update_gate_up_acc_block
+            // (which hardcodes 3 rows and debug_asserts a_row_step_micro == 3).
+            crate::kernel::x86_64::f16_512::matmul_block::matmul_block(
+                a_tile,
+                gate_panel,
+                gate_acc,
+                &call_param,
+            );
+            crate::kernel::x86_64::f16_512::matmul_block::matmul_block(
+                a_tile,
+                up_panel,
+                up_acc,
+                &call_param,
+            );
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            for row_in_tile in 0..rows {
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut gate =
+                        *gate_acc.add(row_in_tile * micro_tile_cols + col_in_tile) as f32;
+                    let mut up = *up_acc.add(row_in_tile * micro_tile_cols + col_in_tile) as f32;
+                    for reduction_lane in 0..kc {
+                        let input = *a_tile.add(row_in_tile * kc + reduction_lane) as f32;
                         gate += input
                             * (*gate_panel.add(reduction_lane * micro_tile_cols + col_in_tile)
                                 as f32);

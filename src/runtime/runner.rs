@@ -48,6 +48,11 @@ where
     }
 
     pub fn start(self) {
+        let ServingRunner {
+            operator_queue,
+            mut batch_scheduler,
+            stop_flag,
+        } = self;
         let all_core_ids = core_affinity::get_core_ids().unwrap_or_default();
         // Filter to physical cores only: skip hyperthread siblings to avoid
         // AVX-512 execution-unit contention. 每个物理核只用一条超线程,
@@ -58,19 +63,19 @@ where
             .filter(|(i, _)| i % 2 == 0)
             .map(|(_, &id)| id)
             .collect();
-        let requested_thread_num = self.batch_scheduler.thread_num().max(1);
+        let requested_thread_num = batch_scheduler.thread_num().max(1);
         let thread_num = if core_ids.is_empty() {
             requested_thread_num
         } else {
             requested_thread_num.min(core_ids.len()).max(1)
         };
+        batch_scheduler.set_thread_num(thread_num);
 
-        let operator_queue: Arc<[Operator<T>]> = self.operator_queue.into();
+        let operator_queue: Arc<[Operator<T>]> = operator_queue.into();
 
         let barrier = Arc::new(SpinBarrier::new(thread_num));
         let shared_sizes = Arc::new(SyncUnsafeCell::new((0usize, 0usize)));
-        let shared_scheduler = Arc::new(SyncUnsafeCell::new(self.batch_scheduler));
-        let stop_flag = self.stop_flag;
+        let shared_scheduler = Arc::new(SyncUnsafeCell::new(batch_scheduler));
         let profile_enabled = std::env::var_os("ELLM_PROFILE").is_some();
 
         let mut handles = Vec::with_capacity(thread_num);
