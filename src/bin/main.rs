@@ -170,6 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         do_sample,
         eos_token_id_list,
     );
+    model.set_thread_num(thread_num);
 
     let batch_temperature_ptr =
         batch_sequences.with_mut(|batch_sequence| batch_sequence.batch_temperature.as_mut_ptr());

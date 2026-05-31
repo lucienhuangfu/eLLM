@@ -2,7 +2,6 @@
 
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::batch_sequence::BatchSequence;
 use ellm::runtime::io::load_tiktoken;
 use ellm::runtime::io::ChatTemplate;
@@ -13,11 +12,20 @@ use ellm::runtime::{
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
+use std::env;
 use std::sync::Arc;
+
+fn parse_env_usize(name: &str, default: usize) -> usize {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
 
 fn main() {
     let batch_size = 3;
-    let max_output_tokens = 32;
+    let max_output_tokens = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 32);
     let model_dir = "models/Qwen3-0.6B";
 
     let config = Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
@@ -52,8 +60,8 @@ fn main() {
 
     let total_input: usize = all_input_lens.iter().sum();
     let max_input: usize = all_input_lens.iter().copied().max().unwrap();
-    let sequence_length = max_input + max_output_tokens + 64;
-    let chunk_size = total_input + batch_size * max_output_tokens + 64;
+    let sequence_length = max_input + max_output_tokens;
+    let chunk_size = total_input + batch_size * max_output_tokens;
 
     println!("max_input={max_input} total_input={total_input} seq_len={sequence_length} chunk={chunk_size}");
 
@@ -109,6 +117,19 @@ fn main() {
     let top_p = gen_cfg.as_ref().and_then(|g| g.top_p).unwrap_or(1.0) as f32;
     let min_p: f32 = 0.0;
     let do_sample = gen_cfg.as_ref().and_then(|g| g.do_sample).unwrap_or(false);
+    let core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    let requested_thread_num = parse_env_usize(
+        "ELLM_THREAD_NUM",
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1),
+    );
+    let thread_num = if core_ids.is_empty() {
+        requested_thread_num
+    } else {
+        requested_thread_num.min(core_ids.len()).max(1)
+    };
+    println!("Threads: {thread_num}");
 
     println!("Building model graph...");
     let mut model = Model::<f16>::with_sampling(
@@ -124,13 +145,9 @@ fn main() {
         do_sample,
         eos_ids,
     );
-
+    model.set_thread_num(thread_num);
     let (_indices, _values) =
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
-
-    let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    let thread_num = core_ids.len().max(1);
-    println!("Threads: {thread_num}");
 
     let batch_list: Vec<SequenceState> = written_lengths
         .iter()
@@ -161,12 +178,9 @@ fn main() {
     batch_list_ref.with(|list| {
         for (slot, record) in list.iter().enumerate() {
             let input_len = written_lengths[slot];
-            let gen_end = record
-                .kv_index
-                .min(input_len + 32.min(sequence_length - input_len));
+            let actual_gen_len = record.kv_index.saturating_sub(input_len);
+            let gen_end = record.kv_index.min(sequence_length);
             let gen_len = gen_end.saturating_sub(input_len);
-            let text_short = batch_seq.decode_token_span(slot, input_len, gen_end);
-            let ids = batch_seq.token_ids(slot, input_len, gen_end.min(input_len + 5));
             let ids: Vec<u32> = (input_len..gen_end)
                 .map(|i| unsafe { *sequences_ptr.add(slot * sequence_length + i) as u32 })
                 .collect();
@@ -175,7 +189,11 @@ fn main() {
                 .iter()
                 .filter_map(|&tid| tokenizer.decode(vec![tid]).ok())
                 .collect();
-            println!("Slot {slot} [{p}]: {gen_len} tokens", p = prompts[slot]);
+            println!(
+                "Slot {slot} [{p}]: {gen_len} displayed tokens, actual_gen_len={actual_gen_len}, phase={phase:?}",
+                p = prompts[slot],
+                phase = record.phase
+            );
             println!("  {full_text:?}");
             println!();
         }

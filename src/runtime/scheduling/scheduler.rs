@@ -119,6 +119,10 @@ impl BatchScheduler {
         Self::build(sequence_length, batch_size, chunk_size, thread_num)
     }
 
+    pub fn thread_num(&self) -> usize {
+        self.thread_num
+    }
+
     fn schedule_decode_round(&mut self, decode_candidates: Vec<(usize, usize)>) -> usize {
         self.clear_round_outputs();
         let mut decode_count = 0usize;

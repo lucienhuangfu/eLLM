@@ -789,6 +789,42 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
         head_dim: usize,
     ) {
         unsafe {
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+            {
+                use std::arch::x86_64::{
+                    _mm512_fmadd_ph, _mm512_set1_ph, _mm512_setzero_ph, _mm512_storeu_ph,
+                };
+
+                for head_col in (0..head_dim).step_by(micro_tile_cols) {
+                    let output_panel = head_output_panel + head_col / micro_tile_cols;
+                    let mut acc = _mm512_setzero_ph();
+                    let mut reduction_col_start = 0usize;
+                    while reduction_col_start < reduction_cols {
+                        let reduction_cols_this =
+                            reduction_block_cols.min(reduction_cols - reduction_col_start);
+                        let reduction_panel = reduction_col_start / reduction_block_cols;
+                        let weight_panel = packed_b.add(
+                            (reduction_panel * output_panel_count + output_panel)
+                                * reduction_block_cols
+                                * micro_tile_cols,
+                        );
+                        for reduction_lane in 0..reduction_cols_this {
+                            let input_value =
+                                _mm512_set1_ph(*a_row.add(reduction_col_start + reduction_lane));
+                            let weight = std::arch::x86_64::_mm512_loadu_ph(
+                                weight_panel.add(reduction_lane * micro_tile_cols),
+                            );
+                            acc = _mm512_fmadd_ph(input_value, weight, acc);
+                        }
+                        reduction_col_start += reduction_cols_this;
+                    }
+
+                    _mm512_storeu_ph(dst_head.add(head_col), acc);
+                }
+            }
+
+            #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+            {
             for head_col in (0..head_dim).step_by(micro_tile_cols) {
                 let output_panel = head_output_panel + head_col / micro_tile_cols;
                 let mut acc = [0.0f32; 32];
@@ -816,6 +852,7 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
                 for output_lane in 0..micro_tile_cols {
                     *dst_head.add(head_col + output_lane) = acc[output_lane] as f16;
                 }
+            }
             }
         }
     }

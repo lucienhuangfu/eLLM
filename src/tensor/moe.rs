@@ -301,6 +301,7 @@ where
         eos_ids: Vec<usize>,
         scope_name: String,
     ) -> (*const usize, Self) {
+        let input_thread_capacity = self.shape[1].checked_div(input_top_k).unwrap_or(0).max(1);
         let output_shape = vec![self.shape[0], num_topk];
         let indice_ptr = leaked_aligned_ptr(output_shape.iter().product(), 0usize);
 
@@ -321,7 +322,8 @@ where
             min_p,
             do_sample,
             eos_ids,
-        ));
+        )
+        .with_input_thread_capacity(input_thread_capacity));
 
         Self::enqueue(operator);
         (indice_ptr, value_tensor)
