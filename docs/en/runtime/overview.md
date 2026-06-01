@@ -114,13 +114,15 @@ classDiagram
 | Component | Responsibility | File Location |
 |-----------|---------------|---------------|
 | `BatchScheduler` | Generate prefill/decode slices | `scheduling/scheduler.rs` |
-| `SliceScheduler` | Static allocation for prefill slices | `scheduling/slice_scheduler.rs` |
-| `ServingRunner` | Thread pool executor | `runner.rs` |
-| `SequenceState` | Batch slot state | `scheduling/state.rs` |
+| `SliceScheduler` | Distribute prefill tokens across threads | `scheduling/slice_scheduler.rs` |
+| `TokenCounter` | Count tokens and trigger scheduling | `scheduling/token_counter.rs` |
+| `ServingRunner` | Broadcast-subscribed thread pool executor | `runner.rs` |
+| `SequenceState` | Batch slot state | `scheduling/types.rs` |
 | `SequenceSlice` | Minimal computation unit | `scheduling/sequence_slice.rs` |
+| `ScheduleTask` | Scheduling task carrier | `scheduling/types.rs` |
 | `BatchSequence` | Prompt writing & result decoding | `batch_sequence.rs` |
-| `ChatTemplate` | Chat template rendering | `chat_template.rs` |
-| `TokenizerLoader` | Tokenizer loading | `tokenizer_loader.rs` |
+| `ChatTemplate` | Chat template rendering | `io/chat_template.rs` |
+| `TokenizerLoader` | Tokenizer loading | `io/tokenizer_loader.rs` |
 
 ---
 
@@ -173,16 +175,22 @@ stateDiagram-v2
 ```
 src/runtime/
 ├── scheduling/
+│   ├── mod.rs                # Scheduling submodule entry and re-exports
 │   ├── scheduler.rs          # BatchScheduler implementation
+│   ├── token_counter.rs      # TokenCounter implementation
+│   ├── types.rs              # ScheduleTask, SequenceState, Phase definitions
 │   ├── slice_scheduler.rs    # SliceScheduler implementation
-│   ├── state.rs              # SequenceState, Phase definitions
-│   └── sequence_slice.rs     # SequenceSlice, DecodeList definitions
+│   ├── sequence_slice.rs     # SequenceSlice, DecodeList definitions
+│   └── initialization.rs     # build_batch_sequence, build_sequence_state helpers
 ├── batch_sequence.rs         # BatchSequence implementation
-├── chat_template.rs          # ChatTemplate implementation
-├── tokenizer_loader.rs       # Tokenizer loading
-├── operator.rs               # Operator trait
+├── io/
+│   ├── mod.rs                # IO submodule entry
+│   ├── chat_template.rs      # ChatTemplate implementation
+│   ├── tokenizer_loader.rs   # Tokenizer loading (load_tiktoken)
+│   ├── safetensors_loader.rs # Weight loading (SafeTensorsLoader)
+│   └── from_safetensors.rs   # FromSafetensors trait (type conversion)
 ├── runner.rs                 # ServingRunner implementation
-└── mod.rs                    # Module exports
+└── mod.rs                    # Module exports and compatibility aliases
 ```
 
 ---

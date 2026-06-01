@@ -2,8 +2,8 @@ use std::sync::Arc;
 use tiktoken_rs::CoreBPE;
 
 use crate::num_traits::FromNumber;
-use crate::runtime::io::ChatTemplate;
 use crate::runtime::io::load_tiktoken;
+use crate::runtime::io::ChatTemplate;
 use crate::runtime::SequenceState;
 
 pub struct BatchSequence<T> {
@@ -29,14 +29,15 @@ where
     ) -> Result<Self, String> {
         let tokenizer =
             load_tiktoken(tokenizer_json_path, tokenizer_config_json_path).map(Arc::new)?;
-        let chat_template = ChatTemplate::from_model_files(chat_template_path, tokenizer_config_json_path)
-            .map(Arc::new)
-            .map_err(|e| {
-                format!(
-                    "Unable to load chat template from {} or {}: {}",
-                    chat_template_path, tokenizer_config_json_path, e
-                )
-            })?;
+        let chat_template =
+            ChatTemplate::from_model_files(chat_template_path, tokenizer_config_json_path)
+                .map(Arc::new)
+                .map_err(|e| {
+                    format!(
+                        "Unable to load chat template from {} or {}: {}",
+                        chat_template_path, tokenizer_config_json_path, e
+                    )
+                })?;
 
         Ok(Self {
             sequences,
@@ -83,6 +84,20 @@ where
         let sequence_index = record.sequence_index;
         let kv_index = record.kv_index;
         self.decode_token_span(slot_index, sequence_index, kv_index)
+    }
+
+    /// Decode a single token at `token_index` within the given slot.
+    /// Returns `None` if the index is out of bounds.
+    pub fn decode_single_token(&self, slot_index: usize, token_index: usize) -> Option<String> {
+        let ids = self.token_ids(slot_index, token_index, token_index + 1);
+        if ids.is_empty() {
+            return None;
+        }
+        Some(
+            self.tokenizer
+                .decode(ids)
+                .unwrap_or_else(|_| String::from("?")),
+        )
     }
 
     pub fn decode_token_span(&self, slot_index: usize, begin: usize, end: usize) -> String {

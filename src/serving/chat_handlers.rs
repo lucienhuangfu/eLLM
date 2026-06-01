@@ -35,29 +35,11 @@ pub(super) async fn chat_completions(
     let is_stream = request.stream.unwrap_or(false);
     let model = request.model;
 
-    let (slot_index, notifier) =
+    let (slot_index, notifier, prompt_len) =
         match assign_slot_with_messages(&state, &request.messages, request.temperature).await {
             Ok(slot) => slot,
             Err(response) => return response,
         };
-
-    #[cfg(debug_assertions)]
-    println!(
-        "开始等待推理处理请求: {}, Slot: {}, 模式: {}",
-        request_id,
-        slot_index,
-        if is_stream { "流式" } else { "同步" }
-    );
-
-    notifier.notified().await;
-
-    let generated_text = state.batch_states.with(|batch_list| {
-        let record = &batch_list[slot_index];
-        state
-            .batch_sequences
-            .with(|batch_sequences| batch_sequences.decode_generated_text(slot_index, record))
-    });
-    reclaim_slot(&state, slot_index, true).await;
 
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -65,19 +47,35 @@ pub(super) async fn chat_completions(
         .as_secs();
 
     if is_stream {
-        build_stream_response(request_id, model, created, generated_text)
+        build_stream_response(
+            state, slot_index, notifier, prompt_len, request_id, model, created,
+        )
     } else {
+        // Non-streaming: wait for the single EOS notification, then decode all
+        // generated tokens at once.
+        notifier.notified().await;
+
+        let generated_text = state.batch_states.with(|batch_list| {
+            let record = &batch_list[slot_index];
+            state
+                .batch_sequences
+                .with(|batch_sequences| batch_sequences.decode_generated_text(slot_index, record))
+        });
+        reclaim_slot(&state, slot_index, true).await;
+
         #[cfg(debug_assertions)]
         println!("同步推理完成: id={}", request_id);
+
         build_non_stream_response(request_id, model, created, generated_text)
     }
 }
 
+/// Returns `(slot_index, notifier, prompt_len)`.
 async fn assign_slot_with_messages(
     state: &ApiState,
     messages: &[ChatMessage],
     temperature: Option<f32>,
-) -> Result<(usize, Arc<Notify>), axum::response::Response> {
+) -> Result<(usize, Arc<Notify>, usize), axum::response::Response> {
     let permit = state
         .available_slots
         .clone()
@@ -137,7 +135,7 @@ async fn assign_slot_with_messages(
 
     permit.forget();
     state.token_counter.increment(write_len).await;
-    Ok((slot_index, notifier))
+    Ok((slot_index, notifier, write_len))
 }
 
 async fn reclaim_slot(state: &ApiState, slot_index: usize, release_permit: bool) {
@@ -159,16 +157,39 @@ async fn reclaim_slot(state: &ApiState, slot_index: usize, release_permit: bool)
     }
 }
 
+/// True incremental streaming: each `notify_one()` from `TopKSoftmax`
+/// corresponds to one decoded token. We read `record.sequence_index` (the
+/// position just written) after every wake-up, decode that single token, and
+/// push it as an SSE chunk immediately. When `phase == Eos` we emit the final
+/// chunk with `finish_reason: "stop"` and close the stream.
 fn build_stream_response(
+    state: ApiState,
+    slot_index: usize,
+    notifier: Arc<Notify>,
+    _prompt_len: usize,
     request_id: String,
     model: String,
     created: u64,
-    generated_text: String,
 ) -> axum::response::Response {
-    let stream_response = stream! {
-        let mut words = generated_text.split_inclusive(' ').peekable();
-        while let Some(word) = words.next() {
-            let is_final = words.peek().is_none();
+    let stream_body = stream! {
+        loop {
+            notifier.notified().await;
+
+            // Read the token position and phase written by TopKSoftmax.
+            let (token_index, phase) = state.batch_states.with(|batch_list| {
+                let record = &batch_list[slot_index];
+                (record.sequence_index, record.phase)
+            });
+
+            // Decode the single token at token_index.
+            let text = state.batch_sequences.with(|batch_sequences| {
+                batch_sequences
+                    .decode_single_token(slot_index, token_index)
+                    .unwrap_or_default()
+            });
+
+            let is_eos = matches!(phase, Phase::Eos);
+
             let response = StreamResponse {
                 id: request_id.clone(),
                 object: "chat.completion.chunk".to_string(),
@@ -178,19 +199,25 @@ fn build_stream_response(
                     index: 0,
                     delta: ChatMessage {
                         role: "assistant".to_string(),
-                        content: word.to_string(),
+                        content: text,
                     },
-                    finish_reason: is_final.then(|| "stop".to_string()),
+                    finish_reason: is_eos.then(|| "stop".to_string()),
                 }],
             };
 
             if let Ok(json) = serde_json::to_string(&response) {
                 yield Ok::<Event, axum::Error>(Event::default().data(json));
             }
+
+            if is_eos {
+                break;
+            }
         }
+
+        reclaim_slot(&state, slot_index, true).await;
     };
 
-    Sse::new(stream_response).into_response()
+    Sse::new(stream_body).into_response()
 }
 
 fn build_non_stream_response(

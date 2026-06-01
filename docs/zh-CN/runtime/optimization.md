@@ -13,13 +13,14 @@
 
 ## 1. 可调参数
 
-| 参数 | 默认值 | 建议范围 | 说明 |
-|------|--------|----------|------|
-| `chunk_size` | 256 | 64-1024 | 批处理 chunk 大小，作为 `token_threshold` 的传入值 |
-| `schedule_timeout_ms` | 10 | 5-50 | 超时时间（毫秒） |
-| `max_batch_size` | 8 | 4-32 | 最大批处理大小 |
-| `runner_count` | CPU 核心数 | 1-CPU核心数 | Runner 任务数量 |
-| `broadcast_capacity` | 64 | 32-256 | Broadcast channel 容量 |
+所有参数均通过环境变量配置，在 `ServingConfig::new()` 中读取，值为 0 时回退到默认值。
+
+| 参数 | 环境变量 | 默认值 | 建议范围 | 说明 |
+|------|----------|--------|----------|------|
+| `batch_size` | `ELLM_BATCH_SIZE` | 3 | 1-32 | 最大并发请求数（batch 槽位数） |
+| `sequence_length` | `ELLM_SEQUENCE_LENGTH` | 128 | 64-4096 | 每个槽位的最大 token 序列长度 |
+| `chunk_size` | `ELLM_CHUNK_SIZE` | 64 | 32-1024 | Prefill 每轮最大 token 数，同时作为 `token_threshold` |
+| `schedule_timeout_ms` | `ELLM_SCHEDULE_TIMEOUT_MS` | 10 | 5-50 | 超时触发调度的时间窗口（毫秒） |
 
 ---
 
@@ -27,10 +28,11 @@
 
 | 场景 | 策略 |
 |------|------|
-| **低延迟** | 降低 `chunk_size`（传入更小的 `token_threshold`），提高响应性 |
-| **高吞吐** | 提高 `chunk_size`（传入更大的 `token_threshold`），增加批处理效率 |
-| **波动流量** | 设置较小的 `schedule_timeout_ms` |
-| **计算密集** | `runner_count` 设为 CPU 核心数 |
+| **低延迟** | 降低 `ELLM_CHUNK_SIZE`，减少每轮 prefill token 数，提高响应性 |
+| **高吞吐** | 提高 `ELLM_CHUNK_SIZE`，增加批处理效率；同时适当增大 `ELLM_BATCH_SIZE` |
+| **长上下文** | 增大 `ELLM_SEQUENCE_LENGTH`，注意内存占用随之线性增长 |
+| **波动流量** | 设置较小的 `ELLM_SCHEDULE_TIMEOUT_MS`，保证低流量时的调度延迟 |
+| **计算密集** | `runner_count` 由 `determine_thread_config()` 自动设为 CPU 核心数减 2（async 线程） |
 
 ---
 
@@ -65,14 +67,30 @@ flowchart TD
 src/
 ├── runtime/
 │   ├── scheduling/
-│   │   ├── scheduler.rs      # BatchScheduler + TokenCounter
-│   │   └── state.rs          # SequenceState 定义
-│   ├── runner.rs             # ServingRunner (Tokio 任务)
-│   └── mod.rs                # Runtime 模块入口
+│   │   ├── mod.rs            # 调度子模块入口
+│   │   ├── scheduler.rs      # BatchScheduler 实现
+│   │   ├── token_counter.rs  # TokenCounter 实现
+│   │   ├── types.rs          # SequenceState、Phase、ScheduleTask 定义
+│   │   ├── slice_scheduler.rs # SliceScheduler 实现
+│   │   ├── sequence_slice.rs # SequenceSlice、DecodeList 定义
+│   │   └── initialization.rs # build_batch_sequence、build_sequence_state
+│   ├── io/
+│   │   ├── mod.rs            # IO 子模块入口
+│   │   ├── chat_template.rs  # ChatTemplate 实现
+│   │   ├── tokenizer_loader.rs # load_tiktoken
+│   │   ├── safetensors_loader.rs # SafeTensorsLoader
+│   │   └── from_safetensors.rs # FromSafetensors trait
+│   ├── batch_sequence.rs     # BatchSequence 实现
+│   ├── runner.rs             # ServingRunner 实现
+│   └── mod.rs                # Runtime 模块入口与重导出
 ├── serving/
-│   ├── handlers.rs           # chat_completions Handler
-│   ├── bootstrap.rs          # AppState 初始化
-│   └── types.rs              # 请求/响应类型
+│   ├── mod.rs                # HTTP 服务器入口、路由、API 数据结构
+│   ├── config.rs             # ServingConfig（环境变量读取）
+│   ├── model.rs              # 模型初始化与前向推理封装
+│   ├── model_setup.rs        # 模型加载、参数提取、线程配置
+│   ├── resources.rs          # ServingResources 整合初始化
+│   ├── scheduler.rs          # 调度组件创建（BatchScheduler + TokenCounter）
+│   └── chat_handlers.rs      # chat_completions HTTP handler
 └── main.rs                   # Tokio Runtime 启动
 ```
 

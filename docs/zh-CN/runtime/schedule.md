@@ -287,7 +287,7 @@ flowchart TD
 
 | 方法 | 功能 | 参数 | 返回值 |
 |------|------|------|--------|
-| `new(threshold, timeout, sender)` | 构造函数 | threshold=chunk_size、超时、sender | `TokenCounter` |
+| `new(threshold, timeout, scheduler, sender)` | 构造函数 | threshold=chunk_size、超时、BatchScheduler、sender | `TokenCounter` |
 | `increment(count)` | 增加计数 | token 数量 | `bool` (是否触发调度) |
 | `reset()` | 重置计数 | 无 | `()` |
 | `get()` | 获取当前值 | 无 | `usize` |
@@ -297,15 +297,12 @@ flowchart TD
 
 ```rust
 impl TokenCounter {
-    pub async fn run(&self) {
+    pub async fn run(self: Arc<Self>) {
         let mut interval = tokio::time::interval(self.timeout);
         loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    if self.current_tokens.load(Ordering::Relaxed) > 0 {
-                        self.trigger_schedule().await;
-                    }
-                }
+            interval.tick().await;
+            if self.get() > 0 {
+                self.trigger_schedule().await;
             }
         }
     }
@@ -317,8 +314,8 @@ impl TokenCounter {
 | 要点 | 说明 |
 |------|------|
 | `tokio::time::interval` | 创建 Tokio 定时器，非阻塞异步等待 |
-| `interval.tick()` | 每次超时触发 |
-| `current_tokens > 0` | 确保有时间窗口内有待处理请求才调度 |
+| `interval.tick().await` | 每次超时触发，直接 await 而非 select! |
+| `self.get() > 0` | 确保有时间窗口内有待处理请求才调度 |
 | `trigger_schedule()` | 触发调度并重置计数器 |
 
 ---

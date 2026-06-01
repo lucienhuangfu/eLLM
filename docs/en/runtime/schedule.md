@@ -287,7 +287,7 @@ flowchart TD
 
 | Method | Function | Parameters | Return |
 |--------|----------|------------|--------|
-| `new(threshold, timeout, sender)` | Constructor | threshold=chunk_size, timeout, sender | `TokenCounter` |
+| `new(threshold, timeout, scheduler, sender)` | Constructor | threshold=chunk_size, timeout, BatchScheduler, sender | `TokenCounter` |
 | `increment(count)` | Increment counter | token count | `bool` (whether to trigger) |
 | `reset()` | Reset counter | None | `()` |
 | `get()` | Get current value | None | `usize` |
@@ -297,15 +297,12 @@ flowchart TD
 
 ```rust
 impl TokenCounter {
-    pub async fn run(&self) {
+    pub async fn run(self: Arc<Self>) {
         let mut interval = tokio::time::interval(self.timeout);
         loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    if self.current_tokens.load(Ordering::Relaxed) > 0 {
-                        self.trigger_schedule().await;
-                    }
-                }
+            interval.tick().await;
+            if self.get() > 0 {
+                self.trigger_schedule().await;
             }
         }
     }
@@ -317,8 +314,8 @@ impl TokenCounter {
 | Point | Description |
 |-------|-------------|
 | `tokio::time::interval` | Create Tokio timer, non-blocking async wait |
-| `interval.tick()` | Trigger on each timeout |
-| `current_tokens > 0` | Ensure there are pending requests in the time window before scheduling |
+| `interval.tick().await` | Trigger on each timeout, direct await without select! |
+| `self.get() > 0` | Ensure there are pending requests in the time window before scheduling |
 | `trigger_schedule()` | Trigger scheduling and reset counter |
 
 ---

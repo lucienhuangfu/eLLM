@@ -192,8 +192,10 @@ impl<
 
                 if self.eos_ids.contains(&predict_token) {
                     record.phase = Phase::Eos;
-                    record.notify.notify_one();
                 }
+                // Notify after every decoded token (including EOS) so that
+                // streaming handlers can read the token immediately.
+                record.notify.notify_one();
             }
         }
     }

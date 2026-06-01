@@ -21,7 +21,6 @@ pub struct SequenceState {
     pub phase: Phase,
     pub notify: Arc<Notify>,
 }
-
 #[derive(Clone, Debug)]
 pub struct ScheduleTask {
     pub prefill_size: usize,

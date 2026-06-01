@@ -198,12 +198,12 @@ classDiagram
 | `BatchScheduler` | 生成本轮 prefill/decode 切片 | `scheduling/scheduler.rs` |
 | `TokenCounter` | 统计 token 并触发调度 | `scheduling/token_counter.rs` |
 | `ServingRunner` | 广播订阅式线程池执行器 | `runner.rs` |
-| `SequenceState` | Batch 槽位状态 | `scheduling/state.rs` |
+| `SequenceState` | Batch 槽位状态 | `scheduling/types.rs` |
 | `SequenceSlice` | 最小计算单元 | `scheduling/sequence_slice.rs` |
-| `ScheduleTask` | 调度任务载体 | `scheduling/task.rs` |
+| `ScheduleTask` | 调度任务载体 | `scheduling/types.rs` |
 | `BatchSequence` | Prompt 写入与结果解码 | `batch_sequence.rs` |
-| `ChatTemplate` | 聊天模板渲染 | `chat_template.rs` |
-| `TokenizerLoader` | Tokenizer 加载 | `tokenizer_loader.rs` |
+| `ChatTemplate` | 聊天模板渲染 | `io/chat_template.rs` |
+| `TokenizerLoader` | Tokenizer 加载 | `io/tokenizer_loader.rs` |
 
 ---
 
@@ -257,19 +257,22 @@ stateDiagram-v2
 ```
 src/runtime/
 ├── scheduling/
+│   ├── mod.rs                # 调度子模块入口与重导出
 │   ├── scheduler.rs          # BatchScheduler 实现
 │   ├── token_counter.rs      # TokenCounter 实现
-│   ├── task.rs               # ScheduleTask 定义
+│   ├── types.rs              # ScheduleTask、SequenceState、Phase 定义
 │   ├── slice_scheduler.rs    # SliceScheduler 实现
-│   ├── state.rs              # SequenceState, Phase 定义
-│   └── sequence_slice.rs     # SequenceSlice, DecodeList 定义
+│   ├── sequence_slice.rs     # SequenceSlice、DecodeList 定义
+│   └── initialization.rs     # build_batch_sequence、build_sequence_state 辅助函数
 ├── batch_sequence.rs         # BatchSequence 实现
 ├── io/
+│   ├── mod.rs                # IO 子模块入口
 │   ├── chat_template.rs      # ChatTemplate 实现
-│   ├── tokenizer_loader.rs   # Tokenizer 加载
-│   └── safetensors_loader.rs # 权重读取
+│   ├── tokenizer_loader.rs   # Tokenizer 加载（load_tiktoken）
+│   ├── safetensors_loader.rs # 权重读取（SafeTensorsLoader）
+│   └── from_safetensors.rs   # FromSafetensors trait（类型转换）
 ├── runner.rs                 # ServingRunner 实现
-└── mod.rs                    # 模块导出
+└── mod.rs                    # 模块导出与兼容别名
 ```
 
 ---

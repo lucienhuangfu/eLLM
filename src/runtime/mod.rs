@@ -67,11 +67,8 @@ mod tests {
         };
         let scheduler = BatchScheduler::new(8, 2, 1);
         let (sender, _) = broadcast::channel(4);
-        let runner = ServingRunner::<f32>::new(
-            Vec::new(),
-            Arc::clone(&scheduler.batch_list),
-            sender,
-        );
+        let runner =
+            ServingRunner::<f32>::new(Vec::new(), Arc::clone(&scheduler.batch_list), sender);
 
         assert_eq!(prefill_state.sequence_index, 8);
         assert_eq!(prefill_state.kv_index, 12);
