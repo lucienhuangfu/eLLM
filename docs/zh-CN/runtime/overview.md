@@ -6,9 +6,10 @@
 
 1. [模块定位](#1-模块定位)
 2. [架构层次](#2-架构层次)
-3. [核心组件](#3-核心组件)
-4. [数据流](#4-数据流)
-5. [文件结构](#5-文件结构)
+3. [线程管理](#3-线程管理)
+4. [核心组件](#4-核心组件)
+5. [数据流](#5-数据流)
+6. [文件结构](#6-文件结构)
 
 ---
 
@@ -59,9 +60,76 @@ flowchart TB
 
 ---
 
-## 3. 核心组件
+## 3. 线程管理
 
-### 3.1 组件关系
+eLLM Runtime 的所有线程均由 **Tokio 异步运行时**统一管理，实现高效的并发执行和资源调度。
+
+### 3.1 线程架构
+
+```mermaid
+flowchart TB
+    subgraph Tokio Runtime
+        subgraph Serving Layer
+            A[HTTP Workers]
+            A1[HTTP Workers]
+            An[HTTP Workers]
+        end
+
+        subgraph Scheduling Layer
+            B[TokenCounter Task]
+            C[BatchScheduler]
+        end
+
+        subgraph Execution Layer
+            D[ServingRunner]
+            D1[ServingRunner]
+            Dn[ServingRunner]
+        end
+
+        subgraph Shared State
+            E[(AtomicUsize)]
+            F[(Arc<SharedMut>)]
+        end
+    end
+
+    A --> B
+    A1 --> B
+    An --> B
+    B --> C
+    C --> D
+    C --> D1
+    C --> Dn
+```
+
+### 3.2 线程划分
+
+| 层级 | 线程类型 | 数量 | 职责说明 |
+|------|----------|------|----------|
+| **Serving** | HTTP Workers | 多个 | 并发处理客户端请求，接收 chat_completions 请求 |
+| **Scheduling** | Tokio Task | 1 | `TokenCounter` 异步运行，管理调度触发逻辑 |
+| **Execution** | Tokio Tasks | CPU 核心数 | `ServingRunner` 并行执行算子队列 |
+
+### 3.3 Tokio 核心组件
+
+| 组件 | 作用 | 使用场景 |
+|------|------|----------|
+| `tokio::time::interval` | 非阻塞定时器 | 超时触发调度 |
+| `tokio::sync::broadcast` | 一对多任务推送 | 同步通知所有 Runner |
+| `tokio::sync::Barrier` | 多任务同步 | Runner 并行执行协调 |
+| `tokio::select!` | 异步事件多路复用 | 事件驱动调度 |
+
+### 3.4 设计特点
+
+- **异步优先**：所有组件基于 Tokio 异步模型，避免阻塞线程
+- **事件驱动**：通过 token 阈值和时间窗口触发调度，而非轮询
+- **无锁计数**：使用 `AtomicUsize` 实现无锁并发计数
+- **动态扩展**：Runner 数量根据 CPU 核心数自动调整
+
+---
+
+## 4. 核心组件
+
+### 4.1 组件关系
 
 ```mermaid
 classDiagram
@@ -123,7 +191,7 @@ classDiagram
     ServingRunner --> SequenceState
 ```
 
-### 3.2 组件说明
+### 4.2 组件说明
 
 | 组件 | 职责 | 文件位置 |
 |------|------|----------|
@@ -139,9 +207,9 @@ classDiagram
 
 ---
 
-## 4. 数据流
+## 5. 数据流
 
-### 4.1 请求到执行流程
+### 请求到执行流程
 
 ```mermaid
 sequenceDiagram
@@ -171,7 +239,7 @@ sequenceDiagram
     Handler-->>Client: 返回响应
 ```
 
-### 4.2 状态流转
+### 状态流转
 
 ```mermaid
 stateDiagram-v2
@@ -184,7 +252,7 @@ stateDiagram-v2
 
 ---
 
-## 5. 文件结构
+## 6. 文件结构
 
 ```
 src/runtime/

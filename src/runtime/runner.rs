@@ -1,11 +1,8 @@
-use core_affinity;
 use std::ops::{AddAssign, Neg, Sub};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::Barrier;
-use std::thread;
 
 use tokio::sync::broadcast;
+use tokio::sync::Barrier;
 
 use crate::operators::operator::Operator;
 use crate::operators::send_sync_ptr::SharedMut;
@@ -23,7 +20,7 @@ pub struct ServingRunner<T> {
     operator_queue: Vec<Operator<T>>,
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     task_sender: broadcast::Sender<ScheduleTask>,
-    stop_flag: Arc<AtomicBool>,
+    runner_count: usize,
 }
 
 impl<T> ServingRunner<T>
@@ -51,19 +48,21 @@ where
             operator_queue,
             batch_list,
             task_sender,
-            stop_flag: Arc::new(AtomicBool::new(false)),
+            runner_count: num_cpus::get(),
         }
     }
 
-    pub fn start(self) {
-        let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-        let thread_num = core_ids.len().max(1);
+    pub fn with_runner_count(mut self, runner_count: usize) -> Self {
+        self.runner_count = runner_count.max(1);
+        self
+    }
+
+    pub async fn start(self) {
+        let thread_num = self.runner_count;
 
         let operator_queue: Arc<[Operator<T>]> = self.operator_queue.into();
         let barrier = Arc::new(Barrier::new(thread_num));
         let batch_list = Arc::clone(&self.batch_list);
-        let task_sender = self.task_sender.clone();
-        let stop_flag = self.stop_flag;
 
         let mut handles = Vec::with_capacity(thread_num);
 
@@ -71,77 +70,25 @@ where
             let barrier = Arc::clone(&barrier);
             let queue = Arc::clone(&operator_queue);
             let batch_list = Arc::clone(&batch_list);
-            let stop_flag = Arc::clone(&stop_flag);
-            let task_sender = task_sender.clone();
-            let core_id = core_ids.get(thread_id).copied();
-            let mut receiver = task_sender.subscribe();
+            let mut receiver = self.task_sender.subscribe();
 
-            let handle = thread::spawn(move || {
-                if let Some(core_id) = core_id {
-                    core_affinity::set_for_current(core_id);
-                }
-
-                loop {
-                    if stop_flag.load(Ordering::Relaxed) {
-                        break;
-                    }
-
-                    let task = match receiver.blocking_recv() {
-                        Ok(task) => task,
-                        Err(broadcast::error::RecvError::Closed) => break,
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    };
-
-                    if task.prefill_size == 0
-                        && task.decode_size == 0
-                        && task.prefill_list.is_empty()
-                        && task.decode_list.is_empty()
-                    {
-                        if stop_flag.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        continue;
-                    }
-
-                    let batch_list_ptr = batch_list.get();
+            let handle = tokio::spawn(async move {
+                while let Ok(task) = receiver.recv().await {
                     let (prefill_size, decode_size) = (task.prefill_size, task.decode_size);
                     let (prefill_list, decode_list) = (&task.prefill_list, &task.decode_list);
 
-                    for operator in queue.iter() {
-                        unsafe {
-                            let batch_list_ref = &mut *batch_list_ptr;
-                            operator.run(
-                                prefill_size,
-                                decode_size,
-                                thread_num,
-                                thread_id,
-                                prefill_list,
-                                decode_list,
-                                batch_list_ref,
-                            );
-                        }
-                        barrier.wait();
-                    }
+                    Self::execute_operators(
+                        queue.as_ref(),
+                        &batch_list,
+                        prefill_size,
+                        decode_size,
+                        thread_num,
+                        thread_id,
+                        prefill_list,
+                        decode_list,
+                    );
 
-                    barrier.wait();
-
-                    if thread_id == 0 {
-                        let all_eos = unsafe {
-                            (&*batch_list_ptr)
-                                .iter()
-                                .all(|s| matches!(s.phase, crate::runtime::Phase::Eos))
-                        };
-                        if all_eos && unsafe { (&*batch_list_ptr).is_empty() } == false {
-                            stop_flag.store(true, Ordering::Relaxed);
-                            let _ = task_sender.send(ScheduleTask::new(
-                                0,
-                                0,
-                                Vec::new(),
-                                Default::default(),
-                                u64::MAX,
-                            ));
-                        }
-                    }
+                    let _ = barrier.wait().await;
                 }
             });
 
@@ -149,7 +96,34 @@ where
         }
 
         for handle in handles {
-            let _ = handle.join();
+            let _ = handle.await;
+        }
+    }
+
+    fn execute_operators(
+        queue: &[Operator<T>],
+        batch_list: &Arc<SharedMut<Vec<SequenceState>>>,
+        prefill_size: usize,
+        decode_size: usize,
+        thread_num: usize,
+        thread_id: usize,
+        prefill_list: &[Vec<crate::runtime::scheduling::sequence_slice::SequenceSlice>],
+        decode_list: &crate::runtime::scheduling::sequence_slice::DecodeList,
+    ) {
+        let batch_list_ptr = batch_list.get();
+        for operator in queue.iter() {
+            unsafe {
+                let batch_list_ref = &mut *batch_list_ptr;
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    thread_num,
+                    thread_id,
+                    prefill_list,
+                    decode_list,
+                    batch_list_ref,
+                );
+            }
         }
     }
 }
@@ -161,21 +135,20 @@ mod tests {
     use crate::runtime::BatchScheduler;
     use tokio::sync::broadcast;
 
-    #[test]
-    fn new_preserves_operator_queue_and_batch_layout() {
+    #[tokio::test]
+    async fn new_preserves_operator_queue_and_batch_layout() {
         let operator_queue = Vec::<crate::operators::operator::Operator<f32>>::new();
         let batch_scheduler = BatchScheduler::new(16, 4, 3);
         let (sender, _) = broadcast::channel(4);
 
-        let runner =
-            ServingRunner::new(operator_queue, batch_scheduler.batch_list.clone(), sender);
+        let runner = ServingRunner::new(operator_queue, batch_scheduler.batch_list.clone(), sender);
 
         assert_eq!(runner.operator_queue.len(), 0);
         assert_eq!(runner.batch_list.with(|list| list.len()), 0);
     }
 
-    #[test]
-    fn schedule_task_can_be_constructed() {
+    #[tokio::test]
+    async fn schedule_task_can_be_constructed() {
         let task = ScheduleTask::new(0, 0, Vec::new(), Default::default(), 1);
         assert_eq!(task.prefill_size, 0);
         assert_eq!(task.decode_size, 0);

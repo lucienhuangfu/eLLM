@@ -76,7 +76,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runner = build_fake_runner(batch_states.clone(), task_sender.clone());
 
     std::thread::spawn(move || {
-        runner.start();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(runner.start());
     });
 
     serving::run(batch_sequences, batch_states, token_counter).await?;

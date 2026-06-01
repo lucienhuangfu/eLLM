@@ -194,7 +194,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let serving_batch_states = Arc::clone(&batch_states);
 
     std::thread::spawn(move || {
-        runner.start();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(runner.start());
     });
 
     serving::run(batch_sequences, serving_batch_states, token_counter).await?;

@@ -41,14 +41,21 @@ impl TokenCounter {
         self.current_tokens.load(Ordering::Acquire)
     }
 
-    pub async fn increment(&self, count: usize) {
+    pub fn reset(&self) {
+        self.current_tokens.store(0, Ordering::Release);
+    }
+
+    pub async fn increment(&self, count: usize) -> bool {
         if count == 0 {
-            return;
+            return false;
         }
 
         let total = self.current_tokens.fetch_add(count, Ordering::AcqRel) + count;
         if total >= self.threshold {
             self.trigger_schedule().await;
+            true
+        } else {
+            false
         }
     }
 

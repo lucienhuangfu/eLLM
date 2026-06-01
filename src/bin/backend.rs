@@ -168,7 +168,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         task_sender.clone(),
     );
     let runner_handle = std::thread::spawn(move || {
-        runner.start();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(runner.start());
     });
 
     let mut task = task;

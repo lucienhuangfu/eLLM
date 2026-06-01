@@ -167,7 +167,11 @@ fn main() {
         task_sender.clone(),
     );
     let runner_handle = std::thread::spawn(move || {
-        runner.start();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(runner.start());
     });
 
     loop {
