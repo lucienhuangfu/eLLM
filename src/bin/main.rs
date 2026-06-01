@@ -5,7 +5,7 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
-    BatchScheduler, BatchSequence, Phase, Runner, SafeTensorsLoader, SequenceState,
+    BatchScheduler, BatchSequence, Phase, Runner, SafeTensorsLoader, SequenceState, TokenCounter,
 };
 use ellm::serving;
 use ellm::tensor::GlobalOperatorQueue;
@@ -14,6 +14,7 @@ use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 
 fn parse_env_usize(name: &str, default: usize) -> usize {
     env::var(name)
@@ -83,6 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_size = parse_env_usize("ELLM_BATCH_SIZE", 3);
     let sequence_length = parse_env_usize("ELLM_SEQUENCE_LENGTH", 128);
     let chunk_size = parse_env_usize("ELLM_CHUNK_SIZE", 64);
+    let schedule_timeout_ms = parse_env_usize("ELLM_SCHEDULE_TIMEOUT_MS", 10);
+    let broadcast_capacity = parse_env_usize("ELLM_BROADCAST_CAPACITY", 64);
 
     let config = Config::load_from_file(format!("{}/config.json", model_dir))
         .map_err(|e| format!("failed to load config: {}", e))?;
@@ -142,6 +145,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         thread_num,
         Arc::clone(&batch_states),
     );
+    let batch_scheduler = Arc::new(tokio::sync::Mutex::new(batch_scheduler));
+    let (task_sender, _) = tokio::sync::broadcast::channel(broadcast_capacity);
+    let token_counter = Arc::new(TokenCounter::new(
+        chunk_size,
+        Duration::from_millis(schedule_timeout_ms as u64),
+        Arc::clone(&batch_scheduler),
+        task_sender.clone(),
+    ));
 
     let position_vec = RotaryEmbedding::new(
         config.head_dim,
@@ -175,13 +186,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch_sequences.with_mut(|batch_sequence| batch_sequence.batch_temperature.as_mut_ptr());
     let _ = model.forward(sequences_ptr, batch_temperature_ptr);
 
-    let runner = Runner::new(f16::take_operator_queue(), batch_scheduler);
+    let runner = Runner::new(
+        f16::take_operator_queue(),
+        Arc::clone(&batch_states),
+        task_sender.clone(),
+    );
     let serving_batch_states = Arc::clone(&batch_states);
 
     std::thread::spawn(move || {
         runner.start();
     });
 
-    serving::run(batch_sequences, serving_batch_states).await?;
+    serving::run(batch_sequences, serving_batch_states, token_counter).await?;
     Ok(())
 }

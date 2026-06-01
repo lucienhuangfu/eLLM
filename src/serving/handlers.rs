@@ -112,7 +112,7 @@ async fn assign_slot_with_messages(
                         record.kv_index = 0;
                         record.filling_length = write_len;
                         record.phase = Phase::Prefill;
-                        record.notify.clone()
+                        (write_len, record.notify.clone())
                     })
                     .map_err(|e| e.to_string())
             }
@@ -120,8 +120,9 @@ async fn assign_slot_with_messages(
     });
 
     match write_result {
-        Ok(notifier) => {
+        Ok((write_len, notifier)) => {
             permit.forget();
+            state.token_counter.increment(write_len).await;
             Ok((slot_index, notifier))
         }
         Err(err) => {

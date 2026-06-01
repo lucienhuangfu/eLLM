@@ -5,7 +5,7 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
-    BatchScheduler, BatchSequence, Phase, Runner, SafeTensorsLoader, SequenceState,
+    BatchScheduler, BatchSequence, Phase, Runner, SafeTensorsLoader, ScheduleTask, SequenceState,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
@@ -150,10 +150,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     batch_scheduler.batch_list = Arc::new(SharedMut::new(batch_list));
     let batch_list_ref = Arc::clone(&batch_scheduler.batch_list);
+    let (task_sender, _) = tokio::sync::broadcast::channel(8);
+    let sizes = batch_scheduler.schedule_batch();
+    let task = ScheduleTask::new(
+        sizes.0,
+        sizes.1,
+        batch_scheduler.prefill_list.clone(),
+        batch_scheduler.decode_list.clone(),
+        1,
+    );
+    task_sender.send(task.clone()).unwrap();
 
     println!("Starting serving runner...");
-    let runner = Runner::new(f16::take_operator_queue(), batch_scheduler);
-    runner.start();
+    let runner = Runner::new(
+        f16::take_operator_queue(),
+        Arc::clone(&batch_list_ref),
+        task_sender.clone(),
+    );
+    let runner_handle = std::thread::spawn(move || {
+        runner.start();
+    });
+
+    let mut task = task;
+    loop {
+        match task_sender.send(task.clone()) {
+            Ok(_) => break,
+            Err(err) => {
+                task = err.0;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
+    let _ = runner_handle.join();
 
     println!("\n=== Generated Output ===");
     batch_list_ref.with(|list| {

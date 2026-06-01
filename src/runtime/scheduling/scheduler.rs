@@ -1,6 +1,4 @@
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use super::slice_scheduler::{PrefillCandidate, SliceScheduler};
 use crate::operators::send_sync_ptr::SharedMut;
@@ -28,7 +26,7 @@ enum BatchPlan {
 
 impl BatchScheduler {
     fn build(
-        sequence_length: usize,
+        _sequence_length: usize,
         batch_size: usize,
         chunk_size: usize,
         thread_num: usize,
@@ -187,24 +185,27 @@ impl BatchScheduler {
     pub fn schedule_batch(&mut self) -> (usize, usize) {
         let prefill_task_count = self.thread_num.min(self.prefill_list.len());
 
+        if prefill_task_count == 0 {
+            return (0, 0);
+        }
+
         self.prefill_scheduler.set_task_count(prefill_task_count);
 
-        loop {
-            match self.plan_next_round() {
-                BatchPlan::Decode(decode_candidates) => {
-                    let decode_count = self.schedule_decode_round(decode_candidates);
-                    return (0, decode_count);
-                }
-                BatchPlan::Prefill {
-                    candidates,
-                    total_tokens,
-                } => {
-                    let prefill_count = self.schedule_prefill_round(candidates, total_tokens);
-                    return (prefill_count, self.decode_list.len());
-                }
-                BatchPlan::Idle => {
-                    thread::sleep(Duration::from_millis(1));
-                }
+        match self.plan_next_round() {
+            BatchPlan::Decode(decode_candidates) => {
+                let decode_count = self.schedule_decode_round(decode_candidates);
+                (0, decode_count)
+            }
+            BatchPlan::Prefill {
+                candidates,
+                total_tokens,
+            } => {
+                let prefill_count = self.schedule_prefill_round(candidates, total_tokens);
+                (prefill_count, self.decode_list.len())
+            }
+            BatchPlan::Idle => {
+                self.clear_round_outputs();
+                (0, 0)
             }
         }
     }

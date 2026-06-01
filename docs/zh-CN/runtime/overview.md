@@ -1,228 +1,210 @@
-# Runtime 模块说明
+# Runtime 模块总览
 
 ---
 
-`src/runtime` 是推理执行层的核心运行时模块，负责把「请求输入」整理成「可执行的 token 切片」，再把这些切片交给算子队列并行执行。
+## 目录
 
-它主要包含三层职责：
-
-* 输入准备：把聊天消息渲染成 prompt，再编码成 token
-* 批次调度：按 `Decode` 优先规则生成本轮切片
-* 线程执行：由线程池消费切片并顺序执行 operator queue
-
----
-
-## 1. 模块总览
-
-`src/runtime/mod.rs` 暴露了 runtime 侧最常用的入口：
-
-* `BatchScheduler`：每轮生成 `prefill_list` 和 `decode_list`
-* `ServingRunner`：线程池执行器，负责调度和算子执行
-* `Phase`、`SequenceState`：batch 槽位状态
-
-另外还包含以下子模块：
-
-* `batch_sequence`：prompt 写入和生成文本解码
-* `chat_template`：聊天模板渲染
-* `tokenizer_loader`：加载 tiktoken tokenizer
-* `slice_scheduler`：prefill 阶段的静态切片分配
-* `operator`：把 runtime 切片传给具体算子
-* `tensor`：运行时张量与缓存相关实现
+1. [模块定位](#1-模块定位)
+2. [架构层次](#2-架构层次)
+3. [核心组件](#3-核心组件)
+4. [数据流](#4-数据流)
+5. [文件结构](#5-文件结构)
 
 ---
 
-## 2. 核心状态
+## 1. 模块定位
 
-### `SequenceState`
+`src/runtime` 是 eLLM 推理执行层的核心运行时模块，负责将用户请求转换为可执行的计算任务，并协调多线程执行。
 
-每个 batch 槽位对应一个 `SequenceState`，字段含义如下：
-
-| 字段 | 含义 |
-| --- | --- |
-| `phase` | 当前阶段，通常在 `Start / Prefill / Decode / Timeout / Eos` 之间变化 |
-| `sequence_index` | 当前序列游标，表示下一段 token 的起点 |
-| `kv_index` | KV 或已生成 token 的尾部位置 |
-| `filling_length` | 还剩多少 prefill token 需要处理 |
-| `notify` | 该槽位完成后通知上层的同步原语 |
-
-### `Phase`
-
-`Phase` 是状态机枚举，当前代码里最常见的流转是：
-
-* `Start -> Prefill`
-* `Prefill -> Decode`
-* `Decode -> Eos`
+**核心职责**：
+- **输入准备**：将聊天消息渲染为 prompt，编码为 token
+- **批次调度**：按优先级规则生成本轮计算切片
+- **线程执行**：管理线程池并行执行算子队列
 
 ---
 
-## 3. 切片结构
-
-### `SequenceSlice`
-
-调度器不是直接按 batch 槽位执行，而是按 `SequenceSlice` 执行。
-
-一个 slice 描述的是某个 batch 槽位上连续的一段 token：
-
-| 字段 | 含义 |
-| --- | --- |
-| `batch_index` | 属于哪个 batch 槽位 |
-| `sequence_index` | 这段 slice 在序列中的起点 |
-| `token_start_index` | 在本轮扁平 token 视图中的起点 |
-| `length` | 连续 token 长度 |
-| `last_token_flag` | 这段 slice 的末 token 是否需要被当作结果 token 处理 |
-
-### `DecodeList`
-
-`DecodeList` 本质上是 `Vec<SequenceSlice>` 的包装，提供了：
-
-* `push` / `clear`
-* `total_token_count`
-* `lookup_global_index`
-* `walk_global_range`
-
-它既承载 decode 轮的单 token 切片，也承载 prefill 轮的扁平 attention 切片。
-
----
-
-## 4. 输入准备
-
-### `ChatTemplate`
-
-`ChatTemplate` 会加载 `chat_template.jinja`，然后把消息对 `[("role", "content")]` 渲染成最终 prompt。
-
-### `load_tiktoken`
-
-`tokenizer_loader` 会从：
-
-* `tokenizer.json`
-* `tokenizer_config.json`
-
-构建 `tiktoken_rs::CoreBPE`，用于：
-
-* prompt 编码
-* 生成文本解码
-
-### `BatchSequence`
-
-`BatchSequence` 负责把 prompt token 写入底层 token buffer，并在推理结束后把 token 再解码回字符串。
-
-它做的事情很直接：
-
-* `write_prompts()`：把渲染后的 prompt 编码后写入指定 slot
-* `decode_generated_text()`：根据 `sequence_index` 和 `kv_index` 读取生成结果并解码
-
----
-
-## 5. 调度链路
-
-### 调度入口
-
-`ServingRunner::start()` 会创建线程池，并让线程 0 负责每轮调度：
+## 2. 架构层次
 
 ```mermaid
-flowchart TD
-    A[ServingRunner::start] --> B[线程 0 调用 BatchScheduler::schedule_batch]
-    B --> C[Barrier 同步]
-    C --> D[所有线程按顺序执行 operator queue]
-    D --> E[消费同一轮的 prefill_list 和 decode_list]
+flowchart TB
+    subgraph Serving Layer
+        A[chat_completions]
+    end
+
+    subgraph Runtime Layer
+        B[输入准备]
+        C[批次调度]
+        D[线程执行]
+    end
+
+    subgraph Operators Layer
+        E[Attention]
+        F[MatMul]
+        G[TopKSoftmax]
+    end
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    D --> F
+    D --> G
 ```
 
-1. 线程 0 调用 `BatchScheduler::schedule_batch()`
-2. 所有线程通过 `Barrier` 同步
-3. 每个线程依次执行 operator queue
-4. 每个 operator 用同一轮的 `prefill_list` 和 `decode_list`
-
-### `BatchScheduler`
-
-`BatchScheduler` 每轮只做一件事：决定本轮是 `Decode`、`Prefill` 还是 `Idle`。
-
-调度策略非常明确：
-
-* 只要 batch 中存在 `Phase::Decode`，本轮就进入 decode 轮
-* 否则如果存在 `Phase::Prefill`，本轮就进入 prefill 轮
-* 否则进入 idle，并短暂 sleep 后重试
-
-这里采用的是严格的单轮单模式，不会把 decode 和 prefill 混在同一轮里执行。
+| 层次 | 职责 | 关键组件 |
+|------|------|----------|
+| **输入准备** | Prompt 渲染与 Token 编码 | ChatTemplate, BatchSequence, TokenizerLoader |
+| **批次调度** | 切片生成与任务分发 | BatchScheduler, TokenCounter |
+| **线程执行** | 算子队列并行执行 | ServingRunner |
 
 ---
 
-## 6. Prefill 切分
+## 3. 核心组件
 
-prefill 轮由 `FairTaskAllocator` 和 `SliceScheduler` 共同完成。
-
-### `FairTaskAllocator`
-
-它负责把 `total_tokens` 尽量平均拆给 `task_count` 个任务槽位：
-
-* 前面的任务拿到 `base_quota + 1`
-* 后面的任务拿到 `base_quota`
-
-如果 `total_tokens < task_count`，只有前面少数线程会拿到任务。
-
-### `SliceScheduler`
-
-`SliceScheduler` 再把单条序列切成多个 `SequenceSlice`，按静态 token 配额分发到各线程。
-
-因此：
-
-* 长序列可能跨多个线程
-* token 分配是静态的
-* 不做运行时 stealing
-
----
-
-## 7. 状态更新边界
-
-这是 runtime 里最容易混淆的一点。
-
-`BatchScheduler` 只负责规划切片，不直接推进 `SequenceState`。
-
-实际的状态更新发生在别处：
-
-* `serving/handlers.rs` 里，写入 prompt 时会把槽位切到 `Phase::Prefill`
-* `operators/softmax/topk_softmax.rs` 里，prefill slice 消费和最终 token 输出会推进 `sequence_index`、`kv_index`、`filling_length`，并在需要时把状态切到 `Decode` 或 `Eos`
-
-也就是说，runtime 的职责是“生成本轮工作单元”，而不是单独维护完整状态机。
-
----
-
-## 8. 一轮执行概览
-
-可以把一轮 runtime 执行理解为：
+### 3.1 组件关系
 
 ```mermaid
-flowchart TD
-    A[线程 0 调度 batch] --> B[得到 prefill_size / decode_size / prefill_list / decode_list]
-    B --> C[所有线程在 barrier 上同步]
-    C --> D[按 queue 顺序执行 operators]
-    D --> E[必要时由 operator 更新 SequenceState]
-    E --> F[slot 完成时通知上层]
+classDiagram
+    class BatchScheduler {
+        -prefill_list: Vec~Vec~SequenceSlice~~
+        -decode_list: DecodeList
+        -batch_list: Arc~SharedMut~Vec~SequenceState~~~
+        -prefill_scheduler: SliceScheduler
+        +schedule_batch(): (usize, usize)
+    }
+
+    class TokenCounter {
+        -current_tokens: AtomicUsize
+        -threshold: usize
+        -timeout: Duration
+        -broadcast_sender: Sender~ScheduleTask~
+        +increment(count)
+        +run()
+    }
+
+    class ServingRunner {
+        -operator_queue: Vec~Operator~T~~
+        -batch_list: Arc~SharedMut~Vec~SequenceState~~~
+        -task_sender: Sender~ScheduleTask~
+        +start()
+    }
+
+    class SequenceState {
+        +phase: Phase
+        +sequence_index: usize
+        +kv_index: usize
+        +filling_length: usize
+        +notify: Arc~Notify~
+    }
+
+    class SequenceSlice {
+        +batch_index: usize
+        +sequence_index: usize
+        +token_start_index: usize
+        +length: usize
+        +last_token_flag: bool
+    }
+
+    class ScheduleTask {
+        +prefill_size: usize
+        +decode_size: usize
+        +prefill_list: Vec~Vec~SequenceSlice~~
+        +decode_list: DecodeList
+        +timestamp: Instant
+        +task_id: u64
+    }
+
+    BatchScheduler --> SequenceState
+    BatchScheduler --> SequenceSlice
+    BatchScheduler --> DecodeList
+    TokenCounter --> BatchScheduler
+    TokenCounter --> ScheduleTask
+    ServingRunner --> ScheduleTask
+    ServingRunner --> SequenceState
 ```
 
-```text
-thread 0:
-    调度 batch，得到 prefill_size / decode_size / prefill_list / decode_list
+### 3.2 组件说明
 
-所有线程:
-    barrier 同步
-    按 operator queue 顺序执行
-    使用同一轮切片完成计算
+| 组件 | 职责 | 文件位置 |
+|------|------|----------|
+| `BatchScheduler` | 生成本轮 prefill/decode 切片 | `scheduling/scheduler.rs` |
+| `TokenCounter` | 统计 token 并触发调度 | `scheduling/token_counter.rs` |
+| `ServingRunner` | 广播订阅式线程池执行器 | `runner.rs` |
+| `SequenceState` | Batch 槽位状态 | `scheduling/state.rs` |
+| `SequenceSlice` | 最小计算单元 | `scheduling/sequence_slice.rs` |
+| `ScheduleTask` | 调度任务载体 | `scheduling/task.rs` |
+| `BatchSequence` | Prompt 写入与结果解码 | `batch_sequence.rs` |
+| `ChatTemplate` | 聊天模板渲染 | `chat_template.rs` |
+| `TokenizerLoader` | Tokenizer 加载 | `tokenizer_loader.rs` |
 
-算子阶段:
-    依据 slice 和 Phase 更新 SequenceState
-    必要时写回输出 token
-    最终通过 notify 唤醒上层
+---
+
+## 4. 数据流
+
+### 4.1 请求到执行流程
+
+```mermaid
+sequenceDiagram
+    participant Client as 客户端
+    participant Handler as chat_completions
+    participant Template as ChatTemplate
+    participant Tokenizer as TokenizerLoader
+    participant BatchSeq as BatchSequence
+    participant Counter as TokenCounter
+    participant Scheduler as BatchScheduler
+    participant Runner as ServingRunner
+    participant Ops as Operators
+
+    Client->>Handler: POST /chat/completions
+    Handler->>Template: render(messages)
+    Template-->>Handler: prompt
+    Handler->>Tokenizer: encode(prompt)
+    Tokenizer-->>Handler: tokens
+    Handler->>BatchSeq: write_prompts(slot, tokens)
+    Handler->>Counter: increment(write_len)
+    Counter->>Scheduler: schedule_batch()
+    Scheduler-->>Counter: prefill_list, decode_list
+    Counter-->>Runner: broadcast ScheduleTask
+    Runner->>Ops: 执行算子队列
+    Ops->>Ops: 更新状态
+    Ops-->>Handler: 通知完成
+    Handler-->>Client: 返回响应
+```
+
+### 4.2 状态流转
+
+```mermaid
+stateDiagram-v2
+    [*] --> Start
+    Start --> Prefill: 写入 prompts
+    Prefill --> Decode: filling_length == 0
+    Decode --> Eos: 生成 eos token
+    Eos --> Start: 释放槽位
 ```
 
 ---
 
-## 9. 文件索引
+## 5. 文件结构
 
-* `src/runtime/mod.rs`
-* `src/runtime/batch_sequence.rs`
-* `src/runtime/chat_template.rs`
-* `src/runtime/operator.rs`
-* `src/runtime/runner.rs`
-* `src/runtime/scheduler.rs`
-* `src/runtime/slice_scheduler.rs`
-* `src/runtime/tokenizer_loader.rs`
+```
+src/runtime/
+├── scheduling/
+│   ├── scheduler.rs          # BatchScheduler 实现
+│   ├── token_counter.rs      # TokenCounter 实现
+│   ├── task.rs               # ScheduleTask 定义
+│   ├── slice_scheduler.rs    # SliceScheduler 实现
+│   ├── state.rs              # SequenceState, Phase 定义
+│   └── sequence_slice.rs     # SequenceSlice, DecodeList 定义
+├── batch_sequence.rs         # BatchSequence 实现
+├── io/
+│   ├── chat_template.rs      # ChatTemplate 实现
+│   ├── tokenizer_loader.rs   # Tokenizer 加载
+│   └── safetensors_loader.rs # 权重读取
+├── runner.rs                 # ServingRunner 实现
+└── mod.rs                    # 模块导出
+```
+
+---
+
+**文档版本**: v2.0  
+**最后更新**: 2026-06-01

@@ -18,6 +18,8 @@ pub use io::ChatTemplate;
 pub use io::SafeTensorsLoader;
 pub use runner::ServingRunner;
 pub use scheduling::BatchScheduler;
+pub use scheduling::ScheduleTask;
+pub use scheduling::TokenCounter;
 pub use scheduling::{Phase, SequenceState};
 
 /// Compatibility alias matching sample's Runner name.
@@ -44,6 +46,7 @@ pub mod sequence_slice {
 mod tests {
     use super::{BatchScheduler, Phase, SequenceState, ServingRunner};
     use std::sync::Arc;
+    use tokio::sync::broadcast;
     use tokio::sync::Notify;
 
     #[test]
@@ -63,7 +66,12 @@ mod tests {
             notify: Arc::new(Notify::new()),
         };
         let scheduler = BatchScheduler::new(8, 2, 1);
-        let runner = ServingRunner::<f32>::new(Vec::new(), scheduler);
+        let (sender, _) = broadcast::channel(4);
+        let runner = ServingRunner::<f32>::new(
+            Vec::new(),
+            Arc::clone(&scheduler.batch_list),
+            sender,
+        );
 
         assert_eq!(prefill_state.sequence_index, 8);
         assert_eq!(prefill_state.kv_index, 12);

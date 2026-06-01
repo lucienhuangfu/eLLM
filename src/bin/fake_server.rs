@@ -5,9 +5,12 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::operators::operator::Operator;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner};
+use ellm::runtime::{
+    BatchScheduler, Phase, SequenceState, ServingRunner, TokenCounter,
+};
 use ellm::serving;
 use std::sync::Arc;
+use std::time::Duration;
 
 fn build_sequence_state(batch_size: usize) -> Vec<SequenceState> {
     (0..batch_size)
@@ -22,19 +25,11 @@ fn build_sequence_state(batch_size: usize) -> Vec<SequenceState> {
 }
 
 fn build_fake_runner(
-    sequence_length: usize,
-    batch_size: usize,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
+    task_sender: tokio::sync::broadcast::Sender<ellm::runtime::ScheduleTask>,
 ) -> ServingRunner<f16> {
-    let thread_num = core_affinity::get_core_ids()
-        .map(|ids| ids.len())
-        .unwrap_or(1);
-
-    let mut batch_scheduler = BatchScheduler::new(sequence_length, batch_size, thread_num);
-    batch_scheduler.batch_list = batch_states;
-
     let operator_queue = vec![Operator::FakeEcho(FakeEcho)];
-    ServingRunner::new(operator_queue, batch_scheduler)
+    ServingRunner::new(operator_queue, batch_states, task_sender)
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -45,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sequence_length = 256usize;
     let batch_size = 4usize;
     let sequences = {
-        let mut boxed = AlignedBox::allocate_init(sequence_length * batch_size, 0);
+        let boxed = AlignedBox::allocate_init(sequence_length * batch_size, 0);
         let ptr = boxed.as_mut_ptr();
         std::mem::forget(boxed);
         ptr
@@ -68,12 +63,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     let batch_states = Arc::new(SharedMut::new(build_sequence_state(batch_size)));
-    let runner = build_fake_runner(sequence_length, batch_size, batch_states.clone());
+    let mut batch_scheduler = BatchScheduler::new(sequence_length, batch_size, 1);
+    batch_scheduler.batch_list = Arc::clone(&batch_states);
+    let batch_scheduler = Arc::new(tokio::sync::Mutex::new(batch_scheduler));
+    let (task_sender, _) = tokio::sync::broadcast::channel(8);
+    let token_counter = Arc::new(TokenCounter::new(
+        1,
+        Duration::from_millis(10),
+        Arc::clone(&batch_scheduler),
+        task_sender.clone(),
+    ));
+    let runner = build_fake_runner(batch_states.clone(), task_sender.clone());
 
     std::thread::spawn(move || {
         runner.start();
     });
 
-    serving::run(batch_sequences, batch_states).await?;
+    serving::run(batch_sequences, batch_states, token_counter).await?;
     Ok(())
 }
