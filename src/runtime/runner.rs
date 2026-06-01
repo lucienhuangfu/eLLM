@@ -3,12 +3,13 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 use tokio::sync::Barrier;
+use tokio::task::JoinSet;
 
 use crate::operators::operator::Operator;
 use crate::operators::send_sync_ptr::SharedMut;
 
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
-use crate::runtime::scheduling::task::ScheduleTask;
+use crate::runtime::scheduling::types::ScheduleTask;
 use crate::runtime::SequenceState;
 
 /// Runs the inference serving loop.
@@ -64,7 +65,7 @@ where
         let barrier = Arc::new(Barrier::new(thread_num));
         let batch_list = Arc::clone(&self.batch_list);
 
-        let mut handles = Vec::with_capacity(thread_num);
+        let mut join_set = JoinSet::new();
 
         for thread_id in 0..thread_num {
             let barrier = Arc::clone(&barrier);
@@ -72,57 +73,35 @@ where
             let batch_list = Arc::clone(&batch_list);
             let mut receiver = self.task_sender.subscribe();
 
-            let handle = tokio::spawn(async move {
+            join_set.spawn(async move {
                 while let Ok(task) = receiver.recv().await {
                     let (prefill_size, decode_size) = (task.prefill_size, task.decode_size);
                     let (prefill_list, decode_list) = (&task.prefill_list, &task.decode_list);
 
-                    Self::execute_operators(
-                        queue.as_ref(),
-                        &batch_list,
-                        prefill_size,
-                        decode_size,
-                        thread_num,
-                        thread_id,
-                        prefill_list,
-                        decode_list,
-                    );
+                    let batch_list_ptr = batch_list.get();
+                    for operator in queue.iter() {
+                        unsafe {
+                            let batch_list_ref = &mut *batch_list_ptr;
+                            operator.run(
+                                prefill_size,
+                                decode_size,
+                                thread_num,
+                                thread_id,
+                                prefill_list,
+                                decode_list,
+                                batch_list_ref,
+                            );
+                        }
+                    }
 
                     let _ = barrier.wait().await;
                 }
             });
-
-            handles.push(handle);
         }
 
-        for handle in handles {
-            let _ = handle.await;
-        }
-    }
-
-    fn execute_operators(
-        queue: &[Operator<T>],
-        batch_list: &Arc<SharedMut<Vec<SequenceState>>>,
-        prefill_size: usize,
-        decode_size: usize,
-        thread_num: usize,
-        thread_id: usize,
-        prefill_list: &[Vec<crate::runtime::scheduling::sequence_slice::SequenceSlice>],
-        decode_list: &crate::runtime::scheduling::sequence_slice::DecodeList,
-    ) {
-        let batch_list_ptr = batch_list.get();
-        for operator in queue.iter() {
-            unsafe {
-                let batch_list_ref = &mut *batch_list_ptr;
-                operator.run(
-                    prefill_size,
-                    decode_size,
-                    thread_num,
-                    thread_id,
-                    prefill_list,
-                    decode_list,
-                    batch_list_ref,
-                );
+        while let Some(res) = join_set.join_next().await {
+            if let Err(e) = res {
+                eprintln!("Task failed: {}", e);
             }
         }
     }
@@ -131,7 +110,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::ServingRunner;
-    use crate::runtime::scheduling::task::ScheduleTask;
+    use crate::runtime::scheduling::types::ScheduleTask;
     use crate::runtime::BatchScheduler;
     use tokio::sync::broadcast;
 

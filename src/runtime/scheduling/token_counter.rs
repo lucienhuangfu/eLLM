@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 
 use super::scheduler::BatchScheduler;
-use super::task::ScheduleTask;
+use super::types::ScheduleTask;
 
 pub struct TokenCounter {
     current_tokens: AtomicUsize,

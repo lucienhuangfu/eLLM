@@ -1,6 +1,7 @@
 use async_stream::stream;
 use axum::{
     extract::State,
+    http::StatusCode,
     response::sse::Event,
     response::{IntoResponse, Sse},
     Json,
@@ -11,11 +12,14 @@ use tokio::sync::Notify;
 
 use crate::runtime::Phase;
 
-use super::bootstrap::AppState;
-use super::types::{
-    ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, StreamChoice,
-    StreamResponse,
+use super::{
+    AppState, ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
+    StreamChoice, StreamResponse,
 };
+
+fn build_error_response(code: StatusCode, message: &str) -> axum::response::Response {
+    (code, message.to_string()).into_response()
+}
 
 pub(super) async fn chat_completions(
     State(state): State<AppState>,
@@ -29,6 +33,7 @@ pub(super) async fn chat_completions(
             .as_nanos()
     );
     let is_stream = request.stream.unwrap_or(false);
+    let model = request.model;
 
     let (slot_index, notifier) =
         match assign_slot_with_messages(&state, &request.messages, request.temperature).await {
@@ -47,19 +52,24 @@ pub(super) async fn chat_completions(
     notifier.notified().await;
 
     let generated_text = state.batch_states.with(|batch_list| {
-        state.batch_sequences.with(|batch_sequences| {
-            let record = &batch_list[slot_index];
-            batch_sequences.decode_generated_text(slot_index, record)
-        })
+        let record = &batch_list[slot_index];
+        state
+            .batch_sequences
+            .with(|batch_sequences| batch_sequences.decode_generated_text(slot_index, record))
     });
     reclaim_slot(&state, slot_index, true).await;
 
+    let created = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
     if is_stream {
-        build_stream_response(request_id, request.model, generated_text)
+        build_stream_response(request_id, model, created, generated_text)
     } else {
         #[cfg(debug_assertions)]
         println!("同步推理完成: id={}", request_id);
-        build_non_stream_response(request_id, request.model, generated_text)
+        build_non_stream_response(request_id, model, created, generated_text)
     }
 }
 
@@ -68,29 +78,26 @@ async fn assign_slot_with_messages(
     messages: &[ChatMessage],
     temperature: Option<f32>,
 ) -> Result<(usize, Arc<Notify>), axum::response::Response> {
-    let permit = match state.available_slots.clone().acquire_owned().await {
-        Ok(permit) => permit,
-        Err(_) => {
-            return Err((
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+    let permit = state
+        .available_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| {
+            build_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
                 "Slot allocator unavailable",
             )
-                .into_response());
-        }
-    };
+        })?;
 
     let slot_index = {
         let mut free_slots = state.free_slots.lock().await;
-        match free_slots.pop_front() {
-            Some(index) => index,
-            None => {
-                return Err((
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Slot queue empty while permit acquired",
-                )
-                    .into_response());
-            }
-        }
+        free_slots.pop_front().ok_or_else(|| {
+            build_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Slot queue empty while permit acquired",
+            )
+        })?
     };
 
     let message_pairs = messages
@@ -98,45 +105,39 @@ async fn assign_slot_with_messages(
         .map(|msg| (msg.role.as_str(), msg.content.as_str()))
         .collect::<Vec<_>>();
 
-    let write_result = state.batch_states.with_mut(|batch_list| {
-        state.batch_sequences.with_mut(|batch_sequences| {
-            let record = &mut batch_list[slot_index];
-            if !matches!(record.phase, Phase::Start | Phase::Eos) {
-                Err("slot is not in Start or Eos phase".to_string())
-            } else {
-                let temperature = temperature.unwrap_or(1.0);
-                batch_sequences
-                    .write_prompts(slot_index, &message_pairs, temperature)
-                    .map(|write_len| {
-                        record.sequence_index = 0;
-                        record.kv_index = 0;
-                        record.filling_length = write_len;
-                        record.phase = Phase::Prefill;
-                        (write_len, record.notify.clone())
-                    })
-                    .map_err(|e| e.to_string())
-            }
+    let (write_len, notifier) = state
+        .batch_states
+        .with_mut(|batch_list| {
+            state.batch_sequences.with_mut(|batch_sequences| {
+                let record = &mut batch_list[slot_index];
+                if !matches!(record.phase, Phase::Start | Phase::Eos) {
+                    Err("slot is not in Start or Eos phase".to_string())
+                } else {
+                    let temperature = temperature.unwrap_or(1.0);
+                    batch_sequences
+                        .write_prompts(slot_index, &message_pairs, temperature)
+                        .map(|write_len| {
+                            record.sequence_index = 0;
+                            record.kv_index = 0;
+                            record.filling_length = write_len;
+                            record.phase = Phase::Prefill;
+                            (write_len, record.notify.clone())
+                        })
+                        .map_err(|e| e.to_string())
+                }
+            })
         })
-    });
-
-    match write_result {
-        Ok((write_len, notifier)) => {
-            permit.forget();
-            state.token_counter.increment(write_len).await;
-            Ok((slot_index, notifier))
-        }
-        Err(err) => {
-            reclaim_slot(state, slot_index, false).await;
-            drop(permit);
-
+        .map_err(|err| {
             eprintln!("Error writing prompt: {}", err);
-            Err((
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Tokenization failed: {}", err),
+            build_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Tokenization failed: {}", err),
             )
-                .into_response())
-        }
-    }
+        })?;
+
+    permit.forget();
+    state.token_counter.increment(write_len).await;
+    Ok((slot_index, notifier))
 }
 
 async fn reclaim_slot(state: &AppState, slot_index: usize, release_permit: bool) {
@@ -161,13 +162,9 @@ async fn reclaim_slot(state: &AppState, slot_index: usize, release_permit: bool)
 fn build_stream_response(
     request_id: String,
     model: String,
+    created: u64,
     generated_text: String,
 ) -> axum::response::Response {
-    let created = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
     let stream_response = stream! {
         let mut words = generated_text.split_inclusive(' ').peekable();
         while let Some(word) = words.next() {
@@ -183,7 +180,7 @@ fn build_stream_response(
                         role: "assistant".to_string(),
                         content: word.to_string(),
                     },
-                    finish_reason: if is_final { Some("stop".to_string()) } else { None },
+                    finish_reason: is_final.then(|| "stop".to_string()),
                 }],
             };
 
@@ -199,15 +196,13 @@ fn build_stream_response(
 fn build_non_stream_response(
     request_id: String,
     model: String,
+    created: u64,
     generated_text: String,
 ) -> axum::response::Response {
     let response = ChatCompletionResponse {
         id: request_id,
         object: "chat.completion".to_string(),
-        created: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
+        created,
         model,
         choices: vec![ChatCompletionChoice {
             index: 0,

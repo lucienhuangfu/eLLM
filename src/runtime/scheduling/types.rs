@@ -1,6 +1,26 @@
+use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Notify;
 
 use super::sequence_slice::{DecodeList, SequenceSlice};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Phase {
+    Start,
+    Prefill,
+    Decode,
+    Timeout,
+    Eos,
+}
+
+pub struct SequenceState {
+    pub sequence_index: usize,
+    pub kv_index: usize,
+    pub filling_length: usize,
+    pub phase: Phase,
+    pub notify: Arc<Notify>,
+}
 
 #[derive(Clone, Debug)]
 pub struct ScheduleTask {
