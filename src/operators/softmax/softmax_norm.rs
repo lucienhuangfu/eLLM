@@ -15,8 +15,8 @@ use crate::operators::traits::SoftmaxTrait;
 pub struct ExpertsSoftmaxNorm<T> {
     // [prefill_size, num_experts]
     ptr1: ConstPtr<T>,
-    topk_values_ptr: MutPtr<T>,
-    routing: ExpertRouting<T>,
+    pub topk_values_ptr: MutPtr<T>,
+    pub routing: ExpertRouting<T>,
     num_experts: usize,
     num_topk: usize,
     decode_only_flag: bool,
