@@ -1,9 +1,13 @@
 #![feature(f16)]
 
-use ellm::serving;
-use ellm::serving::{initialize_server, ServerConfig};
+use std::env;
 
-fn create_runtime(resources: &serving::ServerResources) -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error>> {
+use ellm::serving;
+use ellm::serving::{initialize_serving_resources, ServingConfig};
+
+fn create_runtime(
+    resources: &serving::ServingResources,
+) -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error>> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(resources.worker_threads)
         .max_blocking_threads(resources.async_threads)
@@ -12,7 +16,7 @@ fn create_runtime(resources: &serving::ServerResources) -> Result<tokio::runtime
         .map_err(Into::into)
 }
 
-async fn run_server(resources: serving::ServerResources) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_server(resources: serving::ServingResources) -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         resources.runner.start().await;
     });
@@ -30,14 +34,13 @@ async fn run_server(resources: serving::ServerResources) -> Result<(), Box<dyn s
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting backend server...");
 
-    let server_config = ServerConfig::default();
-    let resources = initialize_server(&server_config)?;
-    
+    let model_dir = env::args().nth(1).ok_or("Usage: backend <model_dir>")?;
+    let serving_config = ServingConfig::new(model_dir);
+    let resources = initialize_serving_resources(&serving_config)?;
+
     let rt = create_runtime(&resources)?;
 
-    rt.block_on(async move {
-        run_server(resources).await
-    })?;
+    rt.block_on(async move { run_server(resources).await })?;
 
     Ok(())
 }

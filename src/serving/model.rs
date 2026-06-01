@@ -1,4 +1,4 @@
-use crate::serving::model_loader::GenerationParams;
+use crate::serving::model_setup::GenerationParameters;
 use crate::transformer::config::Config;
 use crate::transformer::model::Model;
 use crate::transformer::rope::RotaryEmbedding;
@@ -16,7 +16,7 @@ pub fn create_position_embeddings(config: &Config) -> Vec<f16> {
 
 pub fn initialize_model(
     config: &Config,
-    gen_params: &GenerationParams,
+    gen_params: &GenerationParameters,
     position_vec: Vec<f16>,
     chunk_size: usize,
     batch_size: usize,

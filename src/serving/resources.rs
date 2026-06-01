@@ -9,12 +9,12 @@ use crate::runtime::scheduling::{
 };
 use crate::runtime::Runner;
 
-use super::config::ServerConfig;
+use super::config::ServingConfig;
 use super::model;
-use super::model_loader;
+use super::model_setup;
 use super::scheduler;
 
-pub struct ServerResources {
+pub struct ServingResources {
     pub batch_sequences: Arc<SharedMut<crate::runtime::batch_sequence::BatchSequence<f16>>>,
     pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     pub token_counter: Arc<TokenCounter>,
@@ -24,17 +24,17 @@ pub struct ServerResources {
     pub _sequences_box: AlignedBox<usize>,
 }
 
-pub fn initialize_server(
-    config: &ServerConfig,
-) -> Result<ServerResources, Box<dyn std::error::Error>> {
+pub fn initialize_serving_resources(
+    config: &ServingConfig,
+) -> Result<ServingResources, Box<dyn std::error::Error>> {
     println!("Loading config from: {}", config.model_dir);
 
     let (model_config, generation_config, model_dir) =
-        model_loader::load_model_config(&config.model_dir)?;
-    model_loader::load_model_parameters(&model_dir)?;
+        model_setup::load_model_config(&config.model_dir)?;
+    model_setup::load_model_parameters(&model_dir)?;
 
-    let gen_params = model_loader::extract_generation_params(&model_config, &generation_config);
-    let thread_config = model_loader::determine_thread_config(&generation_config);
+    let gen_params = model_setup::extract_generation_params(&model_config, &generation_config);
+    let thread_config = model_setup::determine_thread_config(&generation_config);
 
     let (sequences_box, batch_sequences) =
         build_batch_sequence(&model_dir, config.batch_size, config.sequence_length)?;
@@ -64,7 +64,7 @@ pub fn initialize_server(
         task_sender,
     );
 
-    Ok(ServerResources {
+    Ok(ServingResources {
         batch_sequences,
         batch_states,
         token_counter,

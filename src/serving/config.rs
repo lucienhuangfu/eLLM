@@ -1,6 +1,6 @@
 use std::env;
 
-pub struct ServerConfig {
+pub struct ServingConfig {
     pub model_dir: String,
     pub batch_size: usize,
     pub sequence_length: usize,
@@ -8,7 +8,7 @@ pub struct ServerConfig {
     pub schedule_timeout_ms: usize,
 }
 
-impl ServerConfig {
+impl ServingConfig {
     pub fn new(model_dir: String) -> Self {
         Self {
             model_dir,

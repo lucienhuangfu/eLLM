@@ -1,7 +1,7 @@
+mod chat_handlers;
 pub mod config;
-mod handlers;
 pub mod model;
-pub mod model_loader;
+pub mod model_setup;
 pub mod resources;
 pub mod scheduler;
 
@@ -16,10 +16,10 @@ use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::batch_sequence::BatchSequence;
 use crate::runtime::scheduling::{Phase, SequenceState, TokenCounter};
 
-use handlers::chat_completions;
+use chat_handlers::chat_completions;
 
-pub use config::ServerConfig;
-pub use resources::{initialize_server, ServerResources};
+pub use config::ServingConfig;
+pub use resources::{initialize_serving_resources, ServingResources};
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionRequest {
@@ -70,7 +70,7 @@ struct StreamChoice {
 }
 
 #[derive(Clone)]
-struct AppState {
+struct ApiState {
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     token_counter: Arc<TokenCounter>,
@@ -78,11 +78,11 @@ struct AppState {
     available_slots: Arc<Semaphore>,
 }
 
-fn build_app_state(
+fn build_api_state(
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     token_counter: Arc<TokenCounter>,
-) -> AppState {
+) -> ApiState {
     let initial_free_slots: VecDeque<usize> = batch_states.with(|batch_states_ref| {
         batch_states_ref
             .iter()
@@ -92,7 +92,7 @@ fn build_app_state(
     });
     let initial_permits = initial_free_slots.len();
 
-    AppState {
+    ApiState {
         batch_sequences,
         batch_states,
         token_counter,
@@ -113,7 +113,7 @@ pub async fn run(
         token_counter_task.run().await;
     });
 
-    let state = build_app_state(batch_sequences, batch_list, token_counter);
+    let state = build_api_state(batch_sequences, batch_list, token_counter);
 
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))

@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use crate::runtime::Phase;
 
 use super::{
-    AppState, ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
+    ApiState, ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
     StreamChoice, StreamResponse,
 };
 
@@ -22,7 +22,7 @@ fn build_error_response(code: StatusCode, message: &str) -> axum::response::Resp
 }
 
 pub(super) async fn chat_completions(
-    State(state): State<AppState>,
+    State(state): State<ApiState>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
     let request_id = format!(
@@ -74,7 +74,7 @@ pub(super) async fn chat_completions(
 }
 
 async fn assign_slot_with_messages(
-    state: &AppState,
+    state: &ApiState,
     messages: &[ChatMessage],
     temperature: Option<f32>,
 ) -> Result<(usize, Arc<Notify>), axum::response::Response> {
@@ -140,7 +140,7 @@ async fn assign_slot_with_messages(
     Ok((slot_index, notifier))
 }
 
-async fn reclaim_slot(state: &AppState, slot_index: usize, release_permit: bool) {
+async fn reclaim_slot(state: &ApiState, slot_index: usize, release_permit: bool) {
     state.batch_states.with_mut(|batch_list| {
         if let Some(record) = batch_list.get_mut(slot_index) {
             record.sequence_index = usize::MAX;

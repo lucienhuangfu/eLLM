@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduling::ScheduleTask;
-use crate::serving::config::ServerConfig;
-use crate::serving::model_loader::ThreadConfig;
+use crate::serving::config::ServingConfig;
+use crate::serving::model_setup::ThreadingConfig;
 
 use crate::runtime::scheduling::{BatchScheduler, SequenceState, TokenCounter};
 
@@ -22,8 +22,8 @@ pub fn build_batch_scheduler(
 }
 
 pub fn create_scheduling_components(
-    config: &ServerConfig,
-    thread_config: &ThreadConfig,
+    config: &ServingConfig,
+    thread_config: &ThreadingConfig,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
 ) -> (
     Arc<TokenCounter>,

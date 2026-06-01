@@ -2,7 +2,7 @@ use crate::config::GenerationConfig;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::transformer::config::Config;
 
-pub struct GenerationParams {
+pub struct GenerationParameters {
     pub top_k: usize,
     pub top_k_simd: usize,
     pub top_p: f16,
@@ -11,7 +11,7 @@ pub struct GenerationParams {
     pub eos_token_id_list: Vec<usize>,
 }
 
-pub struct ThreadConfig {
+pub struct ThreadingConfig {
     pub worker_threads: usize,
     pub async_threads: usize,
     pub total_threads: usize,
@@ -35,7 +35,7 @@ pub fn load_model_config(
 pub fn extract_generation_params(
     config: &Config,
     generation_config: &Option<GenerationConfig>,
-) -> GenerationParams {
+) -> GenerationParameters {
     let top_k = generation_config
         .as_ref()
         .and_then(|cfg| cfg.top_k)
@@ -62,7 +62,7 @@ pub fn extract_generation_params(
         .and_then(|cfg| cfg.eos_token_id_list.clone())
         .unwrap_or_else(|| config.eos_token_ids.clone());
 
-    GenerationParams {
+    GenerationParameters {
         top_k,
         top_k_simd,
         top_p,
@@ -82,7 +82,7 @@ pub fn load_model_parameters(model_dir: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn determine_thread_config(generation_config: &Option<GenerationConfig>) -> ThreadConfig {
+pub fn determine_thread_config(generation_config: &Option<GenerationConfig>) -> ThreadingConfig {
     let requested_thread_num = generation_config
         .as_ref()
         .map_or_else(
@@ -105,7 +105,7 @@ pub fn determine_thread_config(generation_config: &Option<GenerationConfig>) -> 
         total_threads, async_threads, worker_threads
     );
 
-    ThreadConfig {
+    ThreadingConfig {
         worker_threads,
         async_threads,
         total_threads,
