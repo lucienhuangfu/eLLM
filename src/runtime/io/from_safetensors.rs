@@ -1,4 +1,4 @@
-use std::f16;
+use std::{f16, mem};
 
 use anyhow::{anyhow, Result};
 use safetensors::tensor::TensorView;
@@ -11,11 +11,7 @@ pub trait FromSafetensors: Sized {
 impl FromSafetensors for f16 {
     fn from_tensor_view(tensor_view: &TensorView) -> Result<Vec<Self>> {
         match tensor_view.dtype() {
-            Dtype::F16 => Ok(tensor_view
-                .data()
-                .chunks_exact(2)
-                .map(|chunk| f16::from_le_bytes([chunk[0], chunk[1]]))
-                .collect()),
+            Dtype::F16 => copy_le_bytes_as_f16(tensor_view.data()),
             Dtype::F32 => Ok(tensor_view
                 .data()
                 .chunks_exact(4)
@@ -38,6 +34,36 @@ impl FromSafetensors for f16 {
                 tensor_view.dtype()
             )),
         }
+    }
+}
+
+#[inline]
+fn copy_le_bytes_as_f16(data: &[u8]) -> Result<Vec<f16>> {
+    if data.len() % mem::size_of::<f16>() != 0 {
+        return Err(anyhow!(
+            "Invalid F16 tensor byte length: {} is not divisible by {}",
+            data.len(),
+            mem::size_of::<f16>()
+        ));
+    }
+
+    #[cfg(target_endian = "little")]
+    {
+        let len = data.len() / mem::size_of::<f16>();
+        let mut out = Vec::<f16>::with_capacity(len);
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), out.as_mut_ptr().cast::<u8>(), data.len());
+            out.set_len(len);
+        }
+        Ok(out)
+    }
+
+    #[cfg(not(target_endian = "little"))]
+    {
+        Ok(data
+            .chunks_exact(2)
+            .map(|chunk| f16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect())
     }
 }
 
@@ -96,5 +122,28 @@ impl FromSafetensors for f64 {
                 tensor_view.dtype()
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_le_bytes_as_f16_preserves_values() {
+        let values = [1.0f16, -2.5f16, 0.0f16, f16::INFINITY];
+        let mut bytes = Vec::with_capacity(values.len() * mem::size_of::<f16>());
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let copied = copy_le_bytes_as_f16(&bytes).unwrap();
+        assert_eq!(copied, values);
+    }
+
+    #[test]
+    fn copy_le_bytes_as_f16_rejects_odd_byte_count() {
+        let err = copy_le_bytes_as_f16(&[0, 1, 2]).unwrap_err();
+        assert!(err.to_string().contains("Invalid F16 tensor byte length"));
     }
 }

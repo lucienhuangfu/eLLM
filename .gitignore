@@ -4,6 +4,7 @@ debug
 target
 Cargo.lock
 models/
+scripts/
 
 # Local experiment outputs
 experiment/

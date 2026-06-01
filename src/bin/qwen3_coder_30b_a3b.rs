@@ -80,14 +80,13 @@ impl Drop for ProcessLock {
 }
 
 fn main() {
-    let _process_lock =
-        match ProcessLock::acquire("/tmp/ellm_qwen3_coder_30b_a3b.lock").unwrap() {
-            Some(lock) => lock,
-            None => {
-                eprintln!("qwen3_coder_30b_a3b is already running; refusing duplicate launch");
-                return;
-            }
-        };
+    let _process_lock = match ProcessLock::acquire("/tmp/ellm_qwen3_coder_30b_a3b.lock").unwrap() {
+        Some(lock) => lock,
+        None => {
+            eprintln!("qwen3_coder_30b_a3b is already running; refusing duplicate launch");
+            return;
+        }
+    };
 
     let batch_size = parse_env_usize("ELLM_BATCH", 3);
     let max_output_tokens: usize = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 128);
@@ -138,7 +137,7 @@ fn main() {
 
     let params = SafeTensorsLoader::new(model_dir)
         .unwrap()
-        .load_all_weights_f16()
+        .load_all_weights_f16_parallel()
         .unwrap();
     f16::init_global_strict(params);
     eprintln!(

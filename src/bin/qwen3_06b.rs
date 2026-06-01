@@ -67,7 +67,7 @@ fn main() {
 
     let params = SafeTensorsLoader::new(model_dir)
         .unwrap()
-        .load_all_weights_f16()
+        .load_all_weights_f16_parallel()
         .unwrap();
     println!("Loaded {} tensors", params.len());
     f16::init_global_strict(params);

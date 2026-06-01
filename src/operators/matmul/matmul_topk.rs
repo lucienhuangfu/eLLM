@@ -4,10 +4,12 @@
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
+use std::ptr;
 
 use crate::kernel;
 use crate::kernel::common::heap::FixedMinHeap;
 use crate::kernel::common::matmul_params::MatMulParams;
+use crate::num_traits::NegInfinity;
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::MatMulTopKTrait;
@@ -70,7 +72,7 @@ pub struct MatMulTopK<T> {
 
 impl<T> MatMulTopK<T>
 where
-    T: Copy + Default + PartialOrd + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Default + PartialOrd + Add<Output = T> + Mul<Output = T> + NegInfinity,
 {
     #[inline]
     pub fn detect_threads() -> usize {
@@ -297,6 +299,12 @@ where
             for batch_row in 0..active_input_rows {
                 let heap_ptr = self.heap_for(batch_row, thread_id);
                 (*heap_ptr).clear();
+                let base = batch_row * self.thread_max * self.topk_simd
+                    + thread_id * self.topk_simd;
+                for rank in 0..self.topk_simd {
+                    ptr::write(self.value_ptr.ptr.add(base + rank), T::neg_infinity());
+                    ptr::write(self.indice_ptr.ptr.add(base + rank), 0usize);
+                }
             }
 
             let input_tile_count = padded_input_rows.div_ceil(input_block_rows);
@@ -926,6 +934,66 @@ mod tests {
                 // 只检查索引集合即可（顺序应该也是降序）
                 assert_eq!(final_topk, expected, "row {} topk mismatch", i);
             }
+        }
+    }
+
+    #[test]
+    fn test_matmul_topk_empty_thread_heaps_do_not_win_negative_logits() {
+        const M_RUN: usize = 4;
+        const M_MAX: usize = 6;
+        const K: usize = 4;
+        const N: usize = 64;
+        const TOPK: usize = 4;
+        const THREADS: usize = 4;
+
+        let a = vec![1.0f32; M_MAX * K];
+        let mut b_nt = vec![0.0f32; N * K];
+        for j in 0..N {
+            let value = -10.0 + j as f32 * 0.01;
+            for kk in 0..K {
+                b_nt[j * K + kk] = value;
+            }
+        }
+
+        unsafe {
+            let mut indices_buf = vec![usize::MAX; M_MAX * THREADS * TOPK];
+            let mut values_buf = vec![0.0f32; M_MAX * THREADS * TOPK];
+
+            let runner = MatMulTopK::<f32>::new(
+                a.as_ptr(),
+                b_nt.as_ptr(),
+                indices_buf.as_mut_ptr(),
+                values_buf.as_mut_ptr(),
+                M_MAX,
+                N,
+                K,
+                3,
+                64,
+                K,
+                3,
+                32,
+                M_MAX,
+                THREADS,
+                TOPK,
+            );
+
+            for tid in 0..THREADS {
+                runner.run(M_RUN, 0, THREADS, tid);
+            }
+
+            let row = 3;
+            let mut merged = Vec::with_capacity(THREADS * TOPK);
+            for tid in 0..THREADS {
+                let offset = row * (THREADS * TOPK) + tid * TOPK;
+                for rank in 0..TOPK {
+                    merged.push((indices_buf[offset + rank], values_buf[offset + rank]));
+                }
+            }
+            merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            let final_topk: Vec<usize> = merged[..TOPK].iter().map(|(idx, _)| *idx).collect();
+            assert_eq!(final_topk, vec![63, 62, 61, 60]);
+            assert!(merged[..TOPK].iter().all(|(_, value)| *value < 0.0));
         }
     }
 }

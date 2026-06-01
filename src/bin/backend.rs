@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "The sequence data is hardcoded.",
     ];
     let params = SafeTensorsLoader::new(model_dir)
-        .and_then(|loader| loader.load_all_weights_f16())
+        .and_then(|loader| loader.load_all_weights_f16_parallel())
         .map_err(|e| format!("failed to load model parameters: {}", e))?;
     println!("Loaded {} parameter tensors", params.len());
     f16::init_global_strict(params);
