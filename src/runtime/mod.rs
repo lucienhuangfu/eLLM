@@ -2,6 +2,7 @@ pub mod batch_sequence;
 pub mod io;
 pub mod runner;
 pub mod scheduling;
+pub mod spin_barrier;
 
 pub use crate::config::generation_config;
 pub use crate::config::huggingface_config;

@@ -4,10 +4,12 @@
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
+use std::ptr;
 
 use crate::kernel;
 use crate::kernel::common::heap::FixedMinHeap;
 use crate::kernel::common::matmul_params::MatMulParams;
+use crate::num_traits::NegInfinity;
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::MatMulTopKTrait;
@@ -70,7 +72,7 @@ pub struct MatMulTopK<T> {
 
 impl<T> MatMulTopK<T>
 where
-    T: Copy + Default + PartialOrd + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Default + PartialOrd + Add<Output = T> + Mul<Output = T> + NegInfinity,
 {
     #[inline]
     pub fn detect_threads() -> usize {
@@ -297,6 +299,12 @@ where
             for batch_row in 0..active_input_rows {
                 let heap_ptr = self.heap_for(batch_row, thread_id);
                 (*heap_ptr).clear();
+                let base = batch_row * self.thread_max * self.topk_simd
+                    + thread_id * self.topk_simd;
+                for rank in 0..self.topk_simd {
+                    ptr::write(self.value_ptr.ptr.add(base + rank), T::neg_infinity());
+                    ptr::write(self.indice_ptr.ptr.add(base + rank), 0usize);
+                }
             }
 
             let input_tile_count = padded_input_rows.div_ceil(input_block_rows);
@@ -322,6 +330,9 @@ where
                     let mut input_row_offset = 0usize;
                     while input_row_offset < input_rows_in_block {
                         let global_input_row_start = input_row_start + input_row_offset;
+                        let active_rows_in_micro = active_input_rows
+                            .saturating_sub(global_input_row_start)
+                            .min(micro_tile_rows);
 
                         let mut output_col_offset = 0usize;
                         while output_col_offset < output_cols_in_block {
@@ -339,7 +350,17 @@ where
                                 let weight_panel_ptr = self
                                     .packed_panel_ptr(global_output_col_start, reduction_col_start);
 
-                                self.compute(input_tile, weight_panel_ptr, c_tile_ptr);
+                                if active_rows_in_micro < micro_tile_rows {
+                                    self.compute_rows(
+                                        input_tile,
+                                        weight_panel_ptr,
+                                        c_tile_ptr,
+                                        reduction_block_cols,
+                                        active_rows_in_micro,
+                                    );
+                                } else {
+                                    self.compute(input_tile, weight_panel_ptr, c_tile_ptr);
+                                }
 
                                 reduction_col_start += reduction_block_cols;
                             }
@@ -406,6 +427,31 @@ where
 
         kernel::scalar::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
     }
+
+    default fn compute_rows(
+        &self,
+        input_row: *const T,
+        weight_panel: *const T,
+        output_row: *mut T,
+        kc: usize,
+        rows: usize,
+    ) {
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            let input_row_stride = self.column;
+            for row in 0..rows {
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut acc = *output_row.add(row * micro_tile_cols + col_in_tile);
+                    for reduction_lane in 0..kc {
+                        acc = acc
+                            + *input_row.add(row * input_row_stride + reduction_lane)
+                                * *weight_panel.add(reduction_lane * micro_tile_cols + col_in_tile);
+                    }
+                    *output_row.add(row * micro_tile_cols + col_in_tile) = acc;
+                }
+            }
+        }
+    }
 }
 
 impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
@@ -440,6 +486,67 @@ impl MatMulTopKTrait<f16> for MatMulTopK<f16> {
             );
         }
     }
+
+    fn compute_rows(
+        &self,
+        input_row: *const f16,
+        weight_panel: *const f16,
+        output_row: *mut f16,
+        kc: usize,
+        rows: usize,
+    ) {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            use std::arch::x86_64::{
+                _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_set1_ph, _mm512_storeu_ph,
+            };
+
+            let input_row_stride = self.column;
+            let mut acc0 = if rows > 0 {
+                _mm512_loadu_ph(output_row)
+            } else {
+                _mm512_set1_ph(0.0)
+            };
+            let mut acc1 = if rows > 1 {
+                _mm512_loadu_ph(output_row.add(32))
+            } else {
+                _mm512_set1_ph(0.0)
+            };
+            for reduction_lane in 0..kc {
+                let weight = _mm512_loadu_ph(weight_panel.add(reduction_lane * 32));
+                if rows > 0 {
+                    let input = _mm512_set1_ph(*input_row.add(reduction_lane));
+                    acc0 = _mm512_fmadd_ph(input, weight, acc0);
+                }
+                if rows > 1 {
+                    let input = _mm512_set1_ph(*input_row.add(input_row_stride + reduction_lane));
+                    acc1 = _mm512_fmadd_ph(input, weight, acc1);
+                }
+            }
+            if rows > 0 {
+                _mm512_storeu_ph(output_row, acc0);
+            }
+            if rows > 1 {
+                _mm512_storeu_ph(output_row.add(32), acc1);
+            }
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            let input_row_stride = self.column;
+            for row in 0..rows {
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut acc = *output_row.add(row * micro_tile_cols + col_in_tile) as f32;
+                    for reduction_lane in 0..kc {
+                        acc += (*input_row.add(row * input_row_stride + reduction_lane) as f32)
+                            * (*weight_panel.add(reduction_lane * micro_tile_cols + col_in_tile)
+                                as f32);
+                    }
+                    *output_row.add(row * micro_tile_cols + col_in_tile) = acc as f16;
+                }
+            }
+        }
+    }
 }
 
 impl MatMulTopKTrait<f32> for MatMulTopK<f32> {
@@ -456,6 +563,30 @@ impl MatMulTopKTrait<f32> for MatMulTopK<f32> {
         };
 
         kernel::scalar::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
+    }
+
+    fn compute_rows(
+        &self,
+        input_row: *const f32,
+        weight_panel: *const f32,
+        output_row: *mut f32,
+        kc: usize,
+        rows: usize,
+    ) {
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            let input_row_stride = self.column;
+            for row in 0..rows {
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut acc = *output_row.add(row * micro_tile_cols + col_in_tile);
+                    for reduction_lane in 0..kc {
+                        acc += *input_row.add(row * input_row_stride + reduction_lane)
+                            * *weight_panel.add(reduction_lane * micro_tile_cols + col_in_tile);
+                    }
+                    *output_row.add(row * micro_tile_cols + col_in_tile) = acc;
+                }
+            }
+        }
     }
 }
 
@@ -803,6 +934,66 @@ mod tests {
                 // 只检查索引集合即可（顺序应该也是降序）
                 assert_eq!(final_topk, expected, "row {} topk mismatch", i);
             }
+        }
+    }
+
+    #[test]
+    fn test_matmul_topk_empty_thread_heaps_do_not_win_negative_logits() {
+        const M_RUN: usize = 4;
+        const M_MAX: usize = 6;
+        const K: usize = 4;
+        const N: usize = 64;
+        const TOPK: usize = 4;
+        const THREADS: usize = 4;
+
+        let a = vec![1.0f32; M_MAX * K];
+        let mut b_nt = vec![0.0f32; N * K];
+        for j in 0..N {
+            let value = -10.0 + j as f32 * 0.01;
+            for kk in 0..K {
+                b_nt[j * K + kk] = value;
+            }
+        }
+
+        unsafe {
+            let mut indices_buf = vec![usize::MAX; M_MAX * THREADS * TOPK];
+            let mut values_buf = vec![0.0f32; M_MAX * THREADS * TOPK];
+
+            let runner = MatMulTopK::<f32>::new(
+                a.as_ptr(),
+                b_nt.as_ptr(),
+                indices_buf.as_mut_ptr(),
+                values_buf.as_mut_ptr(),
+                M_MAX,
+                N,
+                K,
+                3,
+                64,
+                K,
+                3,
+                32,
+                M_MAX,
+                THREADS,
+                TOPK,
+            );
+
+            for tid in 0..THREADS {
+                runner.run(M_RUN, 0, THREADS, tid);
+            }
+
+            let row = 3;
+            let mut merged = Vec::with_capacity(THREADS * TOPK);
+            for tid in 0..THREADS {
+                let offset = row * (THREADS * TOPK) + tid * TOPK;
+                for rank in 0..TOPK {
+                    merged.push((indices_buf[offset + rank], values_buf[offset + rank]));
+                }
+            }
+            merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            let final_topk: Vec<usize> = merged[..TOPK].iter().map(|(idx, _)| *idx).collect();
+            assert_eq!(final_topk, vec![63, 62, 61, 60]);
+            assert!(merged[..TOPK].iter().all(|(_, value)| *value < 0.0));
         }
     }
 }

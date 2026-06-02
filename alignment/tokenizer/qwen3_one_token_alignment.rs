@@ -14,6 +14,7 @@ use ellm::transformer::rope::RotaryEmbedding;
 use serde_json::json;
 use std::f16;
 use std::sync::Arc;
+use std::time::Instant;
 
 fn operator_name(operator: &Operator<f16>) -> &'static str {
     match operator {
@@ -38,6 +39,27 @@ fn operator_name(operator: &Operator<f16>) -> &'static str {
         Operator::FakeEcho(_) => "FakeEcho",
         Operator::TopKSoftmax(_) => "TopKSoftmax",
     }
+}
+
+fn write_f16_tensor(path: &std::path::Path, ptr: *mut f16, len: usize) -> std::io::Result<()> {
+    let byte_size = len * std::mem::size_of::<f16>();
+    unsafe {
+        let bytes: &[u8] = std::slice::from_raw_parts(ptr as *const u8, byte_size);
+        std::fs::write(path, bytes)
+    }
+}
+
+fn dump_pool_tensor(
+    dump_dir: &std::path::Path,
+    name: &str,
+    file_name: &str,
+    len: usize,
+) {
+    f16::with_global(|pool| {
+        let ptr = pool.get(name, &vec![len]);
+        let path = dump_dir.join(file_name);
+        let _ = write_f16_tensor(&path, ptr, len);
+    });
 }
 
 fn main() -> anyhow::Result<()> {
@@ -68,9 +90,10 @@ fn main() -> anyhow::Result<()> {
     let chunk_size = input_ids.len();
     let top_k = 1;
 
+    let load_start = Instant::now();
     eprintln!("loading f16 weights");
-    let params = SafeTensorsLoader::new(&model_dir)?.load_all_weights_f16()?;
-    eprintln!("loaded {} tensors", params.len());
+    let params = SafeTensorsLoader::new(&model_dir)?.load_all_weights_f16_parallel()?;
+    eprintln!("loaded {} tensors in {:.2?}", params.len(), load_start.elapsed());
     f16::init_global_strict(params);
 
     eprintln!("building rotary embeddings");
@@ -89,6 +112,7 @@ fn main() -> anyhow::Result<()> {
         .filter(|ids| !ids.is_empty())
         .unwrap_or(config.eos_token_ids.clone());
 
+    let build_start = Instant::now();
     eprintln!("building model graph");
     let mut model = Model::<f16>::new(
         &config,
@@ -112,7 +136,7 @@ fn main() -> anyhow::Result<()> {
     eprintln!("calling model.forward");
     let (_output_indices, _output_tensor) =
         model.forward(sequences.as_mut_ptr(), batch_temperature.as_mut_ptr());
-    eprintln!("operator queue ready");
+    eprintln!("operator queue ready in {:.2?}", build_start.elapsed());
     let operator_queue = f16::take_operator_queue();
 
     let slice = SequenceSlice {
@@ -133,6 +157,7 @@ fn main() -> anyhow::Result<()> {
     }];
 
     let token_count = input_ids.len();
+    let hidden_size = config.hidden_size;
 
     // Dump helper is kept for debugging purposes but not currently used
     #[allow(dead_code)]
@@ -158,7 +183,12 @@ fn main() -> anyhow::Result<()> {
 
     // Phase 1: Layer operators + final RMS norm (simulating scheduler's prefill round)
     let dump_dir = std::path::Path::new("alignment/tokenizer/dump");
+    std::fs::create_dir_all(dump_dir)?;
+    let mut completed_layers = 0usize;
+    let mut previous_operator_name = "";
+    let run_start = Instant::now();
     for (index, operator) in operator_queue.iter().enumerate().take(phase2_start) {
+        let current_operator_name = operator_name(operator);
         eprintln!("running operator[{index}] {}", operator_name(operator));
         operator.run(
             input_ids.len(),
@@ -169,37 +199,160 @@ fn main() -> anyhow::Result<()> {
             &decode_list,
             &mut batch_list,
         );
-    }
 
-    // Dump final norm BEFORE manual lift (all 15 tokens intact)
-    f16::with_global(|pool| {
-        let norm_size = token_count * 1024;
-        let norm_ptr = pool.get("model.norm_hidden.output", &vec![norm_size]);
-        let byte_size = norm_size * std::mem::size_of::<f16>();
-        let first_val = unsafe { *norm_ptr };
-        let last_val = unsafe { *norm_ptr.add(norm_size - 1) };
-        eprintln!(
-            "dumping final norm: {norm_size} elements, first={first_val:.4?}, last={last_val:.4?}"
-        );
-        unsafe {
-            let bytes: &[u8] = std::slice::from_raw_parts(norm_ptr as *const u8, byte_size);
-            std::fs::write(dump_dir.join("rust_final_norm.bin"), bytes).ok();
+        let size = token_count * hidden_size;
+        let num_experts = config
+            .layers
+            .get(completed_layers)
+            .and_then(|layer| match &layer.ffn {
+                ellm::transformer::config::FfnKind::SparseMoe { num_experts, .. } => {
+                    Some(*num_experts)
+                }
+                _ => None,
+            })
+            .unwrap_or(128);
+        let num_experts_per_tok = config
+            .layers
+            .get(completed_layers)
+            .and_then(|layer| match &layer.ffn {
+                ellm::transformer::config::FfnKind::SparseMoe {
+                    num_experts_per_tok,
+                    ..
+                } => Some(*num_experts_per_tok),
+                _ => None,
+            })
+            .unwrap_or(8);
+
+        if matches!(operator, Operator::LookupRMSMap(_)) {
+            dump_pool_tensor(
+                dump_dir,
+                "model.layers.0.output_hidden",
+                "rust_layer00_input.bin",
+                size,
+            );
+            dump_pool_tensor(
+                dump_dir,
+                "model.layers.0.output_normal",
+                "rust_layer00_post_input_norm.bin",
+                size,
+            );
+        } else if matches!(operator, Operator::RMSMap(_))
+            && matches!(
+                operator_queue.get(index + 1),
+                Some(Operator::MatMul3(_))
+            )
+            && completed_layers < config.num_hidden_layers
+        {
+            let tensor_name = format!("model.layers.{completed_layers}.input_layernorm.output");
+            let file_name = format!("rust_layer{completed_layers:02}_post_input_norm.bin");
+            dump_pool_tensor(dump_dir, &tensor_name, &file_name, size);
+        } else if matches!(operator, Operator::MatMulAdd(_))
+            && completed_layers < config.num_hidden_layers
+        {
+            let tensor_name = format!("model.layers.{completed_layers}.self_attn");
+            let file_name = format!("rust_layer{completed_layers:02}_attn_residual.bin");
+            dump_pool_tensor(dump_dir, &tensor_name, &file_name, size);
+        } else if matches!(operator, Operator::RMSMap(_))
+            && previous_operator_name == "MatMulAdd"
+            && completed_layers < config.num_hidden_layers
+        {
+            let tensor_name =
+                format!("model.layers.{completed_layers}.post_attention_layernorm.output");
+            let file_name = format!("rust_layer{completed_layers:02}_post_attn_norm.bin");
+            dump_pool_tensor(dump_dir, &tensor_name, &file_name, size);
         }
-    });
+        // Dump router gate logits: MatMul followed by ExpertsSoftmaxNorm
+        else if matches!(operator, Operator::MatMul(_))
+            && matches!(
+                operator_queue.get(index + 1),
+                Some(Operator::ExpertsSoftmaxNorm(_))
+            )
+            && completed_layers < config.num_hidden_layers
+        {
+            let tensor_name = format!("model.layers.{completed_layers}.mlp.gate.output");
+            let file_name = format!("rust_layer{completed_layers:02}_router_logits.bin");
+            let router_size = token_count * num_experts;
+            dump_pool_tensor(dump_dir, &tensor_name, &file_name, router_size);
+        }
+        // Dump routing weights and expert indices after ExpertsSoftmaxNorm
+        // The topk_values_ptr stores per-token top-k weights (token-major, sorted desc)
+        // The routing.topk_indices stores per-token expert indices (token-major, sorted desc)
+        else if matches!(operator, Operator::ExpertsSoftmaxNorm(_))
+            && completed_layers < config.num_hidden_layers
+        {
+            if let Operator::ExpertsSoftmaxNorm(ref softmax_op) = operator {
+                let topk_count = token_count * num_experts_per_tok;
+                // Dump per-token routing weights (token-major, sorted by weight desc)
+                let weights_ptr = softmax_op.topk_values_ptr.ptr;
+                let weights_path = dump_dir.join(format!(
+                    "rust_layer{completed_layers:02}_routing_weights.bin"
+                ));
+                let _ = write_f16_tensor(&weights_path, weights_ptr, topk_count);
+                // Dump per-token selected expert indices (token-major, sorted by weight desc)
+                let indices_ptr = softmax_op.routing.topk_indices.ptr;
+                let indices_path = dump_dir.join(format!(
+                    "rust_layer{completed_layers:02}_selected_experts.bin"
+                ));
+                unsafe {
+                    let byte_size = topk_count * std::mem::size_of::<usize>();
+                    let bytes: &[u8] =
+                        std::slice::from_raw_parts(indices_ptr as *const u8, byte_size);
+                    std::fs::write(&indices_path, bytes).ok();
+                }
+            }
+        }
+        // Dump per-expert down projection output
+        else if matches!(operator, Operator::ExpertsMatMulDown(_))
+            && completed_layers < config.num_hidden_layers
+        {
+            // down_proj output: [token_count, num_experts_per_tok, hidden_size]
+            let tensor_name = format!("model.layers.{completed_layers}.mlp.down_proj.output.output");
+            let file_name = format!("rust_layer{completed_layers:02}_mlp_output.bin");
+            let mlp_out_size = token_count * num_experts_per_tok * hidden_size;
+            dump_pool_tensor(dump_dir, &tensor_name, &file_name, mlp_out_size);
+        } else if matches!(operator, Operator::RMSMap(_))
+            && matches!(
+                operator_queue.get(index + 1),
+                Some(Operator::LiftVector(_))
+            )
+            && completed_layers == config.num_hidden_layers
+        {
+            dump_pool_tensor(
+                dump_dir,
+                "model.norm_hidden.output",
+                "rust_final_norm.bin",
+                size,
+            );
+        }
+
+        if matches!(operator, Operator::ExpertsMergeAdd(_))
+            && completed_layers < config.num_hidden_layers
+        {
+            f16::with_global(|pool| {
+                let tensor_name = format!("model.layers.{completed_layers}.mlp.output.output");
+                let size = token_count * hidden_size;
+                let ptr = pool.get(&tensor_name, &vec![size]);
+                let path = dump_dir.join(format!("rust_layer{completed_layers:02}_output.bin"));
+                let _ = write_f16_tensor(&path, ptr, size);
+            });
+            completed_layers += 1;
+        }
+        previous_operator_name = current_operator_name;
+    }
 
     // Manual LiftVector: copy last token's normed hidden state to position 0
     // This simulates what LiftVector does during real decode, so MatMulTopK
     // can process the correct token in decode mode (prefill=0, decode=1).
     f16::with_global(|pool| {
-        let norm_size = token_count * 1024;
+        let norm_size = token_count * hidden_size;
         let norm_ptr = pool.get("model.norm_hidden.output", &vec![norm_size]);
-        let src_offset = (token_count - 1) * 1024;
+        let src_offset = (token_count - 1) * hidden_size;
         eprintln!(
-            "Manual lift: copying norm[{src_offset}..{}] to norm[0..1024]",
-            src_offset + 1024
+            "Manual lift: copying norm[{src_offset}..{}] to norm[0..{hidden_size}]",
+            src_offset + hidden_size
         );
         unsafe {
-            std::ptr::copy(norm_ptr.add(src_offset), norm_ptr, 1024);
+            std::ptr::copy(norm_ptr.add(src_offset), norm_ptr, hidden_size);
         }
     });
 
@@ -208,6 +361,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("running operator[{index}] {}", operator_name(operator));
         operator.run(0, 1, 1, 0, &prefill_list, &decode_list, &mut batch_list);
     }
+    eprintln!("ran operators in {:.2?}", run_start.elapsed());
 
     let next_token_id = unsafe { *sequences.as_mut_ptr().add(input_ids.len()) };
     eprintln!(">>> next_token_id = {next_token_id}");
@@ -233,6 +387,10 @@ fn main() -> anyhow::Result<()> {
             "input_ids": input_ids,
             "next_token_id": next_token_id,
             "next_token": tokenizer.decode(vec![next_token_id as u32]).unwrap_or_default(),
+            "dump_dir": dump_dir,
+            "dumped_layers": completed_layers,
+            "hidden_size": hidden_size,
+            "num_hidden_layers": config.num_hidden_layers,
             "phase": format!("{:?}", batch_list[0].phase),
             "kv_index": batch_list[0].kv_index,
         }))?

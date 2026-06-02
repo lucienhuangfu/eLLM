@@ -481,25 +481,60 @@ where
                             let mut reduction_col_start = 0usize;
                             debug_assert!(reduction_cols % reduction_block_cols == 0);
                             while reduction_col_start < reduction_cols {
-                                Self::pack_a_tile(
-                                    self,
-                                    expert_id,
-                                    reduction_col_start,
-                                    valid_rows,
-                                    idx_buf,
-                                    token_offset_in_block,
-                                    a_tile,
-                                    reduction_block_cols,
-                                    micro_tile_rows,
-                                );
-
                                 let weight_panel = self.packed_panel_ptr(
                                     expert_id,
                                     output_col_start + output_col_offset,
                                     reduction_col_start,
                                 );
 
-                                self.compute1(a_tile as *const T, weight_panel, acc);
+                                if valid_rows == 1 {
+                                    let token_id = *idx_buf.add(token_offset_in_block);
+                                    let input_row = self
+                                        .nonlin_ptr
+                                        .ptr
+                                        .add(expert_id * (self.num_token * self.hmid))
+                                        .add(token_id * self.hmid + reduction_col_start);
+                                    self.compute1_single(
+                                        input_row,
+                                        weight_panel,
+                                        acc,
+                                        reduction_block_cols,
+                                    );
+                                } else if valid_rows < micro_tile_rows {
+                                    Self::pack_a_tile(
+                                        self,
+                                        expert_id,
+                                        reduction_col_start,
+                                        valid_rows,
+                                        idx_buf,
+                                        token_offset_in_block,
+                                        a_tile,
+                                        reduction_block_cols,
+                                        micro_tile_rows,
+                                    );
+
+                                    self.compute1_rows(
+                                        a_tile as *const T,
+                                        weight_panel,
+                                        acc,
+                                        reduction_block_cols,
+                                        valid_rows,
+                                    );
+                                } else {
+                                    Self::pack_a_tile(
+                                        self,
+                                        expert_id,
+                                        reduction_col_start,
+                                        valid_rows,
+                                        idx_buf,
+                                        token_offset_in_block,
+                                        a_tile,
+                                        reduction_block_cols,
+                                        micro_tile_rows,
+                                    );
+
+                                    self.compute1(a_tile as *const T, weight_panel, acc);
+                                }
 
                                 reduction_col_start += reduction_block_cols;
                             }
@@ -554,6 +589,51 @@ where
     // compute1：acc += A_tile * B_panel。
     default fn compute1(&self, _a_tile: *const T, _b_panel: *const T, _acc: *mut T) {}
 
+    default fn compute1_single(
+        &self,
+        input_row: *const T,
+        b_panel: *const T,
+        acc: *mut T,
+        kc: usize,
+    ) {
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            for col_in_tile in 0..micro_tile_cols {
+                let mut sum = *acc.add(col_in_tile);
+                for reduction_lane in 0..kc {
+                    sum = sum
+                        + *input_row.add(reduction_lane)
+                            * *b_panel.add(reduction_lane * micro_tile_cols + col_in_tile);
+                }
+                *acc.add(col_in_tile) = sum;
+            }
+        }
+    }
+
+    default fn compute1_rows(
+        &self,
+        a_tile: *const T,
+        b_panel: *const T,
+        acc: *mut T,
+        kc: usize,
+        rows: usize,
+    ) {
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            for row_in_tile in 0..rows {
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut sum = *acc.add(row_in_tile * micro_tile_cols + col_in_tile);
+                    for reduction_lane in 0..kc {
+                        sum = sum
+                            + *a_tile.add(row_in_tile * kc + reduction_lane)
+                                * *b_panel.add(reduction_lane * micro_tile_cols + col_in_tile);
+                    }
+                    *acc.add(row_in_tile * micro_tile_cols + col_in_tile) = sum;
+                }
+            }
+        }
+    }
+
     // compute2: out_row[j] += acc_row[j] * factor for len <= micro_tile_cols.
     // compute2：对 len <= micro_tile_cols 的输出执行 out_row[j] += acc_row[j] * factor。
     default fn compute2(
@@ -599,6 +679,77 @@ impl ExpertsDownTrait<f16> for ExpertMatMulDown<f16> {
                     for reduction_lane in 0..reduction_block_cols {
                         sum += (*a_tile.add(row_in_tile * reduction_block_cols + reduction_lane)
                             as f32)
+                            * (*b_panel.add(reduction_lane * micro_tile_cols + col_in_tile) as f32);
+                    }
+                    *acc.add(row_in_tile * micro_tile_cols + col_in_tile) = sum as f16;
+                }
+            }
+        }
+    }
+
+    fn compute1_single(
+        &self,
+        input_row: *const f16,
+        b_panel: *const f16,
+        acc: *mut f16,
+        kc: usize,
+    ) {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            use std::arch::x86_64::{
+                _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_set1_ph, _mm512_storeu_ph,
+            };
+
+            let mut sum = _mm512_loadu_ph(acc);
+            for reduction_lane in 0..kc {
+                let a = _mm512_set1_ph(*input_row.add(reduction_lane));
+                let w = _mm512_loadu_ph(b_panel.add(reduction_lane * 32));
+                sum = _mm512_fmadd_ph(a, w, sum);
+            }
+            _mm512_storeu_ph(acc, sum);
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            for col_in_tile in 0..micro_tile_cols {
+                let mut sum = *acc.add(col_in_tile) as f32;
+                for reduction_lane in 0..kc {
+                    sum += (*input_row.add(reduction_lane) as f32)
+                        * (*b_panel.add(reduction_lane * micro_tile_cols + col_in_tile) as f32);
+                }
+                *acc.add(col_in_tile) = sum as f16;
+            }
+        }
+    }
+
+    fn compute1_rows(
+        &self,
+        a_tile: *const f16,
+        b_panel: *const f16,
+        acc: *mut f16,
+        kc: usize,
+        rows: usize,
+    ) {
+        let micro_tile_cols = self.params.b_row_step_micro.max(1);
+        let call_param = MatMulParams {
+            a_row_step_macro: kc,
+            b_row_step_macro: micro_tile_cols,
+            column_step_macro: kc,
+            a_row_step_micro: rows,
+            b_row_step_micro: micro_tile_cols,
+        };
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            kernel::x86_64::f16_512::matmul_block::matmul_block(a_tile, b_panel, acc, &call_param);
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        unsafe {
+            for row_in_tile in 0..rows {
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut sum = *acc.add(row_in_tile * micro_tile_cols + col_in_tile) as f32;
+                    for reduction_lane in 0..kc {
+                        sum += (*a_tile.add(row_in_tile * kc + reduction_lane) as f32)
                             * (*b_panel.add(reduction_lane * micro_tile_cols + col_in_tile) as f32);
                     }
                     *acc.add(row_in_tile * micro_tile_cols + col_in_tile) = sum as f16;
