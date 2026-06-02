@@ -6,7 +6,7 @@
 
 ## 主题
 
-- [Serving](./serving.md)
+- [Serving](./serving/README.md)
 - [运行时概览](./runtime/overview.md)
 - [运行时调度](./runtime/schedule.md)
 - [运行时优化配置](./runtime/optimization.md)
