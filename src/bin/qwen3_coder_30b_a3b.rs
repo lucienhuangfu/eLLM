@@ -16,6 +16,7 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -246,12 +247,14 @@ fn main() {
     let max_output_tokens_u = max_output_tokens;
 
     let start = Instant::now();
+    let task_in_flight = Arc::new(AtomicBool::new(false));
     let runner = ServingRunner::new(
         f16::take_operator_queue(),
         Arc::clone(&batch_list_ref),
         task_sender.clone(),
     )
-    .with_runner_count(thread_num);
+    .with_runner_count(thread_num)
+    .with_task_in_flight(Arc::clone(&task_in_flight));
     let runner_handle = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(thread_num)
@@ -261,6 +264,8 @@ fn main() {
         rt.block_on(runner.start());
     });
 
+    // Send prefill task
+    task_in_flight.store(true, Ordering::Release);
     loop {
         match task_sender.send(task.clone()) {
             Ok(_) => break,
@@ -271,7 +276,56 @@ fn main() {
         }
     }
 
+    // Decode loop: keep scheduling until all sequences are done
+    let mut generated_count = 0usize;
+    loop {
+        // Wait for current task to complete
+        while task_in_flight.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+
+        generated_count += 1;
+
+        // Check if all sequences are finished
+        let all_done = batch_scheduler.batch_list.with(|list| {
+            list.iter().all(|s| matches!(s.phase, Phase::Eos))
+                || generated_count > max_output_tokens_u
+        });
+        if all_done {
+            break;
+        }
+
+        // Schedule next batch (decode step)
+        let sizes = batch_scheduler.schedule_batch();
+        if sizes.1 == 0 {
+            break;
+        }
+        let decode_task = ScheduleTask::new(
+            sizes.0,
+            sizes.1,
+            batch_scheduler.prefill_list.clone(),
+            batch_scheduler.decode_list.clone(),
+            1,
+        );
+
+        task_in_flight.store(true, Ordering::Release);
+        loop {
+            match task_sender.send(decode_task.clone()) {
+                Ok(_) => break,
+                Err(err) => {
+                    let _ = err.0;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+    }
+
+    // Signal runner to stop
     drop(task_sender);
+    // Wait for final task to complete
+    while task_in_flight.load(Ordering::Acquire) {
+        std::thread::sleep(std::time::Duration::from_micros(100));
+    }
     let _ = runner_handle.join();
     let elapsed = start.elapsed();
 
