@@ -59,11 +59,17 @@ where
     }
 
     pub async fn start(self) {
-        let thread_num = self.runner_count;
+        let ServingRunner {
+            operator_queue,
+            batch_list,
+            task_sender,
+            runner_count,
+        } = self;
+        let thread_num = runner_count;
 
-        let operator_queue: Arc<[Operator<T>]> = self.operator_queue.into();
+        let operator_queue: Arc<[Operator<T>]> = operator_queue.into();
         let barrier = Arc::new(Barrier::new(thread_num));
-        let batch_list = Arc::clone(&self.batch_list);
+        let batch_list = Arc::clone(&batch_list);
 
         let mut join_set = JoinSet::new();
 
@@ -71,7 +77,7 @@ where
             let barrier = Arc::clone(&barrier);
             let queue = Arc::clone(&operator_queue);
             let batch_list = Arc::clone(&batch_list);
-            let mut receiver = self.task_sender.subscribe();
+            let mut receiver = task_sender.subscribe();
 
             join_set.spawn(async move {
                 while let Ok(task) = receiver.recv().await {
@@ -98,6 +104,7 @@ where
                 }
             });
         }
+        drop(task_sender);
 
         while let Some(res) = join_set.join_next().await {
             if let Err(e) = res {

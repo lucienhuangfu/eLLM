@@ -269,6 +269,7 @@ fn main() {
         }
     }
 
+    drop(task_sender);
     let _ = runner_handle.join();
     let elapsed = start.elapsed();
 

@@ -187,6 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    drop(task_sender);
     let _ = runner_handle.join();
 
     println!("\n=== Generated Output ===");
