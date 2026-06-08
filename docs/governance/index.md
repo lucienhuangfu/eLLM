@@ -1,9 +1,3 @@
-# 治理
+# Governance
 
-这里保留项目治理说明。
-
-## 建议包含
-
-- 贡献规则
-- 代码审查流程
-- 决策与维护机制
+This section is reserved for project governance documents and policy notes.

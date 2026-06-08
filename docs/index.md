@@ -21,3 +21,30 @@
 - 把现有章节内容移动到对应子目录
 - 补充每个章节的二级页面
 - 继续完善 MkDocs 主题、搜索和导航
+# Welcome to eLLM
+
+This documentation set is being reorganized around MkDocs and aligned with the
+section layout used by vLLM.
+
+Use the navigation to move through the same major buckets vLLM exposes:
+
+- Getting started
+- User guide
+- Serving and deployment
+- Models and features
+- Developer docs
+- API and CLI references
+
+The pages in this repository are intentionally being split into smaller,
+MkDocs-friendly files so the site can grow without a monolithic markdown index.
+
+## Preview locally
+
+Use `mkdocs serve` to preview the site while the migration is in progress.
+
+## Start here
+
+- [Quickstart](getting_started/quickstart.md)
+- [Configuration](configuration/index.md)
+- [Optimization](configuration/optimization.md)
+- [Model contribution basics](contributing/model/basic.md)

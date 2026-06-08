@@ -1,9 +1,4 @@
-# 功能
+# Features
 
-这里保留功能特性总览。
-
-## 建议包含
-
-- 功能矩阵
-- 模型能力
-- 兼容性说明
+Feature-level guides and deep dives should live here once the migration breaks
+the current pages into smaller topics.

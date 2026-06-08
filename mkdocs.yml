@@ -1,69 +1,72 @@
 site_name: eLLM Docs
-site_description: Documentation site structured for MkDocs, inspired by the vLLM docs layout.
-repo_name: eLLM
-
+site_description: Documentation restructured for MkDocs using the vLLM navigation pattern.
 docs_dir: docs
 site_dir: site
+strict: true
 use_directory_urls: true
+dev_addr: 127.0.0.1:8000
 
 theme:
-  name: material
-  language: zh
-  icon:
-    repo: fontawesome/brands/github
-  features:
-    - navigation.instant
-    - navigation.instant.prefetch
-    - navigation.sections
-    - navigation.top
-    - navigation.tracking
-    - search.suggest
-    - search.highlight
-    - content.code.copy
-    - content.tabs.link
+  name: readthedocs
 
-plugins:
-  - search
+nav:
+  - Home: index.md
+  - User Guide:
+      - Overview: usage/index.md
+      - v1 Guide: usage/v1_guide.md
+  - Getting Started:
+      - Quickstart: getting_started/quickstart.md
+      - Installation: getting_started/installation.md
+  - Examples: examples/index.md
+  - Inference and Serving:
+      - Offline Inference: serving/offline_inference.md
+      - OpenAI Compatible Server: serving/openai_compatible_server.md
+      - Serving Overview: serving/index.md
+      - Integrations: serving/integrations/index.md
+  - Deployment:
+      - Overview: deployment/index.md
+      - Frameworks: deployment/frameworks/index.md
+      - Integrations: deployment/integrations/index.md
+  - Training: training/index.md
+  - Configuration:
+      - Overview: configuration/index.md
+      - Optimization: configuration/optimization.md
+  - Models:
+      - Supported Models: models/supported_models.md
+      - Generative Models: models/generative_models.md
+      - Pooling Models: models/pooling_models/index.md
+      - Extensions: models/extensions/index.md
+      - Hardware Supported Models: models/hardware_supported_models/index.md
+  - Features: features/index.md
+  - Developer Guide:
+      - Overview: contributing/README.md
+      - General: contributing/index.md
+      - Model Implementation:
+          - Overview: contributing/model/README.md
+          - Basic: contributing/model/basic.md
+          - Registration: contributing/model/registration.md
+          - Tests: contributing/model/tests.md
+          - Multimodal: contributing/model/multimodal.md
+          - Transcription: contributing/model/transcription.md
+      - CI: contributing/ci/index.md
+  - Design Documents: design/index.md
+  - Benchmarking:
+      - Overview: benchmarking/README.md
+      - CLI: benchmarking/cli.md
+      - Sweeps: benchmarking/sweeps.md
+      - Dashboard: benchmarking/dashboard.md
+  - API Reference:
+      - Overview: api/README.md
+      - vLLM: api/vllm/index.md
+  - CLI Reference: cli/index.md
+  - Community: community/index.md
+  - Governance: governance/index.md
 
 markdown_extensions:
   - admonition
-  - attr_list
-  - md_in_html
-  - pymdownx.details
-  - pymdownx.superfences
   - toc:
       permalink: true
+  - tables
+  - fenced_code
+  - attr_list
 
-nav:
-  - 首页: index.md
-  - 开始使用:
-      - 快速开始: getting_started/quickstart.md
-      - 安装: getting_started/installation.md
-  - 推理与服务:
-      - 概览: serving/index.md
-      - 在线服务: serving/online_serving.md
-      - 并行与扩展: serving/parallelism_scaling.md
-  - 配置:
-      - 概览: configuration/index.md
-      - 性能优化: configuration/optimization.md
-  - CLI 参考:
-      - 概览: cli/index.md
-      - serve: cli/serve.md
-      - chat: cli/chat.md
-      - complete: cli/complete.md
-      - run-batch: cli/run-batch.md
-      - bench: cli/bench/index.md
-  - 集成:
-      - 概览: integrations/index.md
-  - 部署:
-      - 概览: deployment/index.md
-  - 框架:
-      - 概览: frameworks/index.md
-  - 社区:
-      - 概览: community/index.md
-  - 治理:
-      - 概览: governance/index.md
-  - 中文运行时文档:
-      - 概览: zh-CN/runtime/overview.md
-      - 调度: zh-CN/runtime/schedule.md
-      - 性能优化: zh-CN/runtime/optimization.md

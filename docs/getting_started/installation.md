@@ -1,9 +1,4 @@
-# 安装
+# Installation
 
-这里保留安装相关说明。
+Placeholder for installation instructions.
 
-## 建议包含
-
-- Python 与依赖环境
-- GPU/CPU 安装方式
-- 常见安装问题

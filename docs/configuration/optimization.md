@@ -1,9 +1,21 @@
-# 性能优化
+# Optimization
 
-这里保留性能调优与优化策略。
+This page will become the home for performance-tuning guidance.
 
-## 建议包含
+## Suggested structure
 
-- 并行策略
-- KV cache 与内存优化
-- 吞吐与延迟调优
+- Batch sizing and throughput
+- KV cache and memory tradeoffs
+- Precision choices
+- Parallelism and sharding
+- Scheduler and queue tuning
+
+## Migration notes
+
+This page is where the current optimization notes should be split into smaller
+MkDocs-friendly sections as the migration continues.
+
+## Next steps
+
+- Break large tuning topics into dedicated subpages when they grow too long.
+- Link each recommendation back to a concrete workload or deployment mode.

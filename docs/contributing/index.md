@@ -1,9 +1,15 @@
-# 贡献
+# Contributing
 
-这里保留贡献指南。
+This section covers the general contribution workflow for the repository.
 
-## 建议包含
+## Suggested topics
 
-- 开发流程
-- 文档规范
-- 提交规范
+- Development setup
+- Pull request expectations
+- Code style and formatting
+- Testing and validation
+
+## Related pages
+
+- [Developer Guide](README.md)
+- [Model contribution](model/README.md)

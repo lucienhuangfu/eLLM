@@ -1,9 +1,18 @@
-# 配置
+# Configuration
 
-这里是配置文档入口页。
+This section gathers the knobs that affect runtime behavior, performance, and
+deployment shape.
 
-## 建议包含
+## What belongs here
 
-- 运行参数
-- 模型配置
-- 资源与性能相关设置
+- Model and engine configuration
+- Performance tuning
+- Memory and batching behavior
+- Environment variables and deployment settings
+
+## Key pages
+
+- [Optimization](optimization.md)
+
+If you are looking for a feature-specific explanation, check the related
+section first and only come back here for the knobs that change it.

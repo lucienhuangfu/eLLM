@@ -1,10 +1,4 @@
-# 社区
+# Community
 
-这里保留社区入口与联系信息。
-
-## 建议包含
-
-- 联系方式
-- 论坛
-- Slack
-- 会议与活动
+This section is reserved for community links, governance-adjacent resources,
+and other project-facing documentation.

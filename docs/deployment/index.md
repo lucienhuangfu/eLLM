@@ -1,9 +1,9 @@
-# 部署
+# Deployment
 
-这里保留 Docker、Kubernetes、Nginx 等部署说明。
+Deployment docs will live here once the environment-specific guides are split
+out of the broader serving and configuration pages.
 
-## 建议包含
+## Pages
 
-- Docker
-- Kubernetes
-- 反向代理
+- [Frameworks](frameworks/index.md)
+- [Integrations](integrations/index.md)

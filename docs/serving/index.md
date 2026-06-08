@@ -1,9 +1,10 @@
-# 服务
+# Inference and Serving
 
-这里是服务能力的总入口。
+This section groups the docs for running the project as a service or using it
+for offline inference.
 
-## 建议包含
+## Pages
 
-- API 服务
-- 并行扩展
-- 进阶服务模式
+- [Offline inference](offline_inference.md)
+- [OpenAI compatible server](openai_compatible_server.md)
+- [Serving integrations](integrations/index.md)
