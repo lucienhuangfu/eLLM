@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct SequenceSlice {
     pub token_start_index: usize,
     pub batch_index: usize,
@@ -16,7 +16,7 @@ pub struct DecodeLookupResult {
     pub slice_index: usize,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct DecodeList {
     slices: Vec<SequenceSlice>,
     len: usize,

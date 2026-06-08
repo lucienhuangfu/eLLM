@@ -1,10 +1,10 @@
 use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
 
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::FromNumber;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
-use crate::mem_mgr::mem_pool::GlobalMemPool;
 
 use super::attention::Attention;
 use super::config::{AttentionKind, Config, FfnKind};

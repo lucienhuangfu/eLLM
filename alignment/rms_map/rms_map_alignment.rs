@@ -54,12 +54,7 @@ fn run_test(
     f16_to_f32(&output_f16)
 }
 
-fn compare_and_report(
-    name: &str,
-    output: &[f32],
-    expected: &[f32],
-    dump_dir: &Path,
-) -> bool {
+fn compare_and_report(name: &str, output: &[f32], expected: &[f32], dump_dir: &Path) -> bool {
     let mut max_err = 0.0f32;
     let mut sum_err = 0.0f64;
     let mut dot = 0.0f64;
@@ -134,7 +129,14 @@ fn main() {
     println!("\n--- Test 2: Zeros ---");
     let input_zeros = load_npy_f32(dump_dir.join("input_zeros.npy"));
     let expected_zeros = load_npy_f32(dump_dir.join("expected_zeros.npy"));
-    let output_zeros = run_test(&input_zeros, &weight_ones, hidden_size, eps, num_rows, false);
+    let output_zeros = run_test(
+        &input_zeros,
+        &weight_ones,
+        hidden_size,
+        eps,
+        num_rows,
+        false,
+    );
     compare_and_report("zeros", &output_zeros, &expected_zeros, dump_dir);
 
     // Test 3: Ones

@@ -2,9 +2,9 @@ use std::ops::{AddAssign, Neg, Sub};
 use std::sync::atomic::AtomicUsize;
 
 use crate::kernel::common::matmul_params::MatMulParams;
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
-use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
 use crate::operators::operator::Operator;
@@ -134,8 +134,8 @@ where
     }
 }
 
-use crate::mem_mgr::allocator::AlignedBox;
 use super::storage::leaked_aligned_ptr;
+use crate::mem_mgr::allocator::AlignedBox;
 
 impl<T> Tensor<T>
 where

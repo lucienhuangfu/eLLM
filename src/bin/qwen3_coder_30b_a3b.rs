@@ -7,7 +7,7 @@ use ellm::runtime::io::load_tiktoken;
 use ellm::runtime::io::ChatTemplate;
 use ellm::runtime::io::SafeTensorsLoader;
 use ellm::runtime::{
-    BatchScheduler, Config, GenerationConfig, Phase, SequenceState, ServingRunner,
+    BatchScheduler, Config, GenerationConfig, Phase, ScheduleTask, SequenceState, ServingRunner,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
@@ -225,11 +225,20 @@ fn main() {
         })
         .collect();
 
-    let batch_scheduler = BatchScheduler::new(sequence_length, batch_size, thread_num);
+    let mut batch_scheduler = BatchScheduler::new(sequence_length, batch_size, thread_num);
     batch_scheduler
         .batch_list
         .with_mut(|list| *list = batch_list);
     let batch_list_ref = Arc::clone(&batch_scheduler.batch_list);
+    let (task_sender, _) = tokio::sync::broadcast::channel(8);
+    let sizes = batch_scheduler.schedule_batch();
+    let mut task = ScheduleTask::new(
+        sizes.0,
+        sizes.1,
+        batch_scheduler.prefill_list.clone(),
+        batch_scheduler.decode_list.clone(),
+        1,
+    );
 
     // ---- force max_output_tokens cutoff after gen ----
     let sequence_length_u = sequence_length;
@@ -237,8 +246,30 @@ fn main() {
     let max_output_tokens_u = max_output_tokens;
 
     let start = Instant::now();
-    let runner = ServingRunner::new(f16::take_operator_queue(), batch_scheduler);
-    runner.start();
+    let runner = ServingRunner::new(
+        f16::take_operator_queue(),
+        Arc::clone(&batch_list_ref),
+        task_sender.clone(),
+    );
+    let runner_handle = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(runner.start());
+    });
+
+    loop {
+        match task_sender.send(task.clone()) {
+            Ok(_) => break,
+            Err(err) => {
+                task = err.0;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
+    let _ = runner_handle.join();
     let elapsed = start.elapsed();
 
     // Force-cut each sequence to exactly max_output_tokens generated tokens

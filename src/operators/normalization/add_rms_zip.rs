@@ -1,10 +1,10 @@
 use std::f16;
 // use num_traits::Float;
 
-use crate::num_traits::Sqrt;
-use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
+use crate::num_traits::Sqrt;
 use crate::operators::assign::assign;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::ZipMapTrait;
 
 #[derive(Clone)]
