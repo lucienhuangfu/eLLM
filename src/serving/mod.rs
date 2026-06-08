@@ -2,6 +2,7 @@ mod chat_handlers;
 pub mod config;
 pub mod model;
 pub mod model_setup;
+pub mod parser;
 pub mod resources;
 pub mod scheduler;
 
@@ -15,6 +16,7 @@ use tokio::sync::{Mutex, Semaphore};
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::batch_sequence::BatchSequence;
 use crate::runtime::scheduling::{Phase, SequenceState, TokenCounter};
+use parser::ParserOptions;
 
 use chat_handlers::chat_completions;
 
@@ -65,8 +67,38 @@ struct StreamResponse {
 #[derive(Debug, Serialize)]
 struct StreamChoice {
     index: u32,
-    delta: ChatMessage,
+    delta: StreamDelta,
     finish_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+struct StreamDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<StreamToolCall>>,
+}
+
+#[derive(Debug, Serialize)]
+struct StreamToolCall {
+    index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(rename = "type")]
+    kind: String,
+    function: StreamToolFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct StreamToolFunction {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arguments: Option<String>,
 }
 
 #[derive(Clone)]
@@ -74,6 +106,7 @@ struct ApiState {
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     token_counter: Arc<TokenCounter>,
+    parser_options: ParserOptions,
     free_slots: Arc<Mutex<VecDeque<usize>>>,
     available_slots: Arc<Semaphore>,
 }
@@ -82,6 +115,7 @@ fn build_api_state(
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     token_counter: Arc<TokenCounter>,
+    parser_options: ParserOptions,
 ) -> ApiState {
     let initial_free_slots: VecDeque<usize> = batch_states.with(|batch_states_ref| {
         batch_states_ref
@@ -96,6 +130,7 @@ fn build_api_state(
         batch_sequences,
         batch_states,
         token_counter,
+        parser_options,
         free_slots: Arc::new(Mutex::new(initial_free_slots)),
         available_slots: Arc::new(Semaphore::new(initial_permits)),
     }
@@ -105,6 +140,7 @@ pub async fn run(
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     token_counter: Arc<TokenCounter>,
+    parser_options: ParserOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动事件驱动的 OpenAI 兼容服务器...");
 
@@ -113,7 +149,7 @@ pub async fn run(
         token_counter_task.run().await;
     });
 
-    let state = build_api_state(batch_sequences, batch_list, token_counter);
+    let state = build_api_state(batch_sequences, batch_list, token_counter, parser_options);
 
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))

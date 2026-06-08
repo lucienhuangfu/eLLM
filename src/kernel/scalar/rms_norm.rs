@@ -8,8 +8,7 @@ pub fn rms_norm<T>(
     output_ptr: *mut T,
     length: usize,
     eps: T,
-)
-where
+) where
     T: Sqrt,
 {
     unsafe {

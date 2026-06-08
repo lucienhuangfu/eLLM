@@ -6,6 +6,8 @@ pub struct ServingConfig {
     pub sequence_length: usize,
     pub chunk_size: usize,
     pub schedule_timeout_ms: usize,
+    pub reasoning_parser_enabled: bool,
+    pub tool_call_parser_enabled: bool,
 }
 
 impl ServingConfig {
@@ -16,6 +18,8 @@ impl ServingConfig {
             sequence_length: parse_env_usize("ELLM_SEQUENCE_LENGTH", 128),
             chunk_size: parse_env_usize("ELLM_CHUNK_SIZE", 64),
             schedule_timeout_ms: parse_env_usize("ELLM_SCHEDULE_TIMEOUT_MS", 10),
+            reasoning_parser_enabled: true,
+            tool_call_parser_enabled: true,
         }
     }
 }

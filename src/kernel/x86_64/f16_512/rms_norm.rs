@@ -1,7 +1,7 @@
 use std::arch::x86_64::{
-    _mm512_abs_ph, _mm512_add_ph, _mm512_div_ph, _mm512_fmadd_ph, _mm512_loadu_ph,
-    _mm512_max_ph, _mm512_mul_ph, _mm512_reduce_add_ph, _mm512_reduce_max_ph, _mm512_set1_ph,
-    _mm512_setzero_ph, _mm512_storeu_ph,
+    _mm512_abs_ph, _mm512_add_ph, _mm512_div_ph, _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_max_ph,
+    _mm512_mul_ph, _mm512_reduce_add_ph, _mm512_reduce_max_ph, _mm512_set1_ph, _mm512_setzero_ph,
+    _mm512_storeu_ph,
 };
 use std::f16;
 
@@ -107,9 +107,8 @@ pub fn rms_norm(
     let rrms = (sum / length as f32 + eps as f32).sqrt().recip();
     unsafe {
         for index in 0..length {
-            *output_ptr.add(index) = ((*input_ptr.add(index) as f32)
-                * rrms
-                * (*weight_ptr.add(index) as f32)) as f16;
+            *output_ptr.add(index) =
+                ((*input_ptr.add(index) as f32) * rrms * (*weight_ptr.add(index) as f32)) as f16;
         }
     }
 }

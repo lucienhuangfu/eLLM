@@ -1,11 +1,11 @@
 use std::ops::{AddAssign, Neg, Sub};
 
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
-use crate::mem_mgr::mem_pool::GlobalMemPool;
 
-use crate::kernel::common::matmul_params::MatMulParams;
 use super::names::DenseMlpTensorNames;
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
 #[derive(Clone)]

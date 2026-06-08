@@ -12,14 +12,13 @@ use tokio::sync::Notify;
 
 use crate::runtime::Phase;
 
+use super::parser::{
+    IncrementalStreamingParser, ParserEvent, StreamingParser, ToolCall, ToolCallDelta,
+};
 use super::{
     ApiState, ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
-    StreamChoice, StreamResponse,
+    StreamChoice, StreamDelta, StreamResponse, StreamToolCall, StreamToolFunction,
 };
-
-fn build_error_response(code: StatusCode, message: &str) -> axum::response::Response {
-    (code, message.to_string()).into_response()
-}
 
 pub(super) async fn chat_completions(
     State(state): State<ApiState>,
@@ -35,7 +34,7 @@ pub(super) async fn chat_completions(
     let is_stream = request.stream.unwrap_or(false);
     let model = request.model;
 
-    let (slot_index, notifier, prompt_len) =
+    let (slot_index, notifier) =
         match assign_slot_with_messages(&state, &request.messages, request.temperature).await {
             Ok(slot) => slot,
             Err(response) => return response,
@@ -47,9 +46,7 @@ pub(super) async fn chat_completions(
         .as_secs();
 
     if is_stream {
-        build_stream_response(
-            state, slot_index, notifier, prompt_len, request_id, model, created,
-        )
+        build_stream_response(state, slot_index, notifier, request_id, model, created)
     } else {
         // Non-streaming: wait for the single EOS notification, then decode all
         // generated tokens at once.
@@ -66,35 +63,51 @@ pub(super) async fn chat_completions(
         #[cfg(debug_assertions)]
         println!("同步推理完成: id={}", request_id);
 
-        build_non_stream_response(request_id, model, created, generated_text)
+        Json(ChatCompletionResponse {
+            id: request_id,
+            object: "chat.completion".to_string(),
+            created,
+            model,
+            choices: vec![ChatCompletionChoice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: generated_text,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+        })
+        .into_response()
     }
 }
 
-/// Returns `(slot_index, notifier, prompt_len)`.
+/// Returns `(slot_index, notifier)`.
 async fn assign_slot_with_messages(
     state: &ApiState,
     messages: &[ChatMessage],
     temperature: Option<f32>,
-) -> Result<(usize, Arc<Notify>, usize), axum::response::Response> {
+) -> Result<(usize, Arc<Notify>), axum::response::Response> {
     let permit = state
         .available_slots
         .clone()
         .acquire_owned()
         .await
         .map_err(|_| {
-            build_error_response(
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Slot allocator unavailable",
+                "Slot allocator unavailable".to_string(),
             )
+                .into_response()
         })?;
 
     let slot_index = {
         let mut free_slots = state.free_slots.lock().await;
         free_slots.pop_front().ok_or_else(|| {
-            build_error_response(
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Slot queue empty while permit acquired",
+                "Slot queue empty while permit acquired".to_string(),
             )
+                .into_response()
         })?
     };
 
@@ -127,15 +140,16 @@ async fn assign_slot_with_messages(
         })
         .map_err(|err| {
             eprintln!("Error writing prompt: {}", err);
-            build_error_response(
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("Tokenization failed: {}", err),
+                format!("Tokenization failed: {}", err),
             )
+                .into_response()
         })?;
 
     permit.forget();
     state.token_counter.increment(write_len).await;
-    Ok((slot_index, notifier, write_len))
+    Ok((slot_index, notifier))
 }
 
 async fn reclaim_slot(state: &ApiState, slot_index: usize, release_permit: bool) {
@@ -166,11 +180,13 @@ fn build_stream_response(
     state: ApiState,
     slot_index: usize,
     notifier: Arc<Notify>,
-    _prompt_len: usize,
     request_id: String,
     model: String,
     created: u64,
 ) -> axum::response::Response {
+    let mut parser = IncrementalStreamingParser::with_options(state.parser_options);
+    let mut role_sent = false;
+    let mut tool_call_index = 0u32;
     let stream_body = stream! {
         loop {
             notifier.notified().await;
@@ -190,23 +206,88 @@ fn build_stream_response(
 
             let is_eos = matches!(phase, Phase::Eos);
 
-            let response = StreamResponse {
-                id: request_id.clone(),
-                object: "chat.completion.chunk".to_string(),
-                created,
-                model: model.clone(),
-                choices: vec![StreamChoice {
-                    index: 0,
-                    delta: ChatMessage {
-                        role: "assistant".to_string(),
-                        content: text,
-                    },
-                    finish_reason: is_eos.then(|| "stop".to_string()),
-                }],
-            };
+            let mut events = parser.feed(&text);
+            if is_eos {
+                events.push(ParserEvent::Finish);
+            }
 
-            if let Ok(json) = serde_json::to_string(&response) {
-                yield Ok::<Event, axum::Error>(Event::default().data(json));
+            for event in events {
+                let (delta, finish_reason) = match event {
+                    ParserEvent::Content(content) => {
+                        let delta = StreamDelta {
+                            role: (!role_sent).then(|| "assistant".to_string()),
+                            content: Some(content),
+                            reasoning_content: None,
+                            tool_calls: None,
+                        };
+                        role_sent = true;
+                        (delta, None)
+                    }
+                    ParserEvent::Reasoning(reasoning) => {
+                        let delta = StreamDelta {
+                            role: (!role_sent).then(|| "assistant".to_string()),
+                            content: None,
+                            reasoning_content: Some(reasoning),
+                            tool_calls: None,
+                        };
+                        role_sent = true;
+                        (delta, None)
+                    }
+                    ParserEvent::ToolCallDelta(ToolCallDelta { fragment }) => {
+                        let delta = StreamDelta {
+                            role: (!role_sent).then(|| "assistant".to_string()),
+                            content: None,
+                            reasoning_content: None,
+                            tool_calls: Some(vec![StreamToolCall {
+                                index: tool_call_index,
+                                id: None,
+                                kind: "function".to_string(),
+                                function: StreamToolFunction {
+                                    name: None,
+                                    arguments: Some(fragment),
+                                },
+                            }]),
+                        };
+                        role_sent = true;
+                        (delta, None)
+                    }
+                    ParserEvent::ToolCall(ToolCall { name, arguments }) => {
+                        let delta = StreamDelta {
+                            role: (!role_sent).then(|| "assistant".to_string()),
+                            content: None,
+                            reasoning_content: None,
+                            tool_calls: Some(vec![StreamToolCall {
+                                index: tool_call_index,
+                                id: None,
+                                kind: "function".to_string(),
+                                function: StreamToolFunction {
+                                    name: Some(name),
+                                    arguments: Some(arguments.to_string()),
+                                },
+                            }]),
+                        };
+                        tool_call_index += 1;
+                        role_sent = true;
+                        (delta, None)
+                    }
+                    ParserEvent::Finish => (StreamDelta::default(), Some("stop".to_string())),
+                };
+
+                let response = StreamResponse {
+                    id: request_id.clone(),
+                    object: "chat.completion.chunk".to_string(),
+                    created,
+                    model: model.clone(),
+                    choices: vec![StreamChoice {
+                        index: 0,
+                        delta,
+                        finish_reason,
+                    }],
+                };
+
+                if let Ok(json) = serde_json::to_string(&response) {
+                    yield Ok::<Event, axum::Error>(Event::default().data(json));
+                }
             }
 
             if is_eos {
@@ -218,28 +299,4 @@ fn build_stream_response(
     };
 
     Sse::new(stream_body).into_response()
-}
-
-fn build_non_stream_response(
-    request_id: String,
-    model: String,
-    created: u64,
-    generated_text: String,
-) -> axum::response::Response {
-    let response = ChatCompletionResponse {
-        id: request_id,
-        object: "chat.completion".to_string(),
-        created,
-        model,
-        choices: vec![ChatCompletionChoice {
-            index: 0,
-            message: ChatMessage {
-                role: "assistant".to_string(),
-                content: generated_text,
-            },
-            finish_reason: Some("stop".to_string()),
-        }],
-    };
-
-    Json(response).into_response()
 }

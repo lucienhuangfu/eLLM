@@ -7,6 +7,8 @@ use ellm::operators::testing::FakeEcho;
 use ellm::runtime::batch_sequence::BatchSequence;
 use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner, TokenCounter};
 use ellm::serving;
+use ellm::serving::parser::{ParserOptions, ParserRule};
+use ellm::transformer::config::ModelFamily;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -81,6 +83,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rt.block_on(runner.start());
     });
 
-    serving::run(batch_sequences, batch_states, token_counter).await?;
+    let parser_options = ParserOptions::new(ParserRule::for_model_family(&ModelFamily::Qwen));
+
+    serving::run(batch_sequences, batch_states, token_counter, parser_options).await?;
     Ok(())
 }

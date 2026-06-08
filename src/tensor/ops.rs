@@ -1,7 +1,7 @@
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
-use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::operators::movement::LiftVector;
 use crate::operators::operator::Operator;
 use crate::operators::transform::{

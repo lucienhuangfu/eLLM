@@ -1,9 +1,29 @@
 #![feature(f16)]
 
-use std::env;
+use clap::Parser;
 
 use ellm::serving;
 use ellm::serving::{initialize_serving_resources, ServingConfig};
+
+#[derive(Debug, Parser)]
+#[command(name = "eLLM serving")]
+struct Cli {
+    model_dir: String,
+
+    #[arg(
+        long = "reasoning-parser",
+        default_value_t = true,
+        help = "Enable or disable reasoning tag parsing"
+    )]
+    reasoning_parser: bool,
+
+    #[arg(
+        long = "tool-call-parser",
+        default_value_t = true,
+        help = "Enable or disable tool call tag parsing"
+    )]
+    tool_call_parser: bool,
+}
 
 fn create_runtime(
     resources: &serving::ServingResources,
@@ -16,7 +36,9 @@ fn create_runtime(
         .map_err(Into::into)
 }
 
-async fn run_server(resources: serving::ServingResources) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_server(
+    resources: serving::ServingResources,
+) -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         resources.runner.start().await;
     });
@@ -25,6 +47,7 @@ async fn run_server(resources: serving::ServingResources) -> Result<(), Box<dyn 
         resources.batch_sequences,
         resources.batch_states,
         resources.token_counter,
+        resources.parser_options,
     )
     .await?;
 
@@ -34,8 +57,10 @@ async fn run_server(resources: serving::ServingResources) -> Result<(), Box<dyn 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting backend server...");
 
-    let model_dir = env::args().nth(1).ok_or("Usage: backend <model_dir>")?;
-    let serving_config = ServingConfig::new(model_dir);
+    let cli = Cli::parse();
+    let mut serving_config = ServingConfig::new(cli.model_dir);
+    serving_config.reasoning_parser_enabled = cli.reasoning_parser;
+    serving_config.tool_call_parser_enabled = cli.tool_call_parser;
     let resources = initialize_serving_resources(&serving_config)?;
 
     let rt = create_runtime(&resources)?;

@@ -12,12 +12,14 @@ use crate::runtime::Runner;
 use super::config::ServingConfig;
 use super::model;
 use super::model_setup;
+use super::parser::{ParserOptions, ParserRule};
 use super::scheduler;
 
 pub struct ServingResources {
     pub batch_sequences: Arc<SharedMut<crate::runtime::batch_sequence::BatchSequence<f16>>>,
     pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     pub token_counter: Arc<TokenCounter>,
+    pub parser_options: ParserOptions,
     pub runner: Runner<f16>,
     pub worker_threads: usize,
     pub async_threads: usize,
@@ -35,6 +37,11 @@ pub fn initialize_serving_resources(
 
     let gen_params = model_setup::extract_generation_params(&model_config, &generation_config);
     let thread_config = model_setup::determine_thread_config(&generation_config);
+    let parser_options = ParserOptions {
+        rule: ParserRule::for_model_family(&model_config.family),
+        reasoning_parser: config.reasoning_parser_enabled,
+        tool_call_parser: config.tool_call_parser_enabled,
+    };
 
     let (sequences_box, batch_sequences) =
         build_batch_sequence(&model_dir, config.batch_size, config.sequence_length)?;
@@ -68,6 +75,7 @@ pub fn initialize_serving_resources(
         batch_sequences,
         batch_states,
         token_counter,
+        parser_options,
         runner,
         worker_threads: thread_config.worker_threads,
         async_threads: thread_config.async_threads,

@@ -62,6 +62,7 @@ serde_yaml = "0.9"
 tiktoken-rs = "0.6"
 thiserror = "1.0"
 tokio = { version = "1.52.3", features = ["sync", "net", "rt", "rt-multi-thread", "macros"] }
+tokio-stream = "0.1"
 
 [profile.release]
 opt-level = 3

@@ -5,10 +5,10 @@ use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 
-use crate::kernel::common::matmul_params::MatMulParams;
-use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::kernel;
+use crate::kernel::common::matmul_params::MatMulParams;
 use crate::operators::assign::assign;
+use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::MatMulTrait;
 
 // Variable naming used in this operator:

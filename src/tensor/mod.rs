@@ -1,5 +1,5 @@
-mod moe;
 mod matmul;
+mod moe;
 mod ops;
 mod queue;
 mod shape;
