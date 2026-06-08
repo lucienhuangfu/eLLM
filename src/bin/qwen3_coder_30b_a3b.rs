@@ -18,7 +18,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 fn parse_env_usize(name: &str, default: usize) -> usize {
     env::var(name)
@@ -26,6 +26,28 @@ fn parse_env_usize(name: &str, default: usize) -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+fn parse_env_bool(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+fn unix_timestamp_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn log_timing(label: &str, start: Instant) {
+    eprintln!(
+        "{label}: {:.3}s ts_ms={}",
+        start.elapsed().as_secs_f64(),
+        unix_timestamp_ms()
+    );
 }
 
 fn physical_core_thread_limit(requested_thread_num: usize) -> usize {
@@ -141,10 +163,7 @@ fn main() {
         .load_all_weights_f16_parallel()
         .unwrap();
     f16::init_global_strict(params);
-    eprintln!(
-        "load_weights: {:.3}s",
-        program_start.elapsed().as_secs_f64()
-    );
+    log_timing("load_weights", program_start);
 
     let position_vec = RotaryEmbedding::new(
         config.head_dim,
@@ -194,7 +213,11 @@ fn main() {
             .map(|n| n.get())
             .unwrap_or(1),
     );
-    let thread_num = physical_core_thread_limit(requested_thread_num);
+    let thread_num = if parse_env_bool("ELLM_ALLOW_LOGICAL_THREADS") {
+        requested_thread_num.max(1)
+    } else {
+        physical_core_thread_limit(requested_thread_num)
+    };
     eprintln!("threads: {thread_num}");
 
     let mut model = Model::<f16>::with_sampling(
@@ -213,7 +236,7 @@ fn main() {
     model.set_thread_num(thread_num);
     let (_indices, _values) =
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
-    eprintln!("build_graph: {:.3}s", program_start.elapsed().as_secs_f64());
+    log_timing("build_graph", program_start);
 
     let batch_list: Vec<SequenceState> = written_lengths
         .iter()
@@ -285,6 +308,9 @@ fn main() {
         }
 
         generated_count += 1;
+        if generated_count == 1 {
+            log_timing("first_token", start);
+        }
 
         // Check if all sequences are finished
         let all_done = batch_scheduler.batch_list.with(|list| {
@@ -347,6 +373,10 @@ fn main() {
         }
     });
 
-    eprintln!("generate: {:.3}s", elapsed.as_secs_f64());
-    eprintln!("total: {:.3}s", program_start.elapsed().as_secs_f64());
+    eprintln!(
+        "generate: {:.3}s ts_ms={}",
+        elapsed.as_secs_f64(),
+        unix_timestamp_ms()
+    );
+    log_timing("total", program_start);
 }
