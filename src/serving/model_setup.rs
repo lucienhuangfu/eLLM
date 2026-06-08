@@ -96,7 +96,14 @@ pub fn determine_thread_config(generation_config: &Option<GenerationConfig>) -> 
         .max(1);
 
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    let total_threads = core_ids.len().max(1).min(requested_thread_num);
+    // Use only physical cores (even indices) to avoid hyperthreading overhead
+    let physical_cores = if core_ids.is_empty() {
+        requested_thread_num
+    } else {
+        let physical_count = core_ids.iter().enumerate().filter(|(i, _)| i % 2 == 0).count();
+        physical_count.max(1).min(requested_thread_num)
+    };
+    let total_threads = physical_cores;
     let async_threads = 2;
     let worker_threads = (total_threads - async_threads).max(1);
 

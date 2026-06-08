@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ pub struct TokenCounter {
     schedule_gate: AsyncMutex<()>,
     last_schedule_time: Mutex<Instant>,
     next_task_id: AtomicU64,
+    task_in_flight: Arc<AtomicBool>,
 }
 
 impl TokenCounter {
@@ -34,7 +35,12 @@ impl TokenCounter {
             schedule_gate: AsyncMutex::new(()),
             last_schedule_time: Mutex::new(Instant::now()),
             next_task_id: AtomicU64::new(1),
+            task_in_flight: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn task_in_flight(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.task_in_flight)
     }
 
     pub fn get(&self) -> usize {
@@ -77,9 +83,19 @@ impl TokenCounter {
             return;
         }
 
+        if self
+            .task_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.current_tokens.fetch_add(pending, Ordering::AcqRel);
+            return;
+        }
+
         let mut scheduler = self.scheduler.lock().await;
         let (prefill_size, decode_size) = scheduler.schedule_batch();
         if prefill_size == 0 && decode_size == 0 {
+            self.task_in_flight.store(false, Ordering::Release);
             self.current_tokens.fetch_add(pending, Ordering::AcqRel);
             return;
         }
@@ -97,6 +113,7 @@ impl TokenCounter {
                 *last_schedule_time = Instant::now();
             }
         } else {
+            self.task_in_flight.store(false, Ordering::Release);
             self.current_tokens.fetch_add(pending, Ordering::AcqRel);
         }
     }

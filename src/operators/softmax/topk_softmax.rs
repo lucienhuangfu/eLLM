@@ -166,7 +166,6 @@ impl<
                 let write_sequence_index = record.kv_index;
                 if write_sequence_index >= self.sequence_stride {
                     record.phase = Phase::Eos;
-                    record.notify.notify_one();
                     continue;
                 }
 
@@ -201,9 +200,6 @@ impl<
                 if self.eos_ids.contains(&predict_token) {
                     record.phase = Phase::Eos;
                 }
-                // Notify after every decoded token (including EOS) so that
-                // streaming handlers can read the token immediately.
-                record.notify.notify_one();
             }
         }
     }

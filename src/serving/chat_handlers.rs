@@ -48,9 +48,22 @@ pub(super) async fn chat_completions(
     if is_stream {
         build_stream_response(state, slot_index, notifier, request_id, model, created)
     } else {
-        // Non-streaming: wait for the single EOS notification, then decode all
+        // Non-streaming: keep scheduling decode work until EOS, then decode all
         // generated tokens at once.
-        notifier.notified().await;
+        loop {
+            notifier.notified().await;
+
+            let is_eos = state.batch_states.with(|batch_list| {
+                let record = &batch_list[slot_index];
+                matches!(record.phase, Phase::Eos)
+            });
+
+            if is_eos {
+                break;
+            }
+
+            state.token_counter.increment(1).await;
+        }
 
         let generated_text = state.batch_states.with(|batch_list| {
             let record = &batch_list[slot_index];
@@ -205,6 +218,9 @@ fn build_stream_response(
             });
 
             let is_eos = matches!(phase, Phase::Eos);
+            if !is_eos {
+                state.token_counter.increment(1).await;
+            }
 
             let mut events = parser.feed(&text);
             if is_eos {

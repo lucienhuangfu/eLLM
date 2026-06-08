@@ -250,9 +250,11 @@ fn main() {
         f16::take_operator_queue(),
         Arc::clone(&batch_list_ref),
         task_sender.clone(),
-    );
+    )
+    .with_runner_count(thread_num);
     let runner_handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(thread_num)
             .enable_all()
             .build()
             .unwrap();

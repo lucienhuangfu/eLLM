@@ -23,6 +23,21 @@ fn parse_env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn physical_core_thread_limit(requested_thread_num: usize) -> usize {
+    let all_core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    let physical_core_count = all_core_ids
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 0)
+        .count();
+
+    if physical_core_count == 0 {
+        requested_thread_num.max(1)
+    } else {
+        requested_thread_num.min(physical_core_count).max(1)
+    }
+}
+
 fn main() {
     let batch_size = 3;
     let max_output_tokens = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 32);
@@ -127,7 +142,7 @@ fn main() {
     let thread_num = if core_ids.is_empty() {
         requested_thread_num
     } else {
-        requested_thread_num.min(core_ids.len()).max(1)
+        physical_core_thread_limit(requested_thread_num)
     };
     println!("Threads: {thread_num}");
 
@@ -183,9 +198,11 @@ fn main() {
         f16::take_operator_queue(),
         Arc::clone(&batch_list_ref),
         task_sender.clone(),
-    );
+    )
+    .with_runner_count(thread_num);
     let runner_handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(thread_num)
             .enable_all()
             .build()
             .unwrap();

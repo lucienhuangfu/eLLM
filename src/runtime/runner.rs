@@ -1,16 +1,52 @@
 use std::ops::{AddAssign, Neg, Sub};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
-use tokio::sync::Barrier;
 use tokio::task::JoinSet;
 
 use crate::operators::operator::Operator;
 use crate::operators::send_sync_ptr::SharedMut;
+use crate::runtime::spin_barrier::SpinBarrier;
 
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
+use crate::runtime::scheduling::types::Phase;
 use crate::runtime::scheduling::types::ScheduleTask;
 use crate::runtime::SequenceState;
+
+#[derive(Clone, Copy)]
+struct SequenceSnapshot {
+    sequence_index: usize,
+    phase: Phase,
+}
+
+fn snapshot_sequences(batch_list: &[SequenceState]) -> Vec<SequenceSnapshot> {
+    batch_list
+        .iter()
+        .map(|record| SequenceSnapshot {
+            sequence_index: record.sequence_index,
+            phase: record.phase,
+        })
+        .collect()
+}
+
+fn notify_completed_sequences(before: &[SequenceSnapshot], batch_list: &[SequenceState]) {
+    for (index, record) in batch_list.iter().enumerate() {
+        let Some(previous) = before.get(index) else {
+            continue;
+        };
+
+        if matches!(record.phase, Phase::Prefill) {
+            continue;
+        }
+
+        let token_or_eos_ready =
+            record.sequence_index != previous.sequence_index || record.phase != previous.phase;
+        if token_or_eos_ready {
+            record.notify.notify_one();
+        }
+    }
+}
 
 /// Runs the inference serving loop.
 ///
@@ -22,6 +58,7 @@ pub struct ServingRunner<T> {
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     task_sender: broadcast::Sender<ScheduleTask>,
     runner_count: usize,
+    task_in_flight: Option<Arc<AtomicBool>>,
 }
 
 impl<T> ServingRunner<T>
@@ -50,11 +87,17 @@ where
             batch_list,
             task_sender,
             runner_count: num_cpus::get(),
+            task_in_flight: None,
         }
     }
 
     pub fn with_runner_count(mut self, runner_count: usize) -> Self {
         self.runner_count = runner_count.max(1);
+        self
+    }
+
+    pub fn with_task_in_flight(mut self, task_in_flight: Arc<AtomicBool>) -> Self {
+        self.task_in_flight = Some(task_in_flight);
         self
     }
 
@@ -64,11 +107,12 @@ where
             batch_list,
             task_sender,
             runner_count,
+            task_in_flight,
         } = self;
         let thread_num = runner_count;
 
         let operator_queue: Arc<[Operator<T>]> = operator_queue.into();
-        let barrier = Arc::new(Barrier::new(thread_num));
+        let barrier = Arc::new(SpinBarrier::new(thread_num));
         let batch_list = Arc::clone(&batch_list);
 
         let mut join_set = JoinSet::new();
@@ -77,15 +121,22 @@ where
             let barrier = Arc::clone(&barrier);
             let queue = Arc::clone(&operator_queue);
             let batch_list = Arc::clone(&batch_list);
+            let task_in_flight = task_in_flight.clone();
             let mut receiver = task_sender.subscribe();
 
             join_set.spawn(async move {
                 while let Ok(task) = receiver.recv().await {
                     let (prefill_size, decode_size) = (task.prefill_size, task.decode_size);
                     let (prefill_list, decode_list) = (&task.prefill_list, &task.decode_list);
+                    let before = {
+                        let batch_list_ptr = batch_list.get();
+                        unsafe { snapshot_sequences(&*batch_list_ptr) }
+                    };
 
-                    let batch_list_ptr = batch_list.get();
+                    barrier.wait();
                     for operator in queue.iter() {
+                        barrier.wait();
+                        let batch_list_ptr = batch_list.get();
                         unsafe {
                             let batch_list_ref = &mut *batch_list_ptr;
                             operator.run(
@@ -98,9 +149,20 @@ where
                                 batch_list_ref,
                             );
                         }
+                        barrier.wait();
                     }
 
-                    let _ = barrier.wait().await;
+                    let is_leader = barrier.wait();
+                    if is_leader {
+                        let batch_list_ptr = batch_list.get();
+                        unsafe {
+                            notify_completed_sequences(&before, &*batch_list_ptr);
+                        }
+                        if let Some(task_in_flight) = &task_in_flight {
+                            task_in_flight.store(false, Ordering::Release);
+                        }
+                    }
+                    barrier.wait();
                 }
             });
         }

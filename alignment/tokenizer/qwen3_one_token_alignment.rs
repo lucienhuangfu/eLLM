@@ -49,12 +49,7 @@ fn write_f16_tensor(path: &std::path::Path, ptr: *mut f16, len: usize) -> std::i
     }
 }
 
-fn dump_pool_tensor(
-    dump_dir: &std::path::Path,
-    name: &str,
-    file_name: &str,
-    len: usize,
-) {
+fn dump_pool_tensor(dump_dir: &std::path::Path, name: &str, file_name: &str, len: usize) {
     f16::with_global(|pool| {
         let ptr = pool.get(name, &vec![len]);
         let path = dump_dir.join(file_name);
@@ -93,7 +88,11 @@ fn main() -> anyhow::Result<()> {
     let load_start = Instant::now();
     eprintln!("loading f16 weights");
     let params = SafeTensorsLoader::new(&model_dir)?.load_all_weights_f16_parallel()?;
-    eprintln!("loaded {} tensors in {:.2?}", params.len(), load_start.elapsed());
+    eprintln!(
+        "loaded {} tensors in {:.2?}",
+        params.len(),
+        load_start.elapsed()
+    );
     f16::init_global_strict(params);
 
     eprintln!("building rotary embeddings");
@@ -184,6 +183,14 @@ fn main() -> anyhow::Result<()> {
     // Phase 1: Layer operators + final RMS norm (simulating scheduler's prefill round)
     let dump_dir = std::path::Path::new("alignment/tokenizer/dump");
     std::fs::create_dir_all(dump_dir)?;
+    for entry in std::fs::read_dir(dump_dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if file_name.starts_with("rust_") && file_name.ends_with(".bin") {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
     let mut completed_layers = 0usize;
     let mut previous_operator_name = "";
     let run_start = Instant::now();
@@ -237,10 +244,7 @@ fn main() -> anyhow::Result<()> {
                 size,
             );
         } else if matches!(operator, Operator::RMSMap(_))
-            && matches!(
-                operator_queue.get(index + 1),
-                Some(Operator::MatMul3(_))
-            )
+            && matches!(operator_queue.get(index + 1), Some(Operator::MatMul3(_)))
             && completed_layers < config.num_hidden_layers
         {
             let tensor_name = format!("model.layers.{completed_layers}.input_layernorm.output");
@@ -249,9 +253,18 @@ fn main() -> anyhow::Result<()> {
         } else if matches!(operator, Operator::MatMulAdd(_))
             && completed_layers < config.num_hidden_layers
         {
-            let tensor_name = format!("model.layers.{completed_layers}.self_attn");
-            let file_name = format!("rust_layer{completed_layers:02}_attn_residual.bin");
-            dump_pool_tensor(dump_dir, &tensor_name, &file_name, size);
+            if previous_operator_name == "SiluMulZipMap" {
+                let tensor_name = format!("model.layers.{completed_layers}.mlp.output");
+                let mlp_file_name = format!("rust_layer{completed_layers:02}_mlp_merged.bin");
+                let layer_file_name = format!("rust_layer{completed_layers:02}_output.bin");
+                dump_pool_tensor(dump_dir, &tensor_name, &mlp_file_name, size);
+                dump_pool_tensor(dump_dir, &tensor_name, &layer_file_name, size);
+                completed_layers += 1;
+            } else {
+                let tensor_name = format!("model.layers.{completed_layers}.self_attn");
+                let file_name = format!("rust_layer{completed_layers:02}_attn_residual.bin");
+                dump_pool_tensor(dump_dir, &tensor_name, &file_name, size);
+            }
         } else if matches!(operator, Operator::RMSMap(_))
             && previous_operator_name == "MatMulAdd"
             && completed_layers < config.num_hidden_layers
@@ -306,15 +319,13 @@ fn main() -> anyhow::Result<()> {
             && completed_layers < config.num_hidden_layers
         {
             // down_proj output: [token_count, num_experts_per_tok, hidden_size]
-            let tensor_name = format!("model.layers.{completed_layers}.mlp.down_proj.output.output");
+            let tensor_name =
+                format!("model.layers.{completed_layers}.mlp.down_proj.output.output");
             let file_name = format!("rust_layer{completed_layers:02}_mlp_output.bin");
             let mlp_out_size = token_count * num_experts_per_tok * hidden_size;
             dump_pool_tensor(dump_dir, &tensor_name, &file_name, mlp_out_size);
         } else if matches!(operator, Operator::RMSMap(_))
-            && matches!(
-                operator_queue.get(index + 1),
-                Some(Operator::LiftVector(_))
-            )
+            && matches!(operator_queue.get(index + 1), Some(Operator::LiftVector(_)))
             && completed_layers == config.num_hidden_layers
         {
             dump_pool_tensor(

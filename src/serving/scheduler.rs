@@ -33,7 +33,7 @@ pub fn create_scheduling_components(
         config.sequence_length,
         config.batch_size,
         config.chunk_size,
-        thread_config.total_threads,
+        thread_config.worker_threads,
         Arc::clone(&batch_states),
     );
     let batch_scheduler = Arc::new(tokio::sync::Mutex::new(batch_scheduler));

@@ -111,15 +111,15 @@ impl BatchScheduler {
                 }
             }
 
-            if has_decode {
-                BatchPlan::Decode(decode_candidates)
-            } else if candidates.is_empty() {
-                BatchPlan::Idle
-            } else {
+            if !candidates.is_empty() {
                 BatchPlan::Prefill {
                     candidates,
                     total_tokens: total_tokens.min(self.max_prefill_size),
                 }
+            } else if has_decode {
+                BatchPlan::Decode(decode_candidates)
+            } else {
+                BatchPlan::Idle
             }
         })
     }
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn schedule_batch_prefers_decode_when_both_phases_exist() {
+    fn schedule_batch_finishes_prefill_when_both_phases_exist() {
         let mut scheduler = BatchScheduler::new(16, 4, 3);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 6));
@@ -377,16 +377,22 @@ mod tests {
 
         let (prefill_tokens, decode_tokens) = scheduler.schedule_batch();
 
-        assert_eq!(prefill_tokens, 0);
-        assert_eq!(decode_tokens, 1);
-        assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
-        assert_eq!(scheduler.decode_list.len(), 1);
+        assert_eq!(prefill_tokens, 9);
+        assert_eq!(decode_tokens, 2);
+        assert_eq!(scheduler.decode_list.len(), 2);
 
-        let slice = &scheduler.decode_list[0];
-        assert_eq!(slice.batch_index, 1);
-        assert_eq!(slice.sequence_index, 100);
-        assert_eq!(slice.token_start_index, 0);
-        assert_eq!(slice.length, 1);
-        assert!(slice.last_token_flag);
+        let first = &scheduler.decode_list[0];
+        assert_eq!(first.batch_index, 0);
+        assert_eq!(first.sequence_index, 0);
+        assert_eq!(first.token_start_index, 0);
+        assert_eq!(first.length, 6);
+        assert!(first.last_token_flag);
+
+        let second = &scheduler.decode_list[1];
+        assert_eq!(second.batch_index, 2);
+        assert_eq!(second.sequence_index, 32);
+        assert_eq!(second.token_start_index, 6);
+        assert_eq!(second.length, 3);
+        assert!(second.last_token_flag);
     }
 }

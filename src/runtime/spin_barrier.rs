@@ -19,18 +19,21 @@ impl SpinBarrier {
         }
     }
 
-    pub fn wait(&self) {
+    /// Returns true for the last thread to arrive (the leader).
+    pub fn wait(&self) -> bool {
         let gen = self.generation.load(Ordering::Acquire);
         let prev = self.count.fetch_add(1, Ordering::AcqRel);
         if prev == self.num_threads - 1 {
             // Last thread to arrive — reset and flip generation.
             self.count.store(0, Ordering::Release);
             self.generation.fetch_add(1, Ordering::Release);
+            true
         } else {
             // Spin until generation changes (last thread flips it).
             while self.generation.load(Ordering::Acquire) == gen {
                 std::hint::spin_loop();
             }
+            false
         }
     }
 }

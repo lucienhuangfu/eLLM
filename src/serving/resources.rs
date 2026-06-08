@@ -60,6 +60,7 @@ pub fn initialize_serving_resources(
         config.batch_size,
         config.sequence_length,
     );
+    model.set_thread_num(thread_config.worker_threads);
 
     let batch_temperature_ptr =
         batch_sequences.with_mut(|batch_sequence| batch_sequence.batch_temperature.as_mut_ptr());
@@ -69,7 +70,9 @@ pub fn initialize_serving_resources(
         f16::take_operator_queue(),
         Arc::clone(&batch_states),
         task_sender,
-    );
+    )
+    .with_runner_count(thread_config.worker_threads)
+    .with_task_in_flight(token_counter.task_in_flight());
 
     Ok(ServingResources {
         batch_sequences,

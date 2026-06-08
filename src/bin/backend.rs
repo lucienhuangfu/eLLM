@@ -13,6 +13,21 @@ use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::sync::Arc;
 
+fn physical_core_thread_limit(requested_thread_num: usize) -> usize {
+    let all_core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    let physical_core_count = all_core_ids
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 0)
+        .count();
+
+    if physical_core_count == 0 {
+        requested_thread_num.max(1)
+    } else {
+        requested_thread_num.min(physical_core_count).max(1)
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Initializing...");
 
@@ -127,7 +142,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eos_token_id_list,
     );
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    let thread_num = core_ids.len().max(1).min(thread_num);
+    let thread_num = if core_ids.is_empty() {
+        thread_num
+    } else {
+        physical_core_thread_limit(thread_num)
+    };
     model.set_thread_num(thread_num);
 
     // Run the model forward pass to populate the operator queue
@@ -169,7 +188,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         task_sender.clone(),
     );
     let runner_handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(thread_num)
             .enable_all()
             .build()
             .unwrap();
