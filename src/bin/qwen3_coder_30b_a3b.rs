@@ -16,8 +16,9 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 fn parse_env_usize(name: &str, default: usize) -> usize {
     env::var(name)
@@ -25,6 +26,28 @@ fn parse_env_usize(name: &str, default: usize) -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+fn parse_env_bool(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+fn unix_timestamp_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn log_timing(label: &str, start: Instant) {
+    eprintln!(
+        "{label}: {:.3}s ts_ms={}",
+        start.elapsed().as_secs_f64(),
+        unix_timestamp_ms()
+    );
 }
 
 fn physical_core_thread_limit(requested_thread_num: usize) -> usize {
@@ -140,10 +163,7 @@ fn main() {
         .load_all_weights_f16_parallel()
         .unwrap();
     f16::init_global_strict(params);
-    eprintln!(
-        "load_weights: {:.3}s",
-        program_start.elapsed().as_secs_f64()
-    );
+    log_timing("load_weights", program_start);
 
     let position_vec = RotaryEmbedding::new(
         config.head_dim,
@@ -193,7 +213,11 @@ fn main() {
             .map(|n| n.get())
             .unwrap_or(1),
     );
-    let thread_num = physical_core_thread_limit(requested_thread_num);
+    let thread_num = if parse_env_bool("ELLM_ALLOW_LOGICAL_THREADS") {
+        requested_thread_num.max(1)
+    } else {
+        physical_core_thread_limit(requested_thread_num)
+    };
     eprintln!("threads: {thread_num}");
 
     let mut model = Model::<f16>::with_sampling(
@@ -212,7 +236,7 @@ fn main() {
     model.set_thread_num(thread_num);
     let (_indices, _values) =
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
-    eprintln!("build_graph: {:.3}s", program_start.elapsed().as_secs_f64());
+    log_timing("build_graph", program_start);
 
     let batch_list: Vec<SequenceState> = written_lengths
         .iter()
@@ -246,12 +270,14 @@ fn main() {
     let max_output_tokens_u = max_output_tokens;
 
     let start = Instant::now();
+    let task_in_flight = Arc::new(AtomicBool::new(false));
     let runner = ServingRunner::new(
         f16::take_operator_queue(),
         Arc::clone(&batch_list_ref),
         task_sender.clone(),
     )
-    .with_runner_count(thread_num);
+    .with_runner_count(thread_num)
+    .with_task_in_flight(Arc::clone(&task_in_flight));
     let runner_handle = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(thread_num)
@@ -261,6 +287,8 @@ fn main() {
         rt.block_on(runner.start());
     });
 
+    // Send prefill task
+    task_in_flight.store(true, Ordering::Release);
     loop {
         match task_sender.send(task.clone()) {
             Ok(_) => break,
@@ -271,7 +299,59 @@ fn main() {
         }
     }
 
+    // Decode loop: keep scheduling until all sequences are done
+    let mut generated_count = 0usize;
+    loop {
+        // Wait for current task to complete
+        while task_in_flight.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+
+        generated_count += 1;
+        if generated_count == 1 {
+            log_timing("first_token", start);
+        }
+
+        // Check if all sequences are finished
+        let all_done = batch_scheduler.batch_list.with(|list| {
+            list.iter().all(|s| matches!(s.phase, Phase::Eos))
+                || generated_count > max_output_tokens_u
+        });
+        if all_done {
+            break;
+        }
+
+        // Schedule next batch (decode step)
+        let sizes = batch_scheduler.schedule_batch();
+        if sizes.1 == 0 {
+            break;
+        }
+        let decode_task = ScheduleTask::new(
+            sizes.0,
+            sizes.1,
+            batch_scheduler.prefill_list.clone(),
+            batch_scheduler.decode_list.clone(),
+            1,
+        );
+
+        task_in_flight.store(true, Ordering::Release);
+        loop {
+            match task_sender.send(decode_task.clone()) {
+                Ok(_) => break,
+                Err(err) => {
+                    let _ = err.0;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+    }
+
+    // Signal runner to stop
     drop(task_sender);
+    // Wait for final task to complete
+    while task_in_flight.load(Ordering::Acquire) {
+        std::thread::sleep(std::time::Duration::from_micros(100));
+    }
     let _ = runner_handle.join();
     let elapsed = start.elapsed();
 
@@ -293,6 +373,10 @@ fn main() {
         }
     });
 
-    eprintln!("generate: {:.3}s", elapsed.as_secs_f64());
-    eprintln!("total: {:.3}s", program_start.elapsed().as_secs_f64());
+    eprintln!(
+        "generate: {:.3}s ts_ms={}",
+        elapsed.as_secs_f64(),
+        unix_timestamp_ms()
+    );
+    log_timing("total", program_start);
 }
