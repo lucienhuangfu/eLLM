@@ -137,7 +137,7 @@ cargo run --bin my_op_alignment
 
 ## 7. References
 
-- [FakeEcho](../operator/fake_echo.md) — simplest possible operator, good reference
-- [LiftVector](../operator/left_vector.md) — minimal memory-movement operator
-- [Attention](../operator/attention.md) — full static parallel operator
-- [HuggingFace Alignment](../reference/hf_alignment.md) — golden-file testing workflow
+- [FakeEcho](../design/operators/fake_echo.md) — simplest possible operator, good reference
+- [LiftVector](../design/operators/left_vector.md) — minimal memory-movement operator
+- [Attention](../design/operators/attention.md) — full static parallel operator
+- [HuggingFace Alignment](hf_alignment.md) — golden-file testing workflow

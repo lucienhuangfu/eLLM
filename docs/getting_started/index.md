@@ -1,9 +1,4 @@
-# 开始使用
+# Getting Started
 
-这里是入门入口页，后续可以迁入安装、启动和快速上手内容。
-
-## 建议包含
-
-- 安装说明
-- 第一次运行
-- 基础概念
+- [Quickstart](quickstart.md) — start the server and send your first request in under 5 minutes
+- [Installation](installation.md) — build from source, requirements, environment setup

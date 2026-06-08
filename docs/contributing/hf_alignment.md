@@ -51,4 +51,3 @@ Or directly:
 ```powershell
 py -3 .\tests\reference\hf\rope.py --case .\tests\reference\hf\cases\rope_case_min.json --output .\tests\reference\hf\golden\rope_case_min.json
 ```
-
