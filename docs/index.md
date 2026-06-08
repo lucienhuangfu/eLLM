@@ -1,29 +1,23 @@
-# Documentation
+# eLLM 文档
 
-Choose a language entry:
+这里是文档站点首页。当前结构已经整理成 MkDocs 可直接使用的目录形态，后续可以把现有内容逐步迁移到对应章节。
 
-- [English](./en/index.md)
-- [简体中文](./zh-CN/index.md)
+## 快速入口
 
-## Current topic docs
+- [开始使用](getting_started/index.md)
+- [配置](configuration/index.md)
+- [服务](serving/index.md)
+- [CLI](cli/index.md)
+- [功能](features/index.md)
+- [示例](examples/index.md)
+- [贡献](contributing/index.md)
 
-The translated topic pages now live under `docs/en/`:
+## 迁移说明
 
-- [Serving](./en/serving.md)
-- [Runtime overview](./en/runtime/overview.md)
-- [Runtime schedule](./en/runtime/schedule.md)
-- [Operator: attention](./en/operator/attention.md)
-- [Operator: fake_echo](./en/operator/fake_echo.md)
-- [Operator: global_index_lookup](./en/operator/global_index_lookup.md)
-- [Operator: left_vector / LiftVector](./en/operator/left_vector.md)
-- [Operator: matmul](./en/operator/matmul.md)
-- [Operator: minimax_m2.5_router](./en/operator/minimax_m2.5_router.md)
-- [Transformer: minimal_model_abstraction](./en/transformers/minimal_model_abstraction.md)
-- [Transformer: minimax_m2.5_rope](./en/transformers/minimax_m2.5_rope.md)
-- [Transformer: moe_refactor](./en/transformers/moe_refactor.md)
-- [Transformer: MoE routing data structures](./en/transformers/moe_routing_data_structures.md)
-- [Reference: Hugging Face alignment](./en/reference/hf_alignment.md)
+为了贴近 vLLM 的文档组织方式，本站点采用了按主题分区的结构，而不是把所有 Markdown 平铺在 `docs/` 根目录。
 
-中文对应页面：
+## 下一步
 
-- [Transformer：MoE Routing 数据结构调整说明](./zh-CN/transformers/moe_routing_data_structures.md)
+- 把现有章节内容移动到对应子目录
+- 补充每个章节的二级页面
+- 继续完善 MkDocs 主题、搜索和导航

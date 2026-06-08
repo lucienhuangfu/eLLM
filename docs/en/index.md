@@ -1,22 +1,30 @@
-# English Documentation
+---
+hide:
+  - navigation
+  - toc
+---
 
-This is the English entry point for the documentation tree.
+# Welcome to eLLM
 
-The topic pages now live under `docs/en/` with the same structure as the Chinese docs.
+eLLM is a high-performance, CPU-focused LLM inference engine written in Rust.
+It provides an [OpenAI-compatible](https://platform.openai.com/docs/api-reference/chat) HTTP serving layer
+on top of a hand-tuned multi-threaded inference runtime — no GPU required.
 
-## Topics
+---
 
-- [Serving](./serving.md)
-- [Runtime overview](./runtime/overview.md)
-- [Runtime schedule](./runtime/schedule.md)
-- [Operator: attention](./operator/attention.md)
-- [Operator: fake_echo](./operator/fake_echo.md)
-- [Operator: global_index_lookup](./operator/global_index_lookup.md)
-- [Operator: left_vector / LiftVector](./operator/left_vector.md)
-- [Operator: matmul](./operator/matmul.md)
-- [Operator: minimax_m2.5_router](./operator/minimax_m2.5_router.md)
-- [Transformer: minimal_model_abstraction](./transformers/minimal_model_abstraction.md)
-- [Transformer: minimax_m2.5_rope](./transformers/minimax_m2.5_rope.md)
-- [Transformer: moe_refactor](./transformers/moe_refactor.md)
-- [Transformer: MoE routing data structures](./transformers/moe_routing_data_structures.md)
-- [Reference: Hugging Face alignment](./reference/hf_alignment.md)
+## Where to start
+
+- **Run a model right now** → [Quickstart](getting_started/quickstart.md)
+- **Build from source** → [Installation](getting_started/installation.md)
+- **Understand the architecture** → [Design Overview](design/index.md)
+- **Add a new operator** → [Contributing](contributing/new_operator.md)
+
+---
+
+## Highlights
+
+- Pure Rust inference runtime with AVX-512 / AVX2 SIMD kernels
+- OpenAI-compatible `/v1/chat/completions` endpoint with SSE streaming
+- Event-driven batch scheduler — threshold + timeout dual-trigger
+- Supports dense and sparse-MoE transformer families (Qwen3, MiniMax-M2.5, Llama-2, Mixtral)
+- Golden-file HuggingFace alignment workflow for operator validation

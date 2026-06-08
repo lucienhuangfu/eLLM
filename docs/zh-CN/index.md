@@ -1,22 +1,28 @@
-# 简体中文文档
+---
+hide:
+  - navigation
+  - toc
+---
 
-这是文档树的中文入口页。
+# 欢迎使用 eLLM
 
-当前详细主题页已经迁移到 `docs/zh-CN/` 下，目录结构与语言一一对应。
+eLLM 是一个用 Rust 编写的高性能 CPU 推理引擎，提供 OpenAI 兼容的 HTTP 服务层——无需 GPU。
 
-## 主题
+---
 
-- [Serving](./serving.md)
-- [运行时概览](./runtime/overview.md)
-- [运行时调度](./runtime/schedule.md)
-- [运行时优化配置](./runtime/optimization.md)
-- [算子：attention](./operator/attention.md)
-- [算子：fake_echo](./operator/fake_echo.md)
-- [算子：global_index_lookup](./operator/global_index_lookup.md)
-- [算子：left_vector / LiftVector](./operator/left_vector.md)
-- [算子：matmul](./operator/matmul.md)
-- [算子：minimax_m2.5_router](./operator/minimax_m2.5_router.md)
-- [Transformer：minimal_model_abstraction](./transformers/minimal_model_abstraction.md)
-- [Transformer：minimax_m2.5_rope](./transformers/minimax_m2.5_rope.md)
-- [Transformer：MoE Routing 数据结构调整说明](./transformers/moe_routing_data_structures.md)
-- [参考：Hugging Face 对齐](./reference/hf_alignment.md)
+## 从哪里开始
+
+- **立即运行模型** → [快速入门](getting_started/quickstart.md)
+- **从源码构建** → [安装指南](getting_started/installation.md)
+- **了解架构** → [设计文档](design/index.md)
+- **新增算子** → [贡献指南](contributing/new_operator.md)
+
+---
+
+## 核心特性
+
+- 纯 Rust 推理运行时，支持 AVX-512 / AVX2 SIMD 内核
+- OpenAI 兼容的 `/v1/chat/completions` 端点，支持 SSE 流式输出
+- 事件驱动批次调度器——阈值 + 超时双触发机制
+- 支持 Dense 和 Sparse-MoE Transformer 架构（Qwen3、MiniMax-M2.5、Llama-2、Mixtral）
+- 基于黄金文件的 HuggingFace 对齐工作流，用于算子验证

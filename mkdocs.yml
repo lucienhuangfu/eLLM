@@ -1,0 +1,69 @@
+site_name: eLLM Docs
+site_description: Documentation site structured for MkDocs, inspired by the vLLM docs layout.
+repo_name: eLLM
+
+docs_dir: docs
+site_dir: site
+use_directory_urls: true
+
+theme:
+  name: material
+  language: zh
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+nav:
+  - 首页: index.md
+  - 开始使用:
+      - 快速开始: getting_started/quickstart.md
+      - 安装: getting_started/installation.md
+  - 推理与服务:
+      - 概览: serving/index.md
+      - 在线服务: serving/online_serving.md
+      - 并行与扩展: serving/parallelism_scaling.md
+  - 配置:
+      - 概览: configuration/index.md
+      - 性能优化: configuration/optimization.md
+  - CLI 参考:
+      - 概览: cli/index.md
+      - serve: cli/serve.md
+      - chat: cli/chat.md
+      - complete: cli/complete.md
+      - run-batch: cli/run-batch.md
+      - bench: cli/bench/index.md
+  - 集成:
+      - 概览: integrations/index.md
+  - 部署:
+      - 概览: deployment/index.md
+  - 框架:
+      - 概览: frameworks/index.md
+  - 社区:
+      - 概览: community/index.md
+  - 治理:
+      - 概览: governance/index.md
+  - 中文运行时文档:
+      - 概览: zh-CN/runtime/overview.md
+      - 调度: zh-CN/runtime/schedule.md
+      - 性能优化: zh-CN/runtime/optimization.md
