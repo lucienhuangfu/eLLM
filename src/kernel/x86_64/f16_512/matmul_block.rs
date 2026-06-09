@@ -3,6 +3,8 @@
 
 use std::f16;
 
+use std::arch::x86_64::{_mm512_fmadd_ph, _mm512_loadu_ph, _mm512_set1_ph, _mm512_storeu_ph};
+
 use crate::kernel::common::matmul_params::MatMulParams;
 
 /// 广播式 3x32 FP16 AVX-512 微核：
@@ -28,6 +30,48 @@ pub unsafe fn matmul_block(
     let kc = param.column_step_macro;
     let lda = param.a_row_step_macro;
     let ldc = param.b_row_step_macro;
+
+    if nr == 32 && mr <= 3 {
+        let mut c0 = if mr > 0 {
+            _mm512_loadu_ph(c.add(0 * ldc))
+        } else {
+            _mm512_set1_ph(0.0)
+        };
+        let mut c1 = if mr > 1 {
+            _mm512_loadu_ph(c.add(1 * ldc))
+        } else {
+            _mm512_set1_ph(0.0)
+        };
+        let mut c2 = if mr > 2 {
+            _mm512_loadu_ph(c.add(2 * ldc))
+        } else {
+            _mm512_set1_ph(0.0)
+        };
+
+        for k in 0..kc {
+            let b = _mm512_loadu_ph(b_panel.add(k * 32));
+            if mr > 0 {
+                c0 = _mm512_fmadd_ph(_mm512_set1_ph(*a.add(0 * lda + k)), b, c0);
+            }
+            if mr > 1 {
+                c1 = _mm512_fmadd_ph(_mm512_set1_ph(*a.add(1 * lda + k)), b, c1);
+            }
+            if mr > 2 {
+                c2 = _mm512_fmadd_ph(_mm512_set1_ph(*a.add(2 * lda + k)), b, c2);
+            }
+        }
+
+        if mr > 0 {
+            _mm512_storeu_ph(c.add(0 * ldc), c0);
+        }
+        if mr > 1 {
+            _mm512_storeu_ph(c.add(1 * ldc), c1);
+        }
+        if mr > 2 {
+            _mm512_storeu_ph(c.add(2 * ldc), c2);
+        }
+        return;
+    }
 
     for row in 0..mr {
         for col in 0..nr {

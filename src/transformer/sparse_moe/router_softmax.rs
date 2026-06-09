@@ -64,7 +64,7 @@ where
             MatMulParams {
                 a_row_step_macro: 3,
                 b_row_step_macro: 128,
-                column_step_macro: 16,
+                column_step_macro: 64,
                 a_row_step_micro: 3,
                 b_row_step_micro: 32,
             },

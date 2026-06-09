@@ -23,6 +23,7 @@ pub struct TopKSoftmax<T> {
     batch_temperature: MutPtr<T>,
     sequence_stride: usize,
     input_top_k: usize,
+    input_thread_capacity: usize,
     top_k: usize,
     top_p: T,
     min_p: T,
@@ -108,12 +109,18 @@ impl<
             },
             sequence_stride,
             input_top_k,
+            input_thread_capacity: 0,
             top_k,
             top_p,
             min_p,
             do_sample,
             eos_ids,
         }
+    }
+
+    pub fn with_input_thread_capacity(mut self, input_thread_capacity: usize) -> Self {
+        self.input_thread_capacity = input_thread_capacity;
+        self
     }
 
     pub fn run(
@@ -159,12 +166,12 @@ impl<
                 let write_sequence_index = record.kv_index;
                 if write_sequence_index >= self.sequence_stride {
                     record.phase = Phase::Eos;
-                    record.notify.notify_one();
                     continue;
                 }
 
                 let temperature = self.get_temperature(batch_index);
-                let input_stride = row_index * self.input_top_k * thread_num;
+                let input_thread_capacity = self.input_thread_capacity.max(thread_num);
+                let input_stride = row_index * self.input_top_k * input_thread_capacity;
                 let output_stride = row_index * self.top_k;
 
                 self.compute(
@@ -193,9 +200,6 @@ impl<
                 if self.eos_ids.contains(&predict_token) {
                     record.phase = Phase::Eos;
                 }
-                // Notify after every decoded token (including EOS) so that
-                // streaming handlers can read the token immediately.
-                record.notify.notify_one();
             }
         }
     }

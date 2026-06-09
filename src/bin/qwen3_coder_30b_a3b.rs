@@ -13,8 +13,12 @@ use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::env;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 fn parse_env_usize(name: &str, default: usize) -> usize {
     env::var(name)
@@ -22,6 +26,28 @@ fn parse_env_usize(name: &str, default: usize) -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+fn parse_env_bool(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+fn unix_timestamp_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn log_timing(label: &str, start: Instant) {
+    eprintln!(
+        "{label}: {:.3}s ts_ms={}",
+        start.elapsed().as_secs_f64(),
+        unix_timestamp_ms()
+    );
 }
 
 fn physical_core_thread_limit(requested_thread_num: usize) -> usize {
@@ -39,10 +65,56 @@ fn physical_core_thread_limit(requested_thread_num: usize) -> usize {
     }
 }
 
+struct ProcessLock {
+    path: PathBuf,
+}
+
+impl ProcessLock {
+    fn acquire(path: impl AsRef<Path>) -> std::io::Result<Option<Self>> {
+        let path = path.as_ref();
+        match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(mut file) => {
+                writeln!(file, "{}", std::process::id())?;
+                Ok(Some(Self {
+                    path: path.to_path_buf(),
+                }))
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing_pid = fs::read_to_string(path)
+                    .ok()
+                    .and_then(|pid| pid.trim().parse::<u32>().ok());
+                if let Some(pid) = existing_pid {
+                    if Path::new(&format!("/proc/{pid}")).exists() {
+                        return Ok(None);
+                    }
+                }
+                let _ = fs::remove_file(path);
+                Self::acquire(path)
+            }
+            Err(err) => Err(err),
+        }
+    }
+}
+
+impl Drop for ProcessLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 fn main() {
-    let batch_size = 3;
-    let max_output_tokens = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 32);
-    let model_dir = "models/Qwen3-0.6B";
+    let _process_lock = match ProcessLock::acquire("/tmp/ellm_qwen3_coder_30b_a3b.lock").unwrap() {
+        Some(lock) => lock,
+        None => {
+            eprintln!("qwen3_coder_30b_a3b is already running; refusing duplicate launch");
+            return;
+        }
+    };
+
+    let batch_size = parse_env_usize("ELLM_BATCH", 3);
+    let max_output_tokens: usize = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 128);
+    let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
+    let program_start = Instant::now();
 
     let config = Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
     let gen_cfg =
@@ -57,20 +129,27 @@ fn main() {
         .unwrap();
     let tokenizer = load_tiktoken(&tokenizer_path, &tokenizer_config_path).unwrap();
 
-    let prompts = [
-        "请用 Rust 写一个计算斐波那契数列的函数。",
-        "What is the difference between stack and heap memory?",
-        "Tell me a short joke about programming.",
+    let default_prompts = [
+        "Write a Rust function that implements a thread-safe LRU cache.",
+        "Explain how to implement a zero-copy parser in Rust using slices and references.",
+        "Write a Python async function that fetches data from multiple APIs concurrently with rate limiting.",
     ];
+    let env_prompt = env::var("ELLM_PROMPT").ok();
+    let mut prompts = Vec::with_capacity(batch_size);
+    for slot in 0..batch_size {
+        if let Some(prompt) = env_prompt.as_deref() {
+            prompts.push(prompt.to_string());
+        } else {
+            prompts.push(default_prompts[slot % default_prompts.len()].to_string());
+        }
+    }
 
-    // Tokenize to determine sizes
     let mut all_input_lens = Vec::new();
     for prompt in &prompts {
         let rendered = chat_template
-            .apply_chat_template(&[("user", *prompt)], true)
+            .apply_chat_template(&[("user", prompt.as_str())], true)
             .unwrap();
         let ids = tokenizer.encode_with_special_tokens(&rendered);
-        println!("Prompt '{prompt}': {len} tokens", len = ids.len());
         all_input_lens.push(ids.len());
     }
 
@@ -79,14 +158,12 @@ fn main() {
     let sequence_length = max_input + max_output_tokens;
     let chunk_size = total_input + batch_size * max_output_tokens;
 
-    println!("max_input={max_input} total_input={total_input} seq_len={sequence_length} chunk={chunk_size}");
-
     let params = SafeTensorsLoader::new(model_dir)
         .unwrap()
         .load_all_weights_f16_parallel()
         .unwrap();
-    println!("Loaded {} tensors", params.len());
     f16::init_global_strict(params);
+    log_timing("load_weights", program_start);
 
     let position_vec = RotaryEmbedding::new(
         config.head_dim,
@@ -97,11 +174,8 @@ fn main() {
     )
     .forward::<f16>();
 
-    let eos_ids = gen_cfg
-        .as_ref()
-        .and_then(|g| g.eos_token_id_list.clone())
-        .filter(|ids| !ids.is_empty())
-        .unwrap_or(config.eos_token_ids.clone());
+    // Force continue to max_output_tokens — disable EOS stopping.
+    let eos_ids: Vec<usize> = vec![];
 
     let sequences_capacity = sequence_length * batch_size;
     let sequences_box = AlignedBox::allocate_init(sequences_capacity, 0usize);
@@ -120,7 +194,7 @@ fn main() {
     let mut written_lengths = Vec::new();
     for (slot, prompt) in prompts.iter().enumerate().take(batch_size) {
         let write_len = batch_seq
-            .write_prompts(slot, &[("user", prompt)], 1.0)
+            .write_prompts(slot, &[("user", prompt.as_str())], 1.0)
             .unwrap();
         written_lengths.push(write_len);
     }
@@ -133,21 +207,19 @@ fn main() {
     let top_p = gen_cfg.as_ref().and_then(|g| g.top_p).unwrap_or(1.0) as f32;
     let min_p: f32 = 0.0;
     let do_sample = gen_cfg.as_ref().and_then(|g| g.do_sample).unwrap_or(false);
-    let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let requested_thread_num = parse_env_usize(
         "ELLM_THREAD_NUM",
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1),
     );
-    let thread_num = if core_ids.is_empty() {
-        requested_thread_num
+    let thread_num = if parse_env_bool("ELLM_ALLOW_LOGICAL_THREADS") {
+        requested_thread_num.max(1)
     } else {
         physical_core_thread_limit(requested_thread_num)
     };
-    println!("Threads: {thread_num}");
+    eprintln!("threads: {thread_num}");
 
-    println!("Building model graph...");
     let mut model = Model::<f16>::with_sampling(
         &config,
         position_vec,
@@ -164,6 +236,7 @@ fn main() {
     model.set_thread_num(thread_num);
     let (_indices, _values) =
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
+    log_timing("build_graph", program_start);
 
     let batch_list: Vec<SequenceState> = written_lengths
         .iter()
@@ -181,7 +254,6 @@ fn main() {
         .batch_list
         .with_mut(|list| *list = batch_list);
     let batch_list_ref = Arc::clone(&batch_scheduler.batch_list);
-
     let (task_sender, _) = tokio::sync::broadcast::channel(8);
     let sizes = batch_scheduler.schedule_batch();
     let mut task = ScheduleTask::new(
@@ -192,11 +264,13 @@ fn main() {
         1,
     );
 
-    println!("Starting inference...");
-    let start = std::time::Instant::now();
+    // ---- force max_output_tokens cutoff after gen ----
+    let sequence_length_u = sequence_length;
+    let sequences_ptr_u = sequences_ptr;
     let max_output_tokens_u = max_output_tokens;
-    let task_in_flight = Arc::new(AtomicBool::new(false));
 
+    let start = Instant::now();
+    let task_in_flight = Arc::new(AtomicBool::new(false));
     let runner = ServingRunner::new(
         f16::take_operator_queue(),
         Arc::clone(&batch_list_ref),
@@ -225,14 +299,20 @@ fn main() {
         }
     }
 
-    // Decode loop
+    // Decode loop: keep scheduling until all sequences are done
     let mut generated_count = 0usize;
     loop {
+        // Wait for current task to complete
         while task_in_flight.load(Ordering::Acquire) {
             std::thread::sleep(std::time::Duration::from_micros(100));
         }
-        generated_count += 1;
 
+        generated_count += 1;
+        if generated_count == 1 {
+            log_timing("first_token", start);
+        }
+
+        // Check if all sequences are finished
         let all_done = batch_scheduler.batch_list.with(|list| {
             list.iter().all(|s| matches!(s.phase, Phase::Eos))
                 || generated_count > max_output_tokens_u
@@ -241,6 +321,7 @@ fn main() {
             break;
         }
 
+        // Schedule next batch (decode step)
         let sizes = batch_scheduler.schedule_batch();
         if sizes.1 == 0 {
             break;
@@ -265,38 +346,37 @@ fn main() {
         }
     }
 
+    // Signal runner to stop
     drop(task_sender);
+    // Wait for final task to complete
     while task_in_flight.load(Ordering::Acquire) {
         std::thread::sleep(std::time::Duration::from_micros(100));
     }
     let _ = runner_handle.join();
-
     let elapsed = start.elapsed();
-    println!("Done in {elapsed:.2?}\n");
 
+    // Force-cut each sequence to exactly max_output_tokens generated tokens
     batch_list_ref.with(|list| {
-        for (slot, record) in list.iter().enumerate() {
+        for slot in 0..list.len() {
             let input_len = written_lengths[slot];
-            let actual_gen_len = record.kv_index.saturating_sub(input_len);
-            let gen_end = record.kv_index.min(sequence_length);
-            let gen_len = gen_end.saturating_sub(input_len);
-            let _text_short = batch_seq.decode_token_span(slot, input_len, gen_end);
-            let _ids = batch_seq.token_ids(slot, input_len, gen_end.min(input_len + 5));
-            let ids: Vec<u32> = (input_len..gen_end)
-                .map(|i| unsafe { *sequences_ptr.add(slot * sequence_length + i) as u32 })
+            // Hard cutoff: only show the first max_output_tokens generated ids
+            let cut_end = (input_len + max_output_tokens_u).min(sequence_length_u);
+            let gen_len = cut_end.saturating_sub(input_len);
+            let ids: Vec<u32> = (input_len..cut_end)
+                .map(|i| unsafe { *sequences_ptr_u.add(slot * sequence_length_u + i) as u32 })
                 .collect();
-            // Decode all tokens individually (tiktoken batch decode can fail on special tokens)
-            let full_text: String = ids
+            let text: String = ids
                 .iter()
                 .filter_map(|&tid| tokenizer.decode(vec![tid]).ok())
                 .collect();
-            println!(
-                "Slot {slot} [{p}]: {gen_len} displayed tokens, actual_gen_len={actual_gen_len}, phase={phase:?}",
-                p = prompts[slot],
-                phase = record.phase
-            );
-            println!("  {full_text:?}");
-            println!();
+            println!("Slot {slot}: {gen_len} tokens\n{text}\n");
         }
     });
+
+    eprintln!(
+        "generate: {:.3}s ts_ms={}",
+        elapsed.as_secs_f64(),
+        unix_timestamp_ms()
+    );
+    log_timing("total", program_start);
 }

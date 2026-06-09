@@ -188,6 +188,31 @@ where
             }
         }
     }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::AddRMSZipMap(_) => "AddRMSZipMap",
+            Self::AddZipMap(_) => "AddZipMap",
+            Self::Attention(_) => "Attention",
+            Self::ExpertsMatMulDown(_) => "ExpertsMatMulDown",
+            Self::ExpertsMatMulSilu(_) => "ExpertsMatMulSilu",
+            Self::ExpertsMergeAdd(_) => "ExpertsMergeAdd",
+            Self::MatMulSigmoid(_) => "MatMulSigmoid",
+            Self::ExpertsSoftmaxNorm(_) => "ExpertsSoftmaxNorm",
+            Self::ExpertsTopkNorm(_) => "ExpertsTopkNorm",
+            Self::LiftVector(_) => "LiftVector",
+            Self::LookupRMSMap(_) => "LookupRMSMap",
+            Self::MatMul(_) => "MatMul",
+            Self::MatMul3(_) => "MatMul3",
+            Self::MatMulAdd(_) => "MatMulAdd",
+            Self::MatMulTopK(_) => "MatMulTopK",
+            Self::RMSMap(_) => "RMSMap",
+            Self::SigmoidMap(_) => "SigmoidMap",
+            Self::FakeEcho(_) => "FakeEcho",
+            Self::SiluMulZipMap(_) => "SiluMulZipMap",
+            Self::TopKSoftmax(_) => "TopKSoftmax",
+        }
+    }
 }
 
 // Many Operator variants contain raw pointers to buffers that are

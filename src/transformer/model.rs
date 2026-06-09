@@ -44,6 +44,7 @@ where
     pub do_sample: bool,
     pub eos_id: usize,
     pub eos_ids: Vec<usize>,
+    thread_num: usize,
     scope_name: String,
 }
 
@@ -137,6 +138,10 @@ where
         }
 
         let eos_id = eos_ids.first().copied().unwrap_or(0);
+        let thread_num = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .max(1);
 
         Self {
             lm_head_weight: Tensor::zeros(
@@ -156,9 +161,14 @@ where
             do_sample,
             eos_id: eos_id,
             eos_ids,
+            thread_num,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
             scope_name: scope_name,
         }
+    }
+
+    pub fn set_thread_num(&mut self, thread_num: usize) {
+        self.thread_num = thread_num.max(1);
     }
 
     pub fn forward(
@@ -218,9 +228,7 @@ where
                 b_row_step_micro: 32,
             },
             self.topk_simd_size,
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1),
+            self.thread_num,
             format!("{}.lm_head", self.scope_name),
         );
 

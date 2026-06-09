@@ -1,5 +1,14 @@
 pub trait MatMulTopKTrait<T> {
     fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, value_ptr: *mut T);
+
+    fn compute_rows(
+        &self,
+        input_row: *const T,
+        weight_panel: *const T,
+        output_row: *mut T,
+        kc: usize,
+        rows: usize,
+    );
 }
 
 pub trait TopKSoftmaxTrait<T> {

@@ -23,6 +23,7 @@ pub trait AttentionTrait<T> {
 
 pub trait MatMulTrait<T> {
     fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T);
+
     fn compute2(
         &self,
         _input_ptr1: *const T,
@@ -41,6 +42,15 @@ pub trait MatMulAddTrait<T> {
         input_ptr2: *const T,
         input_ptr3: *const T,
         output_ptr: *mut T,
+    );
+
+    fn compute_rows(
+        &self,
+        input_row: *const T,
+        weight_panel: *const T,
+        output_row: *mut T,
+        kc: usize,
+        rows: usize,
     );
 }
 

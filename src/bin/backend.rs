@@ -11,7 +11,23 @@ use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+fn physical_core_thread_limit(requested_thread_num: usize) -> usize {
+    let all_core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    let physical_core_count = all_core_ids
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 0)
+        .count();
+
+    if physical_core_count == 0 {
+        requested_thread_num.max(1)
+    } else {
+        requested_thread_num.min(physical_core_count).max(1)
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Initializing...");
@@ -68,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "The sequence data is hardcoded.",
     ];
     let params = SafeTensorsLoader::new(model_dir)
-        .and_then(|loader| loader.load_all_weights_f16())
+        .and_then(|loader| loader.load_all_weights_f16_parallel())
         .map_err(|e| format!("failed to load model parameters: {}", e))?;
     println!("Loaded {} parameter tensors", params.len());
     f16::init_global_strict(params);
@@ -126,13 +142,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         do_sample,
         eos_token_id_list,
     );
+    let core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    let thread_num = if core_ids.is_empty() {
+        thread_num
+    } else {
+        physical_core_thread_limit(thread_num)
+    };
+    model.set_thread_num(thread_num);
 
     // Run the model forward pass to populate the operator queue
     let (_output_indices, _output_tensor) =
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
 
-    let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    let thread_num = core_ids.len().max(1).min(thread_num);
     let mut batch_scheduler =
         BatchScheduler::with_mode(sequence_length, batch_size, chunk_size, thread_num);
     let mut batch_list = Vec::with_capacity(batch_size);
@@ -159,22 +180,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch_scheduler.decode_list.clone(),
         1,
     );
-    task_sender.send(task.clone()).unwrap();
-
     println!("Starting serving runner...");
+    let task_in_flight = Arc::new(AtomicBool::new(false));
     let runner = Runner::new(
         f16::take_operator_queue(),
         Arc::clone(&batch_list_ref),
         task_sender.clone(),
-    );
+    )
+    .with_task_in_flight(Arc::clone(&task_in_flight));
     let runner_handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(thread_num)
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(runner.start());
     });
 
+    // Send prefill task
+    task_in_flight.store(true, Ordering::Release);
     let mut task = task;
     loop {
         match task_sender.send(task.clone()) {
@@ -186,6 +210,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Decode loop
+    let mut generated_count = 0usize;
+    loop {
+        while task_in_flight.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+        generated_count += 1;
+
+        let all_done = batch_scheduler.batch_list.with(|list| {
+            list.iter().all(|s| matches!(s.phase, Phase::Eos))
+        });
+        if all_done {
+            break;
+        }
+
+        let sizes = batch_scheduler.schedule_batch();
+        if sizes.1 == 0 {
+            break;
+        }
+        let decode_task = ScheduleTask::new(
+            sizes.0,
+            sizes.1,
+            batch_scheduler.prefill_list.clone(),
+            batch_scheduler.decode_list.clone(),
+            1,
+        );
+
+        task_in_flight.store(true, Ordering::Release);
+        loop {
+            match task_sender.send(decode_task.clone()) {
+                Ok(_) => break,
+                Err(err) => {
+                    let _ = err.0;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+    }
+
+    drop(task_sender);
+    while task_in_flight.load(Ordering::Acquire) {
+        std::thread::sleep(std::time::Duration::from_micros(100));
+    }
     let _ = runner_handle.join();
 
     println!("\n=== Generated Output ===");

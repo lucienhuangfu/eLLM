@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
+use std::thread;
 
 use anyhow::{anyhow, Result};
 use memmap2::MmapOptions;
@@ -51,17 +52,69 @@ impl SafeTensorsLoader {
         })
     }
 
+    fn load_file_weights<T: FromSafetensors>(model_file: &str) -> Result<HashMap<String, Vec<T>>> {
+        let file = File::open(model_file)?;
+        let mmap = unsafe { MmapOptions::new().map(&file)? };
+        let safetensors = SafeTensors::deserialize(&mmap)?;
+
+        let mut weights = HashMap::with_capacity(safetensors.tensors().len());
+        for (name, tensor_view) in safetensors.tensors() {
+            let data = T::from_tensor_view(&tensor_view)?;
+            weights.insert(name.to_string(), data);
+        }
+
+        Ok(weights)
+    }
+
     pub fn load_all_weights<T: FromSafetensors>(&self) -> Result<HashMap<String, Vec<T>>> {
         let mut all_weights = HashMap::with_capacity(512);
 
         for model_file in &self.model_files {
-            let file = File::open(model_file)?;
-            let mmap = unsafe { MmapOptions::new().map(&file)? };
-            let safetensors = SafeTensors::deserialize(&mmap)?;
+            all_weights.extend(Self::load_file_weights::<T>(model_file)?);
+        }
 
-            for (name, tensor_view) in safetensors.tensors() {
-                let data = T::from_tensor_view(&tensor_view)?;
-                all_weights.insert(name.to_string(), data);
+        Ok(all_weights)
+    }
+
+    pub fn load_all_weights_parallel<T>(&self) -> Result<HashMap<String, Vec<T>>>
+    where
+        T: FromSafetensors + Send,
+    {
+        let thread_count = std::env::var("ELLM_LOAD_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1)
+            })
+            .min(self.model_files.len())
+            .max(1);
+
+        let mut all_weights = HashMap::with_capacity(512);
+
+        for chunk in self.model_files.chunks(thread_count) {
+            let file_maps = thread::scope(|scope| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|model_file| {
+                        scope.spawn(move || Self::load_file_weights::<T>(model_file.as_str()))
+                    })
+                    .collect();
+
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle
+                            .join()
+                            .map_err(|_| anyhow!("parallel safetensors loader thread panicked"))?
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?;
+
+            for file_weights in file_maps {
+                all_weights.extend(file_weights);
             }
         }
 
@@ -70,6 +123,10 @@ impl SafeTensorsLoader {
 
     pub fn load_all_weights_f16(&self) -> Result<HashMap<String, Vec<f16>>> {
         self.load_all_weights::<f16>()
+    }
+
+    pub fn load_all_weights_f16_parallel(&self) -> Result<HashMap<String, Vec<f16>>> {
+        self.load_all_weights_parallel::<f16>()
     }
 
     pub fn merge_moe<T>(&self, weights: &mut HashMap<String, Vec<T>>) -> Result<()> {
