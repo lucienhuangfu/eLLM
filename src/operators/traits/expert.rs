@@ -47,6 +47,20 @@ pub trait ExpertsSiluTrait<T> {
         rows: usize,
     );
 
+    fn compute1_gather_rows(
+        &self,
+        input_base: *const T,
+        input_row_stride: usize,
+        idx_buf: *const usize,
+        idx_off: usize,
+        reduction_col_start: usize,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+    );
+
     fn compute2(&self, gate_row: *const T, up_row: *const T, c_row: *mut T);
 }
 

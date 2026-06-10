@@ -191,7 +191,11 @@ fn main() {
         "Explain how to implement a zero-copy parser in Rust using slices and references.",
         "Write a Python async function that fetches data from multiple APIs concurrently with rate limiting.",
     ];
-    let env_prompt = env::var("ELLM_PROMPT").ok();
+    let env_prompt = if let Ok(prompt_file) = env::var("ELLM_PROMPT_FILE") {
+        Some(std::fs::read_to_string(prompt_file).expect("failed to read ELLM_PROMPT_FILE"))
+    } else {
+        env::var("ELLM_PROMPT").ok()
+    };
     let mut prompts = Vec::with_capacity(batch_size);
     for slot in 0..batch_size {
         if let Some(prompt) = env_prompt.as_deref() {
