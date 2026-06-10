@@ -18,9 +18,8 @@ pub use io::load_tiktoken;
 pub use io::ChatTemplate;
 pub use io::SafeTensorsLoader;
 pub use runner::ServingRunner;
-pub use scheduling::BatchScheduler;
+pub use scheduling::InferenceScheduler;
 pub use scheduling::ScheduleTask;
-pub use scheduling::TokenCounter;
 pub use scheduling::{Phase, SequenceState};
 
 /// Compatibility alias matching sample's Runner name.
@@ -45,34 +44,35 @@ pub mod sequence_slice {
 
 #[cfg(test)]
 mod tests {
-    use super::{BatchScheduler, Phase, SequenceState, ServingRunner};
+    use super::{InferenceScheduler, Phase, SequenceState, ServingRunner};
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::sync::broadcast;
     use tokio::sync::Notify;
 
     #[test]
     fn runtime_reexports_are_constructible() {
-        let prefill_state = SequenceState {
-            sequence_index: 8,
-            kv_index: 12,
-            filling_length: 4,
-            phase: Phase::Prefill,
-            notify: Arc::new(Notify::new()),
-        };
-        let decode_state = SequenceState {
-            sequence_index: 16,
-            kv_index: 16,
-            filling_length: 0,
-            phase: Phase::Decode,
-            notify: Arc::new(Notify::new()),
-        };
-        let scheduler = BatchScheduler::new(8, 2, 1);
+        use crate::operators::send_sync_ptr::SharedMut;
+
+        let prefill_state = SequenceState::new_prefill_state(8, 4);
+        let decode_state = SequenceState::new_decode_state(16, 16);
+
         let (sender, _) = broadcast::channel(4);
+        let batch_list = Arc::new(SharedMut::new(Vec::new()));
+        let scheduler = InferenceScheduler::new(
+            8,
+            2,
+            1,
+            1,
+            Duration::from_millis(100),
+            sender.clone(),
+            batch_list,
+        );
         let runner =
-            ServingRunner::<f32>::new(Vec::new(), Arc::clone(&scheduler.batch_list), sender);
+            ServingRunner::<f32>::new(Vec::new(), Arc::clone(&scheduler.batch_list()), sender);
 
         assert_eq!(prefill_state.sequence_index, 8);
-        assert_eq!(prefill_state.kv_index, 12);
+        assert_eq!(prefill_state.kv_index, 8);
         assert_eq!(prefill_state.filling_length, 4);
         assert_eq!(prefill_state.phase, Phase::Prefill);
         assert_eq!(Arc::strong_count(&prefill_state.notify), 1);

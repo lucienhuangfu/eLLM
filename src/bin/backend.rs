@@ -5,7 +5,8 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
-    BatchScheduler, BatchSequence, Phase, Runner, SafeTensorsLoader, ScheduleTask, SequenceState,
+    BatchSequence, InferenceScheduler, Phase, Runner, SafeTensorsLoader, ScheduleTask,
+    SequenceState,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
@@ -13,6 +14,7 @@ use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 fn physical_core_thread_limit(requested_thread_num: usize) -> usize {
     let all_core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -154,30 +156,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_output_indices, _output_tensor) =
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
 
-    let mut batch_scheduler =
-        BatchScheduler::with_mode(sequence_length, batch_size, chunk_size, thread_num);
+    let (task_sender, _) = tokio::sync::broadcast::channel(8);
+
     let mut batch_list = Vec::with_capacity(batch_size);
     batch_list.extend(
         written_lengths
             .iter()
             .enumerate()
-            .map(|(_, &len)| SequenceState {
-                filling_length: len.min(sequence_length),
-                sequence_index: 0,
-                kv_index: 0,
-                phase: Phase::Prefill,
-                notify: Arc::new(tokio::sync::Notify::new()),
-            }),
+            .map(|(_, &len)| SequenceState::new_prefill_state(0, len.min(sequence_length))),
     );
-    batch_scheduler.batch_list = Arc::new(SharedMut::new(batch_list));
-    let batch_list_ref = Arc::clone(&batch_scheduler.batch_list);
-    let (task_sender, _) = tokio::sync::broadcast::channel(8);
+    let batch_list_arc = Arc::new(SharedMut::new(batch_list));
+
+    let mut batch_scheduler = InferenceScheduler::with_mode(
+        sequence_length,
+        batch_size,
+        chunk_size,
+        thread_num,
+        chunk_size,
+        Duration::from_millis(10),
+        task_sender.clone(),
+        Arc::clone(&batch_list_arc),
+    );
+
+    let batch_list_ref = Arc::clone(&batch_list_arc);
     let sizes = batch_scheduler.schedule_batch();
     let task = ScheduleTask::new(
         sizes.0,
         sizes.1,
-        batch_scheduler.prefill_list.clone(),
-        batch_scheduler.decode_list.clone(),
+        batch_scheduler.prefill_list().clone(),
+        batch_scheduler.decode_list().clone(),
         1,
     );
     println!("Starting serving runner...");
@@ -218,9 +225,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         generated_count += 1;
 
-        let all_done = batch_scheduler.batch_list.with(|list| {
-            list.iter().all(|s| matches!(s.phase, Phase::Eos))
-        });
+        let all_done =
+            batch_list_ref.with(|list| list.iter().all(|s| matches!(s.phase, Phase::Eos)));
         if all_done {
             break;
         }
@@ -232,8 +238,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let decode_task = ScheduleTask::new(
             sizes.0,
             sizes.1,
-            batch_scheduler.prefill_list.clone(),
-            batch_scheduler.decode_list.clone(),
+            batch_scheduler.prefill_list().clone(),
+            batch_scheduler.decode_list().clone(),
             1,
         );
 

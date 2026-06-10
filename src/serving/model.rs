@@ -8,8 +8,7 @@ use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::batch_sequence::BatchSequence;
 use crate::runtime::scheduling::{
-    build_batch_sequence, build_sequence_state, BatchScheduler, ScheduleTask, SequenceState,
-    TokenCounter,
+    build_batch_sequence, build_sequence_state, InferenceScheduler, ScheduleTask, SequenceState,
 };
 use crate::runtime::Runner;
 use crate::tensor::GlobalOperatorQueue;
@@ -72,7 +71,7 @@ pub struct ThreadingConfig {
 pub struct ServingResources {
     pub batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    pub token_counter: Arc<TokenCounter>,
+    pub scheduler: Arc<InferenceScheduler>,
     pub parser_options: ParserOptions,
     pub runner: Runner<f16>,
     pub worker_threads: usize,
@@ -188,29 +187,25 @@ fn create_scheduling_components(
     thread_config: &ThreadingConfig,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
 ) -> (
-    Arc<TokenCounter>,
+    Arc<InferenceScheduler>,
     tokio::sync::broadcast::Sender<ScheduleTask>,
 ) {
-    let mut batch_scheduler = BatchScheduler::with_mode(
-        config.sequence_length,
-        config.batch_size,
-        config.chunk_size,
-        thread_config.worker_threads,
-    );
-    batch_scheduler.batch_list = Arc::clone(&batch_states);
-    let batch_scheduler = Arc::new(tokio::sync::Mutex::new(batch_scheduler));
     let broadcast_capacity = thread_config.worker_threads;
     let (task_sender, _): (tokio::sync::broadcast::Sender<ScheduleTask>, _) =
         tokio::sync::broadcast::channel(broadcast_capacity);
 
-    let token_counter = Arc::new(TokenCounter::new(
+    let scheduler = Arc::new(InferenceScheduler::with_mode(
+        config.sequence_length,
+        config.batch_size,
+        config.chunk_size,
+        thread_config.worker_threads,
         config.chunk_size,
         Duration::from_millis(config.schedule_timeout_ms as u64),
-        Arc::clone(&batch_scheduler),
         task_sender.clone(),
+        Arc::clone(&batch_states),
     ));
 
-    (token_counter, task_sender)
+    (scheduler, task_sender)
 }
 
 pub fn initialize_serving_resources(
@@ -250,7 +245,7 @@ pub fn initialize_serving_resources(
     let sequences_ptr = sequences_box.as_mut_ptr();
 
     let batch_states = Arc::new(SharedMut::new(build_sequence_state(config.batch_size)));
-    let (token_counter, task_sender) =
+    let (scheduler, task_sender) =
         create_scheduling_components(config, &thread_config, Arc::clone(&batch_states));
 
     let position_vec = RotaryEmbedding::new(
@@ -281,12 +276,12 @@ pub fn initialize_serving_resources(
         task_sender,
     )
     .with_runner_count(thread_config.worker_threads)
-    .with_task_in_flight(token_counter.task_in_flight());
+    .with_task_in_flight(scheduler.task_in_flight());
 
     Ok(ServingResources {
         batch_sequences,
         batch_states,
-        token_counter,
+        scheduler,
         parser_options,
         runner,
         worker_threads: thread_config.worker_threads,

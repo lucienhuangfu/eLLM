@@ -228,8 +228,9 @@ mod test {
     use super::*;
     use crate::kernel::common::matmul_params::MatMulParams;
     use crate::operators::expert::expert_routing::ExpertRouting;
+    use crate::operators::send_sync_ptr::SharedMut;
     use crate::runtime::scheduling::SequenceSlice;
-    use crate::runtime::{BatchScheduler, Phase, SequenceState};
+    use crate::runtime::{InferenceScheduler, Phase, SequenceState};
     use approx::assert_ulps_eq;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -364,8 +365,18 @@ mod test {
         sequences[0..SEQUENCE_LENGTH].copy_from_slice(&[1, 2, 3, 0, 0]);
         sequences[SEQUENCE_LENGTH..SEQUENCE_LENGTH * 2].copy_from_slice(&[4, 5, 6, 7, 0]);
 
-        let mut scheduler = BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM);
-        scheduler.batch_list.with_mut(|batch_list| {
+        let (sender, _) = tokio::sync::broadcast::channel(4);
+        let batch_list = Arc::new(SharedMut::new(Vec::new()));
+        let mut scheduler = InferenceScheduler::new(
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            THREAD_NUM,
+            1,
+            std::time::Duration::from_millis(100),
+            sender,
+            batch_list,
+        );
+        scheduler.batch_list().with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 3));
             batch_list.push(prefill_state(0, 4));
         });
@@ -373,13 +384,13 @@ mod test {
         let (prefill_size, decode_size) = scheduler.schedule_batch();
         assert_eq!(prefill_size, 7);
         assert_eq!(decode_size, 2);
-        assert_eq!(scheduler.decode_list[0].token_start_index, 0);
-        assert_eq!(scheduler.decode_list[0].length, 3);
-        assert_eq!(scheduler.decode_list[1].token_start_index, 3);
-        assert_eq!(scheduler.decode_list[1].length, 4);
+        assert_eq!(scheduler.decode_list()[0].token_start_index, 0);
+        assert_eq!(scheduler.decode_list()[0].length, 3);
+        assert_eq!(scheduler.decode_list()[1].token_start_index, 3);
+        assert_eq!(scheduler.decode_list()[1].length, 4);
 
-        let prefill_list = scheduler.prefill_list.clone();
-        let decode_list = scheduler.decode_list.clone();
+        let prefill_list = scheduler.prefill_list().clone();
+        let decode_list = scheduler.decode_list().clone();
 
         let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
         fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
@@ -398,7 +409,7 @@ mod test {
             1.0e-6,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &lookup,
                 prefill_size,
@@ -460,7 +471,7 @@ mod test {
             params.b_row_step_micro,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &matmul3,
                 prefill_size,
@@ -506,7 +517,7 @@ mod test {
             THREAD_NUM,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &attention,
                 prefill_size,
@@ -528,7 +539,7 @@ mod test {
         );
 
         let lift = Operator::LiftVector(LiftVector::new(attention_output.as_mut_ptr(), HEAD_DIM));
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &lift,
                 prefill_size,
@@ -570,7 +581,7 @@ mod test {
             vec![VOCAB_SIZE - 1],
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &topk,
                 prefill_size,
@@ -603,14 +614,24 @@ mod test {
 
         fn run_chain(thread_num: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
             let sequences = vec![1usize, 2, 3, 0, 0, 0, 4, 5, 6, 7, 0, 0];
-            let mut scheduler = BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, thread_num);
-            scheduler.batch_list.with_mut(|batch_list| {
+            let (sender, _) = tokio::sync::broadcast::channel(4);
+            let batch_list = Arc::new(SharedMut::new(Vec::new()));
+            let mut scheduler = InferenceScheduler::new(
+                SEQUENCE_LENGTH,
+                BATCH_SIZE,
+                thread_num,
+                1,
+                std::time::Duration::from_millis(100),
+                sender,
+                batch_list,
+            );
+            scheduler.batch_list().with_mut(|batch_list| {
                 batch_list.push(prefill_state(0, 3));
                 batch_list.push(prefill_state(0, 4));
             });
             let (prefill_size, decode_size) = scheduler.schedule_batch();
-            let prefill_list = scheduler.prefill_list.clone();
-            let decode_list = scheduler.decode_list.clone();
+            let prefill_list = scheduler.prefill_list().clone();
+            let decode_list = scheduler.decode_list().clone();
 
             let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
             fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
@@ -628,7 +649,7 @@ mod test {
                 1.0e-6,
             ));
 
-            scheduler.batch_list.with_mut(|batch_list| {
+            scheduler.batch_list().with_mut(|batch_list| {
                 run_prefill_operator_all_threads(
                     &lookup,
                     prefill_size,
@@ -686,7 +707,7 @@ mod test {
                 params.b_row_step_micro,
             ));
 
-            scheduler.batch_list.with_mut(|batch_list| {
+            scheduler.batch_list().with_mut(|batch_list| {
                 run_prefill_operator_all_threads(
                     &matmul3,
                     prefill_size,
@@ -722,8 +743,18 @@ mod test {
         sequences[0..SEQUENCE_LENGTH].copy_from_slice(&[1, 2, 3, 42, 0, 0]);
         sequences[SEQUENCE_LENGTH..SEQUENCE_LENGTH * 2].copy_from_slice(&[4, 5, 6, 7, 77, 0]);
 
-        let mut scheduler = BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM);
-        scheduler.batch_list.with_mut(|batch_list| {
+        let (sender, _) = tokio::sync::broadcast::channel(4);
+        let batch_list = Arc::new(SharedMut::new(Vec::new()));
+        let mut scheduler = InferenceScheduler::new(
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            THREAD_NUM,
+            1,
+            std::time::Duration::from_millis(100),
+            sender,
+            batch_list,
+        );
+        scheduler.batch_list().with_mut(|batch_list| {
             batch_list.push(decode_state(3, 4));
             batch_list.push(decode_state(4, 5));
         });
@@ -731,14 +762,14 @@ mod test {
         let (prefill_size, decode_size) = scheduler.schedule_batch();
         assert_eq!(prefill_size, 0);
         assert_eq!(decode_size, 2);
-        assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
-        assert_eq!(scheduler.decode_list[0].sequence_index, 3);
-        assert_eq!(scheduler.decode_list[0].token_start_index, 0);
-        assert_eq!(scheduler.decode_list[1].sequence_index, 4);
-        assert_eq!(scheduler.decode_list[1].token_start_index, 1);
+        assert!(scheduler.prefill_list().iter().all(Vec::is_empty));
+        assert_eq!(scheduler.decode_list()[0].sequence_index, 3);
+        assert_eq!(scheduler.decode_list()[0].token_start_index, 0);
+        assert_eq!(scheduler.decode_list()[1].sequence_index, 4);
+        assert_eq!(scheduler.decode_list()[1].token_start_index, 1);
 
-        let prefill_list = scheduler.prefill_list.clone();
-        let decode_list = scheduler.decode_list.clone();
+        let prefill_list = scheduler.prefill_list().clone();
+        let decode_list = scheduler.decode_list().clone();
 
         let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
         fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
@@ -757,7 +788,7 @@ mod test {
             1.0e-6,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &lookup,
                 prefill_size,
@@ -816,7 +847,7 @@ mod test {
             params.b_row_step_micro,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &matmul3,
                 prefill_size,
@@ -861,7 +892,7 @@ mod test {
             THREAD_NUM,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &attention,
                 prefill_size,
@@ -876,7 +907,7 @@ mod test {
         assert!(attention_output[HEAD_DIM] != 0.0);
 
         let lift = Operator::LiftVector(LiftVector::new(attention_output.as_mut_ptr(), HEAD_DIM));
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &lift,
                 prefill_size,
@@ -910,7 +941,7 @@ mod test {
             vec![VOCAB_SIZE - 1],
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &topk,
                 prefill_size,
@@ -944,8 +975,18 @@ mod test {
         const TOPK: usize = 8;
 
         let mut sequences = vec![10usize, 11, 12, 0, 0, 0];
-        let mut scheduler = BatchScheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM);
-        scheduler.batch_list.with_mut(|batch_list| {
+        let (sender, _) = tokio::sync::broadcast::channel(4);
+        let batch_list = Arc::new(SharedMut::new(Vec::new()));
+        let mut scheduler = InferenceScheduler::new(
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            THREAD_NUM,
+            1,
+            std::time::Duration::from_millis(100),
+            sender,
+            batch_list,
+        );
+        scheduler.batch_list().with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 3));
         });
 
@@ -973,12 +1014,12 @@ mod test {
         let (prefill_size, decode_size) = scheduler.schedule_batch();
         assert_eq!(prefill_size, 3);
         assert_eq!(decode_size, 1);
-        assert_eq!(scheduler.decode_list[0].sequence_index, 0);
-        assert_eq!(scheduler.decode_list[0].length, 3);
-        assert!(scheduler.decode_list[0].last_token_flag);
+        assert_eq!(scheduler.decode_list()[0].sequence_index, 0);
+        assert_eq!(scheduler.decode_list()[0].length, 3);
+        assert!(scheduler.decode_list()[0].last_token_flag);
 
-        let prefill_list = scheduler.prefill_list.clone();
-        let decode_list = scheduler.decode_list.clone();
+        let prefill_list = scheduler.prefill_list().clone();
+        let decode_list = scheduler.decode_list().clone();
         let norm_weight = vec![1.0f32; HIDDEN_SIZE];
         let mut hidden = vec![0.0f32; prefill_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; prefill_size * HIDDEN_SIZE];
@@ -993,7 +1034,7 @@ mod test {
             1.0e-6,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &lookup,
                 prefill_size,
@@ -1034,7 +1075,7 @@ mod test {
             params.b_row_step_micro,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &matmul3,
                 prefill_size,
@@ -1075,7 +1116,7 @@ mod test {
             THREAD_NUM,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &prefill_attention,
                 prefill_size,
@@ -1092,7 +1133,7 @@ mod test {
             prefill_attention_output.as_mut_ptr(),
             HEAD_DIM,
         ));
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &lift,
                 prefill_size,
@@ -1128,7 +1169,7 @@ mod test {
             vec![VOCAB_SIZE - 1],
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &topk,
                 prefill_size,
@@ -1149,12 +1190,12 @@ mod test {
         let (decode_prefill_size, decode_size) = scheduler.schedule_batch();
         assert_eq!(decode_prefill_size, 0);
         assert_eq!(decode_size, 1);
-        assert!(scheduler.prefill_list.iter().all(Vec::is_empty));
-        assert_eq!(scheduler.decode_list[0].sequence_index, 3);
-        assert_eq!(scheduler.decode_list[0].length, 1);
+        assert!(scheduler.prefill_list().iter().all(Vec::is_empty));
+        assert_eq!(scheduler.decode_list()[0].sequence_index, 3);
+        assert_eq!(scheduler.decode_list()[0].length, 1);
 
-        let prefill_list = scheduler.prefill_list.clone();
-        let decode_list = scheduler.decode_list.clone();
+        let prefill_list = scheduler.prefill_list().clone();
+        let decode_list = scheduler.decode_list().clone();
         let norm_weight = vec![1.0f32; HIDDEN_SIZE];
         let mut hidden = vec![0.0f32; decode_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; decode_size * HIDDEN_SIZE];
@@ -1169,7 +1210,7 @@ mod test {
             1.0e-6,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &lookup,
                 decode_prefill_size,
@@ -1209,7 +1250,7 @@ mod test {
             params.b_row_step_micro,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &matmul3,
                 decode_prefill_size,
@@ -1251,7 +1292,7 @@ mod test {
             THREAD_NUM,
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &decode_attention,
                 decode_prefill_size,
@@ -1289,7 +1330,7 @@ mod test {
             vec![VOCAB_SIZE - 1],
         ));
 
-        scheduler.batch_list.with_mut(|batch_list| {
+        scheduler.batch_list().with_mut(|batch_list| {
             run_prefill_operator_all_threads(
                 &topk,
                 decode_prefill_size,

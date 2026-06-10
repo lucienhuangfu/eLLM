@@ -2,12 +2,13 @@
 
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
+use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::batch_sequence::BatchSequence;
 use ellm::runtime::io::load_tiktoken;
 use ellm::runtime::io::ChatTemplate;
 use ellm::runtime::io::SafeTensorsLoader;
 use ellm::runtime::{
-    BatchScheduler, Config, GenerationConfig, Phase, ScheduleTask, SequenceState, ServingRunner,
+    Config, GenerationConfig, InferenceScheduler, Phase, ScheduleTask, SequenceState, ServingRunner,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
@@ -15,6 +16,7 @@ use ellm::transformer::rope::RotaryEmbedding;
 use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 fn parse_env_usize(name: &str, default: usize) -> usize {
     env::var(name)
@@ -167,28 +169,27 @@ fn main() {
 
     let batch_list: Vec<SequenceState> = written_lengths
         .iter()
-        .map(|&len| SequenceState {
-            filling_length: len,
-            sequence_index: 0,
-            kv_index: 0,
-            phase: Phase::Prefill,
-            notify: Arc::new(tokio::sync::Notify::new()),
-        })
+        .map(|&len| SequenceState::new_prefill_state(0, len))
         .collect();
-
-    let mut batch_scheduler = BatchScheduler::new(sequence_length, batch_size, thread_num);
-    batch_scheduler
-        .batch_list
-        .with_mut(|list| *list = batch_list);
-    let batch_list_ref = Arc::clone(&batch_scheduler.batch_list);
+    let batch_list_arc = Arc::new(SharedMut::new(batch_list));
 
     let (task_sender, _) = tokio::sync::broadcast::channel(8);
+    let mut batch_scheduler = InferenceScheduler::new(
+        sequence_length,
+        batch_size,
+        thread_num,
+        1,
+        Duration::from_millis(10),
+        task_sender.clone(),
+        Arc::clone(&batch_list_arc),
+    );
+    let batch_list_ref = Arc::clone(&batch_list_arc);
     let sizes = batch_scheduler.schedule_batch();
     let mut task = ScheduleTask::new(
         sizes.0,
         sizes.1,
-        batch_scheduler.prefill_list.clone(),
-        batch_scheduler.decode_list.clone(),
+        batch_scheduler.prefill_list().clone(),
+        batch_scheduler.decode_list().clone(),
         1,
     );
 
@@ -233,7 +234,7 @@ fn main() {
         }
         generated_count += 1;
 
-        let all_done = batch_scheduler.batch_list.with(|list| {
+        let all_done = batch_scheduler.batch_list().with(|list| {
             list.iter().all(|s| matches!(s.phase, Phase::Eos))
                 || generated_count > max_output_tokens_u
         });
@@ -248,8 +249,8 @@ fn main() {
         let decode_task = ScheduleTask::new(
             sizes.0,
             sizes.1,
-            batch_scheduler.prefill_list.clone(),
-            batch_scheduler.decode_list.clone(),
+            batch_scheduler.prefill_list().clone(),
+            batch_scheduler.decode_list().clone(),
             1,
         );
 

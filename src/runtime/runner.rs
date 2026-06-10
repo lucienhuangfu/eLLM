@@ -180,16 +180,28 @@ where
 mod tests {
     use super::ServingRunner;
     use crate::runtime::scheduling::types::ScheduleTask;
-    use crate::runtime::BatchScheduler;
+    use crate::runtime::InferenceScheduler;
     use tokio::sync::broadcast;
 
     #[tokio::test]
     async fn new_preserves_operator_queue_and_batch_layout() {
-        let operator_queue = Vec::<crate::operators::operator::Operator<f32>>::new();
-        let batch_scheduler = BatchScheduler::new(16, 4, 3);
-        let (sender, _) = broadcast::channel(4);
+        use crate::operators::send_sync_ptr::SharedMut;
+        use std::sync::Arc;
 
-        let runner = ServingRunner::new(operator_queue, batch_scheduler.batch_list.clone(), sender);
+        let operator_queue = Vec::<crate::operators::operator::Operator<f32>>::new();
+        let (sender, _) = broadcast::channel(4);
+        let batch_list = Arc::new(SharedMut::new(Vec::new()));
+        let batch_scheduler = InferenceScheduler::new(
+            16,
+            4,
+            3,
+            1,
+            std::time::Duration::from_millis(100),
+            sender.clone(),
+            batch_list,
+        );
+
+        let runner = ServingRunner::new(operator_queue, batch_scheduler.batch_list(), sender);
 
         assert_eq!(runner.operator_queue.len(), 0);
         assert_eq!(runner.batch_list.with(|list| list.len()), 0);

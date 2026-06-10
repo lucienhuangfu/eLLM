@@ -46,7 +46,7 @@ async fn run_server(
     serving::run(
         resources.batch_sequences,
         resources.batch_states,
-        resources.token_counter,
+        resources.scheduler,
         resources.parser_options,
     )
     .await?;
