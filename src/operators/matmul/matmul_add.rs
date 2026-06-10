@@ -503,6 +503,11 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
             } else {
                 _mm512_set1_ph(0.0)
             };
+            let mut acc2 = if rows > 2 {
+                _mm512_loadu_ph(output_row.add(output_row_stride * 2))
+            } else {
+                _mm512_set1_ph(0.0)
+            };
             for reduction_lane in 0..kc {
                 let weight = _mm512_loadu_ph(weight_panel.add(reduction_lane * 32));
                 if rows > 0 {
@@ -513,12 +518,20 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
                     let input = _mm512_set1_ph(*input_row.add(input_row_stride + reduction_lane));
                     acc1 = _mm512_fmadd_ph(input, weight, acc1);
                 }
+                if rows > 2 {
+                    let input =
+                        _mm512_set1_ph(*input_row.add(input_row_stride * 2 + reduction_lane));
+                    acc2 = _mm512_fmadd_ph(input, weight, acc2);
+                }
             }
             if rows > 0 {
                 _mm512_storeu_ph(output_row, acc0);
             }
             if rows > 1 {
                 _mm512_storeu_ph(output_row.add(output_row_stride), acc1);
+            }
+            if rows > 2 {
+                _mm512_storeu_ph(output_row.add(output_row_stride * 2), acc2);
             }
         }
 
@@ -568,6 +581,11 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
             } else {
                 _mm512_set1_ph(0.0)
             };
+            let mut acc2 = if rows > 2 {
+                _mm512_loadu_ph(residual_row.add(output_row_stride * 2))
+            } else {
+                _mm512_set1_ph(0.0)
+            };
             for reduction_lane in 0..kc {
                 let weight = _mm512_loadu_ph(weight_panel.add(reduction_lane * 32));
                 if rows > 0 {
@@ -578,12 +596,20 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
                     let input = _mm512_set1_ph(*input_row.add(input_row_stride + reduction_lane));
                     acc1 = _mm512_fmadd_ph(input, weight, acc1);
                 }
+                if rows > 2 {
+                    let input =
+                        _mm512_set1_ph(*input_row.add(input_row_stride * 2 + reduction_lane));
+                    acc2 = _mm512_fmadd_ph(input, weight, acc2);
+                }
             }
             if rows > 0 {
                 _mm512_storeu_ph(output_row, acc0);
             }
             if rows > 1 {
                 _mm512_storeu_ph(output_row.add(output_row_stride), acc1);
+            }
+            if rows > 2 {
+                _mm512_storeu_ph(output_row.add(output_row_stride * 2), acc2);
             }
         }
 

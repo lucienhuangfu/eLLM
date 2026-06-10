@@ -371,3 +371,78 @@ decode 的核心矛盾是：
 继续拆 attention 内部 profile
 为长 decode 设计 KV split + partial softmax merge
 ```
+
+## 9. 第二轮 A-pack elimination + AVX-512 优化（2025-06-11 已验证）
+
+继续对 prefill 算子做 A-pack elimination 和 SIMD 优化。每步改动后跑 profile 验证（4000 input / 16 output / 48 线程）。
+
+### 9.1 ExpertMatMulDown 2-row gather（✅ 保留）
+
+延续 §5.3 的 3-row gather 思路。Down 的 2-row partial tile 从 `pack_a_tile + compute1_rows` 改为直接 `compute1_gather_2rows`（AVX-512 broadcast+FMA）。
+
+**改动文件**：
+- [expert_matmul_mul.rs](src/operators/expert/expert_matmul_mul.rs)：`run()` 中 2-row 路径
+- [expert.rs](src/operators/traits/expert.rs)：`ExpertsDownTrait` 新增 `compute1_gather_2rows`
+- 9 个单测通过
+
+### 9.2 MatMulAdd compute_rows 3-row unroll（✅ 保留）
+
+`compute_rows` 和 `compute_rows_init`（f16 AVX-512）从 2-row 补齐为 3-row unroll（acc0/acc1/acc2），与 `compute_init` 保持一致。当前 workload 下实际只命中 1-2 row（tail），但代码更完整。
+
+**改动文件**：[matmul_add.rs](src/operators/matmul/matmul_add.rs) — 8 个单测通过
+
+### 9.3 ExpertsMatMulSilu 2-row gather（❌ 已回退）
+
+尝试对 Silu 做 2-row gather，**wall clock 从 4.798s 退化为 5.012s（+4.5%）**。
+
+原因：gate+up 双 weight panel 的 gather kernel 每次 kc 迭代都要从非连续地址 broadcast gather，而旧路径的 `pack_a_tile + matmul_block×2` 中 pack 后的连续 buffer 被两次 matmul_block 共享 L1 cache。直接 gather 的 cache 行为更差。
+
+### 9.4 MatMul3 compute1_init + 冗余 zero-init 移除（✅ 保留）
+
+**问题**：`compute_head_tile_from_packed` 在 3-row tile 计算前先做 `for head_col in 0..head_dim { *dst = 0 }`（每 head 128 次标量写入），然后 `compute1`（`matmul_update_inplace_3x32_accum`）又从 C load 再累加。zero-init 是冗余的。
+
+**方案**：新增 `matmul_update_inplace_3x32_first` kernel（累加器从 `_mm512_set1_ph(0.0)` 开始，不从 C load），通过 trait `compute1_init` → f16 specialization dispatch。首个 reduction panel 用 `compute1_init`，后续用 `compute1`，zero-init pass 完全消除。
+
+**改动文件**：
+- [matmul_rms_complex.rs](src/kernel/x86_64/f16_512/matmul_rms_complex.rs)：新增 `matmul_update_inplace_3x32_first`
+- [linear.rs](src/operators/traits/linear.rs)：`MatMulkqvTrait` 新增 `compute1_init`
+- [matmul3.rs](src/operators/matmul/matmul3.rs)：`compute1_init` trait dispatch + `compute_head_tile_from_packed` 零写消除
+- [matmul3.rs](src/operators/matmul/matmul3.rs)：`compute_head_from_packed` 冗余 zero-init 移除（`compute_head_gemv` 内部用 `_mm512_setzero_ph` 开始）
+
+**MatMul3 wall clock**：Baseline 2.829s → 2.750s（-2.8%），多轮 profile 一致。
+
+### 9.5 rotate_half_rope → AVX-512 in-place（✅ 保留）
+
+原 `rotate_half_rope` 每次调用分配 128 元素 Vec + 标量循环。替换为 AVX-512 in-place 版本，使用 `_mm512_fmul_pch`（complex multiply）处理。
+
+**改动文件**：
+- [rope.rs](src/kernel/x86_64/f16_512/rope.rs)：新增 `rotate_half_rope_avx512`
+- [matmul3.rs](src/operators/matmul/matmul3.rs)：`compute_norm_rope` f16 路径调用 AVX-512 版本
+- 2 个单测通过
+
+**prefill 影响**：`compute_norm_rope` 在 prefill fast path 中仅命中 1-row tail tile（~40 次调用），影响可忽略。对 decode 路径（逐行 GEMV）帮助更大。
+
+### 9.6 accumulator zero-init trait dispatch（❌ 已回退）
+
+尝试用 trait method `zero_acc` 把 MoE 的 96 元素 acc 清零从标量循环改成 AVX-512 SIMD store。profile 显示 **Silu wall clock 4.063s → 4.245s（+4.5%）**，vtable dispatch 开销大于 96 次标量写入的节省。已全部移除（包括 `zero.rs` kernel 文件）。
+
+### 9.7 最终 Profile 汇总
+
+多次 profile 的 wall clock 范围（run+barrier）：
+
+| 算子 | Baseline | 优化后范围 | 趋势 |
+|------|----------|-----------|------|
+| Attention | 5.606s | 5.37-5.45s | ↓ 3-4%（噪声） |
+| Silu | 4.798s | 4.06-4.67s | ↓ 波动大 |
+| MatMul3 | 2.829s | 2.75-2.79s | ↓ 2-3%（稳定） |
+| MatMulAdd | 2.010s | 1.87-2.01s | ↓ 波动大 |
+| Down | 1.648s | 1.60-1.66s | ↓ 波动大 |
+| **first_token** | **17.084s** | **16.04-16.68s** | **↓ 3-6%** |
+
+### 9.8 教训
+
+- **多 weight gather kernel（Silu gate+up）不宜替换 pack 路径**：pack 后 L1 cache 复用收益 > 跳过 pack
+- **单 weight gather kernel（Down）可以替换**
+- **trait dispatch 对小操作（96 元素 zero）开销过大**：vtable call > 96 次标量写入
+- **per-thread `run` 波动 ±30%+**，必须用 wall clock（R+B）或 first_token 判断
+- **kernel 改动需要确认热路径是否命中**：rope AVX-512 只命中 tail row，prefill 收益可忽略

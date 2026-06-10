@@ -463,9 +463,8 @@ where
         debug_assert_eq!(micro_tile_cols, 32);
         debug_assert_eq!(self.head_dim % micro_tile_cols, 0);
 
-        for head_col in 0..self.head_dim {
-            *dst_head.add(head_col) = T::default();
-        }
+        // Zero-init removed: compute_head_gemv starts accumulators from zero internally.
+        // 移除 zero-init：compute_head_gemv 内部从零开始累加。
 
         let head_col0 = head_index * self.head_dim;
         let head_output_panel0 = head_col0 / micro_tile_cols;
@@ -559,6 +558,7 @@ where
         debug_assert!(valid_rows <= micro_tile_rows);
 
         if valid_rows < micro_tile_rows {
+            // Partial rows: use compute_head_from_packed (AVX-512 GEMV, no external zero-init needed).
             for row in 0..valid_rows {
                 self.compute_head_from_packed(
                     input_row.add(row * reduction_cols),
@@ -574,18 +574,14 @@ where
             return;
         }
 
-        for row in 0..micro_tile_rows {
-            let row_head = dst_head.add(row * output_row_stride);
-            for head_col in 0..self.head_dim {
-                *row_head.add(head_col) = T::default();
-            }
-        }
-
+        // Full 3-row tile: first panel uses compute1_init (starts from zero, no C load),
+        // subsequent panels use compute1 (accumulate). Zero-init pass eliminated.
         let head_col0 = head_index * self.head_dim;
         let output_panel_count = n_total.div_ceil(micro_tile_cols);
         for head_col in (0..self.head_dim).step_by(micro_tile_cols) {
             let output_panel = (head_col0 + head_col) / micro_tile_cols;
             let mut reduction_col_start = 0usize;
+            let mut is_first = true;
             while reduction_col_start < reduction_cols {
                 let reduction_cols_this =
                     reduction_block_cols.min(reduction_cols - reduction_col_start);
@@ -595,14 +591,26 @@ where
                         * reduction_block_cols
                         * micro_tile_cols,
                 );
-                self.compute1(
-                    input_row.add(reduction_col_start),
-                    weight_panel,
-                    dst_head.add(head_col),
-                    reduction_cols,
-                    output_row_stride,
-                    reduction_cols_this,
-                );
+                if is_first {
+                    self.compute1_init(
+                        input_row.add(reduction_col_start),
+                        weight_panel,
+                        dst_head.add(head_col),
+                        reduction_cols,
+                        output_row_stride,
+                        reduction_cols_this,
+                    );
+                    is_first = false;
+                } else {
+                    self.compute1(
+                        input_row.add(reduction_col_start),
+                        weight_panel,
+                        dst_head.add(head_col),
+                        reduction_cols,
+                        output_row_stride,
+                        reduction_cols_this,
+                    );
+                }
                 reduction_col_start += reduction_cols_this;
             }
         }
@@ -883,6 +891,20 @@ where
             }
         }
     }
+
+    #[inline]
+    default fn compute1_init(
+        &self,
+        a: *const T,
+        b_panel: *const T,
+        c: *mut T,
+        lda: usize,
+        ldc: usize,
+        kc: usize,
+    ) {
+        // default: fall back to accum (caller must ensure C is zero-initialized)
+        self.compute1(a, b_panel, c, lda, ldc, kc);
+    }
 }
 
 // f16 specialization: call the AVX-512 micro-kernel.
@@ -916,6 +938,29 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
                     *c.add(m * ldc + n) = sum as f16;
                 }
             }
+        }
+    }
+
+    #[inline]
+    fn compute1_init(
+        &self,
+        a: *const f16,
+        b_panel: *const f16,
+        c: *mut f16,
+        lda: usize,
+        ldc: usize,
+        kc: usize,
+    ) {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            crate::kernel::x86_64::f16_512::matmul_rms_complex::matmul_update_inplace_3x32_first(
+                a, b_panel, c, lda, ldc, kc,
+            );
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        {
+            // fallback: accum with zero-init required by caller
+            self.compute1(a, b_panel, c, lda, ldc, kc);
         }
     }
 
@@ -958,7 +1003,16 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
             length,
             eps,
         );
-        rotate_half_rope(c_head, rope_head, length);
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            crate::kernel::x86_64::f16_512::rope::rotate_half_rope_avx512(
+                c_head, rope_head, length,
+            );
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        {
+            rotate_half_rope(c_head, rope_head, length);
+        }
     }
 
     #[inline]

@@ -106,6 +106,18 @@ pub trait MatMulkqvTrait<T> {
         kc: usize,
     );
 
+    /// compute1_init: C = A × B_panel（first K-block, no prior C load）.
+    /// Eliminates the external zero-init pass for the 3-row tile path.
+    fn compute1_init(
+        &self,
+        a: *const T,
+        b_panel: *const T,
+        c: *mut T,
+        lda: usize,
+        ldc: usize,
+        kc: usize,
+    );
+
     fn compute2(&self, c_head: *mut T, rope_head: *const T, ldc: usize);
 
     fn compute_norm_rope(
