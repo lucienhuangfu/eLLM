@@ -6,19 +6,133 @@ use axum::{
     response::{IntoResponse, Sse},
     Json,
 };
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify, Semaphore};
 
-use crate::runtime::Phase;
+use crate::operators::send_sync_ptr::SharedMut;
+use crate::runtime::batch_sequence::BatchSequence;
+use crate::runtime::scheduling::{Phase, SequenceState, TokenCounter};
 
 use super::parser::{
-    IncrementalStreamingParser, ParserEvent, StreamingParser, ToolCall, ToolCallDelta,
+    IncrementalStreamingParser, ParserEvent, ParserOptions, StreamingParser, ToolCall,
+    ToolCallDelta,
 };
-use super::{
-    ApiState, ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
-    StreamChoice, StreamDelta, StreamResponse, StreamToolCall, StreamToolFunction,
-};
+
+#[derive(Debug, Deserialize)]
+pub struct ChatCompletionRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    pub stream: Option<bool>,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<usize>,
+    pub top_p: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatCompletionResponse {
+    pub id: String,
+    pub object: String,
+    pub created: u64,
+    pub model: String,
+    pub choices: Vec<ChatCompletionChoice>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatCompletionChoice {
+    pub index: u32,
+    pub message: ChatMessage,
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StreamResponse {
+    pub id: String,
+    pub object: String,
+    pub created: u64,
+    pub model: String,
+    pub choices: Vec<StreamChoice>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StreamChoice {
+    pub index: u32,
+    pub delta: StreamDelta,
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct StreamDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<StreamToolCall>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StreamToolCall {
+    pub index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: StreamToolFunction,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StreamToolFunction {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct ApiState {
+    pub batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
+    pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
+    pub token_counter: Arc<TokenCounter>,
+    pub parser_options: ParserOptions,
+    pub free_slots: Arc<Mutex<VecDeque<usize>>>,
+    pub available_slots: Arc<Semaphore>,
+}
+
+pub fn build_api_state(
+    batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
+    batch_states: Arc<SharedMut<Vec<SequenceState>>>,
+    token_counter: Arc<TokenCounter>,
+    parser_options: ParserOptions,
+) -> ApiState {
+    let initial_free_slots: VecDeque<usize> = batch_states.with(|batch_states_ref| {
+        batch_states_ref
+            .iter()
+            .enumerate()
+            .filter_map(|(i, record)| (record.phase == Phase::Start).then_some(i))
+            .collect()
+    });
+    let initial_permits = initial_free_slots.len();
+
+    ApiState {
+        batch_sequences,
+        batch_states,
+        token_counter,
+        parser_options,
+        free_slots: Arc::new(Mutex::new(initial_free_slots)),
+        available_slots: Arc::new(Semaphore::new(initial_permits)),
+    }
+}
 
 pub(super) async fn chat_completions(
     State(state): State<ApiState>,
@@ -48,8 +162,6 @@ pub(super) async fn chat_completions(
     if is_stream {
         build_stream_response(state, slot_index, notifier, request_id, model, created)
     } else {
-        // Non-streaming: keep scheduling decode work until EOS, then decode all
-        // generated tokens at once.
         loop {
             notifier.notified().await;
 
@@ -94,7 +206,6 @@ pub(super) async fn chat_completions(
     }
 }
 
-/// Returns `(slot_index, notifier)`.
 async fn assign_slot_with_messages(
     state: &ApiState,
     messages: &[ChatMessage],
@@ -184,11 +295,6 @@ async fn reclaim_slot(state: &ApiState, slot_index: usize, release_permit: bool)
     }
 }
 
-/// True incremental streaming: each `notify_one()` from `TopKSoftmax`
-/// corresponds to one decoded token. We read `record.sequence_index` (the
-/// position just written) after every wake-up, decode that single token, and
-/// push it as an SSE chunk immediately. When `phase == Eos` we emit the final
-/// chunk with `finish_reason: "stop"` and close the stream.
 fn build_stream_response(
     state: ApiState,
     slot_index: usize,
@@ -204,13 +310,11 @@ fn build_stream_response(
         loop {
             notifier.notified().await;
 
-            // Read the token position and phase written by TopKSoftmax.
             let (token_index, phase) = state.batch_states.with(|batch_list| {
                 let record = &batch_list[slot_index];
                 (record.sequence_index, record.phase)
             });
 
-            // Decode the single token at token_index.
             let text = state.batch_sequences.with(|batch_sequences| {
                 batch_sequences
                     .decode_single_token(slot_index, token_index)
