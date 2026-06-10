@@ -413,7 +413,6 @@ pub unsafe fn block_flash_attention(
                 block_max = score;
             }
         }
-
         let next_max = if block_max > running_max[row_offset] {
             block_max
         } else {
@@ -421,20 +420,48 @@ pub unsafe fn block_flash_attention(
         };
 
         let carry = running_denom[row_offset] * f16::exp(running_max[row_offset] - next_max);
-        let mut next_denom = carry;
-        for offset in 0..block_len {
-            next_denom += f16::exp(scores[offset] - next_max);
-        }
+        let next_denom = if scores.len() >= GQA8_COL_BLOCK {
+            for offset in block_len..GQA8_COL_BLOCK {
+                scores[offset] = f16::NEG_INFINITY;
+            }
+            let shifted = _mm512_sub_ph(_mm512_loadu_ph(scores.as_ptr()), _mm512_set1_ph(next_max));
+            let exp_scores = exp512(shifted);
+            let next_denom = carry + _mm512_reduce_add_ph(exp_scores);
 
-        let previous_weight = carry / next_denom;
-        scale_output_avx512(output_row_ptr, head_size, previous_weight);
+            let previous_weight = carry / next_denom;
+            scale_output_avx512(output_row_ptr, head_size, previous_weight);
 
-        for offset in 0..block_len {
-            let col = col_begin + offset;
-            let value_row_ptr = v_head_ptr.add(col * v_seq_stride);
-            let weight = f16::exp(scores[offset] - next_max) / next_denom;
-            add_weighted_value_avx512(output_row_ptr, value_row_ptr, head_size, weight);
-        }
+            let normalized = _mm512_div_ph(exp_scores, _mm512_set1_ph(next_denom));
+            let mut normalized_scores = [0.0f16; GQA8_COL_BLOCK];
+            _mm512_storeu_ph(normalized_scores.as_mut_ptr(), normalized);
+            for offset in 0..block_len {
+                let col = col_begin + offset;
+                let value_row_ptr = v_head_ptr.add(col * v_seq_stride);
+                add_weighted_value_avx512(
+                    output_row_ptr,
+                    value_row_ptr,
+                    head_size,
+                    normalized_scores[offset],
+                );
+            }
+            next_denom
+        } else {
+            let mut next_denom = carry;
+            for offset in 0..block_len {
+                next_denom += f16::exp(scores[offset] - next_max);
+            }
+
+            let previous_weight = carry / next_denom;
+            scale_output_avx512(output_row_ptr, head_size, previous_weight);
+
+            for offset in 0..block_len {
+                let col = col_begin + offset;
+                let value_row_ptr = v_head_ptr.add(col * v_seq_stride);
+                let weight = f16::exp(scores[offset] - next_max) / next_denom;
+                add_weighted_value_avx512(output_row_ptr, value_row_ptr, head_size, weight);
+            }
+            next_denom
+        };
 
         running_max[row_offset] = next_max;
         running_denom[row_offset] = next_denom;

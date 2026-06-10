@@ -55,7 +55,7 @@ where
             v_tensor.strides[2],
             self.strides[0],
             1,
-            8,
+            32,
             self.shape[3],
             inverse_sqrt_head,
             decode_only_flag,
