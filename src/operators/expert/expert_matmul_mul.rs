@@ -528,19 +528,20 @@ where
                                     valid_rows,
                                 );
                             } else {
-                                Self::pack_a_tile(
-                                    self,
-                                    expert_id,
-                                    reduction_col_start,
-                                    valid_rows,
+                                let expert_input_base = self
+                                    .nonlin_ptr
+                                    .ptr
+                                    .add(expert_id * (self.num_token * self.hmid));
+                                self.compute1_gather_rows(
+                                    expert_input_base,
+                                    self.hmid,
                                     idx_buf,
                                     token_offset_in_block,
-                                    a_tile,
+                                    reduction_col_start,
+                                    weight_panel,
+                                    acc,
                                     reduction_block_cols,
-                                    micro_tile_rows,
                                 );
-
-                                self.compute1(a_tile as *const T, weight_panel, acc);
                             }
 
                             reduction_col_start += reduction_block_cols;
@@ -632,6 +633,36 @@ where
                     for reduction_lane in 0..kc {
                         sum = sum
                             + *a_tile.add(row_in_tile * kc + reduction_lane)
+                                * *b_panel.add(reduction_lane * micro_tile_cols + col_in_tile);
+                    }
+                    *acc.add(row_in_tile * micro_tile_cols + col_in_tile) = sum;
+                }
+            }
+        }
+    }
+
+    default fn compute1_gather_rows(
+        &self,
+        input_base: *const T,
+        input_row_stride: usize,
+        idx_buf: *const usize,
+        idx_off: usize,
+        reduction_col_start: usize,
+        b_panel: *const T,
+        acc: *mut T,
+        kc: usize,
+    ) {
+        unsafe {
+            let micro_tile_rows = self.params.a_row_step_micro.max(1);
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            for row_in_tile in 0..micro_tile_rows {
+                let token_id = *idx_buf.add(idx_off + row_in_tile);
+                let input_row = input_base.add(token_id * input_row_stride + reduction_col_start);
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut sum = *acc.add(row_in_tile * micro_tile_cols + col_in_tile);
+                    for reduction_lane in 0..kc {
+                        sum = sum
+                            + *input_row.add(reduction_lane)
                                 * *b_panel.add(reduction_lane * micro_tile_cols + col_in_tile);
                     }
                     *acc.add(row_in_tile * micro_tile_cols + col_in_tile) = sum;
@@ -756,6 +787,67 @@ impl ExpertsDownTrait<f16> for ExpertMatMulDown<f16> {
                     let mut sum = *acc.add(row_in_tile * micro_tile_cols + col_in_tile) as f32;
                     for reduction_lane in 0..kc {
                         sum += (*a_tile.add(row_in_tile * kc + reduction_lane) as f32)
+                            * (*b_panel.add(reduction_lane * micro_tile_cols + col_in_tile) as f32);
+                    }
+                    *acc.add(row_in_tile * micro_tile_cols + col_in_tile) = sum as f16;
+                }
+            }
+        }
+    }
+
+    fn compute1_gather_rows(
+        &self,
+        input_base: *const f16,
+        input_row_stride: usize,
+        idx_buf: *const usize,
+        idx_off: usize,
+        reduction_col_start: usize,
+        b_panel: *const f16,
+        acc: *mut f16,
+        kc: usize,
+    ) {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            use std::arch::x86_64::{
+                _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_set1_ph, _mm512_storeu_ph,
+            };
+
+            let token0 = *idx_buf.add(idx_off);
+            let token1 = *idx_buf.add(idx_off + 1);
+            let token2 = *idx_buf.add(idx_off + 2);
+            let row0 = input_base.add(token0 * input_row_stride + reduction_col_start);
+            let row1 = input_base.add(token1 * input_row_stride + reduction_col_start);
+            let row2 = input_base.add(token2 * input_row_stride + reduction_col_start);
+
+            let mut sum0 = _mm512_loadu_ph(acc);
+            let mut sum1 = _mm512_loadu_ph(acc.add(32));
+            let mut sum2 = _mm512_loadu_ph(acc.add(64));
+
+            for reduction_lane in 0..kc {
+                let w = _mm512_loadu_ph(b_panel.add(reduction_lane * 32));
+                let a0 = _mm512_set1_ph(*row0.add(reduction_lane));
+                let a1 = _mm512_set1_ph(*row1.add(reduction_lane));
+                let a2 = _mm512_set1_ph(*row2.add(reduction_lane));
+
+                sum0 = _mm512_fmadd_ph(a0, w, sum0);
+                sum1 = _mm512_fmadd_ph(a1, w, sum1);
+                sum2 = _mm512_fmadd_ph(a2, w, sum2);
+            }
+
+            _mm512_storeu_ph(acc, sum0);
+            _mm512_storeu_ph(acc.add(32), sum1);
+            _mm512_storeu_ph(acc.add(64), sum2);
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            for row_in_tile in 0..3 {
+                let token_id = *idx_buf.add(idx_off + row_in_tile);
+                let input_row = input_base.add(token_id * input_row_stride + reduction_col_start);
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut sum = *acc.add(row_in_tile * micro_tile_cols + col_in_tile) as f32;
+                    for reduction_lane in 0..kc {
+                        sum += (*input_row.add(reduction_lane) as f32)
                             * (*b_panel.add(reduction_lane * micro_tile_cols + col_in_tile) as f32);
                     }
                     *acc.add(row_in_tile * micro_tile_cols + col_in_tile) = sum as f16;

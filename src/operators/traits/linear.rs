@@ -62,10 +62,29 @@ pub trait MatMulAddTrait<T> {
         output_ptr: *mut T,
     );
 
+    fn compute_init(
+        &self,
+        input_ptr1: *const T,
+        weight_panel: *const T,
+        residual_ptr: *const T,
+        output_ptr: *mut T,
+        kc: usize,
+    );
+
     fn compute_rows(
         &self,
         input_row: *const T,
         weight_panel: *const T,
+        output_row: *mut T,
+        kc: usize,
+        rows: usize,
+    );
+
+    fn compute_rows_init(
+        &self,
+        input_row: *const T,
+        weight_panel: *const T,
+        residual_row: *const T,
         output_row: *mut T,
         kc: usize,
         rows: usize,
