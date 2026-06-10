@@ -1692,6 +1692,7 @@ mod test {
                 M,
                 thread_max,
                 TOPK,
+                false,
             );
 
             let used_cpu = num_cpus::get().min(runner.thread_max()).min(8).max(1);
@@ -1789,6 +1790,7 @@ mod test {
                 M,
                 thread_max,
                 TOPK,
+                false,
             );
 
             let used_cpu = num_cpus::get().min(runner.thread_max()).min(16).max(1);

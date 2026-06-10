@@ -19,6 +19,24 @@ pub trait AttentionTrait<T> {
         running_denom: &mut [T],
         scores: &mut [T],
     );
+
+    #[allow(clippy::too_many_arguments)]
+    fn compute_gqa8(
+        &self,
+        _q_group_ptr: *const T,
+        _k_head_ptr: *const T,
+        _v_head_ptr: *const T,
+        _output_group_ptr: *mut T,
+        _row_begin: usize,
+        _row_end: usize,
+        _total_col_end: usize,
+        _sequence_index: usize,
+        _k_seq_stride: usize,
+        _v_seq_stride: usize,
+        _q_seq_stride: usize,
+    ) -> bool {
+        false
+    }
 }
 
 pub trait MatMulTrait<T> {

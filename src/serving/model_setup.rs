@@ -100,7 +100,11 @@ pub fn determine_thread_config(generation_config: &Option<GenerationConfig>) -> 
     let physical_cores = if core_ids.is_empty() {
         requested_thread_num
     } else {
-        let physical_count = core_ids.iter().enumerate().filter(|(i, _)| i % 2 == 0).count();
+        let physical_count = core_ids
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 0)
+            .count();
         physical_count.max(1).min(requested_thread_num)
     };
     let total_threads = physical_cores;

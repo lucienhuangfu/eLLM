@@ -61,11 +61,7 @@ fn main() -> anyhow::Result<()> {
     let hidden_size = config.hidden_size;
 
     // Select prompts based on batch_size
-    let prompts: Vec<&str> = DEFAULT_PROMPTS
-        .iter()
-        .take(batch_size)
-        .copied()
-        .collect();
+    let prompts: Vec<&str> = DEFAULT_PROMPTS.iter().take(batch_size).copied().collect();
 
     let mut all_input_ids: Vec<Vec<u32>> = vec![];
     let mut all_prompts: Vec<String> = vec![];

@@ -14,8 +14,9 @@ This document discusses how CPU attention is organized with static parallelism. 
 
 The focus here is on scheduling structure, tensor organization, and parallel splitting. In terms of implementation status:
 
-> Static attention splitting, block-wise traversal, and the scalar block attention kernel are already wired up.  
-> The default `AttentionTrait` implementation and the `f16` / `f32` specialization paths both land on `kernel::scalar::block_flash_attention`.
+> Static attention splitting and block-wise traversal are wired up.
+> The generic fallback path still uses scalar block attention, while the `f16` specialization on AVX512-FP16 CPUs uses the `f16_512` attention kernels.
+> For long prefill with GQA ratio 8, the `f16` path can use a fused `1 KV head -> 8 Q heads` kernel inside the sequence-split traversal.
 
 ---
 
@@ -99,7 +100,7 @@ There are several points to note:
 
 * The outer task source is `attention_list`, not a direct even split by batch.
 * `batch` participates in task location because each slice carries a `batch_index`.
-* In the long-slice path, a single thread traverses all `kv_head`s and corresponding local heads within the sequence range it owns.
+* In the long-slice path, a single thread owns a sequence range. Within that range it traverses `kv_head`s; for supported `f16` GQA-8 cases, the local heads under one `kv_head` are computed by a fused group kernel rather than by eight independent head kernels.
 * In the short-slice path, the scheduler first advances in `kv_head` waves, then statically assigns the flattened attention-head slots in the current wave to threads.
 
 ---
@@ -169,11 +170,56 @@ The priority here is:
 * Match the lower-triangular workload shape of causal attention
 * Keep thread load as balanced as possible
 * Keep the traversal structure within each `kv_head` stable
+* Preserve the GQA relationship inside each assigned row interval, so one `kv_head` can feed its local Q-head group efficiently
 
 But this rule only applies when the slice is long enough and has enough row blocks to spread across threads. Otherwise:
 
 * Some threads may get no valid row interval at all
 * A single short slice may not cover all cores
+
+### 4.2.1 Long Prefill and GQA Group Fusion
+
+Sequence splitting does not mean that long prefill ignores heads or GQA. It means the outer thread ownership is first decided by the sequence dimension because that is where the causal lower-triangular workload lives.
+
+For a long slice, the intended structure is:
+
+```text
+thread -> triangle-balanced row range
+for kv_head in 0 .. num_key_value_heads:
+    compute the local Q-head group that shares this K/V head
+```
+
+For Qwen3-Coder-30B-A3B, the relevant attention shape is:
+
+```text
+num_attention_heads = 32
+num_key_value_heads = 4
+attention_heads_per_kv = 8
+```
+
+So the GQA mapping is:
+
+```text
+kv_head 0 -> q_head 0..7
+kv_head 1 -> q_head 8..15
+kv_head 2 -> q_head 16..23
+kv_head 3 -> q_head 24..31
+```
+
+The optimized long-prefill path keeps the sequence split and fuses the local heads under the same `kv_head`:
+
+```text
+for assigned row range:
+    for kv_head:
+        fused_gqa8(kv_head, q_head_group[0..8], row_range)
+```
+
+This preserves both important properties:
+
+* The sequence axis is still split by triangular causal work, so long-prefill row imbalance is controlled.
+* K/V locality is improved because the same K/V head is used while computing its eight local Q heads.
+
+This differs from pure head split. Pure head split would assign Q heads directly and make each Q head scan the full long sequence independently. That can cover threads, but it loses the row-triangle split and weakens stable reuse of `1 KV head -> 8 Q heads`.
 
 ## 4.3 Case 2: Short Slice, Split by Head
 
@@ -279,14 +325,28 @@ The core priorities are:
 * After the current wave completes, all threads move to the next wave together
 * Always keep contiguous-range assignment; do not use round-robin
 
-## 4.4 Relationship Between the Two Strategies
+## 4.4 Relationship Between the Strategies
 
-The two splitting modes are not stacked on top of each other; they are mutually exclusive:
+The outer splitting modes are mutually exclusive, but the long-slice sequence path can still use GQA-aware grouped computation internally:
 
-* Long slices are split by sequence dimension first, because that matches the workload shape of causal attention better
+* Long slices are split by sequence dimension first, because that matches the workload shape of causal attention better.
+* Inside a long-slice sequence range, supported kernels can fuse the local Q-head group under each `kv_head`.
 * Short slices are split by head first, with `kv_head` waves, so that as few `kv_head`s as possible cover as many threads as possible
 * Both strategies are built on the same outer `SequenceSlice` task input
 * Both keep static task assignment and do not rely on runtime preemption or dynamic stealing
+
+So the practical policy is:
+
+```text
+long prefill:
+    triangle sequence split
+    + GQA group fusion inside each row range
+
+decode / short slice:
+    head split with kv_head waves
+```
+
+This combination is intentional. Long prefill needs sequence splitting to preserve triangular causal load balance. Decode has only one or a few rows, so it needs head splitting to expose enough parallel work.
 
 ## 4.5 Block Traversal Granularity
 
@@ -302,6 +362,27 @@ In case 1, the internal traversal can be understood as:
 * The thread first gets a continuous interval on the sequence axis
 * Then it expands the interval with a two-dimensional `row_chunk × col_chunk` block structure
 * The current block parameters are `1 × 8`
+* In the optimized GQA-8 `f16` path, the traversal over the eight local Q heads under one `kv_head` is fused within that row interval
+
+There is one additional implementation detail in the current AVX512-FP16 GQA-8 kernel:
+
+* The scheduling-level `col_step` is still `8`
+* The fused GQA-8 kernel uses an internal column micro-block of `32` visible K/V rows
+* For each row and `kv_head`, the kernel computes eight Q-head scores while loading the same K row once
+* The score block is normalized with AVX512 vectorized `exp` / divide instead of repeatedly calling scalar `f16::exp` for every score
+* This keeps the external static split unchanged, while reducing K reloads, scalar exponent calls, and repeated online-softmax output rescaling
+
+For long prefill this means the effective optimized path is:
+
+```text
+thread owns triangle-balanced row range
+for kv_head:
+    for row in row_range:
+        for K/V columns in internal blocks of 32:
+            compute 8 Q-head scores sharing the same K row
+            vectorize softmax weight generation for the 32-column block
+            accumulate V into the 8 local Q-head outputs
+```
 
 In case 2, a better understanding is:
 
@@ -351,6 +432,7 @@ So the more appropriate description is:
 
 * This is a GQA structure
 * The group relationship is implied by `num_attention_heads / num_key_value_heads`
+* In long prefill, supported kernels can use this relationship by computing all local Q heads under one `kv_head` together
 * In short-slice head splitting, the scheduling priority also follows this GQA structure: first decide how many `kv_head`s are minimally needed for the current wave, then statically assign threads across continuous local heads under those `kv_head`s
 
 ## 5.2 Causal Semantics
@@ -378,12 +460,14 @@ This static attention parallelization scheme can be summarized as:
 * The attention path uses GQA tensor organization.
 * The outer task input comes from `SequenceSlice`, not from a direct even batch split.
 * When a slice is long enough, the inner thread split uses triangular work to split row intervals statically, rather than distributing rows evenly.
+* In supported `f16` GQA-8 long-prefill cases, the sequence-split path computes the eight local Q heads under one `kv_head` with a fused kernel, so K/V locality is used without giving up triangular row balancing.
+* The current AVX512-FP16 fused GQA-8 kernel uses an internal 32-column block and vectorized softmax weight generation; this is separate from the scheduling-level `col_step`.
 * When a slice is short and cannot cover all threads with row blocks, the inner split switches to `kv_head` waves: each wave activates as few contiguous `kv_head`s as possible, then assigns the flattened attention-head slots of that wave contiguously to threads.
 * Internal traversal uses a two-dimensional block structure, with current parameters `row_step=1` and `col_step=8`.
-* The current numerical path already performs row-by-row causal truncation through scalar `block_flash_attention`, and `RowVisitPlan.tail` is also executed in the access path.
+* The current numerical path already performs row-by-row causal truncation inside the block attention kernels, and `RowVisitPlan.tail` is also executed in the access path.
 
 ---
 
 # 7. Core Idea in One Sentence
 
-> The core of this scheme is to use `SequenceSlice` to provide outer tasks; let long slices split thread row intervals by triangular workload; let short slices advance in `kv_head` waves and statically assign the flattened `(kv_head, local_head)` slots of the current wave to threads; and inside each slot continue to run the same `row_step × col_step` block causal attention computation.
+> The core of this scheme is to use `SequenceSlice` to provide outer tasks; let long prefill split thread row intervals by triangular workload and fuse the local Q-head group under each `kv_head`; let decode or short slices advance in `kv_head` waves and statically assign the flattened `(kv_head, local_head)` slots of the current wave to threads; and keep causal truncation inside the block attention kernels.

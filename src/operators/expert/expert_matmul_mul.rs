@@ -3,8 +3,7 @@
 
 use crate::kernel;
 use crate::kernel::common::matmul_params::MatMulParams;
-use crate::operators::assign::assign;
-use crate::operators::expert::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
+use crate::operators::expert::expert_routing::{ExpertRouting, ExpertTaskMeta};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::ExpertsDownTrait;
 use std::f16;
@@ -431,147 +430,154 @@ where
             // 每线程私有 scratch 切片。
             let (a_tile, acc, idx_buf) = self.thread_slices(thread_id);
 
-            if let Some((task_begin, task_end)) = assign(total_tasks, thread_num, thread_id) {
-                for task_id in task_begin..task_end {
-                    let Some((task_meta, token_tile_id, output_tile_id)) =
-                        task_assign(&expert_tasks, output_column_tile_count, task_id)
-                    else {
-                        continue;
-                    };
+            if thread_num == 0 || thread_id >= thread_num {
+                return;
+            }
+            let mut task_meta_index = 0usize;
+            for task_id in (thread_id..total_tasks).step_by(thread_num) {
+                while task_meta_index < expert_tasks.len()
+                    && expert_tasks[task_meta_index].task_end <= task_id
+                {
+                    task_meta_index += 1;
+                }
+                let Some(&task_meta) = expert_tasks.get(task_meta_index) else {
+                    break;
+                };
+                debug_assert!(task_id >= task_meta.task_begin && task_id < task_meta.task_end);
+                let local_task_id = task_id - task_meta.task_begin;
+                let token_tile_id = local_task_id / output_column_tile_count;
+                let output_tile_id = local_task_id % output_column_tile_count;
 
-                    let token_block_start = token_tile_id * token_block_rows;
-                    let output_col_start = output_tile_id * output_block_cols;
-                    let output_cols_in_block =
-                        (output_cols - output_col_start).min(output_block_cols);
-                    if output_cols_in_block == 0 {
-                        continue;
-                    }
+                let token_block_start = token_tile_id * token_block_rows;
+                let output_col_start = output_tile_id * output_block_cols;
+                let output_cols_in_block = (output_cols - output_col_start).min(output_block_cols);
+                if output_cols_in_block == 0 {
+                    continue;
+                }
 
-                    let tokens_in_block =
-                        (task_meta.token_count - token_block_start).min(token_block_rows);
-                    debug_assert!(tokens_in_block > 0);
+                let tokens_in_block =
+                    (task_meta.token_count - token_block_start).min(token_block_rows);
+                debug_assert!(tokens_in_block > 0);
 
-                    let routed_token_begin = task_meta.token_begin + token_block_start;
-                    for token_offset in 0..tokens_in_block {
-                        *idx_buf.add(token_offset) =
-                            routed_tokens[routed_token_begin + token_offset];
-                    }
+                let routed_token_begin = task_meta.token_begin + token_block_start;
+                for token_offset in 0..tokens_in_block {
+                    *idx_buf.add(token_offset) = routed_tokens[routed_token_begin + token_offset];
+                }
 
-                    let expert_id = task_meta.expert_id;
-                    // The macro output block may be wider than one micro tile.
-                    // 输出宏块可能大于一个微内核 tile，因此内部继续按 micro_tile_cols 切分。
-                    let mut output_col_offset = 0usize;
-                    while output_col_offset < output_cols_in_block {
-                        let output_cols_this =
-                            (output_cols_in_block - output_col_offset).min(micro_tile_cols);
+                let expert_id = task_meta.expert_id;
+                // The macro output block may be wider than one micro tile.
+                // 输出宏块可能大于一个微内核 tile，因此内部继续按 micro_tile_cols 切分。
+                let mut output_col_offset = 0usize;
+                while output_col_offset < output_cols_in_block {
+                    let output_cols_this =
+                        (output_cols_in_block - output_col_offset).min(micro_tile_cols);
 
-                        // Process routed tokens by micro rows to keep accumulator bounds valid.
-                        // 按微内核行数处理 routed tokens，避免累加器越界。
-                        let mut token_offset_in_block = 0usize;
-                        while token_offset_in_block < tokens_in_block {
-                            let valid_rows =
-                                (tokens_in_block - token_offset_in_block).min(micro_tile_rows);
+                    // Process routed tokens by micro rows to keep accumulator bounds valid.
+                    // 按微内核行数处理 routed tokens，避免累加器越界。
+                    let mut token_offset_in_block = 0usize;
+                    while token_offset_in_block < tokens_in_block {
+                        let valid_rows =
+                            (tokens_in_block - token_offset_in_block).min(micro_tile_rows);
 
-                            for accumulator_index in 0..(micro_tile_rows * micro_tile_cols) {
-                                *acc.add(accumulator_index) = T::default();
-                            }
-
-                            // Accumulate along reduction dimension: acc += A_tile * B_panel.
-                            // 沿 reduction 维度累加：acc += A_tile * B_panel。
-                            let mut reduction_col_start = 0usize;
-                            debug_assert!(reduction_cols % reduction_block_cols == 0);
-                            while reduction_col_start < reduction_cols {
-                                let weight_panel = self.packed_panel_ptr(
-                                    expert_id,
-                                    output_col_start + output_col_offset,
-                                    reduction_col_start,
-                                );
-
-                                if valid_rows == 1 {
-                                    let token_id = *idx_buf.add(token_offset_in_block);
-                                    let input_row = self
-                                        .nonlin_ptr
-                                        .ptr
-                                        .add(expert_id * (self.num_token * self.hmid))
-                                        .add(token_id * self.hmid + reduction_col_start);
-                                    self.compute1_single(
-                                        input_row,
-                                        weight_panel,
-                                        acc,
-                                        reduction_block_cols,
-                                    );
-                                } else if valid_rows < micro_tile_rows {
-                                    Self::pack_a_tile(
-                                        self,
-                                        expert_id,
-                                        reduction_col_start,
-                                        valid_rows,
-                                        idx_buf,
-                                        token_offset_in_block,
-                                        a_tile,
-                                        reduction_block_cols,
-                                        micro_tile_rows,
-                                    );
-
-                                    self.compute1_rows(
-                                        a_tile as *const T,
-                                        weight_panel,
-                                        acc,
-                                        reduction_block_cols,
-                                        valid_rows,
-                                    );
-                                } else {
-                                    Self::pack_a_tile(
-                                        self,
-                                        expert_id,
-                                        reduction_col_start,
-                                        valid_rows,
-                                        idx_buf,
-                                        token_offset_in_block,
-                                        a_tile,
-                                        reduction_block_cols,
-                                        micro_tile_rows,
-                                    );
-
-                                    self.compute1(a_tile as *const T, weight_panel, acc);
-                                }
-
-                                reduction_col_start += reduction_block_cols;
-                            }
-
-                            // Scatter each valid row back to token-major output with route weight.
-                            // 将每个有效行乘以路由权重后写回 token-major 输出。
-                            for row_in_tile in 0..valid_rows {
-                                let token_id = *idx_buf.add(token_offset_in_block + row_in_tile);
-                                let route_weight = routed_scores
-                                    [routed_token_begin + token_offset_in_block + row_in_tile];
-                                let topk_slot = routed_slots
-                                    [routed_token_begin + token_offset_in_block + row_in_tile];
-
-                                let out_row = self.output_ptr.ptr.add(
-                                    token_id * (self.num_topk * output_cols)
-                                        + topk_slot * output_cols
-                                        + (output_col_start + output_col_offset),
-                                );
-
-                                let acc_row = acc.add(row_in_tile * micro_tile_cols) as *const T;
-                                for col_in_tile in 0..output_cols_this {
-                                    *out_row.add(col_in_tile) = T::default();
-                                }
-
-                                self.compute2(
-                                    out_row,
-                                    acc_row,
-                                    &route_weight as *const T,
-                                    output_cols_this,
-                                );
-                            }
-
-                            token_offset_in_block += valid_rows;
+                        for accumulator_index in 0..(micro_tile_rows * micro_tile_cols) {
+                            *acc.add(accumulator_index) = T::default();
                         }
 
-                        output_col_offset += micro_tile_cols;
+                        // Accumulate along reduction dimension: acc += A_tile * B_panel.
+                        // 沿 reduction 维度累加：acc += A_tile * B_panel。
+                        let mut reduction_col_start = 0usize;
+                        debug_assert!(reduction_cols % reduction_block_cols == 0);
+                        while reduction_col_start < reduction_cols {
+                            let weight_panel = self.packed_panel_ptr(
+                                expert_id,
+                                output_col_start + output_col_offset,
+                                reduction_col_start,
+                            );
+
+                            if valid_rows == 1 {
+                                let token_id = *idx_buf.add(token_offset_in_block);
+                                let input_row = self
+                                    .nonlin_ptr
+                                    .ptr
+                                    .add(expert_id * (self.num_token * self.hmid))
+                                    .add(token_id * self.hmid + reduction_col_start);
+                                self.compute1_single(
+                                    input_row,
+                                    weight_panel,
+                                    acc,
+                                    reduction_block_cols,
+                                );
+                            } else if valid_rows < micro_tile_rows {
+                                Self::pack_a_tile(
+                                    self,
+                                    expert_id,
+                                    reduction_col_start,
+                                    valid_rows,
+                                    idx_buf,
+                                    token_offset_in_block,
+                                    a_tile,
+                                    reduction_block_cols,
+                                    micro_tile_rows,
+                                );
+
+                                self.compute1_rows(
+                                    a_tile as *const T,
+                                    weight_panel,
+                                    acc,
+                                    reduction_block_cols,
+                                    valid_rows,
+                                );
+                            } else {
+                                Self::pack_a_tile(
+                                    self,
+                                    expert_id,
+                                    reduction_col_start,
+                                    valid_rows,
+                                    idx_buf,
+                                    token_offset_in_block,
+                                    a_tile,
+                                    reduction_block_cols,
+                                    micro_tile_rows,
+                                );
+
+                                self.compute1(a_tile as *const T, weight_panel, acc);
+                            }
+
+                            reduction_col_start += reduction_block_cols;
+                        }
+
+                        // Scatter each valid row back to token-major output with route weight.
+                        // 将每个有效行乘以路由权重后写回 token-major 输出。
+                        for row_in_tile in 0..valid_rows {
+                            let token_id = *idx_buf.add(token_offset_in_block + row_in_tile);
+                            let route_weight = routed_scores
+                                [routed_token_begin + token_offset_in_block + row_in_tile];
+                            let topk_slot = routed_slots
+                                [routed_token_begin + token_offset_in_block + row_in_tile];
+
+                            let out_row = self.output_ptr.ptr.add(
+                                token_id * (self.num_topk * output_cols)
+                                    + topk_slot * output_cols
+                                    + (output_col_start + output_col_offset),
+                            );
+
+                            let acc_row = acc.add(row_in_tile * micro_tile_cols) as *const T;
+                            for col_in_tile in 0..output_cols_this {
+                                *out_row.add(col_in_tile) = T::default();
+                            }
+
+                            self.compute2(
+                                out_row,
+                                acc_row,
+                                &route_weight as *const T,
+                                output_cols_this,
+                            );
+                        }
+
+                        token_offset_in_block += valid_rows;
                     }
+
+                    output_col_offset += micro_tile_cols;
                 }
             }
         }
