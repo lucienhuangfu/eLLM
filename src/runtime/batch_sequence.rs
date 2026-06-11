@@ -125,6 +125,36 @@ where
             token_slice.iter().map(|&id| id as u32).collect()
         }
     }
+
+    pub fn tokenize_messages(&self, messages: &[(&str, &str)]) -> Result<Vec<u32>, String> {
+        let prompt = self
+            .chat_template
+            .apply_chat_template(messages, true)
+            .map_err(|e| format!("Render chat template failed: {}", e))?;
+        let tokens = self.tokenizer.encode_with_special_tokens(prompt.as_str());
+        Ok(tokens)
+    }
+
+    pub fn write_tokens(
+        &mut self,
+        slot_index: usize,
+        tokens: &[u32],
+        temperature: f32,
+    ) -> Result<usize, String> {
+        let write_len = tokens.len().min(self.col_size);
+
+        let offset = slot_index * self.col_size;
+
+        for (i, id) in tokens[..write_len].iter().enumerate() {
+            unsafe {
+                *self.sequences.add(offset + i) = *id as usize;
+            }
+        }
+
+        self.batch_temperature[slot_index] = T::from_f32(temperature);
+
+        Ok(write_len)
+    }
 }
 
 unsafe impl<T> Send for BatchSequence<T> where T: Send + Copy + FromNumber {}

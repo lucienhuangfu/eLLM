@@ -1,7 +1,10 @@
 pub mod batch_sequence;
+pub mod cache_strategy;
+pub mod dialogue_cache;
 pub mod io;
 pub mod runner;
 pub mod scheduling;
+pub mod slot_manager;
 pub mod spin_barrier;
 
 pub use crate::config::generation_config;
@@ -14,6 +17,8 @@ pub use generation_config::GenerationConfig;
 pub use huggingface_config::HfConfig;
 
 pub use batch_sequence::BatchSequence;
+pub use cache_strategy::DialogueEntry;
+pub use dialogue_cache::DialogueCache;
 pub use io::load_tiktoken;
 pub use io::ChatTemplate;
 pub use io::SafeTensorsLoader;
@@ -21,6 +26,7 @@ pub use runner::ServingRunner;
 pub use scheduling::ScheduleTask;
 pub use scheduling::Scheduler;
 pub use scheduling::{Phase, SequenceState};
+pub use slot_manager::SlotManager;
 
 /// Compatibility alias matching sample's Runner name.
 pub use runner::ServingRunner as Runner;
