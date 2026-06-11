@@ -4,7 +4,7 @@ use tokio::net::TcpListener;
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::batch_sequence::BatchSequence;
-use crate::runtime::scheduling::{InferenceScheduler, SequenceState};
+use crate::runtime::scheduling::{Scheduler, SequenceState};
 
 use super::api::chat_completions;
 use super::parser::ParserOptions;
@@ -13,7 +13,7 @@ use super::state::build_api_state;
 pub async fn run(
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
-    scheduler: Arc<InferenceScheduler>,
+    scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动事件驱动的 OpenAI 兼容服务器...");

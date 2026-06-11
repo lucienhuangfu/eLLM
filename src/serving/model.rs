@@ -8,7 +8,7 @@ use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::batch_sequence::BatchSequence;
 use crate::runtime::scheduling::{
-    build_batch_sequence, build_sequence_state, InferenceScheduler, ScheduleTask, SequenceState,
+    build_batch_sequence, build_sequence_state, ScheduleTask, Scheduler, SequenceState,
 };
 use crate::runtime::Runner;
 use crate::tensor::GlobalOperatorQueue;
@@ -71,7 +71,7 @@ pub struct ThreadingConfig {
 pub struct ServingResources {
     pub batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    pub scheduler: Arc<InferenceScheduler>,
+    pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
     pub runner: Runner<f16>,
     pub worker_threads: usize,
@@ -186,15 +186,12 @@ fn create_scheduling_components(
     config: &ServingConfig,
     thread_config: &ThreadingConfig,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-) -> (
-    Arc<InferenceScheduler>,
-    tokio::sync::broadcast::Sender<ScheduleTask>,
-) {
+) -> (Arc<Scheduler>, tokio::sync::broadcast::Sender<ScheduleTask>) {
     let broadcast_capacity = thread_config.worker_threads;
     let (task_sender, _): (tokio::sync::broadcast::Sender<ScheduleTask>, _) =
         tokio::sync::broadcast::channel(broadcast_capacity);
 
-    let scheduler = Arc::new(InferenceScheduler::with_mode(
+    let scheduler = Arc::new(Scheduler::with_mode(
         config.sequence_length,
         config.batch_size,
         config.chunk_size,

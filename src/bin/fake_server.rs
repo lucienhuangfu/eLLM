@@ -5,7 +5,7 @@ use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::{InferenceScheduler, Phase, SequenceState, ServingRunner};
+use ellm::runtime::{Phase, Scheduler, SequenceState, ServingRunner};
 use ellm::serving;
 use ellm::serving::parser::{ParserOptions, ParserRule};
 use ellm::transformer::config::ModelFamily;
@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let batch_states = Arc::new(SharedMut::new(build_sequence_state(batch_size)));
     let (task_sender, _) = tokio::sync::broadcast::channel(8);
-    let scheduler = Arc::new(InferenceScheduler::new(
+    let scheduler = Arc::new(Scheduler::new(
         sequence_length,
         batch_size,
         1,

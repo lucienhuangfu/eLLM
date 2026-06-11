@@ -230,7 +230,7 @@ mod test {
     use crate::operators::expert::expert_routing::ExpertRouting;
     use crate::operators::send_sync_ptr::SharedMut;
     use crate::runtime::scheduling::SequenceSlice;
-    use crate::runtime::{InferenceScheduler, Phase, SequenceState};
+    use crate::runtime::{Phase, Scheduler, SequenceState};
     use approx::assert_ulps_eq;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -367,7 +367,7 @@ mod test {
 
         let (sender, _) = tokio::sync::broadcast::channel(4);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let mut scheduler = InferenceScheduler::new(
+        let mut scheduler = Scheduler::new(
             SEQUENCE_LENGTH,
             BATCH_SIZE,
             THREAD_NUM,
@@ -616,7 +616,7 @@ mod test {
             let sequences = vec![1usize, 2, 3, 0, 0, 0, 4, 5, 6, 7, 0, 0];
             let (sender, _) = tokio::sync::broadcast::channel(4);
             let batch_list = Arc::new(SharedMut::new(Vec::new()));
-            let mut scheduler = InferenceScheduler::new(
+            let mut scheduler = Scheduler::new(
                 SEQUENCE_LENGTH,
                 BATCH_SIZE,
                 thread_num,
@@ -745,7 +745,7 @@ mod test {
 
         let (sender, _) = tokio::sync::broadcast::channel(4);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let mut scheduler = InferenceScheduler::new(
+        let mut scheduler = Scheduler::new(
             SEQUENCE_LENGTH,
             BATCH_SIZE,
             THREAD_NUM,
@@ -977,7 +977,7 @@ mod test {
         let mut sequences = vec![10usize, 11, 12, 0, 0, 0];
         let (sender, _) = tokio::sync::broadcast::channel(4);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let mut scheduler = InferenceScheduler::new(
+        let mut scheduler = Scheduler::new(
             SEQUENCE_LENGTH,
             BATCH_SIZE,
             THREAD_NUM,

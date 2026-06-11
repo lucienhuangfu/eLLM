@@ -183,7 +183,7 @@ where
 mod tests {
     use super::ServingRunner;
     use crate::runtime::scheduling::types::ScheduleTask;
-    use crate::runtime::InferenceScheduler;
+    use crate::runtime::Scheduler;
     use tokio::sync::broadcast;
 
     #[tokio::test]
@@ -194,7 +194,7 @@ mod tests {
         let operator_queue = Vec::<crate::operators::operator::Operator<f32>>::new();
         let (sender, _) = broadcast::channel(4);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let batch_scheduler = InferenceScheduler::new(
+        let batch_scheduler = Scheduler::new(
             16,
             4,
             3,

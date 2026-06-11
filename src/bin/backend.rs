@@ -5,8 +5,7 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
-    BatchSequence, InferenceScheduler, Phase, Runner, SafeTensorsLoader, ScheduleTask,
-    SequenceState,
+    BatchSequence, Phase, Runner, SafeTensorsLoader, ScheduleTask, Scheduler, SequenceState,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
@@ -167,7 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
 
-    let mut batch_scheduler = InferenceScheduler::with_mode(
+    let mut batch_scheduler = Scheduler::with_mode(
         sequence_length,
         batch_size,
         chunk_size,

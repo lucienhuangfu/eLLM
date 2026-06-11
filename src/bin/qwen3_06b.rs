@@ -8,7 +8,7 @@ use ellm::runtime::io::load_tiktoken;
 use ellm::runtime::io::ChatTemplate;
 use ellm::runtime::io::SafeTensorsLoader;
 use ellm::runtime::{
-    Config, GenerationConfig, InferenceScheduler, Phase, ScheduleTask, SequenceState, ServingRunner,
+    Config, GenerationConfig, Phase, ScheduleTask, Scheduler, SequenceState, ServingRunner,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
@@ -174,7 +174,7 @@ fn main() {
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
 
     let (task_sender, _) = tokio::sync::broadcast::channel(8);
-    let mut batch_scheduler = InferenceScheduler::new(
+    let mut batch_scheduler = Scheduler::new(
         sequence_length,
         batch_size,
         thread_num,

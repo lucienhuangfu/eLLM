@@ -1,5 +1,6 @@
+use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::broadcast;
@@ -9,11 +10,11 @@ use super::types::{Phase, ScheduleTask, SequenceState};
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduling::sequence_slice::{DecodeList, SequenceSlice};
 
-pub struct InferenceScheduler {
-    prefill_list: RwLock<Vec<Vec<SequenceSlice>>>,
-    decode_list: RwLock<DecodeList>,
+pub struct Scheduler {
+    prefill_list: UnsafeCell<Vec<Vec<SequenceSlice>>>,
+    decode_list: UnsafeCell<DecodeList>,
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
-    prefill_scheduler: RwLock<SliceScheduler>,
+    prefill_scheduler: UnsafeCell<SliceScheduler>,
     max_prefill_size: usize,
     max_decode_size: usize,
     thread_num: AtomicUsize,
@@ -27,6 +28,10 @@ pub struct InferenceScheduler {
     task_in_flight: Arc<AtomicBool>,
 }
 
+unsafe impl Sync for Scheduler {}
+
+unsafe impl Send for Scheduler {}
+
 enum BatchPlan {
     Decode(Vec<(usize, usize)>),
     Prefill {
@@ -36,7 +41,7 @@ enum BatchPlan {
     Idle,
 }
 
-impl InferenceScheduler {
+impl Scheduler {
     pub fn new(
         sequence_length: usize,
         batch_size: usize,
@@ -93,13 +98,13 @@ impl InferenceScheduler {
             max_prefill_size: chunk_size,
             batch_list,
             thread_num: AtomicUsize::new(thread_num),
-            prefill_scheduler: RwLock::new(SliceScheduler::new(batch_size * thread_num)),
-            prefill_list: RwLock::new(
+            prefill_scheduler: UnsafeCell::new(SliceScheduler::new(batch_size * thread_num)),
+            prefill_list: UnsafeCell::new(
                 (0..thread_num)
                     .map(|_| Vec::with_capacity(batch_size))
                     .collect(),
             ),
-            decode_list: RwLock::new(DecodeList::with_capacity(batch_size)),
+            decode_list: UnsafeCell::new(DecodeList::with_capacity(batch_size)),
             needs_schedule: AtomicBool::new(false),
             schedule_tx,
             timeout,
@@ -116,16 +121,14 @@ impl InferenceScheduler {
     pub fn set_thread_num(&self, thread_num: usize) {
         let thread_num = thread_num.max(1);
         self.thread_num.store(thread_num, Ordering::Release);
-        let mut prefill_list = self.prefill_list.write().unwrap();
+        let prefill_list = unsafe { &mut *self.prefill_list.get() };
         if prefill_list.len() > thread_num {
             prefill_list.truncate(thread_num);
         } else {
             prefill_list.resize_with(thread_num, || Vec::with_capacity(self.max_decode_size));
         }
-        self.prefill_scheduler
-            .write()
-            .unwrap()
-            .set_task_count(thread_num);
+        let prefill_scheduler = unsafe { &mut *self.prefill_scheduler.get() };
+        prefill_scheduler.set_task_count(thread_num);
     }
 
     pub fn batch_list(&self) -> Arc<SharedMut<Vec<SequenceState>>> {
@@ -136,20 +139,19 @@ impl InferenceScheduler {
         Arc::clone(&self.task_in_flight)
     }
 
-    pub fn prefill_list(&self) -> std::sync::RwLockReadGuard<'_, Vec<Vec<SequenceSlice>>> {
-        self.prefill_list.read().unwrap()
+    pub fn prefill_list(&self) -> Vec<Vec<SequenceSlice>> {
+        unsafe { (*self.prefill_list.get()).clone() }
     }
 
-    pub fn decode_list(&self) -> std::sync::RwLockReadGuard<'_, DecodeList> {
-        self.decode_list.read().unwrap()
+    pub fn decode_list(&self) -> DecodeList {
+        unsafe { (*self.decode_list.get()).clone() }
     }
 
     pub fn schedule_batch(&self) -> (usize, usize) {
         let thread_num = self.thread_num.load(Ordering::Acquire);
-        let prefill_list = self.prefill_list.read().unwrap();
+        let prefill_list = unsafe { &*self.prefill_list.get() };
         let prefill_task_count = thread_num.min(prefill_list.len());
 
-        // Even if no prefill work, there might be decode work
         if prefill_task_count == 0 {
             let plan = self.plan_next_round();
             match plan {
@@ -162,10 +164,8 @@ impl InferenceScheduler {
             }
         }
 
-        self.prefill_scheduler
-            .write()
-            .unwrap()
-            .set_task_count(prefill_task_count);
+        let prefill_scheduler = unsafe { &mut *self.prefill_scheduler.get() };
+        prefill_scheduler.set_task_count(prefill_task_count);
 
         match self.plan_next_round() {
             BatchPlan::Decode(decode_candidates) => {
@@ -177,7 +177,7 @@ impl InferenceScheduler {
                 total_tokens,
             } => {
                 let prefill_count = self.schedule_prefill_round(candidates, total_tokens);
-                let decode_list = self.decode_list.read().unwrap();
+                let decode_list = unsafe { &*self.decode_list.get() };
                 (prefill_count, decode_list.len())
             }
             BatchPlan::Idle => {
@@ -237,12 +237,10 @@ impl InferenceScheduler {
     }
 
     fn clear_round_outputs(&self) {
-        self.prefill_list
-            .write()
-            .unwrap()
-            .iter_mut()
-            .for_each(Vec::clear);
-        self.decode_list.write().unwrap().clear();
+        let prefill_list = unsafe { &mut *self.prefill_list.get() };
+        prefill_list.iter_mut().for_each(Vec::clear);
+        let decode_list = unsafe { &mut *self.decode_list.get() };
+        decode_list.clear();
     }
 
     fn plan_next_round(&self) -> BatchPlan {
@@ -289,7 +287,7 @@ impl InferenceScheduler {
     fn schedule_decode_round(&self, decode_candidates: Vec<(usize, usize)>) -> usize {
         self.clear_round_outputs();
         let decode_count = decode_candidates.len();
-        let mut decode_list = self.decode_list.write().unwrap();
+        let decode_list = unsafe { &mut *self.decode_list.get() };
 
         for (idx, (batch_index, sequence_index)) in decode_candidates.into_iter().enumerate() {
             decode_list.push(SequenceSlice {
@@ -311,9 +309,9 @@ impl InferenceScheduler {
     ) -> usize {
         self.clear_round_outputs();
         let mut prefill_count = 0usize;
-        let mut prefill_scheduler = self.prefill_scheduler.write().unwrap();
-        let mut decode_list = self.decode_list.write().unwrap();
-        let mut prefill_list = self.prefill_list.write().unwrap();
+        let prefill_scheduler = unsafe { &mut *self.prefill_scheduler.get() };
+        let decode_list = unsafe { &mut *self.decode_list.get() };
+        let prefill_list = unsafe { &mut *self.prefill_list.get() };
 
         prefill_scheduler.init(total_tokens);
 
@@ -340,7 +338,7 @@ impl InferenceScheduler {
                 candidate.sequence_index,
                 candidate.remaining,
                 0,
-                &mut prefill_list,
+                prefill_list,
                 &mut prefill_count,
             );
         }
@@ -375,8 +373,8 @@ impl InferenceScheduler {
         let task = ScheduleTask::new(
             prefill_size,
             decode_size,
-            self.prefill_list.read().unwrap().clone(),
-            self.decode_list.read().unwrap().clone(),
+            unsafe { (*self.prefill_list.get()).clone() },
+            unsafe { (*self.decode_list.get()).clone() },
             self.next_task_id.fetch_add(1, Ordering::Relaxed),
         );
 
@@ -405,8 +403,7 @@ mod tests {
     fn plan_next_round_returns_idle_for_empty_batch() {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let scheduler =
-            InferenceScheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
+        let scheduler = Scheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
 
         match scheduler.plan_next_round() {
             BatchPlan::Idle => {}
@@ -419,7 +416,7 @@ mod tests {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let mut scheduler =
-            InferenceScheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
+            Scheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(decode_state(100, 128));
         });
@@ -445,7 +442,7 @@ mod tests {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let mut scheduler =
-            InferenceScheduler::new(16, 4, 6, 1, Duration::from_millis(100), sender, batch_list);
+            Scheduler::new(16, 4, 6, 1, Duration::from_millis(100), sender, batch_list);
 
         scheduler.set_thread_num(3);
 
@@ -463,7 +460,7 @@ mod tests {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let mut scheduler =
-            InferenceScheduler::new(8, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
+            Scheduler::new(8, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 23));
         });
@@ -510,7 +507,7 @@ mod tests {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let mut scheduler =
-            InferenceScheduler::new(5, 2, 2, 1, Duration::from_millis(100), sender, batch_list);
+            Scheduler::new(5, 2, 2, 1, Duration::from_millis(100), sender, batch_list);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 13));
         });
@@ -552,7 +549,7 @@ mod tests {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let mut scheduler =
-            InferenceScheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
+            Scheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 6));
             batch_list.push(decode_state(100, 128));

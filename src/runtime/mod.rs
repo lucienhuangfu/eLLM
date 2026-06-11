@@ -18,8 +18,8 @@ pub use io::load_tiktoken;
 pub use io::ChatTemplate;
 pub use io::SafeTensorsLoader;
 pub use runner::ServingRunner;
-pub use scheduling::InferenceScheduler;
 pub use scheduling::ScheduleTask;
+pub use scheduling::Scheduler;
 pub use scheduling::{Phase, SequenceState};
 
 /// Compatibility alias matching sample's Runner name.
@@ -44,7 +44,7 @@ pub mod sequence_slice {
 
 #[cfg(test)]
 mod tests {
-    use super::{InferenceScheduler, Phase, SequenceState, ServingRunner};
+    use super::{Phase, Scheduler, SequenceState, ServingRunner};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::broadcast;
@@ -59,7 +59,7 @@ mod tests {
 
         let (sender, _) = broadcast::channel(4);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let scheduler = InferenceScheduler::new(
+        let scheduler = Scheduler::new(
             8,
             2,
             1,

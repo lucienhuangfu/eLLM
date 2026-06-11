@@ -7,7 +7,7 @@ use tokio::sync::{Mutex, Semaphore};
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::batch_sequence::BatchSequence;
-use crate::runtime::scheduling::{InferenceScheduler, Phase, SequenceState};
+use crate::runtime::scheduling::{Phase, Scheduler, SequenceState};
 
 use super::parser::ParserOptions;
 use super::requests::ChatMessage;
@@ -16,7 +16,7 @@ use super::requests::ChatMessage;
 pub struct ApiState {
     pub batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    pub scheduler: Arc<InferenceScheduler>,
+    pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
     pub free_slots: Arc<Mutex<VecDeque<usize>>>,
     pub available_slots: Arc<Semaphore>,
@@ -25,7 +25,7 @@ pub struct ApiState {
 pub fn build_api_state(
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    scheduler: Arc<InferenceScheduler>,
+    scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
 ) -> ApiState {
     let initial_free_slots: VecDeque<usize> = batch_states.with(|batch_states_ref| {
