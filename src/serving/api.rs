@@ -61,8 +61,6 @@ pub(super) async fn chat_completions(
             if state.is_eos(slot_index) {
                 break;
             }
-
-            state.scheduler.notify_tokens(1).await;
         }
 
         let generated_text = state.decode_generated_text(slot_index);
@@ -107,10 +105,6 @@ fn build_stream_response(
             let (token_index, phase) = state.get_token_index_and_phase(slot_index);
             let text = state.decode_single_token(slot_index, token_index);
             let is_eos = matches!(phase, crate::runtime::scheduling::Phase::Eos);
-
-            if !is_eos {
-                state.scheduler.notify_tokens(1).await;
-            }
 
             let mut events = parser.feed(&text);
             if is_eos {

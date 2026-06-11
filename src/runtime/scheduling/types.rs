@@ -18,8 +18,8 @@ pub enum Phase {
 pub struct ScheduleTask {
     pub prefill_size: usize,
     pub decode_size: usize,
-    pub prefill_list: Vec<Vec<SequenceSlice>>,
-    pub decode_list: DecodeList,
+    pub prefill_list: Arc<Vec<Vec<SequenceSlice>>>,
+    pub decode_list: Arc<DecodeList>,
     pub timestamp: Instant,
     pub task_id: u64,
 }
@@ -35,8 +35,8 @@ impl ScheduleTask {
         Self {
             prefill_size,
             decode_size,
-            prefill_list,
-            decode_list,
+            prefill_list: Arc::new(prefill_list),
+            decode_list: Arc::new(decode_list),
             timestamp: Instant::now(),
             task_id,
         }

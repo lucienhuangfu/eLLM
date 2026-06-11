@@ -1,8 +1,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
-use tokio::sync::{broadcast, Mutex as AsyncMutex};
+use tokio::sync::broadcast;
 
 use super::slice_scheduler::{PrefillCandidate, SliceScheduler};
 use super::types::{Phase, ScheduleTask, SequenceState};
@@ -18,12 +18,11 @@ pub struct InferenceScheduler {
     max_decode_size: usize,
     thread_num: AtomicUsize,
 
-    pending_tokens: AtomicUsize,
-    threshold: usize,
+    // Event-driven scheduling using broadcast channel
+    needs_schedule: AtomicBool,
+    schedule_tx: broadcast::Sender<()>,
     timeout: Duration,
     broadcast_sender: broadcast::Sender<ScheduleTask>,
-    schedule_gate: AsyncMutex<()>,
-    last_schedule_time: Mutex<Instant>,
     next_task_id: AtomicU64,
     task_in_flight: Arc<AtomicBool>,
 }
@@ -42,7 +41,7 @@ impl InferenceScheduler {
         sequence_length: usize,
         batch_size: usize,
         thread_num: usize,
-        threshold: usize,
+        _threshold: usize, // Keep for compatibility
         timeout: Duration,
         broadcast_sender: broadcast::Sender<ScheduleTask>,
         batch_list: Arc<SharedMut<Vec<SequenceState>>>,
@@ -52,7 +51,6 @@ impl InferenceScheduler {
             batch_size,
             sequence_length * batch_size,
             thread_num,
-            threshold,
             timeout,
             broadcast_sender,
             batch_list,
@@ -64,7 +62,7 @@ impl InferenceScheduler {
         batch_size: usize,
         chunk_size: usize,
         thread_num: usize,
-        threshold: usize,
+        _threshold: usize, // Keep for compatibility
         timeout: Duration,
         broadcast_sender: broadcast::Sender<ScheduleTask>,
         batch_list: Arc<SharedMut<Vec<SequenceState>>>,
@@ -74,7 +72,6 @@ impl InferenceScheduler {
             batch_size,
             chunk_size,
             thread_num,
-            threshold,
             timeout,
             broadcast_sender,
             batch_list,
@@ -86,11 +83,11 @@ impl InferenceScheduler {
         batch_size: usize,
         chunk_size: usize,
         thread_num: usize,
-        threshold: usize,
         timeout: Duration,
         broadcast_sender: broadcast::Sender<ScheduleTask>,
         batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     ) -> Self {
+        let (schedule_tx, _) = broadcast::channel(16);
         Self {
             max_decode_size: batch_size,
             max_prefill_size: chunk_size,
@@ -103,12 +100,10 @@ impl InferenceScheduler {
                     .collect(),
             ),
             decode_list: RwLock::new(DecodeList::with_capacity(batch_size)),
-            pending_tokens: AtomicUsize::new(0),
-            threshold: threshold.max(1),
+            needs_schedule: AtomicBool::new(false),
+            schedule_tx,
             timeout,
             broadcast_sender,
-            schedule_gate: AsyncMutex::new(()),
-            last_schedule_time: Mutex::new(Instant::now()),
             next_task_id: AtomicU64::new(1),
             task_in_flight: Arc::new(AtomicBool::new(false)),
         }
@@ -141,10 +136,6 @@ impl InferenceScheduler {
         Arc::clone(&self.task_in_flight)
     }
 
-    pub fn get_pending(&self) -> usize {
-        self.pending_tokens.load(Ordering::Acquire)
-    }
-
     pub fn prefill_list(&self) -> std::sync::RwLockReadGuard<'_, Vec<Vec<SequenceSlice>>> {
         self.prefill_list.read().unwrap()
     }
@@ -158,8 +149,17 @@ impl InferenceScheduler {
         let prefill_list = self.prefill_list.read().unwrap();
         let prefill_task_count = thread_num.min(prefill_list.len());
 
+        // Even if no prefill work, there might be decode work
         if prefill_task_count == 0 {
-            return (0, 0);
+            let plan = self.plan_next_round();
+            match plan {
+                BatchPlan::Decode(decode_candidates) => {
+                    let decode_count = self.schedule_decode_round(decode_candidates);
+                    return (0, decode_count);
+                }
+                BatchPlan::Idle => return (0, 0),
+                BatchPlan::Prefill { .. } => unreachable!(),
+            }
         }
 
         self.prefill_scheduler
@@ -188,7 +188,7 @@ impl InferenceScheduler {
     }
 
     pub fn reset(&self) {
-        self.pending_tokens.store(0, Ordering::Release);
+        self.needs_schedule.store(false, Ordering::Release);
     }
 
     pub async fn notify_tokens(&self, count: usize) -> bool {
@@ -196,22 +196,42 @@ impl InferenceScheduler {
             return false;
         }
 
-        let total = self.pending_tokens.fetch_add(count, Ordering::AcqRel) + count;
-        if total >= self.threshold {
-            self.trigger_schedule().await;
-            true
-        } else {
-            false
-        }
+        // Set flag and signal the scheduler
+        self.needs_schedule.store(true, Ordering::Release);
+        let _ = self.schedule_tx.send(());
+        true
     }
 
     pub async fn run(self: Arc<Self>) {
         let mut interval = tokio::time::interval(self.timeout);
+        let mut schedule_rx = self.schedule_tx.subscribe();
 
         loop {
-            interval.tick().await;
-            if self.get_pending() > 0 {
-                self.trigger_schedule().await;
+            tokio::select! {
+                // Event-driven: wake up when there's a schedule request
+                _ = schedule_rx.recv() => {
+                    if self.needs_schedule.load(Ordering::Acquire) {
+                        self.trigger_schedule();
+                    }
+                }
+                // Fallback: periodic check in case events were missed
+                _ = interval.tick() => {
+                    if self.needs_schedule.load(Ordering::Acquire) {
+                        self.trigger_schedule();
+                        continue;
+                    }
+
+                    // Also check batch state as fallback
+                    let has_work = self.batch_list.with(|batch_list| {
+                        batch_list
+                            .iter()
+                            .any(|r| r.phase == Phase::Decode || r.phase == Phase::Prefill)
+                    });
+                    if has_work {
+                        self.needs_schedule.store(true, Ordering::Release);
+                        self.trigger_schedule();
+                    }
+                }
             }
         }
     }
@@ -328,26 +348,27 @@ impl InferenceScheduler {
         prefill_count
     }
 
-    async fn trigger_schedule(&self) {
-        let _guard = self.schedule_gate.lock().await;
-        let pending = self.pending_tokens.swap(0, Ordering::AcqRel);
-        if pending == 0 {
+    fn trigger_schedule(&self) {
+        // Try to take the schedule flag
+        if !self.needs_schedule.swap(false, Ordering::AcqRel) {
             return;
         }
 
+        // Try to claim the scheduling slot
         if self
             .task_in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            self.pending_tokens.fetch_add(pending, Ordering::AcqRel);
+            // Another task is already scheduling, restore the flag
+            self.needs_schedule.store(true, Ordering::Release);
             return;
         }
 
         let (prefill_size, decode_size) = self.schedule_batch();
         if prefill_size == 0 && decode_size == 0 {
             self.task_in_flight.store(false, Ordering::Release);
-            self.pending_tokens.fetch_add(pending, Ordering::AcqRel);
+            self.needs_schedule.store(true, Ordering::Release);
             return;
         }
 
@@ -360,12 +381,10 @@ impl InferenceScheduler {
         );
 
         if self.broadcast_sender.send(task).is_ok() {
-            if let Ok(mut last_schedule_time) = self.last_schedule_time.lock() {
-                *last_schedule_time = Instant::now();
-            }
+            // Task sent successfully
         } else {
             self.task_in_flight.store(false, Ordering::Release);
-            self.pending_tokens.fetch_add(pending, Ordering::AcqRel);
+            self.needs_schedule.store(true, Ordering::Release);
         }
     }
 }

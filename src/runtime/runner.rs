@@ -7,12 +7,13 @@ use tokio::task::JoinSet;
 
 use crate::operators::operator::Operator;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::spin_barrier::SpinBarrier;
-
-use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
 use crate::runtime::scheduling::types::Phase;
 use crate::runtime::scheduling::types::ScheduleTask;
+use crate::runtime::sequence_slice::{DecodeList, SequenceSlice};
+use crate::runtime::spin_barrier::SpinBarrier;
 use crate::runtime::SequenceState;
+
+use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
 
 #[derive(Clone, Copy)]
 struct SequenceSnapshot {
@@ -127,7 +128,9 @@ where
             join_set.spawn(async move {
                 while let Ok(task) = receiver.recv().await {
                     let (prefill_size, decode_size) = (task.prefill_size, task.decode_size);
-                    let (prefill_list, decode_list) = (&task.prefill_list, &task.decode_list);
+                    // Dereference Arc to get references to underlying data
+                    let prefill_list: &Vec<Vec<SequenceSlice>> = task.prefill_list.as_ref();
+                    let decode_list: &DecodeList = task.decode_list.as_ref();
                     let before = {
                         let batch_list_ptr = batch_list.get();
                         unsafe { snapshot_sequences(&*batch_list_ptr) }
