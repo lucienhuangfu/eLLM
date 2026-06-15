@@ -1,18 +1,31 @@
 # `serve`
 
-`vllm serve` 命令用于启动一个 OpenAI 兼容的推理服务。
+`ellm serve` 命令用于启动一个 OpenAI 兼容的推理服务，与 vLLM 的 serve 命令保持兼容。
 
 ## JSON CLI 参数
 
-传递 JSON CLI 参数时，以下参数集是等效的：
+传递 JSON CLI 参数时，支持以下格式：
 
-- `--json-arg '{"key1": "value1", "key2": {"key3": "value2"}}'`
-- `--json-arg.key1 value1 --json-arg.key2.key3 value2`
+**格式一：完整 JSON 对象**
+```bash
+ellm serve --json-arg '{"model": "/path/to/model", "port": 8080}'
+```
 
-此外，可以使用 `+` 单独传递列表元素：
+**格式二：键值对**
+```bash
+ellm serve --json-arg model=/path/to/model --json-arg port=8080
+```
 
-- `--json-arg '{"key4": ["value3", "value4", "value5"]}'`
-- `--json-arg.key4+ value3 --json-arg.key4+='value4,value5'`
+**格式三：分类配置**
+```bash
+ellm serve --json-arg '{"model": {"model": "/path/to/model", "dtype": "bf16"}, "serve": {"host": "0.0.0.0", "port": 8080}}'
+```
+
+支持的分类：
+- `model.*`: 模型配置
+- `scheduler.*`: 调度器配置
+- `engine.*`: 引擎配置
+- `serve.*`: 服务配置
 
 ## 参数
 

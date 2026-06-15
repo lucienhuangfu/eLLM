@@ -15,6 +15,7 @@ pub async fn run(
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
+    dialogue_cache_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动事件驱动的 OpenAI 兼容服务器...");
 
@@ -23,7 +24,13 @@ pub async fn run(
         scheduler_task.run().await;
     });
 
-    let state = build_api_state(batch_sequences, batch_list, scheduler, parser_options);
+    let state = build_api_state(
+        batch_sequences,
+        batch_list,
+        scheduler,
+        parser_options,
+        dialogue_cache_enabled,
+    );
 
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))

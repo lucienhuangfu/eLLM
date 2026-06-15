@@ -28,6 +28,7 @@ pub fn build_api_state(
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
+    dialogue_cache_enabled: bool,
 ) -> ApiState {
     let slot_manager = Arc::new(SlotManager::new(batch_states.clone()));
     let dialogue_cache = Arc::new(DialogueCache::new(
@@ -35,6 +36,7 @@ pub fn build_api_state(
         batch_sequences.clone(),
         Duration::from_secs(10),
         batch_states.with(|states| states.len()),
+        dialogue_cache_enabled,
     ));
 
     ApiState {

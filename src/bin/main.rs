@@ -1,29 +1,9 @@
 #![feature(f16)]
 
 use clap::Parser;
-
+use ellm::config::{Cli, Config};
 use ellm::serving;
-use ellm::serving::{initialize_serving_resources, ServingConfig};
-
-#[derive(Debug, Parser)]
-#[command(name = "eLLM serving")]
-struct Cli {
-    model_dir: String,
-
-    #[arg(
-        long = "reasoning-parser",
-        default_value_t = true,
-        help = "Enable or disable reasoning tag parsing"
-    )]
-    reasoning_parser: bool,
-
-    #[arg(
-        long = "tool-call-parser",
-        default_value_t = true,
-        help = "Enable or disable tool call tag parsing"
-    )]
-    tool_call_parser: bool,
-}
+use ellm::serving::initialize_serving_resources;
 
 fn create_runtime(
     resources: &serving::ServingResources,
@@ -48,6 +28,7 @@ async fn run_server(
         resources.batch_states,
         resources.scheduler,
         resources.parser_options,
+        resources.dialogue_cache_enabled,
     )
     .await?;
 
@@ -58,10 +39,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting backend server...");
 
     let cli = Cli::parse();
-    let mut serving_config = ServingConfig::new(cli.model_dir);
-    serving_config.reasoning_parser_enabled = cli.reasoning_parser;
-    serving_config.tool_call_parser_enabled = cli.tool_call_parser;
-    let resources = initialize_serving_resources(&serving_config)?;
+    let config = Config::from_cli(cli)?;
+    let resolved_config = config.resolve()?;
+
+    let resources = initialize_serving_resources(&resolved_config)?;
 
     let rt = create_runtime(&resources)?;
 

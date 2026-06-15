@@ -10,6 +10,7 @@ pub struct DialogueCache {
     strategy: Arc<LruCacheStrategy>,
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     max_entries: usize,
+    enabled: bool,
 }
 
 impl DialogueCache {
@@ -18,6 +19,7 @@ impl DialogueCache {
         batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
         retention_duration: Duration,
         max_entries: usize,
+        enabled: bool,
     ) -> Self {
         let strategy = Arc::new(LruCacheStrategy::new(
             slot_manager,
@@ -29,32 +31,51 @@ impl DialogueCache {
             strategy,
             batch_sequences,
             max_entries,
+            enabled,
         }
     }
 
     pub async fn get(&self, dialogue_id: &str) -> Option<DialogueEntry> {
+        if !self.enabled {
+            return None;
+        }
         self.strategy.get(dialogue_id).await
     }
 
     pub async fn insert(&self, dialogue_id: String, slot_index: usize, token_count: usize) {
+        if !self.enabled {
+            return;
+        }
         self.strategy
             .insert(dialogue_id, slot_index, token_count)
             .await
     }
 
     pub async fn insert_batch(&self, entries: Vec<(String, usize, usize)>) {
+        if !self.enabled {
+            return;
+        }
         self.strategy.insert_batch(entries).await
     }
 
     pub async fn remove(&self, dialogue_id: &str) {
+        if !self.enabled {
+            return;
+        }
         self.strategy.remove(dialogue_id).await
     }
 
     pub async fn remove_batch(&self, dialogue_ids: &[&str]) {
+        if !self.enabled {
+            return;
+        }
         self.strategy.remove_batch(dialogue_ids).await
     }
 
     pub async fn cleanup(&self, now: Instant) {
+        if !self.enabled {
+            return;
+        }
         self.strategy.cleanup(now).await
     }
 
@@ -121,7 +142,7 @@ mod tests {
     async fn test_insert_and_get() {
         let slot_manager = create_test_slot_manager();
         let batch_seq = create_test_batch_sequence();
-        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 4);
+        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 4, true);
 
         cache.insert("dialogue-1".to_string(), 0, 10).await;
 
@@ -134,7 +155,7 @@ mod tests {
     async fn test_lru_eviction() {
         let slot_manager = create_test_slot_manager();
         let batch_seq = create_test_batch_sequence();
-        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_millis(10), 2);
+        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_millis(10), 2, true);
 
         cache.insert("dialogue-1".to_string(), 0, 10).await;
         cache.insert("dialogue-2".to_string(), 1, 20).await;
@@ -152,7 +173,7 @@ mod tests {
     async fn test_calculate_delta() {
         let slot_manager = create_test_slot_manager();
         let batch_seq = create_test_batch_sequence();
-        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 4);
+        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 4, true);
 
         let entry = DialogueEntry {
             dialogue_id: "test".to_string(),
@@ -174,7 +195,7 @@ mod tests {
     async fn test_batch_insert() {
         let slot_manager = create_test_slot_manager();
         let batch_seq = create_test_batch_sequence();
-        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 10);
+        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 10, true);
 
         let entries = vec![
             ("dialogue-1".to_string(), 0, 10),
@@ -190,7 +211,7 @@ mod tests {
     async fn test_find_common_prefix() {
         let slot_manager = create_test_slot_manager();
         let batch_seq = create_test_batch_sequence();
-        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 4);
+        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 4, true);
 
         cache.insert("test-dialogue".to_string(), 0, 3).await;
 
@@ -201,5 +222,17 @@ mod tests {
         assert!(result.is_some());
         let (entry, prefix_len, delta) = result.unwrap();
         assert_eq!(entry.dialogue_id, "test-dialogue");
+    }
+
+    #[tokio::test]
+    async fn test_cache_disabled() {
+        let slot_manager = create_test_slot_manager();
+        let batch_seq = create_test_batch_sequence();
+        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 4, false);
+
+        cache.insert("dialogue-1".to_string(), 0, 10).await;
+
+        let entry = cache.get("dialogue-1").await;
+        assert!(entry.is_none());
     }
 }

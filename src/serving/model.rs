@@ -1,8 +1,7 @@
-use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::GenerationConfig;
+use crate::config::{GenerationConfig, ResolvedConfig};
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
@@ -27,26 +26,31 @@ pub struct ServingConfig {
     pub schedule_timeout_ms: usize,
     pub reasoning_parser_enabled: bool,
     pub tool_call_parser_enabled: bool,
+    pub dialogue_cache_enabled: bool,
 }
 
 impl ServingConfig {
-    pub fn new(model_dir: String) -> Self {
-        let parse_env_usize = |name: &str, default: usize| -> usize {
-            env::var(name)
-                .ok()
-                .and_then(|value| value.parse::<usize>().ok())
-                .filter(|value| *value > 0)
-                .unwrap_or(default)
-        };
+    pub fn from_resolved_config(config: &ResolvedConfig) -> Self {
+        let reasoning_parser_enabled = config
+            .serve
+            .as_ref()
+            .map(|s| s.reasoning_parser_enabled)
+            .unwrap_or(true);
+        let tool_call_parser_enabled = config
+            .serve
+            .as_ref()
+            .map(|s| s.tool_call_parser_enabled)
+            .unwrap_or(true);
 
         Self {
-            model_dir,
-            batch_size: parse_env_usize("ELLM_BATCH_SIZE", 3),
-            sequence_length: parse_env_usize("ELLM_SEQUENCE_LENGTH", 128),
-            chunk_size: parse_env_usize("ELLM_CHUNK_SIZE", 64),
-            schedule_timeout_ms: parse_env_usize("ELLM_SCHEDULE_TIMEOUT_MS", 10),
-            reasoning_parser_enabled: true,
-            tool_call_parser_enabled: true,
+            model_dir: config.model.raw_config.model.clone(),
+            batch_size: config.scheduler.max_num_seqs,
+            sequence_length: config.model.raw_config.max_model_len.unwrap_or(128),
+            chunk_size: config.scheduler.prefill_chunk_size.unwrap_or(64),
+            schedule_timeout_ms: config.scheduler.schedule_timeout_ms,
+            reasoning_parser_enabled,
+            tool_call_parser_enabled,
+            dialogue_cache_enabled: config.scheduler.dialogue_cache_enabled,
         }
     }
 }
@@ -77,6 +81,7 @@ pub struct ServingResources {
     pub worker_threads: usize,
     pub async_threads: usize,
     pub _sequences_box: AlignedBox<usize>,
+    pub dialogue_cache_enabled: bool,
 }
 
 fn extract_generation_params(
@@ -206,8 +211,9 @@ fn create_scheduling_components(
 }
 
 pub fn initialize_serving_resources(
-    config: &ServingConfig,
+    resolved_config: &ResolvedConfig,
 ) -> Result<ServingResources, Box<dyn std::error::Error>> {
+    let config = ServingConfig::from_resolved_config(resolved_config);
     println!("Loading config from: {}", config.model_dir);
 
     let model_config = Config::load_from_file(format!("{}/config.json", config.model_dir))
@@ -243,7 +249,7 @@ pub fn initialize_serving_resources(
 
     let batch_states = Arc::new(SharedMut::new(build_sequence_state(config.batch_size)));
     let (scheduler, task_sender) =
-        create_scheduling_components(config, &thread_config, Arc::clone(&batch_states));
+        create_scheduling_components(&config, &thread_config, Arc::clone(&batch_states));
 
     let position_vec = RotaryEmbedding::new(
         model_config.head_dim,
@@ -284,5 +290,6 @@ pub fn initialize_serving_resources(
         worker_threads: thread_config.worker_threads,
         async_threads: thread_config.async_threads,
         _sequences_box: sequences_box,
+        dialogue_cache_enabled: config.dialogue_cache_enabled,
     })
 }

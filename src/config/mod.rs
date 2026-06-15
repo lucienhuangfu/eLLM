@@ -6,8 +6,9 @@ pub mod huggingface_config;
 
 pub use command_line_interface::{ChatArgs, Cli, CliCommand, ServeArgs, SharedArgs};
 pub use config_types::{
-    ChatConfig, Command, Config, ModelConfig, ModelDtype, ResolvedConfig, ResolvedModelConfig,
-    SchedulerConfig, SchedulingPolicy, ServeConfig,
+    ChatConfig, Command, Config, ConvertType, EngineConfig, ModelConfig, ModelDtype,
+    ResolvedConfig, ResolvedModelConfig, RunnerType, SchedulerConfig, SchedulingPolicy,
+    ServeConfig, TokenizerMode,
 };
 pub use config_validator::ConfigError;
 pub use generation_config::GenerationConfig;
