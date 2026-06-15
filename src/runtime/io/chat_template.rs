@@ -41,7 +41,7 @@ impl ChatTemplate {
         Self::from_tokenizer_config(tokenizer_config_path)
     }
 
-    fn from_template_source(chat_template: String) -> Result<Self, Box<dyn Error + Send + Sync>> {
+    pub fn from_template_source(chat_template: String) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let mut env = Environment::new();
         env.set_unknown_method_callback(
             |_state: &State, value: &Value, method: &str, args: &[Value]| {

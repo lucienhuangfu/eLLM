@@ -1,5 +1,5 @@
-use ellm::runtime::chat_template::ChatTemplate;
-use ellm::runtime::tokenizer_loader::load_tiktoken;
+use ellm::runtime::io::ChatTemplate;
+use ellm::runtime::io::load_tiktoken;
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -18,18 +18,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let token_ids = tokenizer.encode_with_special_tokens(&prompt);
 
     println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "model_dir": model_dir,
-            "messages": messages
-                .iter()
-                .map(|(role, content)| json!({"role": role, "content": content}))
-                .collect::<Vec<_>>(),
-            "add_generation_prompt": true,
-            "rendered_prompt": prompt,
-            "token_ids": token_ids,
-        }))?
+        "Prompt: {}\nToken IDs: {:?}\nToken count: {}",
+        prompt,
+        token_ids,
+        token_ids.len()
     );
+
+    let text = tokenizer.decode(token_ids).unwrap();
+    println!("Decoded text: {}", text);
 
     Ok(())
 }

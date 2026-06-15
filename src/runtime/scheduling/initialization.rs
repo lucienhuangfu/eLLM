@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::batch_sequence::BatchSequence;
+use crate::runtime::scheduling::batch_sequence::BatchSequence;
 use crate::runtime::scheduling::types::SequenceState;
 
 pub fn build_sequence_state(batch_size: usize) -> Vec<SequenceState> {

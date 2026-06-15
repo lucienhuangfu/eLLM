@@ -1,8 +1,5 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// A fast spin-based barrier for fine-grained operator synchronization.
-/// Avoids the kernel-syscall overhead of std::sync::Barrier (futex).
-/// Suitable when threads are expected to arrive within microseconds of each other.
 pub struct SpinBarrier {
     count: AtomicUsize,
     generation: AtomicUsize,
@@ -19,17 +16,14 @@ impl SpinBarrier {
         }
     }
 
-    /// Returns true for the last thread to arrive (the leader).
     pub fn wait(&self) -> bool {
         let gen = self.generation.load(Ordering::Acquire);
         let prev = self.count.fetch_add(1, Ordering::AcqRel);
         if prev == self.num_threads - 1 {
-            // Last thread to arrive — reset and flip generation.
             self.count.store(0, Ordering::Release);
             self.generation.fetch_add(1, Ordering::Release);
             true
         } else {
-            // Spin until generation changes (last thread flips it).
             while self.generation.load(Ordering::Acquire) == gen {
                 std::hint::spin_loop();
             }

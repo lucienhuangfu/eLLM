@@ -2,7 +2,7 @@
 
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::runtime::{model_loader::SafeTensorsLoader, Config};
+use ellm::runtime::{Config, io::SafeTensorsLoader};
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 

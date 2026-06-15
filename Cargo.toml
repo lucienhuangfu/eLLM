@@ -42,6 +42,7 @@ path = "alignment/tokenizer/multi_batch_test.rs"
 [dependencies]
 anyhow = "1.0.72"
 async-stream = "0.3.6"
+rustc-hash = "1.1.0"
 axum = "0.8.4"
 core_affinity = "0.8.1"
 clap = { version = "4.5.20", features = ["derive"] }

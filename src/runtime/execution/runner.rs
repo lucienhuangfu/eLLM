@@ -7,10 +7,10 @@ use tokio::task::JoinSet;
 
 use crate::operators::operator::Operator;
 use crate::operators::send_sync_ptr::SharedMut;
+use crate::runtime::execution::spin_barrier::SpinBarrier;
 use crate::runtime::scheduling::types::Phase;
 use crate::runtime::scheduling::types::ScheduleTask;
-use crate::runtime::sequence_slice::{DecodeList, SequenceSlice};
-use crate::runtime::spin_barrier::SpinBarrier;
+use crate::runtime::scheduling::sequence_slice::{DecodeList, SequenceSlice};
 use crate::runtime::SequenceState;
 
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
@@ -49,11 +49,6 @@ fn notify_completed_sequences(before: &[SequenceSnapshot], batch_list: &[Sequenc
     }
 }
 
-/// Runs the inference serving loop.
-///
-/// Each worker subscribes to the schedule broadcast stream. When a task arrives,
-/// all workers synchronize on a barrier, run the operator queue in order, and
-/// then return to waiting for the next schedule event.
 pub struct ServingRunner<T> {
     operator_queue: Vec<Operator<T>>,
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
@@ -128,7 +123,6 @@ where
             join_set.spawn(async move {
                 while let Ok(task) = receiver.recv().await {
                     let (prefill_size, decode_size) = (task.prefill_size, task.decode_size);
-                    // Dereference Arc to get references to underlying data
                     let prefill_list: &Vec<Vec<SequenceSlice>> = task.prefill_list.as_ref();
                     let decode_list: &DecodeList = task.decode_list.as_ref();
                     let before = {

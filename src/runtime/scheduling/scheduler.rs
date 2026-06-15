@@ -5,21 +5,20 @@ use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use super::slice_scheduler::{PrefillCandidate, SliceScheduler};
+use super::sequence_slice::{DecodeList, SequenceSlice};
+use super::strategy::{BatchPlan, DefaultSchedulerStrategy, PrefillCandidate, SchedulerStrategy};
 use super::types::{Phase, ScheduleTask, SequenceState};
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::scheduling::sequence_slice::{DecodeList, SequenceSlice};
 
 pub struct Scheduler {
     prefill_list: UnsafeCell<Vec<Vec<SequenceSlice>>>,
     decode_list: UnsafeCell<DecodeList>,
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
-    prefill_scheduler: UnsafeCell<SliceScheduler>,
+    strategy: Box<dyn SchedulerStrategy>,
     max_prefill_size: usize,
     max_decode_size: usize,
     thread_num: AtomicUsize,
 
-    // Event-driven scheduling using broadcast channel
     needs_schedule: AtomicBool,
     schedule_tx: broadcast::Sender<()>,
     timeout: Duration,
@@ -32,21 +31,12 @@ unsafe impl Sync for Scheduler {}
 
 unsafe impl Send for Scheduler {}
 
-enum BatchPlan {
-    Decode(Vec<(usize, usize)>),
-    Prefill {
-        candidates: Vec<PrefillCandidate>,
-        total_tokens: usize,
-    },
-    Idle,
-}
-
 impl Scheduler {
     pub fn new(
         sequence_length: usize,
         batch_size: usize,
         thread_num: usize,
-        _threshold: usize, // Keep for compatibility
+        _threshold: usize,
         timeout: Duration,
         broadcast_sender: broadcast::Sender<ScheduleTask>,
         batch_list: Arc<SharedMut<Vec<SequenceState>>>,
@@ -59,6 +49,10 @@ impl Scheduler {
             timeout,
             broadcast_sender,
             batch_list,
+            Box::new(DefaultSchedulerStrategy::new(
+                batch_size,
+                sequence_length * batch_size,
+            )),
         )
     }
 
@@ -67,7 +61,7 @@ impl Scheduler {
         batch_size: usize,
         chunk_size: usize,
         thread_num: usize,
-        _threshold: usize, // Keep for compatibility
+        _threshold: usize,
         timeout: Duration,
         broadcast_sender: broadcast::Sender<ScheduleTask>,
         batch_list: Arc<SharedMut<Vec<SequenceState>>>,
@@ -80,6 +74,29 @@ impl Scheduler {
             timeout,
             broadcast_sender,
             batch_list,
+            Box::new(DefaultSchedulerStrategy::new(batch_size, chunk_size)),
+        )
+    }
+
+    pub fn with_strategy(
+        sequence_length: usize,
+        batch_size: usize,
+        chunk_size: usize,
+        thread_num: usize,
+        timeout: Duration,
+        broadcast_sender: broadcast::Sender<ScheduleTask>,
+        batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+        strategy: Box<dyn SchedulerStrategy>,
+    ) -> Self {
+        Self::build(
+            sequence_length,
+            batch_size,
+            chunk_size,
+            thread_num,
+            timeout,
+            broadcast_sender,
+            batch_list,
+            strategy,
         )
     }
 
@@ -91,6 +108,7 @@ impl Scheduler {
         timeout: Duration,
         broadcast_sender: broadcast::Sender<ScheduleTask>,
         batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+        strategy: Box<dyn SchedulerStrategy>,
     ) -> Self {
         let (schedule_tx, _) = broadcast::channel(16);
         Self {
@@ -98,7 +116,7 @@ impl Scheduler {
             max_prefill_size: chunk_size,
             batch_list,
             thread_num: AtomicUsize::new(thread_num),
-            prefill_scheduler: UnsafeCell::new(SliceScheduler::new(batch_size * thread_num)),
+            strategy,
             prefill_list: UnsafeCell::new(
                 (0..thread_num)
                     .map(|_| Vec::with_capacity(batch_size))
@@ -127,8 +145,6 @@ impl Scheduler {
         } else {
             prefill_list.resize_with(thread_num, || Vec::with_capacity(self.max_decode_size));
         }
-        let prefill_scheduler = unsafe { &mut *self.prefill_scheduler.get() };
-        prefill_scheduler.set_task_count(thread_num);
     }
 
     pub fn batch_list(&self) -> Arc<SharedMut<Vec<SequenceState>>> {
@@ -164,9 +180,6 @@ impl Scheduler {
             }
         }
 
-        let prefill_scheduler = unsafe { &mut *self.prefill_scheduler.get() };
-        prefill_scheduler.set_task_count(prefill_task_count);
-
         match self.plan_next_round() {
             BatchPlan::Decode(decode_candidates) => {
                 let decode_count = self.schedule_decode_round(decode_candidates);
@@ -196,7 +209,6 @@ impl Scheduler {
             return false;
         }
 
-        // Set flag and signal the scheduler
         self.needs_schedule.store(true, Ordering::Release);
         let _ = self.schedule_tx.send(());
         true
@@ -208,20 +220,17 @@ impl Scheduler {
 
         loop {
             tokio::select! {
-                // Event-driven: wake up when there's a schedule request
                 _ = schedule_rx.recv() => {
                     if self.needs_schedule.load(Ordering::Acquire) {
                         self.trigger_schedule();
                     }
                 }
-                // Fallback: periodic check in case events were missed
                 _ = interval.tick() => {
                     if self.needs_schedule.load(Ordering::Acquire) {
                         self.trigger_schedule();
                         continue;
                     }
 
-                    // Also check batch state as fallback
                     let has_work = self.batch_list.with(|batch_list| {
                         batch_list
                             .iter()
@@ -244,62 +253,17 @@ impl Scheduler {
     }
 
     fn plan_next_round(&self) -> BatchPlan {
-        let max_decode_size = self.max_decode_size;
         self.batch_list.with(|batch_list| {
-            let mut decode_candidates = Vec::with_capacity(max_decode_size);
-            let mut total_tokens = 0usize;
-            let mut candidates = Vec::with_capacity(batch_list.len());
-            let mut has_decode = false;
-
-            for (batch_index, record) in batch_list.iter().enumerate() {
-                match record.phase {
-                    Phase::Decode => {
-                        has_decode = true;
-                        if decode_candidates.len() < max_decode_size {
-                            decode_candidates.push((batch_index, record.sequence_index));
-                        }
-                    }
-                    Phase::Prefill => {
-                        total_tokens += record.filling_length;
-                        candidates.push(PrefillCandidate {
-                            batch_index,
-                            sequence_index: record.sequence_index,
-                            remaining: record.filling_length,
-                        });
-                    }
-                    _ => {}
-                }
-            }
-
-            if !candidates.is_empty() {
-                BatchPlan::Prefill {
-                    candidates,
-                    total_tokens: total_tokens.min(self.max_prefill_size),
-                }
-            } else if has_decode {
-                BatchPlan::Decode(decode_candidates)
-            } else {
-                BatchPlan::Idle
-            }
+            self.strategy
+                .plan_next_round(batch_list, self.max_decode_size, self.max_prefill_size)
         })
     }
 
     fn schedule_decode_round(&self, decode_candidates: Vec<(usize, usize)>) -> usize {
         self.clear_round_outputs();
-        let decode_count = decode_candidates.len();
         let decode_list = unsafe { &mut *self.decode_list.get() };
-
-        for (idx, (batch_index, sequence_index)) in decode_candidates.into_iter().enumerate() {
-            decode_list.push(SequenceSlice {
-                batch_index,
-                sequence_index,
-                token_start_index: idx,
-                length: 1,
-                last_token_flag: true,
-            });
-        }
-
-        decode_count
+        self.strategy
+            .schedule_decode_round(decode_candidates, decode_list)
     }
 
     fn schedule_prefill_round(
@@ -308,57 +272,29 @@ impl Scheduler {
         total_tokens: usize,
     ) -> usize {
         self.clear_round_outputs();
-        let mut prefill_count = 0usize;
-        let prefill_scheduler = unsafe { &mut *self.prefill_scheduler.get() };
-        let decode_list = unsafe { &mut *self.decode_list.get() };
         let prefill_list = unsafe { &mut *self.prefill_list.get() };
+        let decode_list = unsafe { &mut *self.decode_list.get() };
+        let thread_num = self.thread_num.load(Ordering::Acquire);
 
-        prefill_scheduler.init(total_tokens);
-
-        for candidate in candidates {
-            if prefill_scheduler.is_done() {
-                break;
-            }
-
-            let attention_length = candidate
-                .remaining
-                .min(prefill_scheduler.remaining_tokens());
-            if attention_length > 0 {
-                decode_list.push(SequenceSlice {
-                    batch_index: candidate.batch_index,
-                    sequence_index: candidate.sequence_index,
-                    token_start_index: prefill_count,
-                    length: attention_length,
-                    last_token_flag: attention_length == candidate.remaining,
-                });
-            }
-
-            prefill_scheduler.schedule_for_sequence(
-                candidate.batch_index,
-                candidate.sequence_index,
-                candidate.remaining,
-                0,
-                prefill_list,
-                &mut prefill_count,
-            );
-        }
-
-        prefill_count
+        self.strategy.schedule_prefill_round(
+            candidates,
+            total_tokens,
+            prefill_list,
+            decode_list,
+            thread_num,
+        )
     }
 
     fn trigger_schedule(&self) {
-        // Try to take the schedule flag
         if !self.needs_schedule.swap(false, Ordering::AcqRel) {
             return;
         }
 
-        // Try to claim the scheduling slot
         if self
             .task_in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            // Another task is already scheduling, restore the flag
             self.needs_schedule.store(true, Ordering::Release);
             return;
         }
@@ -379,7 +315,6 @@ impl Scheduler {
         );
 
         if self.broadcast_sender.send(task).is_ok() {
-            // Task sent successfully
         } else {
             self.task_in_flight.store(false, Ordering::Release);
             self.needs_schedule.store(true, Ordering::Release);
@@ -390,6 +325,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::scheduling::strategy::DefaultSchedulerStrategy;
 
     fn decode_state(sequence_index: usize, kv_index: usize) -> SequenceState {
         SequenceState::new_decode_state(sequence_index, kv_index)
@@ -415,8 +351,7 @@ mod tests {
     fn schedule_decode_round_uses_one_decode_sequence() {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let mut scheduler =
-            Scheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
+        let scheduler = Scheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(decode_state(100, 128));
         });
@@ -441,8 +376,7 @@ mod tests {
     fn set_thread_num_resizes_prefill_work_lists() {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let mut scheduler =
-            Scheduler::new(16, 4, 6, 1, Duration::from_millis(100), sender, batch_list);
+        let scheduler = Scheduler::new(16, 4, 6, 1, Duration::from_millis(100), sender, batch_list);
 
         scheduler.set_thread_num(3);
 
@@ -459,8 +393,7 @@ mod tests {
     fn schedule_prefill_round_limits_one_sequence_to_max_prefill_size() {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let mut scheduler =
-            Scheduler::new(8, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
+        let scheduler = Scheduler::new(8, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 23));
         });
@@ -506,8 +439,7 @@ mod tests {
     fn schedule_prefill_round_truncates_to_max_prefill_size() {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let mut scheduler =
-            Scheduler::new(5, 2, 2, 1, Duration::from_millis(100), sender, batch_list);
+        let scheduler = Scheduler::new(5, 2, 2, 1, Duration::from_millis(100), sender, batch_list);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 13));
         });
@@ -548,8 +480,7 @@ mod tests {
     fn schedule_batch_finishes_prefill_when_both_phases_exist() {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let mut scheduler =
-            Scheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
+        let scheduler = Scheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 6));
             batch_list.push(decode_state(100, 128));
@@ -599,5 +530,25 @@ mod tests {
         state.reset_to_start();
         assert_eq!(state.phase, Phase::Start);
         assert_eq!(state.sequence_index, usize::MAX);
+    }
+
+    #[test]
+    fn custom_strategy_can_be_used() {
+        let (sender, _) = broadcast::channel(16);
+        let batch_list = Arc::new(SharedMut::new(Vec::new()));
+
+        let strategy = Box::new(DefaultSchedulerStrategy::new(4, 32));
+        let scheduler = Scheduler::with_strategy(
+            16,
+            4,
+            32,
+            2,
+            Duration::from_millis(100),
+            sender,
+            batch_list,
+            strategy,
+        );
+
+        assert_eq!(scheduler.thread_num(), 2);
     }
 }

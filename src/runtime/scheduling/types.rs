@@ -49,7 +49,7 @@ pub struct SequenceState {
     pub kv_index: usize,
     pub filling_length: usize,
     pub phase: Phase,
-    pub notify: Arc<Notify>,
+    pub(crate) notify: Arc<Notify>,
 }
 
 impl SequenceState {
@@ -85,6 +85,7 @@ impl SequenceState {
 
     pub fn transition_to_decode(&mut self) {
         self.phase = Phase::Decode;
+        self.filling_length = 0;
         self.notify.notify_one();
     }
 

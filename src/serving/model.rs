@@ -6,7 +6,7 @@ use crate::config::GenerationConfig;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::batch_sequence::BatchSequence;
+use crate::runtime::scheduling::batch_sequence::BatchSequence;
 use crate::runtime::scheduling::{
     build_batch_sequence, build_sequence_state, ScheduleTask, Scheduler, SequenceState,
 };

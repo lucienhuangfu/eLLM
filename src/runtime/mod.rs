@@ -1,52 +1,23 @@
-pub mod batch_sequence;
-pub mod cache_strategy;
-pub mod dialogue_cache;
+pub mod caching;
+pub mod error;
+pub mod execution;
 pub mod io;
-pub mod runner;
 pub mod scheduling;
-pub mod slot_manager;
-pub mod spin_barrier;
 
-pub use crate::config::generation_config;
-pub use crate::config::huggingface_config;
-
+pub use crate::config::generation_config::GenerationConfig;
+pub use crate::config::huggingface_config::HfConfig;
 pub use crate::tensor;
-
 pub use crate::transformer::config::Config;
-pub use generation_config::GenerationConfig;
-pub use huggingface_config::HfConfig;
 
-pub use batch_sequence::BatchSequence;
-pub use cache_strategy::DialogueEntry;
-pub use dialogue_cache::DialogueCache;
-pub use io::load_tiktoken;
-pub use io::ChatTemplate;
-pub use io::SafeTensorsLoader;
-pub use runner::ServingRunner;
-pub use scheduling::ScheduleTask;
-pub use scheduling::Scheduler;
-pub use scheduling::{Phase, SequenceState};
-pub use slot_manager::SlotManager;
+pub use caching::{DialogueCache, DialogueEntry};
+pub use execution::{ServingRunner, SpinBarrier};
+pub use io::{load_tiktoken, ChatTemplate, SafeTensorsLoader};
+pub use scheduling::{
+    BatchSequence, DecodeList, DecodeLookupResult, Phase, ScheduleTask, Scheduler, SequenceSlice,
+    SequenceState, SequenceStateMachine, SlotManager, TransitionError,
+};
 
-/// Compatibility alias matching sample's Runner name.
-pub use runner::ServingRunner as Runner;
-
-/// Compatibility modules for existing imports
-pub mod chat_template {
-    pub use super::io::ChatTemplate;
-}
-
-pub mod tokenizer_loader {
-    pub use super::io::load_tiktoken;
-}
-
-pub mod model_loader {
-    pub use super::io::SafeTensorsLoader;
-}
-
-pub mod sequence_slice {
-    pub use super::scheduling::sequence_slice::*;
-}
+pub use execution::runner::ServingRunner as Runner;
 
 #[cfg(test)]
 mod tests {

@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, RwLock};
 
-use crate::runtime::slot_manager::SlotManager;
+use crate::runtime::scheduling::slot_manager::SlotManager;
+
+use super::lru_list::LruList;
 
 #[derive(Debug, Clone)]
 pub struct DialogueEntry {
@@ -13,91 +15,6 @@ pub struct DialogueEntry {
     pub last_accessed_at: Instant,
     pub in_lru: bool,
     pub lru_index: Option<usize>,
-}
-
-#[derive(Clone)]
-struct LruNode {
-    dialogue_id: String,
-    prev: Option<usize>,
-    next: Option<usize>,
-}
-
-struct LruList {
-    nodes: Vec<LruNode>,
-    head: Option<usize>,
-    tail: Option<usize>,
-    free_indices: Vec<usize>,
-}
-
-impl LruList {
-    fn new() -> Self {
-        Self {
-            nodes: Vec::new(),
-            head: None,
-            tail: None,
-            free_indices: Vec::new(),
-        }
-    }
-
-    fn push_back(&mut self, dialogue_id: String) -> usize {
-        let index = if let Some(free_idx) = self.free_indices.pop() {
-            self.nodes[free_idx] = LruNode {
-                dialogue_id,
-                prev: self.tail,
-                next: None,
-            };
-            free_idx
-        } else {
-            let index = self.nodes.len();
-            self.nodes.push(LruNode {
-                dialogue_id,
-                prev: self.tail,
-                next: None,
-            });
-            index
-        };
-
-        if let Some(tail) = self.tail {
-            self.nodes[tail].next = Some(index);
-        } else {
-            self.head = Some(index);
-        }
-        self.tail = Some(index);
-        index
-    }
-
-    fn remove(&mut self, index: usize) {
-        let node = self.nodes[index].clone();
-
-        if let Some(prev) = node.prev {
-            self.nodes[prev].next = node.next;
-        } else {
-            self.head = node.next;
-        }
-
-        if let Some(next) = node.next {
-            self.nodes[next].prev = node.prev;
-        } else {
-            self.tail = node.prev;
-        }
-
-        self.free_indices.push(index);
-    }
-
-    fn pop_back(&mut self) -> Option<String> {
-        let tail = self.tail?;
-        let dialogue_id = self.nodes[tail].dialogue_id.clone();
-        self.remove(tail);
-        Some(dialogue_id)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.head.is_none()
-    }
-
-    fn len(&self) -> usize {
-        self.nodes.len() - self.free_indices.len()
-    }
 }
 
 pub struct LruCacheStrategy {

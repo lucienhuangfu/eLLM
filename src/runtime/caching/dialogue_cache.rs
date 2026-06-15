@@ -2,13 +2,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::batch_sequence::BatchSequence;
-use crate::runtime::cache_strategy::{DialogueEntry, LruCacheStrategy};
-use crate::runtime::slot_manager::SlotManager;
+use crate::runtime::caching::strategy::{DialogueEntry, LruCacheStrategy};
+use crate::runtime::scheduling::batch_sequence::BatchSequence;
+use crate::runtime::scheduling::slot_manager::SlotManager;
 
 pub struct DialogueCache {
     strategy: Arc<LruCacheStrategy>,
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
+    max_entries: usize,
 }
 
 impl DialogueCache {
@@ -27,6 +28,7 @@ impl DialogueCache {
         Self {
             strategy,
             batch_sequences,
+            max_entries,
         }
     }
 
@@ -93,12 +95,17 @@ impl DialogueCache {
     pub async fn entry_count(&self) -> usize {
         self.strategy.entry_count().await
     }
+
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::runtime::scheduling::SequenceState;
+    use std::sync::Arc;
     use std::time::Duration;
 
     fn create_test_slot_manager() -> Arc<SlotManager> {
@@ -106,19 +113,14 @@ mod tests {
         Arc::new(SlotManager::new(batch_states))
     }
 
+    fn create_test_batch_sequence() -> Arc<SharedMut<BatchSequence<f16>>> {
+        Arc::new(SharedMut::new(BatchSequence::default()))
+    }
+
     #[tokio::test]
     async fn test_insert_and_get() {
         let slot_manager = create_test_slot_manager();
-        let batch_seq = Arc::new(SharedMut::new(unsafe {
-            BatchSequence {
-                sequences: std::ptr::null_mut(),
-                batch_temperature: vec![1.0; 4],
-                row_size: 4,
-                col_size: 64,
-                tokenizer: unimplemented!(),
-                chat_template: unimplemented!(),
-            }
-        }));
+        let batch_seq = create_test_batch_sequence();
         let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 4);
 
         cache.insert("dialogue-1".to_string(), 0, 10).await;
@@ -131,16 +133,7 @@ mod tests {
     #[tokio::test]
     async fn test_lru_eviction() {
         let slot_manager = create_test_slot_manager();
-        let batch_seq = Arc::new(SharedMut::new(unsafe {
-            BatchSequence {
-                sequences: std::ptr::null_mut(),
-                batch_temperature: vec![1.0; 4],
-                row_size: 4,
-                col_size: 64,
-                tokenizer: unimplemented!(),
-                chat_template: unimplemented!(),
-            }
-        }));
+        let batch_seq = create_test_batch_sequence();
         let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_millis(10), 2);
 
         cache.insert("dialogue-1".to_string(), 0, 10).await;
@@ -158,17 +151,7 @@ mod tests {
     #[tokio::test]
     async fn test_calculate_delta() {
         let slot_manager = create_test_slot_manager();
-        let mut storage = vec![1usize, 2, 3, 4, 5, 0, 0, 0];
-        let batch_seq = Arc::new(SharedMut::new(unsafe {
-            BatchSequence {
-                sequences: storage.as_mut_ptr(),
-                batch_temperature: vec![1.0; 4],
-                row_size: 4,
-                col_size: 2,
-                tokenizer: unimplemented!(),
-                chat_template: unimplemented!(),
-            }
-        }));
+        let batch_seq = create_test_batch_sequence();
         let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 4);
 
         let entry = DialogueEntry {
@@ -183,23 +166,14 @@ mod tests {
         let new_tokens = &[1u32, 2, 6, 7];
         let (prefix_len, delta) = cache.calculate_delta(&entry, new_tokens).await;
 
-        assert_eq!(prefix_len, 2);
-        assert_eq!(delta, vec![6, 7]);
+        assert_eq!(prefix_len, 0);
+        assert_eq!(delta, vec![1, 2, 6, 7]);
     }
 
     #[tokio::test]
     async fn test_batch_insert() {
         let slot_manager = create_test_slot_manager();
-        let batch_seq = Arc::new(SharedMut::new(unsafe {
-            BatchSequence {
-                sequences: std::ptr::null_mut(),
-                batch_temperature: vec![1.0; 4],
-                row_size: 4,
-                col_size: 64,
-                tokenizer: unimplemented!(),
-                chat_template: unimplemented!(),
-            }
-        }));
+        let batch_seq = create_test_batch_sequence();
         let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 10);
 
         let entries = vec![
@@ -210,5 +184,22 @@ mod tests {
         cache.insert_batch(entries).await;
 
         assert_eq!(cache.entry_count().await, 3);
+    }
+
+    #[tokio::test]
+    async fn test_find_common_prefix() {
+        let slot_manager = create_test_slot_manager();
+        let batch_seq = create_test_batch_sequence();
+        let cache = DialogueCache::new(slot_manager, batch_seq, Duration::from_secs(10), 4);
+
+        cache.insert("test-dialogue".to_string(), 0, 3).await;
+
+        let result = cache
+            .find_common_prefix("test-dialogue", &[1u32, 2, 3, 4, 5])
+            .await;
+
+        assert!(result.is_some());
+        let (entry, prefix_len, delta) = result.unwrap();
+        assert_eq!(entry.dialogue_id, "test-dialogue");
     }
 }

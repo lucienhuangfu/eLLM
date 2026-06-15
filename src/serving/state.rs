@@ -4,10 +4,11 @@ use std::time::Duration;
 use axum::response::IntoResponse;
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::batch_sequence::BatchSequence;
+use crate::runtime::error::SlotError;
+use crate::runtime::scheduling::batch_sequence::BatchSequence;
 use crate::runtime::scheduling::{Phase, Scheduler, SequenceState};
+use crate::runtime::DialogueCache;
 use crate::runtime::SlotManager;
-use crate::runtime::{DialogueCache, DialogueEntry};
 
 use super::parser::ParserOptions;
 use super::requests::ChatMessage;
@@ -48,14 +49,52 @@ pub fn build_api_state(
 
 impl ApiState {
     pub async fn acquire_slot(&self) -> Result<usize, axum::response::Response> {
-        self.slot_manager.acquire_slot(None).await
+        self.slot_manager
+            .acquire_slot(None)
+            .await
+            .map_err(|e| match e {
+                SlotError::AllocatorUnavailable => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Slot allocator unavailable".to_string(),
+                )
+                    .into_response(),
+                SlotError::SlotQueueEmpty => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Slot queue empty while permit acquired".to_string(),
+                )
+                    .into_response(),
+                SlotError::SlotNotFound => (
+                    axum::http::StatusCode::NOT_FOUND,
+                    "Slot not found".to_string(),
+                )
+                    .into_response(),
+            })
     }
 
     pub async fn acquire_slot_for_dialogue(
         &self,
         dialogue_id: &str,
     ) -> Result<usize, axum::response::Response> {
-        self.slot_manager.acquire_slot(Some(dialogue_id)).await
+        self.slot_manager
+            .acquire_slot(Some(dialogue_id))
+            .await
+            .map_err(|e| match e {
+                SlotError::AllocatorUnavailable => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Slot allocator unavailable".to_string(),
+                )
+                    .into_response(),
+                SlotError::SlotQueueEmpty => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Slot queue empty while permit acquired".to_string(),
+                )
+                    .into_response(),
+                SlotError::SlotNotFound => (
+                    axum::http::StatusCode::NOT_FOUND,
+                    "Slot not found".to_string(),
+                )
+                    .into_response(),
+            })
     }
 
     pub async fn release_slot(&self, slot_index: usize, release_permit: bool) {

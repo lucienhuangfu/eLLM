@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::batch_sequence::BatchSequence;
+use crate::runtime::scheduling::batch_sequence::BatchSequence;
 use crate::runtime::scheduling::{Scheduler, SequenceState};
 
 use super::api::chat_completions;

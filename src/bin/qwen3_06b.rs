@@ -3,12 +3,12 @@
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
-use ellm::runtime::batch_sequence::BatchSequence;
 use ellm::runtime::io::load_tiktoken;
 use ellm::runtime::io::ChatTemplate;
 use ellm::runtime::io::SafeTensorsLoader;
 use ellm::runtime::{
-    Config, GenerationConfig, Phase, ScheduleTask, Scheduler, SequenceState, ServingRunner,
+    BatchSequence, Config, GenerationConfig, Phase, ScheduleTask, Scheduler, SequenceState,
+    ServingRunner,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;

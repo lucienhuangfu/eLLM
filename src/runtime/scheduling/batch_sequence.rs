@@ -1,10 +1,11 @@
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use tiktoken_rs::CoreBPE;
 
 use crate::num_traits::FromNumber;
 use crate::runtime::io::load_tiktoken;
 use crate::runtime::io::ChatTemplate;
-use crate::runtime::SequenceState;
+use crate::runtime::scheduling::SequenceState;
 
 pub struct BatchSequence<T> {
     pub sequences: *mut usize,
@@ -13,6 +14,34 @@ pub struct BatchSequence<T> {
     pub col_size: usize,
     pub tokenizer: Arc<CoreBPE>,
     pub chat_template: Arc<ChatTemplate>,
+}
+
+impl<T> Default for BatchSequence<T>
+where
+    T: Copy + FromNumber,
+{
+    fn default() -> Self {
+        Self {
+            sequences: std::ptr::null_mut(),
+            batch_temperature: Vec::new(),
+            row_size: 0,
+            col_size: 0,
+            tokenizer: Arc::new(load_tiktoken("gpt2", "gpt2").unwrap_or_else(|_| {
+                let mut vocab: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
+                let mut merges: FxHashMap<String, u32> = FxHashMap::default();
+                for i in 0..100 {
+                    vocab.insert(format!("token_{}", i).into_bytes(), i as u32);
+                }
+                CoreBPE::new(vocab, merges, "bpe").unwrap()
+            })),
+            chat_template: Arc::new(
+                ChatTemplate::from_template_source(
+                    "{{ .System }}\n{{ .User }}\n{{ .Assistant }}".to_string(),
+                )
+                .unwrap(),
+            ),
+        }
+    }
 }
 
 impl<T> BatchSequence<T>
