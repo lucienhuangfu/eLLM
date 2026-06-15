@@ -11,7 +11,7 @@
 3. [Scheduling Flow](#3-scheduling-flow)
 4. [Decode Round Scheduling](#4-decode-round-scheduling)
 5. [Prefill Round Scheduling](#5-prefill-round-scheduling)
-6. [State Update Boundaries](#6-state-update-boundaries)
+6. [State Machine](#6-state-machine)
 
 **Optimized Scheduling**
 
@@ -30,11 +30,14 @@
 - Scan all sequence states in `batch_list`
 - Decide whether the current round executes `Decode`, `Prefill`, or `Idle`
 - Generate corresponding `SequenceSlice` lists for operator execution
+- Manage event-driven scheduling with broadcast task distribution
 
 **Scheduling Priority** (实际实现):
 1. **Prefill First**: If any `Phase::Prefill` sequences exist, execute Prefill round
 2. **Decode Second**: If no Prefill, execute Decode round  
 3. **Idle Fallback**: If no pending sequences, enter idle state
+
+**Strategy Pattern**: The scheduling logic is delegated to `SchedulerStrategy`, allowing custom scheduling behaviors to be injected.
 
 > **Note**: 与文档初始设计不同，实际实现中 Prefill 优先级高于 Decode，确保新请求能及时得到处理。
 
@@ -49,7 +52,7 @@
 | `prefill_list` | `UnsafeCell<Vec<Vec<SequenceSlice>>>` | 每个线程的 prefill slice 列表 |
 | `decode_list` | `UnsafeCell<DecodeList>` | Decode/Attention slice 容器 |
 | `batch_list` | `Arc<SharedMut<Vec<SequenceState>>>` | 序列状态共享存储 |
-| `prefill_scheduler` | `UnsafeCell<SliceScheduler>` | Prefill 分片调度器 |
+| `strategy` | `Box<dyn SchedulerStrategy>` | 调度策略（策略模式） |
 | `max_prefill_size` | `usize` | 最大 prefill token 数（由 chunk_size 决定） |
 | `max_decode_size` | `usize` | 最大 decode 序列数（等于 batch_size） |
 | `thread_num` | `AtomicUsize` | 线程数（动态可调整） |
@@ -93,6 +96,16 @@ enum BatchPlan {
 }
 ```
 
+### 2.5 PrefillCandidate Struct
+
+```rust
+struct PrefillCandidate {
+    batch_index: usize,
+    sequence_index: usize,
+    remaining: usize,
+}
+```
+
 ---
 
 ## 3. Scheduling Flow
@@ -102,30 +115,56 @@ enum BatchPlan {
 ```mermaid
 flowchart TD
     A["schedule_batch()"] --> B["获取 thread_num"]
-    B --> C{"prefill_task_count > 0?"}
-    C -->|是| D["设置 prefill_scheduler task_count"]
-    C -->|否| E["plan_next_round()"]
-    D --> E
-    E --> F["plan_next_round() 扫描 batch_list"]
-    F --> G{"BatchPlan 类型"}
-    G -->|Decode| H["schedule_decode_round()"]
-    G -->|Prefill| I["schedule_prefill_round()"]
-    G -->|Idle| J["clear_round_outputs()"]
-    H --> K["return (0, decode_count)"]
-    I --> L["return (prefill_count, decode_list.len())"]
-    J --> M["return (0, 0)"]
+    B --> C["获取 prefill_task_count"]
+    C --> D["plan_next_round()"]
+    D --> E{"BatchPlan 类型"}
+    E -->|Decode| F["strategy.schedule_decode_round()"]
+    E -->|Prefill| G["strategy.schedule_prefill_round()"]
+    E -->|Idle| H["clear_round_outputs()"]
+    F --> I["return (0, decode_count)"]
+    G --> J["return (prefill_count, decode_list.len())"]
+    H --> K["return (0, 0)"]
 ```
 
 ### 3.2 Plan Generation Logic (实际实现)
 
 ```text
 plan_next_round() flow:
-1. 遍历 batch_list 收集候选
-2. 如果有 Prefill 候选 -> 返回 BatchPlan::Prefill
-3. 如果有 Decode 候选 -> 返回 BatchPlan::Decode  
-4. 否则返回 BatchPlan::Idle
+1. 委托给 strategy.plan_next_round(batch_list, max_decode_size, max_prefill_size)
+2. 策略遍历 batch_list 收集候选
+3. 如果有 Prefill 候选 -> 返回 BatchPlan::Prefill
+4. 如果有 Decode 候选 -> 返回 BatchPlan::Decode  
+5. 否则返回 BatchPlan::Idle
 
 优先级: Prefill > Decode > Idle
+```
+
+### 3.3 SchedulerStrategy Trait
+
+```rust
+trait SchedulerStrategy: Send + Sync + 'static {
+    fn plan_next_round(
+        &self,
+        batch_list: &[SequenceState],
+        max_decode_size: usize,
+        max_prefill_size: usize,
+    ) -> BatchPlan;
+
+    fn schedule_decode_round(
+        &self,
+        decode_candidates: Vec<(usize, usize)>,
+        decode_list: &mut DecodeList,
+    ) -> usize;
+
+    fn schedule_prefill_round(
+        &self,
+        candidates: Vec<PrefillCandidate>,
+        total_tokens: usize,
+        prefill_list: &mut Vec<Vec<SequenceSlice>>,
+        decode_list: &mut DecodeList,
+        thread_num: usize,
+    ) -> usize;
+}
 ```
 
 ---
@@ -144,8 +183,7 @@ plan_next_round() flow:
 ### 4.2 Slice Generation
 
 ```text
-schedule_decode_round(decode_candidates):
-    clear_round_outputs()
+schedule_decode_round(decode_candidates, decode_list):
     decode_count = decode_candidates.len()
     
     for idx, (batch_index, sequence_index) in decode_candidates:
@@ -176,34 +214,69 @@ schedule_decode_round(decode_candidates):
 ### 5.2 Total Token Calculation
 
 ```text
-max_prefill_size = chunk_size  // 而非 sequence_length * batch_size
+max_prefill_size = chunk_size  // 由策略配置决定
 total_tokens = min(sum(filling_length), max_prefill_size)
 ```
 
 ### 5.3 SliceScheduler 分配
 
 ```text
-prefill_scheduler.init(total_tokens)
-
-for candidate in candidates:
-    if prefill_scheduler.is_done():
-        break
+schedule_prefill_round(candidates, total_tokens, prefill_list, decode_list, thread_num):
+    prefill_count = 0
+    task_count = thread_num.min(prefill_list.len())
     
-    attention_length = min(candidate.remaining, prefill_scheduler.remaining_tokens())
-    if attention_length > 0:
-        decode_list.push(attention_slice)
+    scheduler = SliceScheduler::new(task_count)
+    scheduler.init(total_tokens)
     
-    prefill_scheduler.schedule_for_sequence(
-        batch_index,
-        sequence_index,
-        remaining,
-        start_offset,
-        prefill_list,
-        &mut prefill_count
-    )
+    for candidate in candidates:
+        if scheduler.is_done():
+            break
+        
+        attention_length = min(candidate.remaining, scheduler.remaining_tokens())
+        if attention_length > 0:
+            decode_list.push(attention_slice)
+        
+        scheduler.schedule_for_sequence(
+            batch_index,
+            sequence_index,
+            remaining,
+            0,
+            prefill_list,
+            &mut prefill_count
+        )
+    
+    return prefill_count
 ```
 
-### 5.4 线程配额分配示例
+### 5.4 SliceScheduler 核心算法
+
+```text
+SliceScheduler:
+    - task_count: 线程数
+    - total_tokens: 总 token 数
+    - scheduled_tokens: 已分配 token 数
+    - current_task: 当前分配的线程索引
+    - current_task_remaining: 当前线程剩余配额
+
+quota_for(task_index):
+    base_quota = total_tokens / task_count
+    extra_quota = total_tokens % task_count
+    if task_index < extra_quota:
+        return base_quota + 1
+    else:
+        return base_quota
+
+schedule_for_sequence:
+    while remaining > 0 && !is_done():
+        task_index = current_task_index()
+        token_start_index = scheduled_tokens
+        take = min(remaining, current_task_remaining, remaining_tokens)
+        prefill_list[task_index].push(SequenceSlice { ... })
+        scheduled_tokens += take
+        remaining -= take
+```
+
+### 5.5 线程配额分配示例
 
 假设 `total_tokens=23`, `task_count=3`:
 
@@ -215,29 +288,61 @@ for candidate in candidates:
 
 ---
 
-## 6. State Update Boundaries
+## 6. State Machine
 
-### 6.1 Scheduler Does Not Update State
+### 6.1 SequenceStateMachine 职责
 
-`Scheduler` only generates slices, does not modify `SequenceState`. State updates occur at:
+`SequenceStateMachine` 封装了状态转换的业务逻辑，确保状态转换的合法性和原子性。
 
-| Phase | Location | Update Content |
-|-------|----------|-----------------|
-| **Write Prompt** | `handlers.rs` | Set `phase=Prefill`, `filling_length` |
-| **Prefill Execution** | `TopKSoftmax` | Advance `sequence_index`, `kv_index`, `filling_length` |
-| **Switch to Decode** | `TopKSoftmax` | Set `phase=Decode` when `filling_length==0` |
-| **Generation Complete** | `TopKSoftmax` | Set `phase=Eos` when `eos_id` encountered |
+### 6.2 支持的状态转换
 
-### 6.2 State Transition Diagram
+| From | To | 条件 | 方法 |
+|------|-----|------|------|
+| `Start` | `Prefill` | 无 | `transition_to_prefill()` |
+| `Eos` | `Prefill` | 无 | `transition_to_prefill()` |
+| `Timeout` | `Prefill` | 无 | `transition_to_prefill()` |
+| `Prefill` | `Decode` | `filling_length == 0` | `transition_to_decode()` / `advance_sequence()` |
+| `Decode` | `Eos` | 生成 eos token | `transition_to_eos()` |
+| `Prefill` | `Eos` | 生成 eos token | `transition_to_eos()` |
+| `Decode` | `Timeout` | 超时 | `transition_to_timeout()` |
+| `Prefill` | `Timeout` | 超时 | `transition_to_timeout()` |
+| 任意 | `Start` | 重置 | `reset_to_start()` |
 
-```mermaid
-stateDiagram-v2
-    Start --> Prefill: handlers.rs write_prompts
-    Prefill --> Prefill: TopKSoftmax (incomplete)
-    Prefill --> Decode: TopKSoftmax (filling_length==0)
-    Decode --> Decode: TopKSoftmax (incomplete)
-    Decode --> Eos: TopKSoftmax (eos_id)
-    Eos --> Start: handlers.rs reclaim_slot
+### 6.3 advance_sequence 自动转换
+
+```text
+advance_sequence(state, steps):
+    previous_phase = state.phase
+    state.sequence_index += steps
+    
+    if state.phase == Phase::Prefill:
+        state.filling_length -= steps
+        if state.filling_length == 0:
+            transition_to_decode(state)
+            return Some(Phase::Decode)
+    
+    if previous_phase != state.phase:
+        return Some(state.phase)
+    else:
+        return None
+```
+
+### 6.4 状态转换验证
+
+```rust
+fn can_transition(from: Phase, to: Phase) -> bool {
+    match (from, to) {
+        (Start, Prefill) => true,
+        (Eos, Prefill) => true,
+        (Timeout, Prefill) => true,
+        (Prefill, Decode) => true,
+        (Decode, Eos) => true,
+        (Prefill, Eos) => true,
+        (Decode, Timeout) => true,
+        (Prefill, Timeout) => true,
+        _ => false,
+    }
+}
 ```
 
 ---
@@ -261,31 +366,7 @@ stateDiagram-v2
 | **One-to-Many Push** | Use Broadcast to synchronously push tasks to multiple Runners |
 | **Lock-Free Counting** | Use atomic operations for lock-free concurrent counting |
 | **Task In-Flight Guard** | Prevent duplicate scheduling with atomic flag |
-
-### 7.3 Optimized Component Relationships
-
-```mermaid
-classDiagram
-    class Scheduler {
-        +needs_schedule: AtomicBool
-        +schedule_tx: Sender~()~
-        +broadcast_sender: Sender~ScheduleTask~
-        +task_in_flight: AtomicBool
-        +notify_tokens(count)
-        +run()
-        +trigger_schedule()
-    }
-
-    class ServingRunner {
-        +receiver: Receiver~ScheduleTask~
-        +run()
-    }
-
-    Scheduler --> Broadcast: send ScheduleTask
-    Broadcast --> ServingRunner: recv
-    Scheduler ..> SequenceState: read state
-    ServingRunner ..> SequenceState: update state
-```
+| **Strategy Pattern** | Decouple scheduling logic from execution |
 
 ---
 
@@ -388,6 +469,7 @@ flowchart TB
             B[Scheduler]
             B1[needs_schedule]
             B2[task_in_flight]
+            B3[strategy]
             C[Broadcast Sender]
         end
 
@@ -399,16 +481,18 @@ flowchart TB
             E1[ServingRunner]
             En[ServingRunner]
             F[Operator Queue]
+            G[SpinBarrier]
         end
 
         subgraph Shared State
-            G[(batch_list - Arc<SharedMut>)]
+            H[(batch_list - Arc<SharedMut>)]
         end
     end
 
     A --> B: notify_tokens()
     A1 --> B: notify_tokens()
     An --> B: notify_tokens()
+    B --> B3: plan_next_round()
     B --> C: send(ScheduleTask)
     C -.-> D
     C -.-> D1
@@ -416,11 +500,14 @@ flowchart TB
     D --> E
     D1 --> E1
     Dn --> En
+    E --> G
+    E1 --> G
+    En --> G
     E --> F
     E1 --> F
     En --> F
-    B -.-> G
-    E -.-> G
+    B -.-> H
+    E -.-> H
 ```
 
 ### 9.2 Thread Division
@@ -438,11 +525,14 @@ flowchart TD
     A[Runner start] --> B[订阅 Broadcast Channel]
     B --> C{等待消息}
     C -->|Receive ScheduleTask| D[解析任务]
-    D --> E[执行算子队列]
-    E --> F[更新 SequenceState]
-    F --> G[通知完成]
-    G --> C
-    C -->|Channel closed| H[退出循环]
+    D --> E[SpinBarrier 同步]
+    E --> F[遍历算子队列]
+    F --> G[执行算子]
+    G --> E
+    F --> H[Leader 通知完成]
+    H --> I[重置 task_in_flight]
+    I --> C
+    C -->|Channel closed| J[退出循环]
 ```
 
 ---
@@ -459,6 +549,7 @@ sequenceDiagram
     participant R2 as Runner Receiver 2
     participant Runner1 as ServingRunner 1
     participant Runner2 as ServingRunner 2
+    participant Barrier as SpinBarrier
     participant OpQueue as Operator Queue
     participant BatchList as batch_list
 
@@ -468,6 +559,11 @@ sequenceDiagram
 
     R1->>Runner1: wake up
     R2->>Runner2: wake up
+
+    Runner1->>Barrier: wait()
+    Runner2->>Barrier: wait()
+    Barrier-->>Runner1: continue
+    Barrier-->>Runner2: continue
 
     Runner1->>OpQueue: execute operators
     Runner2->>OpQueue: execute operators
@@ -483,8 +579,8 @@ classDiagram
     class ScheduleTask {
         +prefill_size: usize
         +decode_size: usize
-        +prefill_list: Vec~Vec~SequenceSlice~~
-        +decode_list: DecodeList
+        +prefill_list: Arc~Vec~Vec~SequenceSlice~~~
+        +decode_list: Arc~DecodeList~
         +timestamp: Instant
         +task_id: u64
     }
@@ -500,6 +596,7 @@ classDiagram
 | Slot allocation | `Semaphore + Mutex<VecDeque>` | 防止重复分配 |
 | Task broadcast | `tokio::sync::broadcast` | 一对多可靠推送 |
 | `thread_num` | `AtomicUsize` | 动态线程数调整 |
+| Strategy | Trait Object | 策略模式，运行时可替换 |
 
 ---
 
@@ -512,7 +609,6 @@ set_thread_num(thread_num):
     1. thread_num = max(thread_num, 1)
     2. 原子存储新的 thread_num
     3. 调整 prefill_list 长度（截断或扩展）
-    4. 更新 prefill_scheduler 的 task_count
 ```
 
 ### 11.2 线程数与 prefill_list 的关系
@@ -526,5 +622,33 @@ prefill_list: Vec<Vec<SequenceSlice>>
 
 ---
 
-**Document Version**: v3.1  
-**Last Updated**: 2026-06-11
+## 12. Slot Manager
+
+### 12.1 SlotManager 职责
+
+`SlotManager` 负责管理 batch slot 的分配和释放，支持对话级别的槽位管理。
+
+### 12.2 核心方法
+
+| Method | Description |
+|--------|-------------|
+| `acquire_slot(dialogue_id)` | 获取槽位，可选关联对话 ID |
+| `release_slot(slot_index, release_permit)` | 释放槽位 |
+| `release_by_dialogue(dialogue_id)` | 根据对话 ID 释放槽位 |
+| `get_slot_for_dialogue(dialogue_id)` | 获取对话对应的槽位 |
+
+### 12.3 数据结构
+
+```text
+SlotManager:
+    - free_slots: Mutex<VecDeque<usize>>      # 空闲槽位队列
+    - available_slots: Semaphore              # 可用槽位信号量
+    - slot_to_dialogue: Mutex<HashMap<usize, String>>   # 槽位到对话的映射
+    - dialogue_to_slot: Mutex<HashMap<String, usize>>   # 对话到槽位的映射
+    - batch_states: SharedMut<Vec<SequenceState>>        # 槽位状态
+```
+
+---
+
+**Document Version**: v3.2  
+**Last Updated**: 2026-06-15

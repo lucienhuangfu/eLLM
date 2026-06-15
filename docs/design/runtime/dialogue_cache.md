@@ -29,8 +29,18 @@
 | `lru_index` | `Option<usize>` | 在 LRU 链表中的节点索引（用于 O(1) 删除） |
 
 **数据引用说明**：
-- **Tokens**：实际 token 序列存储在 `BatchSequence::sequences` 中，通过 `slot_index` 定位
-- **KV Cache**：KV 缓存信息存储在 `BatchScheduler::batch_list`（`SequenceState`）中，通过 `slot_index` 关联
+- **Tokens**：实际 token 序列存储在 `BatchSequence` 中，通过 `slot_index` 定位
+- **KV Cache**：KV 缓存信息存储在 `Scheduler::batch_list`（`SequenceState`）中，通过 `slot_index` 关联
+
+### LruNode
+
+LRU 链表节点：
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `dialogue_id` | `String` | 对话 ID |
+| `prev` | `Option<usize>` | 前驱节点索引 |
+| `next` | `Option<usize>` | 后继节点索引 |
 
 ### LruList
 
@@ -43,13 +53,6 @@
 | `tail` | `Option<usize>` | 尾节点索引 |
 | `free_indices` | `Vec<usize>` | 空闲索引池（复用已删除节点位置） |
 
-**LruNode 结构**：
-| Field | Type | Description |
-|-------|------|-------------|
-| `dialogue_id` | `String` | 对话 ID |
-| `prev` | `Option<usize>` | 前驱节点索引 |
-| `next` | `Option<usize>` | 后继节点索引 |
-
 ### LruCacheStrategy
 
 LRU 缓存策略实现（策略模式）：
@@ -59,7 +62,7 @@ LRU 缓存策略实现（策略模式）：
 | `entries` | `RwLock<HashMap<String, DialogueEntry>>` | 对话条目存储 |
 | `lru_list` | `Mutex<LruList>` | LRU 双向链表 |
 | `retention_duration` | `Duration` | 保留时长（默认 10s） |
-| `max_entries` | `usize` | 最大缓存数（等于 `BatchSequence::row_size`） |
+| `max_entries` | `usize` | 最大缓存数 |
 | `slot_manager` | `Arc<SlotManager>` | 槽位管理器引用 |
 
 ### DialogueCache
@@ -69,7 +72,8 @@ LRU 缓存策略实现（策略模式）：
 | Field | Type | Description |
 |-------|------|-------------|
 | `strategy` | `Arc<LruCacheStrategy>` | 缓存策略实现 |
-| `batch_sequences` | `Arc<SharedMut<BatchSequence>>` | 批量序列引用 |
+| `batch_sequences` | `Arc<SharedMut<BatchSequence<f16>>>` | 批量序列引用 |
+| `max_entries` | `usize` | 最大缓存条目数 |
 
 ---
 
@@ -92,6 +96,7 @@ stateDiagram-v2
 - **访问重置定时器**：任何访问都会更新 `last_accessed_at`
 - **LRU 剥离**：访问 LRU 中的条目会将其移回 Active 状态
 - **O(1) 删除**：通过 `lru_index` 字段直接定位并删除 LRU 节点
+- **索引复用**：LruList 维护空闲索引池，复用已删除节点位置
 
 ---
 
@@ -156,37 +161,53 @@ cleanup(now):
 ### 3. Delta Prefill Calculation
 
 ```
-calculate_delta(entry: DialogueEntry, new_tokens: Vec<u32>):
+calculate_delta(entry: DialogueEntry, new_tokens: &[u32]):
     // 从 BatchSequence 获取已缓存的 tokens
     cached_tokens = batch_sequences.token_ids(entry.slot_index, 0, entry.token_count)
     
-    prefix_len = 0
     min_len = min(cached_tokens.len(), new_tokens.len())
+    prefix_len = 0
     
     while prefix_len < min_len && cached_tokens[prefix_len] == new_tokens[prefix_len]:
         prefix_len += 1
     
-    return (prefix_len, new_tokens[prefix_len:])
+    return (prefix_len, new_tokens[prefix_len:].to_vec())
 ```
 
-### 4. Batch Operations
+### 4. Find Common Prefix
 
 ```
-insert_batch(entries: Vec<(dialogue_id, slot_index, token_count)>):
+find_common_prefix(dialogue_id, new_tokens):
+    entry = get(dialogue_id)
+    if entry is None:
+        return None
+    
+    (prefix_len, delta_tokens) = calculate_delta(entry, new_tokens)
+    
+    if prefix_len > 0:
+        return Some((entry, prefix_len, delta_tokens))
+    else:
+        return None
+```
+
+### 5. Batch Operations
+
+```
+insert_batch(entries: Vec<(String, usize, usize)>):
     lock = entries.write()
     for (dialogue_id, slot_index, token_count) in entries:
         lock.insert(dialogue_id, DialogueEntry {...})
     drop(lock)
     cleanup(now)
 
-remove_batch(dialogue_ids: Vec<String>):
+remove_batch(dialogue_ids: &[&str]):
     to_release = []
     
     {
         entries_write = entries.write()
         lru_list = lru_list.lock()
         
-        for dialogue_id in dialogue_ids:
+        for &dialogue_id in dialogue_ids:
             if let Some(entry) = entries_write.remove(dialogue_id):
                 if entry.in_lru:
                     lru_list.remove(entry.lru_index)
@@ -195,6 +216,61 @@ remove_batch(dialogue_ids: Vec<String>):
     
     for dialogue_id in to_release:
         slot_manager.release_by_dialogue(dialogue_id)
+```
+
+---
+
+## LruList 核心操作
+
+### push_back
+
+```
+push_back(dialogue_id):
+    if free_indices is not empty:
+        index = free_indices.pop()
+        nodes[index] = LruNode { dialogue_id, prev: tail, next: None }
+    else:
+        index = nodes.len()
+        nodes.push(LruNode { dialogue_id, prev: tail, next: None })
+    
+    if tail is Some:
+        nodes[tail].next = Some(index)
+    else:
+        head = Some(index)
+    
+    tail = Some(index)
+    return index
+```
+
+### remove
+
+```
+remove(index):
+    node = nodes[index].clone()
+    
+    if node.prev is Some:
+        nodes[node.prev].next = node.next
+    else:
+        head = node.next
+    
+    if node.next is Some:
+        nodes[node.next].prev = node.prev
+    else:
+        tail = node.prev
+    
+    free_indices.push(index)
+```
+
+### pop_back
+
+```
+pop_back():
+    if tail is None:
+        return None
+    
+    dialogue_id = nodes[tail].dialogue_id.clone()
+    remove(tail)
+    return Some(dialogue_id)
 ```
 
 ---
@@ -232,11 +308,13 @@ sequenceDiagram
 | `insert`, `remove` | 写锁 |
 | `cleanup` | 写锁（短暂持有）+ 异步释放 |
 | `insert_batch`, `remove_batch` | 批量写锁 |
+| `LruList` operations | Mutex 保护 |
 
 **性能优化**：
 - **读写分离**：读操作优先使用读锁，减少锁竞争
 - **短锁持有**：cleanup 先收集待驱逐列表，释放锁后再执行异步操作
 - **批量操作**：支持批量插入/删除，减少锁获取次数
+- **索引复用**：LruList 复用已删除节点位置，减少内存分配
 
 ---
 
@@ -245,21 +323,22 @@ sequenceDiagram
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `retention_duration` | 10s | 保留期时长 |
-| `max_entries` | `BatchSequence::row_size` | 最大缓存对话数 |
-| `cleanup_interval` | 5s | 清理任务执行频率 |
+| `max_entries` | 配置值 | 最大缓存对话数 |
+| `cleanup_interval` | 按需调用 | 清理任务执行频率 |
 
 ---
 
 ## Module Structure
 
 ```
-src/runtime/
-├── cache_strategy.rs     # LruCacheStrategy、LruList、DialogueEntry
+src/runtime/caching/
+├── mod.rs                # Caching submodule entry and re-exports
 ├── dialogue_cache.rs     # DialogueCache 门面
-└── slot_manager.rs       # 槽位管理（与驱逐联动）
+├── strategy.rs           # LruCacheStrategy、DialogueEntry
+└── lru_list.rs           # LruList、LruNode 实现
 ```
 
 ---
 
-**Document Version**: v2.1  
-**Last Updated**: 2026-06-11
+**Document Version**: v2.2  
+**Last Updated**: 2026-06-15

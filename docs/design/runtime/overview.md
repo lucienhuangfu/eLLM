@@ -20,6 +20,7 @@
 - **Input Preparation**: Render chat messages to prompts, encode to tokens
 - **Batch Scheduling**: Generate current-round computation slices by priority rules
 - **Thread Execution**: Manage thread pool to execute operator queues in parallel
+- **Dialogue Cache**: Manage dialogue-level caching with timer-based LRU eviction
 
 ---
 
@@ -35,27 +36,31 @@ flowchart TB
         B[Input Preparation]
         C[Batch Scheduling]
         D[Thread Execution]
+        E[Dialogue Cache]
     end
 
     subgraph Operators Layer
-        E[Attention]
-        F[MatMul]
-        G[TopKSoftmax]
+        F[Attention]
+        G[MatMul]
+        H[TopKSoftmax]
     end
 
     A --> B
     B --> C
+    B --> E
     C --> D
-    D --> E
     D --> F
     D --> G
+    D --> H
+    E --> C
 ```
 
 | Layer | Responsibility | Key Components |
 |-------|---------------|----------------|
 | **Input Preparation** | Prompt rendering & token encoding | ChatTemplate, BatchSequence, TokenizerLoader |
-| **Batch Scheduling** | Slice generation & task distribution | BatchScheduler, SliceScheduler |
-| **Thread Execution** | Operator queue parallel execution | ServingRunner |
+| **Batch Scheduling** | Slice generation & task distribution | Scheduler, SchedulerStrategy, SlotManager |
+| **Thread Execution** | Operator queue parallel execution | ServingRunner, SpinBarrier |
+| **Dialogue Cache** | Dialogue-level KV cache management | DialogueCache, LruCacheStrategy |
 
 ---
 
@@ -65,18 +70,19 @@ flowchart TB
 
 ```mermaid
 classDiagram
-    class BatchScheduler {
+    class Scheduler {
         -prefill_list: Vec~Vec~SequenceSlice~~
         -decode_list: DecodeList
         -batch_list: Arc~SharedMut~Vec~SequenceState~~~
-        -prefill_scheduler: SliceScheduler
+        -strategy: SchedulerStrategy
         +schedule_batch(): (usize, usize)
         +plan_next_round(): BatchPlan
+        +run()
     }
 
     class ServingRunner {
         -operator_queue: Vec~Operator~T~~
-        -batch_scheduler: BatchScheduler
+        -batch_scheduler: Scheduler
         +start()
     }
 
@@ -103,24 +109,54 @@ classDiagram
         +total_token_count(): usize
     }
 
-    BatchScheduler --> SequenceState
-    BatchScheduler --> SequenceSlice
-    BatchScheduler --> DecodeList
-    ServingRunner --> BatchScheduler
+    class SequenceStateMachine {
+        +transition_to_prefill()
+        +transition_to_decode()
+        +transition_to_eos()
+        +advance_sequence()
+    }
+
+    class SlotManager {
+        +acquire_slot()
+        +release_slot()
+        +release_by_dialogue()
+    }
+
+    class DialogueCache {
+        +get(dialogue_id)
+        +insert(dialogue_id, slot_index, token_count)
+        +calculate_delta(entry, new_tokens)
+        +find_common_prefix(dialogue_id, new_tokens)
+    }
+
+    Scheduler --> SequenceState
+    Scheduler --> SequenceSlice
+    Scheduler --> DecodeList
+    Scheduler ..> SchedulerStrategy : uses
+    ServingRunner --> Scheduler
+    SequenceStateMachine ..> SequenceState : operates on
+    SlotManager --> SequenceState
+    DialogueCache --> SlotManager
 ```
 
 ### 3.2 Component Overview
 
 | Component | Responsibility | File Location |
 |-----------|---------------|---------------|
-| `BatchScheduler` | Generate prefill/decode slices | `scheduling/scheduler.rs` |
-| `SliceScheduler` | Distribute prefill tokens across threads | `scheduling/slice_scheduler.rs` |
-| `TokenCounter` | Count tokens and trigger scheduling | `scheduling/token_counter.rs` |
-| `ServingRunner` | Broadcast-subscribed thread pool executor | `runner.rs` |
+| `Scheduler` | Core scheduling logic, event-driven execution | `scheduling/scheduler.rs` |
+| `SchedulerStrategy` | Scheduling strategy trait | `scheduling/strategy.rs` |
+| `DefaultSchedulerStrategy` | Default scheduling implementation | `scheduling/strategy.rs` |
+| `SliceScheduler` | Prefill token distribution across threads | `scheduling/strategy.rs` |
+| `ServingRunner` | Broadcast-subscribed thread pool executor | `execution/runner.rs` |
 | `SequenceState` | Batch slot state | `scheduling/types.rs` |
+| `SequenceStateMachine` | State transition logic | `scheduling/state_machine.rs` |
 | `SequenceSlice` | Minimal computation unit | `scheduling/sequence_slice.rs` |
 | `ScheduleTask` | Scheduling task carrier | `scheduling/types.rs` |
-| `BatchSequence` | Prompt writing & result decoding | `batch_sequence.rs` |
+| `BatchSequence` | Prompt writing & result decoding | `scheduling/batch_sequence.rs` |
+| `SlotManager` | Batch slot allocation & management | `scheduling/slot_manager.rs` |
+| `DialogueCache` | Dialogue-level cache facade | `caching/dialogue_cache.rs` |
+| `LruCacheStrategy` | LRU eviction strategy | `caching/strategy.rs` |
+| `LruList` | Index-based LRU implementation | `caching/lru_list.rs` |
 | `ChatTemplate` | Chat template rendering | `io/chat_template.rs` |
 | `TokenizerLoader` | Tokenizer loading | `io/tokenizer_loader.rs` |
 
@@ -136,8 +172,9 @@ sequenceDiagram
     participant Handler as chat_completions
     participant Template as ChatTemplate
     participant Tokenizer as TokenizerLoader
+    participant Cache as DialogueCache
     participant BatchSeq as BatchSequence
-    participant Scheduler as BatchScheduler
+    participant Scheduler as Scheduler
     participant Runner as ServingRunner
     participant Ops as Operators
 
@@ -146,13 +183,23 @@ sequenceDiagram
     Template-->>Handler: prompt
     Handler->>Tokenizer: encode(prompt)
     Tokenizer-->>Handler: tokens
-    Handler->>BatchSeq: write_prompts(slot, tokens)
+    
+    Handler->>Cache: find_common_prefix(dialogue_id, tokens)
+    alt Common prefix found
+        Cache-->>Handler: (entry, prefix_len, delta_tokens)
+        Handler->>BatchSeq: write_tokens(delta_tokens)
+    else No common prefix
+        Handler->>BatchSeq: write_prompts(all_tokens)
+        Handler->>Cache: insert(dialogue_id, slot_index, token_count)
+    end
+    
     BatchSeq->>Scheduler: Update SequenceState
-    Handler->>Scheduler: Trigger scheduling
+    Handler->>Scheduler: notify_tokens(count)
+    Scheduler->>Scheduler: trigger_schedule()
     Scheduler->>Scheduler: schedule_batch()
-    Scheduler-->>Runner: prefill_list, decode_list
+    Scheduler-->>Runner: ScheduleTask (prefill_list, decode_list)
     Runner->>Ops: Execute operator queue
-    Ops->>Ops: Update state
+    Ops->>Ops: Update state via SequenceStateMachine
     Ops-->>Handler: Notify completion
     Handler-->>Client: Return response
 ```
@@ -162,10 +209,16 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> Start
-    Start --> Prefill: Write prompts
-    Prefill --> Decode: filling_length == 0
-    Decode --> Eos: Generate eos token
-    Eos --> Start: Release slot
+    Start --> Prefill: write_prompts / transition_to_prefill
+    Prefill --> Prefill: advance_sequence (incomplete)
+    Prefill --> Decode: advance_sequence (filling_length==0)
+    Decode --> Decode: advance_sequence (incomplete)
+    Decode --> Eos: transition_to_eos
+    Decode --> Timeout: transition_to_timeout
+    Prefill --> Eos: transition_to_eos
+    Prefill --> Timeout: transition_to_timeout
+    Eos --> Start: reset_to_start
+    Timeout --> Start: reset_to_start
 ```
 
 ---
@@ -176,24 +229,34 @@ stateDiagram-v2
 src/runtime/
 ├── scheduling/
 │   ├── mod.rs                # Scheduling submodule entry and re-exports
-│   ├── scheduler.rs          # BatchScheduler implementation
-│   ├── token_counter.rs      # TokenCounter implementation
-│   ├── types.rs              # ScheduleTask, SequenceState, Phase definitions
-│   ├── slice_scheduler.rs    # SliceScheduler implementation
+│   ├── scheduler.rs          # Scheduler implementation
+│   ├── strategy.rs           # SchedulerStrategy, BatchPlan, DefaultSchedulerStrategy, SliceScheduler
+│   ├── types.rs              # Phase, ScheduleTask, SequenceState definitions
+│   ├── state_machine.rs      # SequenceStateMachine state transition logic
 │   ├── sequence_slice.rs     # SequenceSlice, DecodeList definitions
+│   ├── batch_sequence.rs     # BatchSequence implementation
+│   ├── slot_manager.rs       # SlotManager implementation
 │   └── initialization.rs     # build_batch_sequence, build_sequence_state helpers
-├── batch_sequence.rs         # BatchSequence implementation
+├── execution/
+│   ├── mod.rs                # Execution submodule entry
+│   ├── runner.rs             # ServingRunner implementation
+│   └── spin_barrier.rs       # SpinBarrier synchronization primitive
+├── caching/
+│   ├── mod.rs                # Caching submodule entry
+│   ├── dialogue_cache.rs     # DialogueCache facade
+│   ├── strategy.rs           # LruCacheStrategy, DialogueEntry
+│   └── lru_list.rs           # LruList implementation
 ├── io/
 │   ├── mod.rs                # IO submodule entry
 │   ├── chat_template.rs      # ChatTemplate implementation
 │   ├── tokenizer_loader.rs   # Tokenizer loading (load_tiktoken)
 │   ├── safetensors_loader.rs # Weight loading (SafeTensorsLoader)
 │   └── from_safetensors.rs   # FromSafetensors trait (type conversion)
-├── runner.rs                 # ServingRunner implementation
+├── error.rs                  # Runtime error definitions
 └── mod.rs                    # Module exports and compatibility aliases
 ```
 
 ---
 
-**Document Version**: v3.0
-**Last Updated**: 2026-06-01
+**Document Version**: v3.2
+**Last Updated**: 2026-06-15
