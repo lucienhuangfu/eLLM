@@ -9,7 +9,7 @@ use crate::num_traits::Sqrt;
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::TopKSoftmaxTrait;
-use crate::runtime::scheduling::SequenceSlice;
+use crate::runtime::state::sequence::SequenceSlice;
 use crate::runtime::{Phase, SequenceState};
 use rand::Rng;
 
@@ -520,7 +520,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::runtime::scheduling::SequenceSlice;
+    use crate::runtime::state::sequence::SequenceSlice;
     use crate::runtime::{Phase, SequenceState};
     use approx::assert_ulps_eq;
 

@@ -31,19 +31,49 @@ pub(super) async fn chat_completions(
     let is_stream = request.stream.unwrap_or(false);
     let model = request.model;
 
-    let slot_index = match state.acquire_slot().await {
-        Ok(slot) => slot,
+    // 提取 session_id 和 mode
+    let session_id = request
+        .session_id
+        .unwrap_or_else(|| format!("session-{}", uuid::Uuid::new_v4()));
+    let mode = match request.session_mode.as_deref() {
+        Some("reusable") => crate::runtime::session::SessionMode::Reusable,
+        _ => crate::runtime::session::SessionMode::NonReusable, // 默认不复用
+    };
+
+    // 获取会话
+    let handle = match state.acquire_session(&session_id, mode).await {
+        Ok(h) => h,
         Err(response) => return response,
     };
 
-    let (write_len, notifier) =
+    let slot_index = handle.slot_index;
+
+    // 尝试增量预填充（如果是复用会话且有缓存）
+    let (write_len, notifier) = if handle.is_reused {
+        match state
+            .write_prompts_with_incremental_prefill(
+                slot_index,
+                &session_id,
+                &request.messages,
+                request.temperature,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(response) => {
+                state.release_session(&session_id, 0).await;
+                return response;
+            }
+        }
+    } else {
         match state.write_prompts_and_prepare(slot_index, &request.messages, request.temperature) {
             Ok(result) => result,
             Err(response) => {
-                state.release_slot(slot_index, true).await;
+                state.release_session(&session_id, 0).await;
                 return response;
             }
-        };
+        }
+    };
 
     state.scheduler.notify_tokens(write_len).await;
 
@@ -53,7 +83,15 @@ pub(super) async fn chat_completions(
         .as_secs();
 
     if is_stream {
-        build_stream_response(state, slot_index, notifier, request_id, model, created)
+        build_stream_response(
+            state,
+            slot_index,
+            &session_id,
+            notifier,
+            request_id,
+            model,
+            created,
+        )
     } else {
         loop {
             notifier.notified().await;
@@ -64,7 +102,10 @@ pub(super) async fn chat_completions(
         }
 
         let generated_text = state.decode_generated_text(slot_index);
-        state.release_slot(slot_index, true).await;
+        let token_count = state
+            .batch_states
+            .with(|batch_list| batch_list[slot_index].sequence_index);
+        state.release_session(&session_id, token_count).await;
 
         #[cfg(debug_assertions)]
         println!("同步推理完成: id={}", request_id);
@@ -90,11 +131,13 @@ pub(super) async fn chat_completions(
 fn build_stream_response(
     state: ApiState<f16>,
     slot_index: usize,
+    session_id: &str,
     notifier: Arc<Notify>,
     request_id: String,
     model: String,
     created: u64,
 ) -> axum::response::Response {
+    let session_id = session_id.to_string();
     let mut parser = IncrementalStreamingParser::with_options(state.parser_options);
     let mut role_sent = false;
     let mut tool_call_index = 0u32;
@@ -104,7 +147,7 @@ fn build_stream_response(
 
             let (token_index, phase) = state.get_token_index_and_phase(slot_index);
             let text = state.decode_single_token(slot_index, token_index);
-            let is_eos = matches!(phase, crate::runtime::scheduling::Phase::Eos);
+            let is_eos = matches!(phase, crate::runtime::Phase::Eos);
 
             let mut events = parser.feed(&text);
             if is_eos {
@@ -195,7 +238,10 @@ fn build_stream_response(
             }
         }
 
-        state.release_slot(slot_index, true).await;
+        let token_count = state.batch_states.with(|batch_list| {
+            batch_list[slot_index].sequence_index
+        });
+        state.release_session(&session_id, token_count).await;
     };
 
     Sse::new(stream_body).into_response()

@@ -1,7 +1,7 @@
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, FromNumber, Sigmoid, Sqrt};
 use crate::operators::fake_echo::FakeEcho;
-use crate::runtime::scheduling::SequenceSlice;
+use crate::runtime::state::sequence::SequenceSlice;
 use crate::runtime::SequenceState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
@@ -229,7 +229,7 @@ mod test {
     use crate::kernel::common::matmul_params::MatMulParams;
     use crate::operators::expert::expert_routing::ExpertRouting;
     use crate::operators::send_sync_ptr::SharedMut;
-    use crate::runtime::scheduling::SequenceSlice;
+    use crate::runtime::state::sequence::SequenceSlice;
     use crate::runtime::{Phase, Scheduler, SequenceState};
     use approx::assert_ulps_eq;
     use std::sync::atomic::Ordering;

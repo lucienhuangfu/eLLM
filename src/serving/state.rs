@@ -1,14 +1,13 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::response::IntoResponse;
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::error::SlotError;
-use crate::runtime::scheduling::batch_sequence::BatchSequence;
-use crate::runtime::scheduling::{Phase, Scheduler, SequenceState};
-use crate::runtime::DialogueCache;
-use crate::runtime::SlotManager;
+use crate::runtime::scheduler::Scheduler;
+use crate::runtime::session::{SessionHandle, SessionManager, SessionMode};
+use crate::runtime::state::batch::BatchSequence;
+use crate::runtime::state::types::{Phase, SequenceState};
 
 use super::parser::ParserOptions;
 use super::requests::ChatMessage;
@@ -22,8 +21,7 @@ where
     pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
-    pub slot_manager: Arc<SlotManager>,
-    pub dialogue_cache: Arc<DialogueCache<T>>,
+    pub session_manager: Arc<SessionManager<T>>,
 }
 
 pub fn build_api_state(
@@ -31,15 +29,11 @@ pub fn build_api_state(
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
-    dialogue_cache_enabled: bool,
 ) -> ApiState<f16> {
-    let slot_manager = Arc::new(SlotManager::new(batch_states.clone()));
-    let dialogue_cache = Arc::new(DialogueCache::new(
-        slot_manager.clone(),
+    let session_manager = Arc::new(SessionManager::new(
+        batch_states.clone(),
         batch_sequences.clone(),
-        Duration::from_secs(10),
         batch_states.with(|states| states.len()),
-        dialogue_cache_enabled,
     ));
 
     ApiState {
@@ -47,8 +41,7 @@ pub fn build_api_state(
         batch_states,
         scheduler,
         parser_options,
-        slot_manager,
-        dialogue_cache,
+        session_manager,
     }
 }
 
@@ -56,35 +49,14 @@ impl<T> ApiState<T>
 where
     T: Copy + crate::num_traits::FromNumber,
 {
-    pub async fn acquire_slot(&self) -> Result<usize, axum::response::Response> {
-        self.slot_manager
-            .acquire_slot(None)
-            .await
-            .map_err(|e| match e {
-                SlotError::AllocatorUnavailable => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Slot allocator unavailable".to_string(),
-                )
-                    .into_response(),
-                SlotError::SlotQueueEmpty => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Slot queue empty while permit acquired".to_string(),
-                )
-                    .into_response(),
-                SlotError::SlotNotFound => (
-                    axum::http::StatusCode::NOT_FOUND,
-                    "Slot not found".to_string(),
-                )
-                    .into_response(),
-            })
-    }
-
-    pub async fn acquire_slot_for_dialogue(
+    /// 获取会话（替代 acquire_slot）
+    pub async fn acquire_session(
         &self,
-        dialogue_id: &str,
-    ) -> Result<usize, axum::response::Response> {
-        self.slot_manager
-            .acquire_slot(Some(dialogue_id))
+        session_id: &str,
+        mode: SessionMode,
+    ) -> Result<SessionHandle, axum::response::Response> {
+        self.session_manager
+            .acquire_session(session_id, mode)
             .await
             .map_err(|e| match e {
                 SlotError::AllocatorUnavailable => (
@@ -94,7 +66,7 @@ where
                     .into_response(),
                 SlotError::SlotQueueEmpty => (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Slot queue empty while permit acquired".to_string(),
+                    "No available slots".to_string(),
                 )
                     .into_response(),
                 SlotError::SlotNotFound => (
@@ -105,14 +77,22 @@ where
             })
     }
 
-    pub async fn release_slot(&self, slot_index: usize, release_permit: bool) {
-        self.slot_manager
-            .release_slot(slot_index, release_permit)
+    /// 释放会话（替代 release_slot）
+    pub async fn release_session(&self, session_id: &str, token_count: usize) {
+        self.session_manager
+            .release_session(session_id, token_count)
             .await;
     }
 
-    pub async fn release_by_dialogue(&self, dialogue_id: &str) -> Option<usize> {
-        self.slot_manager.release_by_dialogue(dialogue_id).await
+    /// 检查是否有缓存的 tokens（用于增量预填充）
+    pub async fn get_cached_prefix(
+        &self,
+        session_id: &str,
+        new_tokens: &[u32],
+    ) -> Option<(usize, Vec<u32>)> {
+        self.session_manager
+            .calculate_delta(session_id, new_tokens)
+            .await
     }
 
     pub fn write_prompts_and_prepare(
@@ -160,7 +140,7 @@ where
     pub async fn write_prompts_with_incremental_prefill(
         &self,
         slot_index: usize,
-        dialogue_id: &str,
+        session_id: &str,
         messages: &[ChatMessage],
         temperature: Option<f32>,
     ) -> Result<(usize, Arc<tokio::sync::Notify>), axum::response::Response> {
@@ -175,13 +155,10 @@ where
                 .unwrap_or_default()
         });
 
-        let result = self
-            .dialogue_cache
-            .find_common_prefix(dialogue_id, &new_tokens)
-            .await;
+        let result = self.get_cached_prefix(session_id, &new_tokens).await;
 
         match result {
-            Some((entry, prefix_len, delta_tokens)) => self
+            Some((prefix_len, delta_tokens)) => self
                 .batch_states
                 .with_mut(|batch_list| {
                     self.batch_sequences.with_mut(|batch_sequences| {
@@ -195,7 +172,7 @@ where
                                 .write_tokens(slot_index, &delta_tokens, temperature)
                                 .map(|write_len| {
                                     record.sequence_index = prefix_len;
-                                    record.kv_index = entry.slot_index;
+                                    record.kv_index = slot_index;
                                     record.filling_length = write_len;
                                     record.phase = Phase::Prefill;
                                     (write_len, record.notify.clone())
@@ -214,11 +191,6 @@ where
                 }),
             None => {
                 let result = self.write_prompts_and_prepare(slot_index, messages, temperature)?;
-
-                self.dialogue_cache
-                    .insert(dialogue_id.to_string(), slot_index, new_tokens.len())
-                    .await;
-
                 Ok(result)
             }
         }

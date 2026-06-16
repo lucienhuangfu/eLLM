@@ -193,11 +193,26 @@ mod tests {
 
     #[test]
     fn can_transition_validates_transitions() {
-        assert!(SequenceStateMachine::can_transition(Phase::Start, Phase::Prefill));
-        assert!(SequenceStateMachine::can_transition(Phase::Prefill, Phase::Decode));
-        assert!(SequenceStateMachine::can_transition(Phase::Decode, Phase::Eos));
-        assert!(!SequenceStateMachine::can_transition(Phase::Decode, Phase::Prefill));
-        assert!(!SequenceStateMachine::can_transition(Phase::Eos, Phase::Decode));
+        assert!(SequenceStateMachine::can_transition(
+            Phase::Start,
+            Phase::Prefill
+        ));
+        assert!(SequenceStateMachine::can_transition(
+            Phase::Prefill,
+            Phase::Decode
+        ));
+        assert!(SequenceStateMachine::can_transition(
+            Phase::Decode,
+            Phase::Eos
+        ));
+        assert!(!SequenceStateMachine::can_transition(
+            Phase::Decode,
+            Phase::Prefill
+        ));
+        assert!(!SequenceStateMachine::can_transition(
+            Phase::Eos,
+            Phase::Decode
+        ));
     }
 
     #[test]

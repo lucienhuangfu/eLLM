@@ -79,6 +79,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let parser_options = ParserOptions::new(ParserRule::for_model_family(&ModelFamily::Qwen));
 
-    serving::run(batch_sequences, batch_states, scheduler, parser_options, false).await?;
+    serving::run(batch_sequences, batch_states, scheduler, parser_options).await?;
     Ok(())
 }

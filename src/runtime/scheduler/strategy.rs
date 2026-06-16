@@ -1,5 +1,5 @@
-use super::sequence_slice::{DecodeList, SequenceSlice};
-use super::types::{Phase, SequenceState};
+use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
+use crate::runtime::state::types::{Phase, SequenceState};
 
 pub trait SchedulerStrategy: Send + Sync + 'static {
     fn plan_next_round(
@@ -140,9 +140,7 @@ impl SchedulerStrategy for DefaultSchedulerStrategy {
                 break;
             }
 
-            let attention_length = candidate
-                .remaining
-                .min(scheduler.remaining_tokens());
+            let attention_length = candidate.remaining.min(scheduler.remaining_tokens());
             if attention_length > 0 {
                 decode_list.push(SequenceSlice {
                     batch_index: candidate.batch_index,

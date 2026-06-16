@@ -28,7 +28,6 @@ async fn run_server(
         resources.batch_states,
         resources.scheduler,
         resources.parser_options,
-        resources.dialogue_cache_enabled,
     )
     .await?;
 

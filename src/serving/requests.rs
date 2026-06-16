@@ -8,6 +8,8 @@ pub struct ChatCompletionRequest {
     pub temperature: Option<f32>,
     pub max_tokens: Option<usize>,
     pub top_p: Option<f32>,
+    pub session_id: Option<String>,
+    pub session_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

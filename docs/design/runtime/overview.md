@@ -20,7 +20,7 @@
 - **Input Preparation**: Render chat messages to prompts, encode to tokens
 - **Batch Scheduling**: Generate current-round computation slices by priority rules
 - **Thread Execution**: Manage thread pool to execute operator queues in parallel
-- **Dialogue Cache**: Manage dialogue-level caching with timer-based LRU eviction
+- **Session Management**: Unified dialogue session management with reusable/non-reusable modes
 
 ---
 
@@ -36,7 +36,7 @@ flowchart TB
         B[Input Preparation]
         C[Batch Scheduling]
         D[Thread Execution]
-        E[Dialogue Cache]
+        E[Session Management]
     end
 
     subgraph Operators Layer
@@ -58,9 +58,9 @@ flowchart TB
 | Layer | Responsibility | Key Components |
 |-------|---------------|----------------|
 | **Input Preparation** | Prompt rendering & token encoding | ChatTemplate, BatchSequence, TokenizerLoader |
-| **Batch Scheduling** | Slice generation & task distribution | Scheduler, SchedulerStrategy, SlotManager |
+| **Batch Scheduling** | Slice generation & task distribution | Scheduler, SchedulerStrategy, SessionManager |
 | **Thread Execution** | Operator queue parallel execution | ServingRunner, SpinBarrier |
-| **Dialogue Cache** | Dialogue-level KV cache management | DialogueCache, LruCacheStrategy |
+| **Session Management** | Unified session lifecycle management | SessionManager, SlotAllocator, DialogueSession |
 
 ---
 
@@ -116,17 +116,24 @@ classDiagram
         +advance_sequence()
     }
 
-    class SlotManager {
-        +acquire_slot()
-        +release_slot()
-        +release_by_dialogue()
+    class SessionManager {
+        +acquire_session(session_id, mode)
+        +release_session(session_id, token_count)
+        +calculate_delta(session_id, new_tokens)
+        +get_cached_tokens(session_id)
     }
 
-    class DialogueCache {
-        +get(dialogue_id)
-        +insert(dialogue_id, slot_index, token_count)
-        +calculate_delta(entry, new_tokens)
-        +find_common_prefix(dialogue_id, new_tokens)
+    class SlotAllocator {
+        +allocate()
+        +release(slot_index)
+    }
+
+    class DialogueSession {
+        +session_id: String
+        +mode: SessionMode
+        +slot_index: Option<usize>
+        +token_count: usize
+        +is_active: bool
     }
 
     Scheduler --> SequenceState
@@ -135,8 +142,8 @@ classDiagram
     Scheduler ..> SchedulerStrategy : uses
     ServingRunner --> Scheduler
     SequenceStateMachine ..> SequenceState : operates on
-    SlotManager --> SequenceState
-    DialogueCache --> SlotManager
+    SessionManager --> SlotAllocator
+    SessionManager --> DialogueSession
 ```
 
 ### 3.2 Component Overview
@@ -153,10 +160,9 @@ classDiagram
 | `SequenceSlice` | Minimal computation unit | `scheduling/sequence_slice.rs` |
 | `ScheduleTask` | Scheduling task carrier | `scheduling/types.rs` |
 | `BatchSequence` | Prompt writing & result decoding | `scheduling/batch_sequence.rs` |
-| `SlotManager` | Batch slot allocation & management | `scheduling/slot_manager.rs` |
-| `DialogueCache` | Dialogue-level cache facade | `caching/dialogue_cache.rs` |
-| `LruCacheStrategy` | LRU eviction strategy | `caching/strategy.rs` |
-| `LruList` | Index-based LRU implementation | `caching/lru_list.rs` |
+| `SessionManager` | Unified session lifecycle management | `scheduling/session.rs` |
+| `SlotAllocator` | Simplified slot allocation | `scheduling/slot_allocator.rs` |
+| `DialogueSession` | Session metadata structure | `scheduling/session.rs` |
 | `ChatTemplate` | Chat template rendering | `io/chat_template.rs` |
 | `TokenizerLoader` | Tokenizer loading | `io/tokenizer_loader.rs` |
 
@@ -172,7 +178,7 @@ sequenceDiagram
     participant Handler as chat_completions
     participant Template as ChatTemplate
     participant Tokenizer as TokenizerLoader
-    participant Cache as DialogueCache
+    participant SessionMgr as SessionManager
     participant BatchSeq as BatchSequence
     participant Scheduler as Scheduler
     participant Runner as ServingRunner
@@ -184,13 +190,14 @@ sequenceDiagram
     Handler->>Tokenizer: encode(prompt)
     Tokenizer-->>Handler: tokens
     
-    Handler->>Cache: find_common_prefix(dialogue_id, tokens)
-    alt Common prefix found
-        Cache-->>Handler: (entry, prefix_len, delta_tokens)
+    Handler->>SessionMgr: acquire_session(session_id, mode)
+    alt Session can be reused
+        SessionMgr-->>Handler: SessionHandle { is_reused: true }
+        Handler->>SessionMgr: calculate_delta(session_id, tokens)
         Handler->>BatchSeq: write_tokens(delta_tokens)
-    else No common prefix
+    else New session
+        SessionMgr-->>Handler: SessionHandle { is_reused: false }
         Handler->>BatchSeq: write_prompts(all_tokens)
-        Handler->>Cache: insert(dialogue_id, slot_index, token_count)
     end
     
     BatchSeq->>Scheduler: Update SequenceState
@@ -201,6 +208,7 @@ sequenceDiagram
     Runner->>Ops: Execute operator queue
     Ops->>Ops: Update state via SequenceStateMachine
     Ops-->>Handler: Notify completion
+    Handler->>SessionMgr: release_session(session_id, token_count)
     Handler-->>Client: Return response
 ```
 
@@ -235,17 +243,13 @@ src/runtime/
 │   ├── state_machine.rs      # SequenceStateMachine state transition logic
 │   ├── sequence_slice.rs     # SequenceSlice, DecodeList definitions
 │   ├── batch_sequence.rs     # BatchSequence implementation
-│   ├── slot_manager.rs       # SlotManager implementation
+│   ├── session.rs            # SessionManager, DialogueSession, SessionHandle, SessionMode
+│   ├── slot_allocator.rs     # SlotAllocator implementation
 │   └── initialization.rs     # build_batch_sequence, build_sequence_state helpers
 ├── execution/
 │   ├── mod.rs                # Execution submodule entry
 │   ├── runner.rs             # ServingRunner implementation
 │   └── spin_barrier.rs       # SpinBarrier synchronization primitive
-├── caching/
-│   ├── mod.rs                # Caching submodule entry
-│   ├── dialogue_cache.rs     # DialogueCache facade
-│   ├── strategy.rs           # LruCacheStrategy, DialogueEntry
-│   └── lru_list.rs           # LruList implementation
 ├── io/
 │   ├── mod.rs                # IO submodule entry
 │   ├── chat_template.rs      # ChatTemplate implementation
@@ -253,10 +257,11 @@ src/runtime/
 │   ├── safetensors_loader.rs # Weight loading (SafeTensorsLoader)
 │   └── from_safetensors.rs   # FromSafetensors trait (type conversion)
 ├── error.rs                  # Runtime error definitions
-└── mod.rs                    # Module exports and compatibility aliases
+└── mod.rs                    # Module exports
 ```
 
 ---
 
-**Document Version**: v3.2
-**Last Updated**: 2026-06-15
+**Document Version**: v4.0  
+**Last Updated**: 2026-06-16  
+**Major Changes**: Replaced DialogueCache + SlotManager with unified SessionManager architecture

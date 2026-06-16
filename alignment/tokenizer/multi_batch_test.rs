@@ -4,10 +4,10 @@
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::operator::Operator;
+use ellm::runtime::io::load_tiktoken;
 use ellm::runtime::io::ChatTemplate;
 use ellm::runtime::io::SafeTensorsLoader;
-use ellm::runtime::scheduling::sequence_slice::SequenceSlice;
-use ellm::runtime::io::load_tiktoken;
+use ellm::runtime::state::sequence::SequenceSlice;
 use ellm::runtime::{Config, GenerationConfig, Phase, SequenceState};
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;

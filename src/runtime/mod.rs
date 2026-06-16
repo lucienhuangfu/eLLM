@@ -1,23 +1,31 @@
-pub mod caching;
 pub mod error;
-pub mod execution;
+pub mod executor;
 pub mod io;
-pub mod scheduling;
+pub mod scheduler;
+pub mod session;
+pub mod state;
 
 pub use crate::config::generation_config::GenerationConfig;
 pub use crate::config::huggingface_config::HfConfig;
 pub use crate::tensor;
 pub use crate::transformer::config::Config;
 
-pub use caching::{DialogueCache, DialogueEntry};
-pub use execution::{ServingRunner, SpinBarrier};
+pub use executor::{ServingRunner, SpinBarrier};
 pub use io::{load_tiktoken, ChatTemplate, SafeTensorsLoader};
-pub use scheduling::{
-    BatchSequence, DecodeList, DecodeLookupResult, Phase, ScheduleTask, Scheduler, SequenceSlice,
-    SequenceState, SequenceStateMachine, SlotManager, TransitionError,
+pub use scheduler::{
+    BatchPlan, DefaultSchedulerStrategy, PrefillCandidate, ScheduleTask, Scheduler,
+    SchedulerStrategy,
+};
+pub use session::{
+    build_batch_sequence, build_sequence_state, SessionHandle, SessionManager, SessionMode,
+    SlotAllocator,
+};
+pub use state::{
+    BatchSequence, DecodeList, DecodeLookupResult, Phase, SequenceSlice, SequenceState,
+    SequenceStateMachine, TransitionError,
 };
 
-pub use execution::runner::ServingRunner as Runner;
+pub use executor::runner::ServingRunner as Runner;
 
 #[cfg(test)]
 mod tests {

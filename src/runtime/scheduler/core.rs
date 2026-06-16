@@ -5,10 +5,11 @@ use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use super::sequence_slice::{DecodeList, SequenceSlice};
 use super::strategy::{BatchPlan, DefaultSchedulerStrategy, PrefillCandidate, SchedulerStrategy};
-use super::types::{Phase, ScheduleTask, SequenceState};
+use super::task::ScheduleTask;
 use crate::operators::send_sync_ptr::SharedMut;
+use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
+use crate::runtime::state::types::{Phase, SequenceState};
 
 pub struct Scheduler {
     prefill_list: UnsafeCell<Vec<Vec<SequenceSlice>>>,
@@ -325,7 +326,8 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::scheduling::strategy::DefaultSchedulerStrategy;
+    use crate::runtime::scheduler::strategy::DefaultSchedulerStrategy;
+    use crate::runtime::state::types::SequenceState;
 
     fn decode_state(sequence_index: usize, kv_index: usize) -> SequenceState {
         SequenceState::new_decode_state(sequence_index, kv_index)
@@ -506,30 +508,6 @@ mod tests {
         assert_eq!(second.token_start_index, 6);
         assert_eq!(second.length, 3);
         assert!(second.last_token_flag);
-    }
-
-    #[test]
-    fn sequence_state_transitions() {
-        let mut state = SequenceState::new_prefill_state(0, 10);
-        assert_eq!(state.phase, Phase::Prefill);
-        assert_eq!(state.filling_length, 10);
-
-        state.advance_sequence(5);
-        assert_eq!(state.sequence_index, 5);
-        assert_eq!(state.filling_length, 5);
-        assert_eq!(state.phase, Phase::Prefill);
-
-        state.advance_sequence(5);
-        assert_eq!(state.sequence_index, 10);
-        assert_eq!(state.filling_length, 0);
-        assert_eq!(state.phase, Phase::Decode);
-
-        state.transition_to_eos();
-        assert_eq!(state.phase, Phase::Eos);
-
-        state.reset_to_start();
-        assert_eq!(state.phase, Phase::Start);
-        assert_eq!(state.sequence_index, usize::MAX);
     }
 
     #[test]

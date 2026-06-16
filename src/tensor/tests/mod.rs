@@ -4,7 +4,7 @@ pub(super) use crate::mem_mgr::mem_pool::GlobalMemPool;
 pub(super) use crate::operators::expert::expert_routing::routing_from_dense;
 pub(super) use crate::operators::linear::{MatMul, MatMulAdd};
 pub(super) use crate::operators::operator::Operator;
-pub(super) use crate::runtime::scheduling::SequenceSlice;
+pub(super) use crate::runtime::state::sequence::SequenceSlice;
 pub(super) use crate::runtime::{Phase, SequenceState};
 pub(super) use crate::tensor::GlobalOperatorQueue;
 pub(super) use crate::tensor::Tensor;

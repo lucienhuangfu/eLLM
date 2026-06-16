@@ -3,9 +3,8 @@ use std::sync::Arc;
 use tiktoken_rs::CoreBPE;
 
 use crate::num_traits::FromNumber;
-use crate::runtime::io::load_tiktoken;
-use crate::runtime::io::ChatTemplate;
-use crate::runtime::scheduling::SequenceState;
+use crate::runtime::io::{load_tiktoken, ChatTemplate};
+use crate::runtime::state::types::SequenceState;
 
 pub struct BatchSequence<T> {
     pub sequences: *mut usize,

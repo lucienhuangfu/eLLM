@@ -5,10 +5,10 @@ use crate::config::{GenerationConfig, ResolvedConfig};
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::scheduling::batch_sequence::BatchSequence;
-use crate::runtime::scheduling::{
-    build_batch_sequence, build_sequence_state, ScheduleTask, Scheduler, SequenceState,
-};
+use crate::runtime::scheduler::{ScheduleTask, Scheduler};
+use crate::runtime::session::{build_batch_sequence, build_sequence_state, SessionMode};
+use crate::runtime::state::batch::BatchSequence;
+use crate::runtime::state::types::SequenceState;
 use crate::runtime::Runner;
 use crate::tensor::GlobalOperatorQueue;
 use crate::transformer::config::Config;
@@ -27,7 +27,7 @@ pub struct ServingConfig {
     pub reasoning_parser_enabled: bool,
     pub tool_call_parser_enabled: bool,
     pub api_server_count: usize,
-    pub dialogue_cache_enabled: bool,
+    pub session_mode: SessionMode,
 }
 
 impl ServingConfig {
@@ -56,7 +56,11 @@ impl ServingConfig {
                 .as_ref()
                 .map(|s| s.api_server_count)
                 .unwrap_or(2),
-            dialogue_cache_enabled: config.scheduler.dialogue_cache_enabled,
+            session_mode: if config.scheduler.dialogue_cache_enabled {
+                SessionMode::Reusable
+            } else {
+                SessionMode::NonReusable
+            },
         }
     }
 }
@@ -90,7 +94,7 @@ where
     pub worker_threads: usize,
     pub async_threads: usize,
     pub _sequences_box: AlignedBox<usize>,
-    pub dialogue_cache_enabled: bool,
+    pub session_mode: SessionMode,
 }
 
 fn extract_generation_params(
@@ -302,6 +306,6 @@ pub fn initialize_serving_resources(
         worker_threads: thread_config.worker_threads,
         async_threads: thread_config.async_threads,
         _sequences_box: sequences_box,
-        dialogue_cache_enabled: config.dialogue_cache_enabled,
+        session_mode: config.session_mode,
     })
 }
