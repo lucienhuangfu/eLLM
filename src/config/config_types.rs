@@ -150,10 +150,6 @@ pub struct SchedulerConfig {
     #[serde(alias = "enable-continuous-batching")]
     pub enable_continuous_batching: bool,
 
-    #[serde(default)]
-    #[serde(alias = "prefill-chunk-size")]
-    pub prefill_chunk_size: Option<usize>,
-
     #[serde(default = "default_scheduling_policy")]
     #[serde(alias = "scheduling-policy")]
     pub scheduling_policy: SchedulingPolicy,
@@ -249,6 +245,10 @@ pub struct ServeConfig {
     #[serde(alias = "tool-call-parser-enabled")]
     pub tool_call_parser_enabled: bool,
 
+    #[serde(default = "default_api_server_count")]
+    #[serde(alias = "api-server-count")]
+    pub api_server_count: usize,
+
     #[serde(default)]
     #[serde(alias = "uds")]
     pub uds: Option<String>,
@@ -291,6 +291,7 @@ impl Default for ServeConfig {
             api_key: None,
             reasoning_parser_enabled: default_reasoning_parser_enabled(),
             tool_call_parser_enabled: default_tool_call_parser_enabled(),
+            api_server_count: default_api_server_count(),
             uds: None,
             ssl_keyfile: None,
             ssl_certfile: None,
@@ -333,7 +334,6 @@ impl Default for SchedulerConfig {
             max_num_seqs: default_max_num_seqs(),
             max_num_batched_tokens: default_max_num_batched_tokens(),
             enable_continuous_batching: default_enable_continuous_batching(),
-            prefill_chunk_size: None,
             scheduling_policy: default_scheduling_policy(),
             schedule_timeout_ms: default_schedule_timeout_ms(),
             dialogue_cache_enabled: default_dialogue_cache_enabled(),
@@ -443,6 +443,10 @@ pub(crate) fn default_tool_call_parser_enabled() -> bool {
 
 pub(crate) fn default_dialogue_cache_enabled() -> bool {
     false
+}
+
+pub(crate) fn default_api_server_count() -> usize {
+    2
 }
 
 pub(crate) fn default_seed() -> usize {

@@ -149,9 +149,6 @@ pub struct SharedArgs {
     #[arg(long = "enable-continuous-batching", num_args = 0..=1, default_missing_value = "true", help = "Enable continuous batching")]
     pub enable_continuous_batching: Option<bool>,
 
-    #[arg(long = "prefill-chunk-size", help = "Prefill chunk size")]
-    pub prefill_chunk_size: Option<usize>,
-
     #[arg(long = "scheduling-policy", value_enum, help = "Scheduling policy")]
     pub scheduling_policy: Option<SchedulingPolicy>,
 
@@ -187,6 +184,9 @@ pub struct ServeArgs {
 
     #[arg(long = "tool-call-parser-enabled", num_args = 0..=1, default_missing_value = "true", help = "Enable tool call parser")]
     pub tool_call_parser_enabled: Option<bool>,
+
+    #[arg(long = "api-server-count", help = "Number of API server threads")]
+    pub api_server_count: Option<usize>,
 
     #[arg(long = "uds", help = "Unix domain socket path")]
     pub uds: Option<String>,
@@ -305,8 +305,6 @@ pub struct VllmSchedulerConfig {
     pub max_num_batched_tokens: Option<usize>,
     #[serde(alias = "enable_continuous_batching")]
     pub enable_continuous_batching: Option<bool>,
-    #[serde(alias = "prefill_chunk_size")]
-    pub prefill_chunk_size: Option<usize>,
     #[serde(alias = "scheduling_policy")]
     pub scheduling_policy: Option<String>,
     #[serde(alias = "schedule_timeout_ms")]
@@ -341,6 +339,8 @@ pub struct VllmServerConfig {
     pub reasoning_parser_enabled: Option<bool>,
     #[serde(alias = "tool_call_parser_enabled")]
     pub tool_call_parser_enabled: Option<bool>,
+    #[serde(alias = "api_server_count")]
+    pub api_server_count: Option<usize>,
     pub uds: Option<String>,
     #[serde(alias = "ssl_keyfile")]
     pub ssl_keyfile: Option<String>,
@@ -463,9 +463,6 @@ impl VllmConfigFile {
         if let Some(enable_continuous_batching) = scheduler.enable_continuous_batching {
             config.scheduler.enable_continuous_batching = enable_continuous_batching;
         }
-        if let Some(prefill_chunk_size) = scheduler.prefill_chunk_size {
-            config.scheduler.prefill_chunk_size = Some(prefill_chunk_size);
-        }
         if let Some(scheduling_policy) = &scheduler.scheduling_policy {
             config.scheduler.scheduling_policy =
                 SchedulingPolicy::from_str(scheduling_policy, false)
@@ -531,6 +528,9 @@ impl VllmConfigFile {
             }
             if let Some(tool_call_parser_enabled) = server.tool_call_parser_enabled {
                 serve.tool_call_parser_enabled = tool_call_parser_enabled;
+            }
+            if let Some(api_server_count) = server.api_server_count {
+                serve.api_server_count = api_server_count;
             }
             if let Some(uds) = &server.uds {
                 serve.uds = Some(uds.clone());
@@ -785,9 +785,6 @@ impl JsonArgs {
                 "enable_continuous_batching" | "enable-continuous-batching" => {
                     config.scheduler.enable_continuous_batching = self.value_to_bool(value)?
                 }
-                "prefill_chunk_size" | "prefill-chunk-size" => {
-                    config.scheduler.prefill_chunk_size = Some(self.value_to_usize(value)?)
-                }
                 "scheduling_policy" | "scheduling-policy" => {
                     config.scheduler.scheduling_policy = self.value_to_enum(value)?
                 }
@@ -849,6 +846,9 @@ impl JsonArgs {
                     }
                     "tool_call_parser_enabled" | "tool-call-parser-enabled" => {
                         serve.tool_call_parser_enabled = self.value_to_bool(value)?
+                    }
+                    "api_server_count" | "api-server-count" => {
+                        serve.api_server_count = self.value_to_usize(value)?
                     }
                     "uds" => serve.uds = Some(self.value_to_string(value)?),
                     "ssl_keyfile" | "ssl-keyfile" => {
@@ -1043,9 +1043,6 @@ impl Config {
         if let Some(enable_continuous_batching) = shared.enable_continuous_batching {
             self.scheduler.enable_continuous_batching = enable_continuous_batching;
         }
-        if let Some(prefill_chunk_size) = shared.prefill_chunk_size {
-            self.scheduler.prefill_chunk_size = Some(prefill_chunk_size);
-        }
         if let Some(scheduling_policy) = shared.scheduling_policy {
             self.scheduler.scheduling_policy = scheduling_policy;
         }
@@ -1079,6 +1076,9 @@ impl Config {
             }
             if let Some(tool_call_parser_enabled) = args.tool_call_parser_enabled {
                 serve.tool_call_parser_enabled = tool_call_parser_enabled;
+            }
+            if let Some(api_server_count) = args.api_server_count {
+                serve.api_server_count = api_server_count;
             }
             if let Some(uds) = args.uds {
                 serve.uds = Some(uds);

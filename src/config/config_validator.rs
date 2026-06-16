@@ -1,6 +1,6 @@
 use super::config_types::{
     ChatConfig, Command, Config, EngineConfig, ModelConfig, ResolvedConfig, ResolvedModelConfig,
-    ServeConfig, SchedulerConfig,
+    SchedulerConfig, ServeConfig,
 };
 use std::{fs::File, io::BufReader, path::Path};
 use thiserror::Error;
@@ -33,15 +33,6 @@ pub enum ConfigError {
 
     #[error("scheduler.max_num_batched_tokens must be greater than 0")]
     InvalidMaxNumBatchedTokens,
-
-    #[error("scheduler.prefill_chunk_size must be greater than 0 when provided")]
-    InvalidPrefillChunkSize,
-
-    #[error("scheduler.prefill_chunk_size ({prefill_chunk_size}) cannot exceed max_num_batched_tokens ({max_num_batched_tokens})")]
-    PrefillChunkTooLarge {
-        prefill_chunk_size: usize,
-        max_num_batched_tokens: usize,
-    },
 
     #[error("scheduler.max_num_batched_tokens must be greater than or equal to max_num_seqs")]
     InconsistentBatchLimits {
@@ -141,19 +132,6 @@ impl Config {
 
         if self.scheduler.max_num_batched_tokens == 0 {
             return Err(ConfigError::InvalidMaxNumBatchedTokens);
-        }
-
-        if matches!(self.scheduler.prefill_chunk_size, Some(0)) {
-            return Err(ConfigError::InvalidPrefillChunkSize);
-        }
-
-        if let Some(prefill_chunk_size) = self.scheduler.prefill_chunk_size {
-            if prefill_chunk_size > self.scheduler.max_num_batched_tokens {
-                return Err(ConfigError::PrefillChunkTooLarge {
-                    prefill_chunk_size,
-                    max_num_batched_tokens: self.scheduler.max_num_batched_tokens,
-                });
-            }
         }
 
         if self.scheduler.max_num_batched_tokens < self.scheduler.max_num_seqs {
