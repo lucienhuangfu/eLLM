@@ -14,13 +14,16 @@ use super::parser::ParserOptions;
 use super::requests::ChatMessage;
 
 #[derive(Clone)]
-pub struct ApiState {
-    pub batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
+pub struct ApiState<T>
+where
+    T: Copy + crate::num_traits::FromNumber,
+{
+    pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
     pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
     pub slot_manager: Arc<SlotManager>,
-    pub dialogue_cache: Arc<DialogueCache>,
+    pub dialogue_cache: Arc<DialogueCache<T>>,
 }
 
 pub fn build_api_state(
@@ -29,7 +32,7 @@ pub fn build_api_state(
     scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
     dialogue_cache_enabled: bool,
-) -> ApiState {
+) -> ApiState<f16> {
     let slot_manager = Arc::new(SlotManager::new(batch_states.clone()));
     let dialogue_cache = Arc::new(DialogueCache::new(
         slot_manager.clone(),
@@ -49,7 +52,10 @@ pub fn build_api_state(
     }
 }
 
-impl ApiState {
+impl<T> ApiState<T>
+where
+    T: Copy + crate::num_traits::FromNumber,
+{
     pub async fn acquire_slot(&self) -> Result<usize, axum::response::Response> {
         self.slot_manager
             .acquire_slot(None)

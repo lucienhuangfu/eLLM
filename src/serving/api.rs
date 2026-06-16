@@ -18,7 +18,7 @@ use super::stream::{
 };
 
 pub(super) async fn chat_completions(
-    State(state): State<ApiState>,
+    State(state): State<ApiState<f16>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
     let request_id = format!(
@@ -88,7 +88,7 @@ pub(super) async fn chat_completions(
 }
 
 fn build_stream_response(
-    state: ApiState,
+    state: ApiState<f16>,
     slot_index: usize,
     notifier: Arc<Notify>,
     request_id: String,

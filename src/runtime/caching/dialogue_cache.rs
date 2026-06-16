@@ -6,17 +6,20 @@ use crate::runtime::caching::strategy::{DialogueEntry, LruCacheStrategy};
 use crate::runtime::scheduling::batch_sequence::BatchSequence;
 use crate::runtime::scheduling::slot_manager::SlotManager;
 
-pub struct DialogueCache {
+pub struct DialogueCache<T> {
     strategy: Arc<LruCacheStrategy>,
-    batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
+    batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
     max_entries: usize,
     enabled: bool,
 }
 
-impl DialogueCache {
+impl<T> DialogueCache<T>
+where
+    T: Copy + crate::num_traits::FromNumber,
+{
     pub fn new(
         slot_manager: Arc<SlotManager>,
-        batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
+        batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
         retention_duration: Duration,
         max_entries: usize,
         enabled: bool,
@@ -135,7 +138,7 @@ mod tests {
     }
 
     fn create_test_batch_sequence() -> Arc<SharedMut<BatchSequence<f16>>> {
-        Arc::new(SharedMut::new(BatchSequence::default()))
+        Arc::new(SharedMut::new(BatchSequence::<f16>::default()))
     }
 
     #[tokio::test]

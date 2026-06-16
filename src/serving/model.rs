@@ -78,12 +78,15 @@ pub struct ThreadingConfig {
     pub total_threads: usize,
 }
 
-pub struct ServingResources {
-    pub batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
+pub struct ServingResources<T>
+where
+    T: Copy + crate::num_traits::FromNumber,
+{
+    pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
     pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
-    pub runner: Runner<f16>,
+    pub runner: Runner<T>,
     pub worker_threads: usize,
     pub async_threads: usize,
     pub _sequences_box: AlignedBox<usize>,
@@ -221,7 +224,7 @@ fn create_scheduling_components(
 
 pub fn initialize_serving_resources(
     resolved_config: &ResolvedConfig,
-) -> Result<ServingResources, Box<dyn std::error::Error>> {
+) -> Result<ServingResources<f16>, Box<dyn std::error::Error>> {
     let config = ServingConfig::from_resolved_config(resolved_config);
     println!("Loading config from: {}", config.model_dir);
 

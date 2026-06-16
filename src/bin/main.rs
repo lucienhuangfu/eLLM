@@ -6,7 +6,7 @@ use ellm::serving;
 use ellm::serving::initialize_serving_resources;
 
 fn create_runtime(
-    resources: &serving::ServingResources,
+    resources: &serving::ServingResources<f16>,
 ) -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error>> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(resources.worker_threads)
@@ -17,7 +17,7 @@ fn create_runtime(
 }
 
 async fn run_server(
-    resources: serving::ServingResources,
+    resources: serving::ServingResources<f16>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         resources.runner.start().await;
