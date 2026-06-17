@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::oneshot;
 use tokio::sync::Mutex;
 
 use crate::operators::send_sync_ptr::SharedMut;
@@ -11,7 +12,7 @@ use crate::runtime::state::types::SequenceState;
 pub struct SlotAllocator {
     free_slots: Arc<Mutex<VecDeque<usize>>>,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    slot_timers: Arc<Mutex<HashMap<usize, Arc<Mutex<bool>>>>>,
+    slot_timers: Arc<Mutex<HashMap<usize, oneshot::Sender<()>>>>,
     timeout_duration: Duration,
 }
 
@@ -65,10 +66,10 @@ impl SlotAllocator {
     }
 
     pub async fn release(&self, slot_index: usize) {
-        let cancelled = Arc::new(Mutex::new(false));
+        let (tx, rx) = oneshot::channel();
         {
             let mut timers = self.slot_timers.lock().await;
-            timers.insert(slot_index, cancelled.clone());
+            timers.insert(slot_index, tx);
         }
 
         let batch_states = self.batch_states.clone();
@@ -77,16 +78,17 @@ impl SlotAllocator {
         let timeout_duration = self.timeout_duration;
 
         tokio::spawn(async move {
-            tokio::time::sleep(timeout_duration).await;
-
-            let mut cancelled_lock = cancelled.lock().await;
-            if !*cancelled_lock {
-                batch_states.with_mut(|batch_list| {
-                    if let Some(record) = batch_list.get_mut(slot_index) {
-                        record.reset_to_start();
-                    }
-                });
-                free_slots.lock().await.push_back(slot_index);
+            tokio::select! {
+                _ = rx => {
+                }
+                _ = tokio::time::sleep(timeout_duration) => {
+                    batch_states.with_mut(|batch_list| {
+                        if let Some(record) = batch_list.get_mut(slot_index) {
+                            record.reset_to_start();
+                        }
+                    });
+                    free_slots.lock().await.push_back(slot_index);
+                }
             }
 
             let mut timers = slot_timers.lock().await;
@@ -95,8 +97,8 @@ impl SlotAllocator {
     }
 
     pub async fn cancel_timer(&self, slot_index: usize) -> bool {
-        if let Some(cancelled) = self.slot_timers.lock().await.remove(&slot_index) {
-            *cancelled.lock().await = true;
+        if let Some(tx) = self.slot_timers.lock().await.remove(&slot_index) {
+            let _ = tx.send(());
             true
         } else {
             false
