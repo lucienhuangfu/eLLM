@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::response::IntoResponse;
 
@@ -29,11 +30,13 @@ pub fn build_api_state(
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
+    slot_reuse_timeout_ms: usize,
 ) -> ApiState<f16> {
     let session_manager = Arc::new(SessionManager::new(
         batch_states.clone(),
         batch_sequences.clone(),
         batch_states.with(|states| states.len()),
+        Duration::from_millis(slot_reuse_timeout_ms as u64),
     ));
 
     ApiState {

@@ -280,6 +280,10 @@ pub struct ServeConfig {
     #[serde(default = "default_allowed_headers")]
     #[serde(alias = "allowed-headers")]
     pub allowed_headers: Vec<String>,
+
+    #[serde(default = "default_slot_reuse_timeout_ms")]
+    #[serde(alias = "slot-reuse-timeout-ms")]
+    pub slot_reuse_timeout_ms: usize,
 }
 
 impl Default for ServeConfig {
@@ -300,6 +304,7 @@ impl Default for ServeConfig {
             allowed_origins: default_allowed_origins(),
             allowed_methods: default_allowed_methods(),
             allowed_headers: default_allowed_headers(),
+            slot_reuse_timeout_ms: default_slot_reuse_timeout_ms(),
         }
     }
 }
@@ -467,6 +472,10 @@ pub(crate) fn default_allowed_methods() -> Vec<String> {
 
 pub(crate) fn default_allowed_headers() -> Vec<String> {
     vec!["*".to_string()]
+}
+
+pub(crate) fn default_slot_reuse_timeout_ms() -> usize {
+    30000
 }
 
 pub(crate) fn infer_served_model_name(model: &str) -> String {

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
@@ -10,16 +10,12 @@ use crate::runtime::session::allocator::SlotAllocator;
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::types::SequenceState;
 
-/// 会话模式枚举
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SessionMode {
-    /// 复用模式：相同 session_id 复用槽位，保留映射
     Reusable,
-    /// 不复用模式：每次请求分配新槽位，清除映射
     NonReusable,
 }
 
-/// 对话会话结构
 #[derive(Debug, Clone)]
 pub struct DialogueSession {
     pub session_id: String,
@@ -32,25 +28,21 @@ pub struct DialogueSession {
 }
 
 impl DialogueSession {
-    /// 检查是否可以复用此会话的槽位
     pub fn can_reuse(&self) -> bool {
         self.mode == SessionMode::Reusable && self.slot_index.is_some() && !self.is_active
     }
 
-    /// 标记会话为活跃状态
     pub fn activate(&mut self) {
         self.is_active = true;
         self.last_accessed = Instant::now();
     }
 
-    /// 标记会话为非活跃状态
     pub fn deactivate(&mut self) {
         self.is_active = false;
         self.last_accessed = Instant::now();
     }
 }
 
-/// 会话句柄
 #[derive(Debug, Clone)]
 pub struct SessionHandle {
     pub session_id: String,
@@ -76,7 +68,6 @@ impl SessionHandle {
     }
 }
 
-/// 会话管理器 - 统一管理会话生命周期、槽位绑定和 token 缓存
 pub struct SessionManager<T> {
     sessions: Arc<Mutex<HashMap<String, DialogueSession>>>,
     slot_allocator: Arc<SlotAllocator>,
@@ -92,8 +83,9 @@ where
         batch_states: Arc<SharedMut<Vec<SequenceState>>>,
         batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
         max_sessions: usize,
+        timeout_duration: Duration,
     ) -> Self {
-        let slot_allocator = Arc::new(SlotAllocator::new(batch_states));
+        let slot_allocator = Arc::new(SlotAllocator::new(batch_states, timeout_duration));
 
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -103,7 +95,6 @@ where
         }
     }
 
-    /// 获取或创建会话
     pub async fn acquire_session(
         &self,
         session_id: &str,
@@ -111,26 +102,27 @@ where
     ) -> SlotResult<SessionHandle> {
         let mut sessions = self.sessions.lock().await;
 
-        // 尝试查找现有会话
         if let Some(session) = sessions.get_mut(session_id) {
-            if session.can_reuse() {
-                // 复用模式：重用现有槽位
-                let slot_index = session.slot_index.unwrap();
-                session.activate();
-                return Ok(SessionHandle::reused(session_id.to_string(), slot_index));
+            if let Some(preferred_slot) = session.slot_index {
+                match self.slot_allocator.allocate_preferred(preferred_slot).await {
+                    Ok(_) => {
+                        session.activate();
+                        return Ok(SessionHandle::reused(
+                            session_id.to_string(),
+                            preferred_slot,
+                        ));
+                    }
+                    Err(_) => {}
+                }
             }
         }
 
-        // 检查会话数量限制
         if sessions.len() >= self.max_sessions {
-            // 简单的 LRU 清理：移除最久未访问的非活跃会话
             self.evict_lru_session(&mut sessions).await;
         }
 
-        // 分配新槽位
         let slot_index = self.slot_allocator.allocate().await?;
 
-        // 创建新会话
         let new_session = DialogueSession {
             session_id: session_id.to_string(),
             mode,
@@ -145,7 +137,6 @@ where
         Ok(SessionHandle::new(session_id.to_string(), slot_index))
     }
 
-    /// 释放会话
     pub async fn release_session(&self, session_id: &str, token_count: usize) {
         let mut sessions = self.sessions.lock().await;
 
@@ -153,19 +144,20 @@ where
             session.deactivate();
             session.token_count = token_count;
 
-            // 不复用模式：立即清理
             if session.mode == SessionMode::NonReusable {
                 let slot_index = session.slot_index.take();
                 if let Some(idx) = slot_index {
                     self.slot_allocator.release(idx).await;
                 }
                 sessions.remove(session_id);
+            } else {
+                if let Some(idx) = session.slot_index {
+                    self.slot_allocator.release(idx).await;
+                }
             }
-            // 复用模式：保留会话和槽位映射
         }
     }
 
-    /// 获取会话的 token 缓存信息（用于增量预填充）
     pub async fn get_cached_tokens(&self, session_id: &str) -> Option<(usize, usize)> {
         let sessions = self.sessions.lock().await;
         sessions
@@ -174,7 +166,6 @@ where
             .and_then(|s| s.slot_index.map(|idx| (idx, s.token_count)))
     }
 
-    /// 计算前缀匹配并返回 delta tokens
     pub async fn calculate_delta(
         &self,
         session_id: &str,
@@ -200,7 +191,6 @@ where
         }
     }
 
-    /// LRU 清理：移除最久未访问的非活跃会话
     async fn evict_lru_session(&self, sessions: &mut HashMap<String, DialogueSession>) {
         let mut oldest_session: Option<(String, Instant)> = None;
 
@@ -225,7 +215,6 @@ where
         }
     }
 
-    /// 获取当前会话数量
     pub async fn session_count(&self) -> usize {
         let sessions = self.sessions.lock().await;
         sessions.len()
@@ -249,9 +238,8 @@ mod tests {
     async fn test_reusable_mode() {
         let batch_states = create_test_batch_states();
         let batch_seq = create_test_batch_sequence();
-        let manager = SessionManager::new(batch_states, batch_seq, 10);
+        let manager = SessionManager::new(batch_states, batch_seq, 10, Duration::from_millis(100));
 
-        // 第一次获取会话
         let handle1 = manager
             .acquire_session("test-session", SessionMode::Reusable)
             .await
@@ -259,10 +247,8 @@ mod tests {
         assert_eq!(handle1.session_id, "test-session");
         assert!(!handle1.is_reused);
 
-        // 释放会话
         manager.release_session("test-session", 10).await;
 
-        // 第二次获取相同会话，应该复用
         let handle2 = manager
             .acquire_session("test-session", SessionMode::Reusable)
             .await
@@ -275,18 +261,15 @@ mod tests {
     async fn test_non_reusable_mode() {
         let batch_states = create_test_batch_states();
         let batch_seq = create_test_batch_sequence();
-        let manager = SessionManager::new(batch_states, batch_seq, 10);
+        let manager = SessionManager::new(batch_states, batch_seq, 10, Duration::from_millis(100));
 
-        // 第一次获取会话
         let handle1 = manager
             .acquire_session("test-session", SessionMode::NonReusable)
             .await
             .unwrap();
 
-        // 释放会话
         manager.release_session("test-session", 10).await;
 
-        // 第二次获取相同会话，应该分配新槽位
         let handle2 = manager
             .acquire_session("test-session", SessionMode::NonReusable)
             .await
@@ -299,19 +282,41 @@ mod tests {
     async fn test_concurrent_access_prevention() {
         let batch_states = create_test_batch_states();
         let batch_seq = create_test_batch_sequence();
-        let manager = SessionManager::new(batch_states, batch_seq, 10);
+        let manager = SessionManager::new(batch_states, batch_seq, 10, Duration::from_millis(100));
 
-        // 获取会话但不释放
         let handle = manager
             .acquire_session("active-session", SessionMode::Reusable)
             .await
             .unwrap();
 
-        // 再次尝试获取相同会话，应该分配新槽位（因为原会话仍活跃）
         let handle2 = manager
             .acquire_session("active-session", SessionMode::Reusable)
             .await
             .unwrap();
         assert_ne!(handle2.slot_index, handle.slot_index);
+    }
+
+    #[tokio::test]
+    async fn test_reuse_after_timeout() {
+        let batch_states = create_test_batch_states();
+        let batch_seq = create_test_batch_sequence();
+        let manager = SessionManager::new(batch_states, batch_seq, 10, Duration::from_millis(50));
+
+        let handle1 = manager
+            .acquire_session("test-session", SessionMode::Reusable)
+            .await
+            .unwrap();
+        let slot1 = handle1.slot_index;
+
+        manager.release_session("test-session", 10).await;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let handle2 = manager
+            .acquire_session("test-session", SessionMode::Reusable)
+            .await
+            .unwrap();
+        assert_eq!(handle2.slot_index, slot1);
+        assert!(handle2.is_reused);
     }
 }

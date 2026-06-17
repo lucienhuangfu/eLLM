@@ -622,33 +622,60 @@ prefill_list: Vec<Vec<SequenceSlice>>
 
 ---
 
-## 12. Slot Manager
+## 12. SlotAllocator
 
-### 12.1 SlotManager 职责
+### 12.1 SlotAllocator 职责
 
-`SlotManager` 负责管理 batch slot 的分配和释放，支持对话级别的槽位管理。
+`SlotAllocator` 负责管理 batch slot 的分配和释放，支持延迟回收和优先复用策略。
+
+**核心特性**：
+- **延迟回收**：释放的槽位先进入定时状态，超时后才返回 LRU 队列
+- **优先复用**：同 session 请求优先复用原槽位（无论其处于定时或 LRU 状态）
+- **异步计时**：使用 Tokio 异步计时器，不阻塞主线程
 
 ### 12.2 核心方法
 
 | Method | Description |
 |--------|-------------|
-| `acquire_slot(dialogue_id)` | 获取槽位，可选关联对话 ID |
-| `release_slot(slot_index, release_permit)` | 释放槽位 |
-| `release_by_dialogue(dialogue_id)` | 根据对话 ID 释放槽位 |
-| `get_slot_for_dialogue(dialogue_id)` | 获取对话对应的槽位 |
+| `allocate()` | 从 LRU 队列分配槽位 |
+| `allocate_preferred(slot_index)` | 优先分配指定槽位（支持定时状态和 LRU 队列） |
+| `release(slot_index)` | 释放槽位，启动延迟回收计时器 |
+| `cancel_timer(slot_index)` | 取消指定槽位的计时器（非错误操作） |
 
 ### 12.3 数据结构
 
 ```text
-SlotManager:
-    - free_slots: Mutex<VecDeque<usize>>      # 空闲槽位队列
-    - available_slots: Semaphore              # 可用槽位信号量
-    - slot_to_dialogue: Mutex<HashMap<usize, String>>   # 槽位到对话的映射
-    - dialogue_to_slot: Mutex<HashMap<String, usize>>   # 对话到槽位的映射
-    - batch_states: SharedMut<Vec<SequenceState>>        # 槽位状态
+SlotAllocator:
+    - free_slots: Mutex<VecDeque<usize>>           # 空闲槽位队列（LRU 管理）
+    - slot_timers: Mutex<HashMap<usize, Arc<Mutex<bool>>>>  # 槽位计时器取消标志
+    - timeout_duration: Duration                   # 延迟回收超时时间
+    - batch_states: SharedMut<Vec<SequenceState>>  # 槽位状态
 ```
+
+### 12.4 Slot 生命周期
+
+```mermaid
+stateDiagram-v2
+    [*] --> Free: 初始化 (LRU 管理)
+    
+    Free --> InUse: allocate() / allocate_preferred()
+    
+    InUse --> Timed: release() (启动延迟回收计时器)
+    
+    Timed --> InUse: allocate_preferred() (同 session 复用，取消计时器)
+    Timed --> Free: timeout (计时器到期，返回 LRU 队列)
+    
+    Free --> InUse: allocate_preferred() (同 session 复用，从 LRU 移除)
+```
+
+### 12.5 配置参数
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `slot_reuse_timeout_ms` | 30000 | 槽位延迟回收超时时间（毫秒） |
 
 ---
 
-**Document Version**: v3.2  
-**Last Updated**: 2026-06-15
+**Document Version**: v3.3  
+**Last Updated**: 2026-06-17  
+**Major Changes**: Updated SlotManager to SlotAllocator with delayed recycling mechanism

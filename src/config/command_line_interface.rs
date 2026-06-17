@@ -223,6 +223,13 @@ pub struct ServeArgs {
         help = "Allowed headers"
     )]
     pub allowed_headers: Option<Vec<String>>,
+
+    #[arg(
+        long = "slot-reuse-timeout-ms",
+        default_value = "30000",
+        help = "Slot reuse timeout in milliseconds"
+    )]
+    pub slot_reuse_timeout_ms: Option<usize>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -872,6 +879,9 @@ impl JsonArgs {
                     "allowed_headers" | "allowed-headers" => {
                         serve.allowed_headers = self.value_to_vec_string(value)?
                     }
+                    "slot_reuse_timeout_ms" | "slot-reuse-timeout-ms" => {
+                        serve.slot_reuse_timeout_ms = self.value_to_usize(value)?
+                    }
                     _ => {}
                 }
             }
@@ -1103,6 +1113,9 @@ impl Config {
             }
             if let Some(allowed_headers) = args.allowed_headers {
                 serve.allowed_headers = allowed_headers;
+            }
+            if let Some(slot_reuse_timeout_ms) = args.slot_reuse_timeout_ms {
+                serve.slot_reuse_timeout_ms = slot_reuse_timeout_ms;
             }
         }
     }

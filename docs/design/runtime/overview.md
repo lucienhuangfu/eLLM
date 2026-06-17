@@ -125,7 +125,9 @@ classDiagram
 
     class SlotAllocator {
         +allocate()
+        +allocate_preferred(slot_index)
         +release(slot_index)
+        +cancel_timer(slot_index)
     }
 
     class DialogueSession {
@@ -262,6 +264,6 @@ src/runtime/
 
 ---
 
-**Document Version**: v4.0  
-**Last Updated**: 2026-06-16  
-**Major Changes**: Replaced DialogueCache + SlotManager with unified SessionManager architecture
+**Document Version**: v4.1  
+**Last Updated**: 2026-06-17  
+**Major Changes**: Added slot delayed recycling mechanism and preferred slot reuse strategy

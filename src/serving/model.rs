@@ -28,6 +28,7 @@ pub struct ServingConfig {
     pub tool_call_parser_enabled: bool,
     pub api_server_count: usize,
     pub session_mode: SessionMode,
+    pub slot_reuse_timeout_ms: usize,
 }
 
 impl ServingConfig {
@@ -61,6 +62,11 @@ impl ServingConfig {
             } else {
                 SessionMode::NonReusable
             },
+            slot_reuse_timeout_ms: config
+                .serve
+                .as_ref()
+                .map(|s| s.slot_reuse_timeout_ms)
+                .unwrap_or(30000),
         }
     }
 }
@@ -95,6 +101,7 @@ where
     pub async_threads: usize,
     pub _sequences_box: AlignedBox<usize>,
     pub session_mode: SessionMode,
+    pub slot_reuse_timeout_ms: usize,
 }
 
 fn extract_generation_params(
@@ -307,5 +314,6 @@ pub fn initialize_serving_resources(
         async_threads: thread_config.async_threads,
         _sequences_box: sequences_box,
         session_mode: config.session_mode,
+        slot_reuse_timeout_ms: config.slot_reuse_timeout_ms,
     })
 }
