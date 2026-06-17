@@ -23,7 +23,6 @@ where
     pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
     pub session_manager: Arc<SessionManager<T>>,
-    pub session_mode: SessionMode,
 }
 
 pub fn build_api_state(
@@ -31,14 +30,12 @@ pub fn build_api_state(
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
-    slot_reuse_timeout_ms: usize,
     session_mode: SessionMode,
 ) -> ApiState<f16> {
     let session_manager = Arc::new(SessionManager::new(
         batch_states.clone(),
         batch_sequences.clone(),
-        batch_states.with(|states| states.len()),
-        Duration::from_millis(slot_reuse_timeout_ms as u64),
+        session_mode,
     ));
 
     ApiState {
@@ -47,7 +44,6 @@ pub fn build_api_state(
         scheduler,
         parser_options,
         session_manager,
-        session_mode,
     }
 }
 
@@ -59,10 +55,9 @@ where
     pub async fn acquire_session(
         &self,
         session_id: &str,
-        mode: SessionMode,
     ) -> Result<SessionHandle, axum::response::Response> {
         self.session_manager
-            .acquire_session(session_id, mode)
+            .acquire_session(session_id)
             .await
             .map_err(|e| match e {
                 SlotError::AllocatorUnavailable => (

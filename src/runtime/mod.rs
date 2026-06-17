@@ -16,13 +16,10 @@ pub use scheduler::{
     BatchPlan, DefaultSchedulerStrategy, PrefillCandidate, ScheduleTask, Scheduler,
     SchedulerStrategy,
 };
-pub use session::{
-    build_batch_sequence, build_sequence_state, SessionHandle, SessionManager, SessionMode,
-    SlotAllocator,
-};
+pub use session::{SessionHandle, SessionManager, SessionMode, SlotAllocator};
 pub use state::{
     BatchSequence, DecodeList, DecodeLookupResult, Phase, SequenceSlice, SequenceState,
-    SequenceStateMachine, TransitionError,
+    SequenceStateMachine, TransitionError, build_batch_sequence, build_sequence_state,
 };
 
 pub use executor::runner::ServingRunner as Runner;

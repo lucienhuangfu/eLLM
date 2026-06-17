@@ -28,10 +28,9 @@ pub(super) async fn chat_completions(
     let model = request.model;
 
     let session_id = request.session_id.unwrap_or_else(|| request_id.clone());
-    let mode = state.session_mode;
 
     // 获取会话
-    let handle = match state.acquire_session(&session_id, mode).await {
+    let handle = match state.acquire_session(&session_id).await {
         Ok(h) => h,
         Err(response) => return response,
     };

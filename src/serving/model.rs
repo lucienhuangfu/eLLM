@@ -6,10 +6,11 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::{ScheduleTask, Scheduler};
-use crate::runtime::session::{build_batch_sequence, build_sequence_state, SessionMode};
+use crate::runtime::session::SessionMode;
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::types::SequenceState;
 use crate::runtime::Runner;
+use crate::runtime::{build_batch_sequence, build_sequence_state};
 use crate::tensor::GlobalOperatorQueue;
 use crate::transformer::config::Config;
 use crate::transformer::model::Model;
@@ -266,7 +267,7 @@ pub fn initialize_serving_resources(
         tool_call_parser: config.tool_call_parser_enabled,
     };
 
-    let (sequences_box, batch_sequences) =
+    let (sequences_box, batch_sequences): (AlignedBox<usize>, Arc<SharedMut<BatchSequence<f16>>>) =
         build_batch_sequence(&model_dir, config.batch_size, config.sequence_length)?;
     let sequences_ptr = sequences_box.as_mut_ptr();
 
@@ -282,7 +283,7 @@ pub fn initialize_serving_resources(
         model_config.rope_scaling.clone(),
     )
     .forward::<f16>();
-    let mut model = initialize_model(
+    let mut model: Model<f16> = initialize_model(
         &model_config,
         &gen_params,
         position_vec,
@@ -296,7 +297,7 @@ pub fn initialize_serving_resources(
         batch_sequences.with_mut(|batch_sequence| batch_sequence.batch_temperature.as_mut_ptr());
     let _ = model.forward(sequences_ptr, batch_temperature_ptr);
 
-    let runner = Runner::new(
+    let runner: Runner<f16> = Runner::new(
         f16::take_operator_queue(),
         Arc::clone(&batch_states),
         task_sender,

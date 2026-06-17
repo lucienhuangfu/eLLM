@@ -35,7 +35,7 @@ where
             })),
             chat_template: Arc::new(
                 ChatTemplate::from_template_source(
-                    "{{ .System }}\n{{ .User }}\n{{ .Assistant }}".to_string(),
+                    "{{ system }}\n{{ user }}\n{{ assistant }}".to_string(),
                 )
                 .unwrap(),
             ),

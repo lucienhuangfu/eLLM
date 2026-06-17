@@ -5,6 +5,9 @@ use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::types::SequenceState;
 
+/// 构建序列状态
+///
+/// 创建指定数量的初始序列状态
 pub fn build_sequence_state(batch_size: usize) -> Vec<SequenceState> {
     (0..batch_size)
         .map(|_| SequenceState {
@@ -17,6 +20,9 @@ pub fn build_sequence_state(batch_size: usize) -> Vec<SequenceState> {
         .collect()
 }
 
+/// 构建批处理序列
+///
+/// 创建批处理序列和对应的内存分配
 pub fn build_batch_sequence(
     model_dir: &str,
     batch_size: usize,
