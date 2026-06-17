@@ -23,6 +23,7 @@ where
     pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
     pub session_manager: Arc<SessionManager<T>>,
+    pub session_mode: SessionMode,
 }
 
 pub fn build_api_state(
@@ -31,6 +32,7 @@ pub fn build_api_state(
     scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
     slot_reuse_timeout_ms: usize,
+    session_mode: SessionMode,
 ) -> ApiState<f16> {
     let session_manager = Arc::new(SessionManager::new(
         batch_states.clone(),
@@ -45,6 +47,7 @@ pub fn build_api_state(
         scheduler,
         parser_options,
         session_manager,
+        session_mode,
     }
 }
 

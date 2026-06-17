@@ -4,6 +4,7 @@ use tokio::net::TcpListener;
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::Scheduler;
+use crate::runtime::session::SessionMode;
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::types::SequenceState;
 
@@ -17,6 +18,7 @@ pub async fn run(
     scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
     slot_reuse_timeout_ms: usize,
+    session_mode: SessionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动事件驱动的 OpenAI 兼容服务器...");
 
@@ -25,7 +27,7 @@ pub async fn run(
         scheduler_task.run().await;
     });
 
-    let state = build_api_state(batch_sequences, batch_list, scheduler, parser_options, slot_reuse_timeout_ms);
+    let state = build_api_state(batch_sequences, batch_list, scheduler, parser_options, slot_reuse_timeout_ms, session_mode);
 
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))

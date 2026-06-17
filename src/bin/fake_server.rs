@@ -4,7 +4,7 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
-use ellm::runtime::{BatchSequence, Phase, Scheduler, SequenceState, ServingRunner};
+use ellm::runtime::{BatchSequence, Scheduler, SequenceState, ServingRunner, SessionMode};
 use ellm::serving;
 use ellm::serving::parser::{ParserOptions, ParserRule};
 use ellm::transformer::config::ModelFamily;
@@ -79,6 +79,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let parser_options = ParserOptions::new(ParserRule::for_model_family(&ModelFamily::Qwen));
 
-    serving::run(batch_sequences, batch_states, scheduler, parser_options, 30000).await?;
+    serving::run(
+        batch_sequences,
+        batch_states,
+        scheduler,
+        parser_options,
+        30000,
+        SessionMode::NonReusable,
+    )
+    .await?;
     Ok(())
 }

@@ -21,24 +21,14 @@ pub(super) async fn chat_completions(
     State(state): State<ApiState<f16>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
-    let request_id = format!(
-        "chatcmpl-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
+    let request_id = request
+        .request_id
+        .unwrap_or_else(|| format!("chatcmpl-{}", uuid::Uuid::new_v4()));
     let is_stream = request.stream.unwrap_or(false);
     let model = request.model;
 
-    // 提取 session_id 和 mode
-    let session_id = request
-        .session_id
-        .unwrap_or_else(|| format!("session-{}", uuid::Uuid::new_v4()));
-    let mode = match request.session_mode.as_deref() {
-        Some("reusable") => crate::runtime::session::SessionMode::Reusable,
-        _ => crate::runtime::session::SessionMode::NonReusable, // 默认不复用
-    };
+    let session_id = request.session_id.unwrap_or_else(|| request_id.clone());
+    let mode = state.session_mode;
 
     // 获取会话
     let handle = match state.acquire_session(&session_id, mode).await {
