@@ -8,7 +8,7 @@ use ellm::runtime::io::ChatTemplate;
 use ellm::runtime::io::SafeTensorsLoader;
 use ellm::runtime::{
     BatchSequence, Config, GenerationConfig, Phase, ScheduleTask, Scheduler, SequenceState,
-    ServingRunner,
+    ServingRunner, SessionMode, SlotManager,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
@@ -172,8 +172,14 @@ fn main() {
         .map(|&len| SequenceState::new_prefill_state(0, len))
         .collect();
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
+    let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
 
     let (task_sender, _) = tokio::sync::broadcast::channel(8);
+    let slot_manager = Arc::new(SlotManager::new(
+        batch_size,
+        Arc::clone(&batch_seq_arc),
+        SessionMode::Lru,
+    ));
     let mut batch_scheduler = Scheduler::new(
         sequence_length,
         batch_size,
@@ -182,6 +188,7 @@ fn main() {
         Duration::from_millis(10),
         task_sender.clone(),
         Arc::clone(&batch_list_arc),
+        slot_manager,
     );
     let batch_list_ref = Arc::clone(&batch_list_arc);
     let sizes = batch_scheduler.schedule_batch();
@@ -276,13 +283,14 @@ fn main() {
     println!("Done in {elapsed:.2?}\n");
 
     batch_list_ref.with(|list| {
-        for (slot, record) in list.iter().enumerate() {
-            let input_len = written_lengths[slot];
-            let actual_gen_len = record.kv_index.saturating_sub(input_len);
-            let gen_end = record.kv_index.min(sequence_length);
-            let gen_len = gen_end.saturating_sub(input_len);
-            let _text_short = batch_seq.decode_token_span(slot, input_len, gen_end);
-            let _ids = batch_seq.token_ids(slot, input_len, gen_end.min(input_len + 5));
+        batch_seq_arc.with(|batch_seq| {
+            for (slot, record) in list.iter().enumerate() {
+                let input_len = written_lengths[slot];
+                let actual_gen_len = record.kv_index.saturating_sub(input_len);
+                let gen_end = record.kv_index.min(sequence_length);
+                let gen_len = gen_end.saturating_sub(input_len);
+                let _text_short = batch_seq.decode_token_span(slot, input_len, gen_end);
+                let _ids = batch_seq.token_ids(slot, input_len, gen_end.min(input_len + 5));
             let ids: Vec<u32> = (input_len..gen_end)
                 .map(|i| unsafe { *sequences_ptr.add(slot * sequence_length + i) as u32 })
                 .collect();
@@ -292,12 +300,13 @@ fn main() {
                 .filter_map(|&tid| tokenizer.decode(vec![tid]).ok())
                 .collect();
             println!(
-                "Slot {slot} [{p}]: {gen_len} displayed tokens, actual_gen_len={actual_gen_len}, phase={phase:?}",
-                p = prompts[slot],
-                phase = record.phase
-            );
-            println!("  {full_text:?}");
-            println!();
-        }
+                    "Slot {slot} [{p}]: {gen_len} displayed tokens, actual_gen_len={actual_gen_len}, phase={phase:?}",
+                    p = prompts[slot],
+                    phase = record.phase
+                );
+                println!("  {full_text:?}");
+                println!();
+            }
+        });
     });
 }

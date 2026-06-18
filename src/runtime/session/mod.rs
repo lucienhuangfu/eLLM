@@ -1,7 +1,7 @@
-pub mod allocator;
-pub mod manager;
+pub mod slot_entry;
+pub mod slot_manager;
 pub mod types;
 
-pub use allocator::SlotAllocator;
-pub use manager::SessionManager;
-pub use types::{DialogueSession, SessionHandle, SessionMode};
+pub use slot_entry::SlotEntry;
+pub use slot_manager::SlotManager;
+pub use types::{SessionHandle, SessionMode};

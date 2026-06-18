@@ -1,12 +1,11 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::response::IntoResponse;
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::error::SlotError;
 use crate::runtime::scheduler::Scheduler;
-use crate::runtime::session::{SessionHandle, SessionManager, SessionMode};
+use crate::runtime::session::{SessionHandle, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::types::{Phase, SequenceState};
 
@@ -22,7 +21,7 @@ where
     pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
-    pub session_manager: Arc<SessionManager<T>>,
+    pub slot_manager: Arc<SlotManager<T>>,
 }
 
 pub fn build_api_state(
@@ -30,20 +29,14 @@ pub fn build_api_state(
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
     scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
-    session_mode: SessionMode,
+    slot_manager: Arc<SlotManager<f16>>,
 ) -> ApiState<f16> {
-    let session_manager = Arc::new(SessionManager::new(
-        batch_states.clone(),
-        batch_sequences.clone(),
-        session_mode,
-    ));
-
     ApiState {
         batch_sequences,
         batch_states,
         scheduler,
         parser_options,
-        session_manager,
+        slot_manager,
     }
 }
 
@@ -51,12 +44,11 @@ impl<T> ApiState<T>
 where
     T: Copy + crate::num_traits::FromNumber,
 {
-    /// 获取会话（替代 acquire_slot）
     pub async fn acquire_session(
         &self,
         session_id: &str,
     ) -> Result<SessionHandle, axum::response::Response> {
-        self.session_manager
+        self.slot_manager
             .acquire_session(session_id)
             .await
             .map_err(|e| match e {
@@ -78,25 +70,19 @@ where
             })
     }
 
-    /// 释放会话（替代 release_slot）
     pub async fn release_session(&self, session_id: &str, token_count: usize) {
-        self.session_manager
-            .release_session(session_id, token_count)
-            .await;
+        self.slot_manager.release_session(session_id, token_count).await;
     }
 
-    /// 检查是否有缓存的 tokens（用于增量预填充）
     pub async fn get_cached_prefix(
         &self,
         session_id: &str,
         new_tokens: &[u32],
     ) -> Option<(usize, Vec<u32>)> {
-        self.session_manager
-            .calculate_delta(session_id, new_tokens)
-            .await
+        self.slot_manager.calculate_delta(session_id, new_tokens).await
     }
 
-    pub fn write_prompts_and_prepare(
+    pub async fn write_prompts_and_prepare(
         &self,
         slot_index: usize,
         messages: &[ChatMessage],
@@ -107,7 +93,8 @@ where
             .map(|msg| (msg.role.as_str(), msg.content.as_str()))
             .collect::<Vec<_>>();
 
-        self.batch_states
+        let result = self
+            .batch_states
             .with_mut(|batch_list| {
                 self.batch_sequences.with_mut(|batch_sequences| {
                     let record = &mut batch_list[slot_index];
@@ -135,7 +122,11 @@ where
                     format!("Tokenization failed: {}", err),
                 )
                     .into_response()
-            })
+            })?;
+
+        let _ = self.slot_manager.transition_to_prefill(slot_index, 0, result.0).await;
+
+        Ok(result)
     }
 
     pub async fn write_prompts_with_incremental_prefill(
@@ -158,7 +149,7 @@ where
 
         let result = self.get_cached_prefix(session_id, &new_tokens).await;
 
-        match result {
+        let (write_len, notify) = match result {
             Some((prefix_len, delta_tokens)) => self
                 .batch_states
                 .with_mut(|batch_list| {
@@ -189,12 +180,15 @@ where
                         format!("Tokenization failed: {}", err),
                     )
                         .into_response()
-                }),
+                })?,
             None => {
-                let result = self.write_prompts_and_prepare(slot_index, messages, temperature)?;
-                Ok(result)
+                return self.write_prompts_and_prepare(slot_index, messages, temperature).await;
             }
-        }
+        };
+
+        self.slot_manager.transition_to_prefill(slot_index, 0, write_len).await;
+
+        Ok((write_len, notify))
     }
 
     pub fn is_eos(&self, slot_index: usize) -> bool {

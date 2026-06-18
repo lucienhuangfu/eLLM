@@ -177,7 +177,7 @@ where
 mod tests {
     use super::ServingRunner;
     use crate::runtime::scheduler::task::ScheduleTask;
-    use crate::runtime::Scheduler;
+    use crate::runtime::{Scheduler, SessionMode, SlotManager};
     use tokio::sync::broadcast;
 
     #[tokio::test]
@@ -188,6 +188,18 @@ mod tests {
         let operator_queue = Vec::<crate::operators::operator::Operator<f32>>::new();
         let (sender, _) = broadcast::channel(4);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
+        let batch_sequences = Arc::new(SharedMut::new(
+            crate::runtime::state::batch::BatchSequence::<f16>::new(
+                std::ptr::null_mut(),
+                4,
+                1024,
+                "gpt2",
+                "gpt2",
+                "gpt2",
+            )
+            .unwrap(),
+        ));
+        let slot_manager = Arc::new(SlotManager::new(4, batch_sequences, SessionMode::Lru));
         let batch_scheduler = Scheduler::new(
             16,
             4,
@@ -196,6 +208,7 @@ mod tests {
             std::time::Duration::from_millis(100),
             sender.clone(),
             batch_list,
+            slot_manager,
         );
 
         let runner = ServingRunner::new(operator_queue, batch_scheduler.batch_list(), sender);

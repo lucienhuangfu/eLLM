@@ -3,10 +3,9 @@ use std::time::Instant;
 /// 会话模式
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SessionMode {
-    /// 可复用模式
     Reusable,
-    /// 不可复用模式
     NonReusable,
+    Lru,
 }
 
 /// 对话会话

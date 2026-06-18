@@ -55,7 +55,10 @@ pub(super) async fn chat_completions(
             }
         }
     } else {
-        match state.write_prompts_and_prepare(slot_index, &request.messages, request.temperature) {
+        match state
+            .write_prompts_and_prepare(slot_index, &request.messages, request.temperature)
+            .await
+        {
             Ok(result) => result,
             Err(response) => {
                 state.release_session(&session_id, 0).await;

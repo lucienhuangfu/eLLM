@@ -6,7 +6,7 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::{ScheduleTask, Scheduler};
-use crate::runtime::session::SessionMode;
+use crate::runtime::session::{SessionMode, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::types::SequenceState;
 use crate::runtime::Runner;
@@ -215,10 +215,18 @@ fn create_scheduling_components(
     config: &ServingConfig,
     thread_config: &ThreadingConfig,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
+    batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
+    session_mode: SessionMode,
 ) -> (Arc<Scheduler>, tokio::sync::broadcast::Sender<ScheduleTask>) {
     let broadcast_capacity = thread_config.worker_threads;
     let (task_sender, _): (tokio::sync::broadcast::Sender<ScheduleTask>, _) =
         tokio::sync::broadcast::channel(broadcast_capacity);
+
+    let slot_manager = Arc::new(SlotManager::new(
+        config.batch_size,
+        batch_sequences,
+        session_mode,
+    ));
 
     let scheduler = Arc::new(Scheduler::with_mode(
         config.sequence_length,
@@ -229,6 +237,7 @@ fn create_scheduling_components(
         Duration::from_millis(config.schedule_timeout_ms as u64),
         task_sender.clone(),
         Arc::clone(&batch_states),
+        slot_manager,
     ));
 
     (scheduler, task_sender)
@@ -272,8 +281,13 @@ pub fn initialize_serving_resources(
     let sequences_ptr = sequences_box.as_mut_ptr();
 
     let batch_states = Arc::new(SharedMut::new(build_sequence_state(config.batch_size)));
-    let (scheduler, task_sender) =
-        create_scheduling_components(&config, &thread_config, Arc::clone(&batch_states));
+    let (scheduler, task_sender) = create_scheduling_components(
+        &config,
+        &thread_config,
+        Arc::clone(&batch_states),
+        Arc::clone(&batch_sequences),
+        config.session_mode,
+    );
 
     let position_vec = RotaryEmbedding::new(
         model_config.head_dim,

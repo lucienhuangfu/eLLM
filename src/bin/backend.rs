@@ -6,6 +6,7 @@ use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
     BatchSequence, Phase, Runner, SafeTensorsLoader, ScheduleTask, Scheduler, SequenceState,
+    SessionMode, SlotManager,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
@@ -165,7 +166,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|(_, &len)| SequenceState::new_prefill_state(0, len.min(sequence_length))),
     );
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
+    let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
 
+    let slot_manager = Arc::new(SlotManager::new(
+        batch_size,
+        Arc::clone(&batch_seq_arc),
+        SessionMode::Lru,
+    ));
     let mut batch_scheduler = Scheduler::with_mode(
         sequence_length,
         batch_size,
@@ -175,6 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Duration::from_millis(10),
         task_sender.clone(),
         Arc::clone(&batch_list_arc),
+        slot_manager,
     );
 
     let batch_list_ref = Arc::clone(&batch_list_arc);
@@ -262,12 +270,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Generated Output ===");
     batch_list_ref.with(|list| {
-        for (slot, record) in list.iter().enumerate() {
-            let text = batch_seq.decode_generated_text(slot, record);
-            if !text.is_empty() {
-                println!("Slot {}: {}", slot, text);
+        batch_seq_arc.with(|batch_seq| {
+            for (slot, record) in list.iter().enumerate() {
+                let text = batch_seq.decode_generated_text(slot, record);
+                if !text.is_empty() {
+                    println!("Slot {}: {}", slot, text);
+                }
             }
-        }
+        });
     });
 
     Ok(())

@@ -4,7 +4,7 @@ use tokio::net::TcpListener;
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::Scheduler;
-use crate::runtime::session::SessionMode;
+use crate::runtime::session::{SessionMode, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::types::SequenceState;
 
@@ -26,12 +26,19 @@ pub async fn run(
         scheduler_task.run().await;
     });
 
+    let slot_count = batch_list.with(|list| list.len());
+    let slot_manager = Arc::new(SlotManager::new(
+        slot_count,
+        batch_sequences.clone(),
+        session_mode,
+    ));
+
     let state = build_api_state(
         batch_sequences,
         batch_list,
         scheduler,
         parser_options,
-        session_mode,
+        slot_manager,
     );
 
     let app = Router::new()
