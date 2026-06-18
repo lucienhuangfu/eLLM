@@ -3,9 +3,9 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{SessionMode, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
+use crate::runtime::state::shared::SharedState;
 use crate::runtime::state::types::SequenceState;
 
 use super::api::chat_completions;
@@ -15,16 +15,11 @@ use super::state::build_api_state;
 pub async fn run(
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
-    scheduler: Arc<Scheduler>,
+    shared_state: Arc<SharedState>,
     parser_options: ParserOptions,
     session_mode: SessionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动事件驱动的 OpenAI 兼容服务器...");
-
-    let scheduler_task = Arc::clone(&scheduler);
-    tokio::spawn(async move {
-        scheduler_task.run().await;
-    });
 
     let slot_count = batch_list.with(|list| list.len());
     let slot_manager = Arc::new(SlotManager::new(
@@ -36,7 +31,7 @@ pub async fn run(
     let state = build_api_state(
         batch_sequences,
         batch_list,
-        scheduler,
+        shared_state,
         parser_options,
         slot_manager,
     );
@@ -48,8 +43,8 @@ pub async fn run(
             axum::routing::get(|| async {
                 Json(serde_json::json!({
                     "status": "running",
-                    "mode": "single_threaded_background_processing",
-                    "info": "Inference and HTTP server run on a single OS thread using current_thread runtime"
+                    "mode": "inlined_scheduler",
+                    "info": "Scheduler is inlined in worker loop, executed by leader thread"
                 }))
             }),
         )
@@ -61,7 +56,7 @@ pub async fn run(
     println!("API 端点:");
     println!("  POST /v1/chat/completions - OpenAI 兼容的聊天完成");
     println!("  GET  /status - 服务器状态");
-    println!("推理由后台 runner 订阅调度任务执行");
+    println!("调度由 leader worker 线程内联执行");
 
     axum::serve(listener, app).await?;
     Ok(())

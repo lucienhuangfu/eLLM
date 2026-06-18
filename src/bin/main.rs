@@ -19,14 +19,10 @@ fn create_runtime(
 async fn run_server(
     resources: serving::ServingResources<f16>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    tokio::spawn(async move {
-        resources.runner.start().await;
-    });
-
     serving::run(
         resources.batch_sequences,
         resources.batch_states,
-        resources.scheduler,
+        resources.shared_state,
         resources.parser_options,
         resources.session_mode,
     )

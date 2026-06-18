@@ -4,9 +4,9 @@ use axum::response::IntoResponse;
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::error::SlotError;
-use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{SessionHandle, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
+use crate::runtime::state::shared::SharedState;
 use crate::runtime::state::types::{Phase, SequenceState};
 
 use super::parser::ParserOptions;
@@ -19,7 +19,7 @@ where
 {
     pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
     pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    pub scheduler: Arc<Scheduler>,
+    pub shared_state: Arc<SharedState>,
     pub parser_options: ParserOptions,
     pub slot_manager: Arc<SlotManager<T>>,
 }
@@ -27,14 +27,14 @@ where
 pub fn build_api_state(
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    scheduler: Arc<Scheduler>,
+    shared_state: Arc<SharedState>,
     parser_options: ParserOptions,
     slot_manager: Arc<SlotManager<f16>>,
 ) -> ApiState<f16> {
     ApiState {
         batch_sequences,
         batch_states,
-        scheduler,
+        shared_state,
         parser_options,
         slot_manager,
     }
@@ -126,6 +126,8 @@ where
 
         let _ = self.slot_manager.transition_to_prefill(slot_index, 0, result.0).await;
 
+        self.shared_state.push_request();
+
         Ok(result)
     }
 
@@ -187,6 +189,8 @@ where
         };
 
         self.slot_manager.transition_to_prefill(slot_index, 0, write_len).await;
+
+        self.shared_state.push_request();
 
         Ok((write_len, notify))
     }

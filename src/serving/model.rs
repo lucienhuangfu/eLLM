@@ -1,15 +1,13 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::config::{GenerationConfig, ResolvedConfig};
 use crate::mem_mgr::allocator::AlignedBox;
-use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::scheduler::{ScheduleTask, Scheduler};
+use crate::runtime::executor::ExecutorPool;
 use crate::runtime::session::{SessionMode, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
+use crate::runtime::state::shared::SharedState;
 use crate::runtime::state::types::SequenceState;
-use crate::runtime::Runner;
 use crate::runtime::{build_batch_sequence, build_sequence_state};
 use crate::tensor::GlobalOperatorQueue;
 use crate::transformer::config::Config;
@@ -24,7 +22,6 @@ pub struct ServingConfig {
     pub batch_size: usize,
     pub sequence_length: usize,
     pub chunk_size: usize,
-    pub schedule_timeout_ms: usize,
     pub reasoning_parser_enabled: bool,
     pub tool_call_parser_enabled: bool,
     pub api_server_count: usize,
@@ -50,7 +47,6 @@ impl ServingConfig {
             batch_size: config.scheduler.max_num_seqs,
             sequence_length: config.model.raw_config.max_model_len.unwrap_or(128),
             chunk_size: config.scheduler.max_num_batched_tokens,
-            schedule_timeout_ms: config.scheduler.schedule_timeout_ms,
             reasoning_parser_enabled,
             tool_call_parser_enabled,
             api_server_count: config
@@ -95,9 +91,8 @@ where
 {
     pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
     pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    pub scheduler: Arc<Scheduler>,
+    pub shared_state: Arc<SharedState>,
     pub parser_options: ParserOptions,
-    pub runner: Runner<T>,
     pub worker_threads: usize,
     pub async_threads: usize,
     pub _sequences_box: AlignedBox<usize>,
@@ -211,38 +206,6 @@ fn initialize_model(
     )
 }
 
-fn create_scheduling_components(
-    config: &ServingConfig,
-    thread_config: &ThreadingConfig,
-    batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
-    session_mode: SessionMode,
-) -> (Arc<Scheduler>, tokio::sync::broadcast::Sender<ScheduleTask>) {
-    let broadcast_capacity = thread_config.worker_threads;
-    let (task_sender, _): (tokio::sync::broadcast::Sender<ScheduleTask>, _) =
-        tokio::sync::broadcast::channel(broadcast_capacity);
-
-    let slot_manager = Arc::new(SlotManager::new(
-        config.batch_size,
-        batch_sequences,
-        session_mode,
-    ));
-
-    let scheduler = Arc::new(Scheduler::with_mode(
-        config.sequence_length,
-        config.batch_size,
-        config.chunk_size,
-        thread_config.worker_threads,
-        config.chunk_size,
-        Duration::from_millis(config.schedule_timeout_ms as u64),
-        task_sender.clone(),
-        Arc::clone(&batch_states),
-        slot_manager,
-    ));
-
-    (scheduler, task_sender)
-}
-
 pub fn initialize_serving_resources(
     resolved_config: &ResolvedConfig,
 ) -> Result<ServingResources<f16>, Box<dyn std::error::Error>> {
@@ -281,12 +244,11 @@ pub fn initialize_serving_resources(
     let sequences_ptr = sequences_box.as_mut_ptr();
 
     let batch_states = Arc::new(SharedMut::new(build_sequence_state(config.batch_size)));
-    let (scheduler, task_sender) = create_scheduling_components(
-        &config,
-        &thread_config,
-        Arc::clone(&batch_states),
-        Arc::clone(&batch_sequences),
-        config.session_mode,
+    let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_states)));
+    shared_state.set_plan_builder(
+        config.batch_size,
+        config.chunk_size,
+        thread_config.worker_threads,
     );
 
     let position_vec = RotaryEmbedding::new(
@@ -311,20 +273,22 @@ pub fn initialize_serving_resources(
         batch_sequences.with_mut(|batch_sequence| batch_sequence.batch_temperature.as_mut_ptr());
     let _ = model.forward(sequences_ptr, batch_temperature_ptr);
 
-    let runner: Runner<f16> = Runner::new(
-        f16::take_operator_queue(),
-        Arc::clone(&batch_states),
-        task_sender,
-    )
-    .with_runner_count(thread_config.worker_threads)
-    .with_task_in_flight(scheduler.task_in_flight());
+    let _slot_manager = Arc::new(SlotManager::new(
+        config.batch_size,
+        batch_sequences.clone(),
+        config.session_mode,
+    ));
+
+    let operator_queue = f16::take_operator_queue();
+    let executor_pool = ExecutorPool::new(operator_queue, Arc::clone(&shared_state))
+        .with_thread_count(thread_config.worker_threads);
+    executor_pool.start();
 
     Ok(ServingResources {
         batch_sequences,
         batch_states,
-        scheduler,
+        shared_state,
         parser_options,
-        runner,
         worker_threads: thread_config.worker_threads,
         async_threads: thread_config.async_threads,
         _sequences_box: sequences_box,
