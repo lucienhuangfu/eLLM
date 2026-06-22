@@ -262,7 +262,7 @@ fn main() {
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
         batch_seq_arc,
-        SessionMode::Lru,
+        SessionMode::Reusable,
         600000, // 10 minutes
     ));
     let mut batch_scheduler = Scheduler::new(

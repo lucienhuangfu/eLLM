@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 
+use super::error::ApiResult;
 use super::parser::{IncrementalStreamingParser, ParserEvent, StreamingParser};
 use super::requests::{ChatCompletionRequest, ChatMessage};
 use super::responses::{ChatCompletionChoice, ChatCompletionResponse};
@@ -18,7 +19,7 @@ use super::stream::{
 };
 
 pub(super) async fn chat_completions(
-    State(state): State<ApiState<f16>>,
+    State(state): State<ApiState>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
     let request_id = request
@@ -32,7 +33,7 @@ pub(super) async fn chat_completions(
     // 获取会话
     let handle = match state.acquire_session(&session_id).await {
         Ok(h) => h,
-        Err(response) => return response,
+        Err(e) => return e.into_response(),
     };
 
     let slot_index = handle.slot_index;
@@ -49,9 +50,9 @@ pub(super) async fn chat_completions(
             .await
         {
             Ok(result) => result,
-            Err(response) => {
+            Err(e) => {
                 state.release_session(&session_id, 0).await;
-                return response;
+                return e.into_response();
             }
         }
     } else {
@@ -60,9 +61,9 @@ pub(super) async fn chat_completions(
             .await
         {
             Ok(result) => result,
-            Err(response) => {
+            Err(e) => {
                 state.release_session(&session_id, 0).await;
-                return response;
+                return e.into_response();
             }
         }
     };
@@ -121,7 +122,7 @@ pub(super) async fn chat_completions(
 }
 
 fn build_stream_response(
-    state: ApiState<f16>,
+    state: ApiState,
     slot_index: usize,
     session_id: &str,
     notifier: Arc<Notify>,

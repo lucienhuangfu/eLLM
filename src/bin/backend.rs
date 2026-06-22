@@ -181,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
         Arc::clone(&batch_seq_arc),
-        SessionMode::Lru,
+        SessionMode::Reusable,
         600000, // 10 minutes
     ));
     let mut batch_scheduler = Scheduler::with_mode(

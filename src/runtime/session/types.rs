@@ -5,7 +5,6 @@ use std::time::Instant;
 pub enum SessionMode {
     Reusable,
     NonReusable,
-    Lru,
 }
 
 /// 对话会话

@@ -20,8 +20,7 @@
 - **Input Preparation**: Render chat messages to prompts, encode to tokens
 - **Batch Scheduling**: Generate current-round computation slices by priority rules
 - **Thread Execution**: Manage thread pool to execute operator queues in parallel
-- **Session Management**: Unified dialogue session management with reusable/non-reusable modes and delayed slot recycling
-
+- **Session Management**: Unified dialogue session management with reusable/non-reusable modes and delayed slot recycling via SlotManager
 ---
 
 ## 2. Architecture Layers
@@ -58,9 +57,9 @@ flowchart TB
 | Layer | Responsibility | Key Components |
 |-------|---------------|----------------|
 | **Input Preparation** | Prompt rendering & token encoding | ChatTemplate, BatchSequence, TokenizerLoader |
-| **Batch Scheduling** | Slice generation & task distribution | Scheduler, SchedulerStrategy, SessionManager |
+| **Batch Scheduling** | Slice generation & task distribution | Scheduler, SchedulerStrategy, PlanBuilder |
 | **Thread Execution** | Operator queue parallel execution | ExecutorPool, SpinBarrier |
-| **Session Management** | Unified session lifecycle management | SessionManager, SlotAllocator, DialogueSession |
+| **Session Management** | Unified session lifecycle management | SlotManager, DialogueSession, SessionHandle |
 
 ---
 
@@ -153,21 +152,25 @@ classDiagram
 
 | Component | Responsibility | File Location |
 |-----------|---------------|---------------|
-| `Scheduler` | Core scheduling logic, event-driven execution | `scheduler/core.rs` |
+| `Scheduler` | Core scheduling logic, event-driven execution with broadcast task distribution | `scheduler/core.rs` |
 | `SchedulerStrategy` | Scheduling strategy trait | `scheduler/strategy.rs` |
-| `DefaultSchedulerStrategy` | Default scheduling implementation | `scheduler/strategy.rs` |
+| `DefaultSchedulerStrategy` | Default scheduling implementation delegating to PlanBuilder | `scheduler/strategy.rs` |
 | `PlanBuilder` | Batch plan construction with slice distribution | `plan.rs` |
 | `SliceScheduler` | Prefill token distribution across threads | `plan.rs` |
-| `ExecutorPool` | Leader-follower thread pool executor | `executor/executor.rs` |
-| `SlotState` | Slot state tracking (phase, sequence, KV cache) | `state/core.rs` |
-| `SlotStateMachine` | State transition logic | `state/machine.rs` |
+| `ExecutorPool` | Multi-thread executor with SpinBarrier synchronization | `executor/executor.rs` |
+| `SlotState` | Slot state tracking with LRU pointers, phase, sequence, KV cache | `state/core.rs` |
+| `SlotStateMachine` | State transition logic with validation | `state/machine.rs` |
 | `SequenceSlice` | Minimal computation unit | `state/sequence.rs` |
-| `ScheduleTask` | Scheduling task carrier | `scheduler/task.rs` |
-| `BatchSequence` | Prompt writing & result decoding | `state/batch.rs` |
+| `DecodeList` | Decode slice collection with lookup and iteration utilities | `state/sequence.rs` |
+| `DecodeLookupResult` | Result type for global index lookup | `state/sequence.rs` |
+| `ScheduleTask` | Scheduling task carrier with timestamp | `scheduler/task.rs` |
+| `BatchSequence` | Prompt writing & result decoding with tokenizer integration | `state/batch.rs` |
+| `SharedState` | Shared state for scheduler-executor coordination | `state/shared.rs` |
 | `SlotManager` | Unified slot and session management with LRU and delayed recycling | `session/slot_manager.rs` |
 | `DialogueSession` | Session metadata structure | `session/types.rs` |
-| `ChatTemplate` | Chat template rendering | `io/chat_template.rs` |
-| `TokenizerLoader` | Tokenizer loading | `io/tokenizer_loader.rs` |
+| `ChatTemplate` | Chat template rendering with MiniJinja | `io/chat_template.rs` |
+| `TokenizerLoader` | Tokenizer loading from HuggingFace format | `io/tokenizer_loader.rs` |
+| `SafeTensorsLoader` | Weight loading from SafeTensors format | `io/safetensors_loader.rs` |
 
 ---
 
@@ -246,14 +249,13 @@ src/runtime/
 ├── session/
 │   ├── mod.rs                # Session submodule entry
 │   ├── slot_manager.rs       # SlotManager with LRU and session tracking
-│   ├── slot_entry.rs         # SlotEntry definitions
 │   └── types.rs              # SessionMode, SessionHandle, DialogueSession
 ├── state/
 │   ├── mod.rs                # State submodule entry
-│   ├── core.rs               # SlotState definition
+│   ├── core.rs               # SlotState definition with LRU pointers
 │   ├── machine.rs            # SlotStateMachine state transitions
 │   ├── types.rs              # Phase enum
-│   ├── sequence.rs           # SequenceSlice, DecodeList
+│   ├── sequence.rs           # SequenceSlice, DecodeList, DecodeLookupResult
 │   ├── batch.rs              # BatchSequence implementation
 │   ├── shared.rs             # SharedState for cross-component sharing
 │   └── state_init.rs         # build_batch_sequence, build_slot_state helpers
@@ -267,13 +269,13 @@ src/runtime/
 │   ├── tokenizer_loader.rs   # Tokenizer loading (load_tiktoken)
 │   ├── safetensors_loader.rs # Weight loading (SafeTensorsLoader)
 │   └── from_safetensors.rs   # FromSafetensors trait (type conversion)
-├── plan.rs                   # BatchPlan, PlanBuilder, SliceScheduler
+├── plan.rs                   # BatchPlan, PlanBuilder, SliceScheduler, PrefillCandidate
 ├── error.rs                  # Runtime error definitions
 └── mod.rs                    # Module exports
 ```
 
 ---
 
-**Document Version**: v5.1  
+**Document Version**: v5.2  
 **Last Updated**: 2026-06-22  
-**Major Changes**: Restructured to match actual code organization - renamed SequenceState to SlotState, moved components to scheduler/session/state/executor directories, integrated PlanBuilder into plan.rs, replaced SessionManager+SlotAllocator with unified SlotManager with LRU support, added delayed slot recycling mechanism with configurable timeout
+**Major Changes**: Updated component list with SharedState, DecodeList, DecodeLookupResult; corrected session module file structure (removed slot_entry.rs); updated SlotState description with LRU pointers; added SafeTensorsLoader component; updated responsibility descriptions to match actual implementation

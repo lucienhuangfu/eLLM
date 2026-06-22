@@ -79,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shared_state,
         parser_options,
         SessionMode::NonReusable,
+        600000, // 10 minutes
     )
     .await?;
     Ok(())

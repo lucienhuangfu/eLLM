@@ -18,6 +18,7 @@ pub async fn run(
     shared_state: Arc<SharedState>,
     parser_options: ParserOptions,
     session_mode: SessionMode,
+    slot_reuse_timeout_ms: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动事件驱动的 OpenAI 兼容服务器...");
 
@@ -26,7 +27,7 @@ pub async fn run(
         slot_count,
         batch_sequences.clone(),
         session_mode,
-        600000, // 10 minutes default
+        slot_reuse_timeout_ms as u64,
     ));
 
     let state = build_api_state(

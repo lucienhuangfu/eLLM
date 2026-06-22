@@ -212,8 +212,8 @@ where
                     let mut available = self.available_slots.lock().await;
                     available.push(slot_index);
                 } else {
-                    // Reusable/Lru 模式：启动延迟回收
-                    let session_id_owned = session_id.to_string(); // 克隆 session_id
+                    // Reusable 模式：启动延迟回收定时器，超时后进入LRU队列
+                    let session_id_owned = session_id.to_string();
                     session_map.remove(session_id);
 
                     // 创建取消标志
@@ -231,6 +231,7 @@ where
                     // 启动异步计时器
                     let reserved_slots = Arc::clone(&self.reserved_slots);
                     let available_slots = Arc::clone(&self.available_slots);
+                    let slots = Arc::clone(&self.slots);
                     let timeout = self.reuse_timeout;
 
                     tokio::spawn(async move {
@@ -241,9 +242,27 @@ where
                             return; // 已被复用，不执行回收
                         }
 
-                        // 超时后从 reserved 移除并加入可用池
+                        // 超时后从 reserved 移除，更新LRU并加入可用池
                         let mut reserved = reserved_slots.lock().await;
                         if let Some((idx, _)) = reserved.remove(&session_id_owned) {
+                            // 更新LRU，将slot放入LRU链表头部（表示最近使用）
+                            let mut slots = slots.lock().await;
+                            let prev = slots[idx].lru_prev;
+                            let next = slots[idx].lru_next;
+                            if prev != LRU_SENTINEL {
+                                slots[prev].lru_next = next;
+                            }
+                            if next != LRU_SENTINEL {
+                                slots[next].lru_prev = prev;
+                            }
+                            let head_prev = slots[0].lru_prev;
+                            slots[idx].lru_prev = LRU_SENTINEL;
+                            slots[idx].lru_next = head_prev;
+                            if head_prev != LRU_SENTINEL {
+                                slots[head_prev].lru_next = idx;
+                            }
+                            slots[0].lru_prev = idx;
+
                             let mut available = available_slots.lock().await;
                             if !available.contains(&idx) {
                                 available.push(idx);

@@ -59,6 +59,14 @@
 | `broadcast_sender` | `broadcast::Sender<ScheduleTask>` | Task broadcast sender |
 | `task_in_flight` | `Arc<AtomicBool>` | Atomic flag to prevent duplicate scheduling |
 
+### 2.1.1 Scheduler Constructors
+
+| Constructor | Parameters | Description |
+|-------------|------------|-------------|
+| `new()` | `_sequence_length`, `batch_size`, `thread_num`, `_threshold`, `timeout`, `broadcast_sender`, `batch_list`, `slot_manager` | Creates scheduler with default strategy |
+| `with_mode()` | `_sequence_length`, `batch_size`, `chunk_size`, `thread_num`, `_threshold`, `timeout`, `broadcast_sender`, `batch_list`, `slot_manager` | Creates scheduler with configurable chunk_size |
+| `with_strategy()` | `_sequence_length`, `batch_size`, `chunk_size`, `thread_num`, `timeout`, `broadcast_sender`, `batch_list`, `slot_manager`, `strategy` | Creates scheduler with custom strategy |
+
 ### 2.2 SlotState Fields
 
 | Field | Type | Purpose |
@@ -74,6 +82,17 @@
 | `notify` | `Arc<Notify>` | Completion notification primitive |
 | `lru_prev` | `usize` | LRU linked list previous pointer |
 | `lru_next` | `usize` | LRU linked list next pointer |
+
+### 2.2.1 SlotState Helper Methods
+
+| Method | Description |
+|--------|-------------|
+| `new_start_state()` | Creates Start state with sentinel values |
+| `new_prefill_state(sequence_index, filling_length)` | Creates Prefill state with KV index set to sequence_index |
+| `new_decode_state(sequence_index, kv_index)` | Creates Decode state |
+| `is_active()` | Returns true if phase is Prefill or Decode |
+| `is_available()` | Returns true if phase is Start or Eos |
+| `touch()` | Updates last_accessed to current time |
 
 ### 2.3 BatchPlan Structure
 
@@ -105,6 +124,26 @@ pub struct PlanBuilder {
 - `build_plan(batch_list)`: Analyzes slot states and generates appropriate BatchPlan
 - `build_decode()`: Constructs decode slices from candidates
 - `build_prefill()`: Distributes prefill tokens across threads using SliceScheduler
+
+### 2.4.1 PrefillCandidate Structure
+
+```rust
+pub struct PrefillCandidate {
+    pub batch_index: usize,
+    pub sequence_index: usize,
+    pub remaining: usize,
+}
+```
+
+Used internally by PlanBuilder to collect prefill candidates before distribution.
+
+### 2.4.2 BatchPlan Helper Methods
+
+| Method | Description |
+|--------|-------------|
+| `new(task_id)` | Creates empty BatchPlan |
+| `sequence_count()` | Returns total sequence count (decode_size + prefill flag) |
+| `is_empty()` | Returns true if both prefill_size and decode_size are zero |
 
 ---
 
@@ -217,10 +256,8 @@ total_tokens = min(sum(filling_length), max_prefill_size)
 ```text
 schedule_prefill_round(candidates, total_tokens, prefill_list, decode_list, thread_num):
     prefill_count = 0
-    task_count = thread_num.min(prefill_list.len())
     
-    scheduler = SliceScheduler::new(task_count)
-    scheduler.init(total_tokens)
+    scheduler = SliceScheduler::new(thread_num, total_tokens)
     
     for candidate in candidates:
         if scheduler.is_done():
@@ -230,11 +267,10 @@ schedule_prefill_round(candidates, total_tokens, prefill_list, decode_list, thre
         if attention_length > 0:
             decode_list.push(attention_slice)
         
-        scheduler.schedule_for_sequence(
+        scheduler.schedule_sequence(
             batch_index,
             sequence_index,
             remaining,
-            0,
             prefill_list,
             &mut prefill_count
         )
@@ -246,28 +282,51 @@ schedule_prefill_round(candidates, total_tokens, prefill_list, decode_list, thre
 
 ```text
 SliceScheduler:
-    - task_count: 线程数
+    - thread_num: 线程数
     - total_tokens: 总 token 数
     - scheduled_tokens: 已分配 token 数
-    - current_task: 当前分配的线程索引
-    - current_task_remaining: 当前线程剩余配额
+    - quotas: Vec<usize> - 每个线程的配额向量
+    - current_thread: 当前分配的线程索引
 
-quota_for(task_index):
-    base_quota = total_tokens / task_count
-    extra_quota = total_tokens % task_count
-    if task_index < extra_quota:
-        return base_quota + 1
-    else:
-        return base_quota
+构造函数 new(thread_num, total_tokens):
+    base_quota = total_tokens / thread_num
+    extra_quota = total_tokens % thread_num
+    quotas[i] = base_quota + (1 if i < extra_quota else 0)
 
-schedule_for_sequence:
+is_done():
+    return scheduled_tokens >= total_tokens
+
+remaining_tokens():
+    return total_tokens - scheduled_tokens
+
+schedule_sequence(batch_index, sequence_index, remaining, prefill_list, prefill_count):
+    sequence_cursor = sequence_index
+    
     while remaining > 0 && !is_done():
-        task_index = current_task_index()
-        token_start_index = scheduled_tokens
-        take = min(remaining, current_task_remaining, remaining_tokens)
-        prefill_list[task_index].push(SequenceSlice { ... })
-        scheduled_tokens += take
-        remaining -= take
+        // 跳过已用完配额的线程
+        while current_thread < thread_num && quotas[current_thread] == 0:
+            current_thread += 1
+        
+        if current_thread >= thread_num:
+            break
+        
+        available = min(quotas[current_thread], remaining, remaining_tokens())
+        if available == 0:
+            break
+        
+        prefill_list[current_thread].push(SequenceSlice {
+            batch_index,
+            sequence_index: sequence_cursor,
+            token_start_index: *prefill_count,
+            length: available,
+            last_token_flag: false,
+        })
+        
+        *prefill_count += available
+        quotas[current_thread] -= available
+        scheduled_tokens += available
+        remaining -= available
+        sequence_cursor += available
 ```
 
 ### 5.5 线程配额分配示例
@@ -616,60 +675,6 @@ prefill_list: Vec<Vec<SequenceSlice>>
 
 ---
 
-## 12. SlotAllocator
-
-### 12.1 SlotAllocator 职责
-
-`SlotAllocator` 负责管理 batch slot 的分配和释放，支持延迟回收和优先复用策略。
-
-**核心特性**：
-- **延迟回收**：释放的槽位先进入定时状态，超时后才返回 LRU 队列
-- **优先复用**：同 session 请求优先复用原槽位（无论其处于定时或 LRU 状态）
-- **异步计时**：使用 Tokio 异步计时器，不阻塞主线程
-
-### 12.2 核心方法
-
-| Method | Description |
-|--------|-------------|
-| `allocate()` | 从 LRU 队列分配槽位 |
-| `allocate_preferred(slot_index)` | 优先分配指定槽位（支持定时状态和 LRU 队列） |
-| `release(slot_index)` | 释放槽位，启动延迟回收计时器 |
-| `cancel_timer(slot_index)` | 取消指定槽位的计时器（非错误操作） |
-
-### 12.3 数据结构
-
-```text
-SlotAllocator:
-    - free_slots: Mutex<VecDeque<usize>>           # 空闲槽位队列（LRU 管理）
-    - slot_timers: Mutex<HashMap<usize, Arc<Mutex<bool>>>>  # 槽位计时器取消标志
-    - timeout_duration: Duration                   # 延迟回收超时时间
-    - batch_states: SharedMut<Vec<SequenceState>>  # 槽位状态
-```
-
-### 12.4 Slot 生命周期
-
-```mermaid
-stateDiagram-v2
-    [*] --> Free: 初始化 (LRU 管理)
-    
-    Free --> InUse: allocate() / allocate_preferred()
-    
-    InUse --> Timed: release() (启动延迟回收计时器)
-    
-    Timed --> InUse: allocate_preferred() (同 session 复用，取消计时器)
-    Timed --> Free: timeout (计时器到期，返回 LRU 队列)
-    
-    Free --> InUse: allocate_preferred() (同 session 复用，从 LRU 移除)
-```
-
-### 12.5 配置参数
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `slot_reuse_timeout_ms` | 30000 | 槽位延迟回收超时时间（毫秒） |
-
----
-
-**Document Version**: v4.1  
+**Document Version**: v4.2  
 **Last Updated**: 2026-06-22  
-**Major Changes**: Updated to reflect actual implementation - renamed SequenceState to SlotState, simplified SchedulerStrategy trait, integrated PlanBuilder for batch planning, added BatchMode enum (Decode/Prefill/Mixed), updated SlotState fields with session tracking and LRU pointers, documented delayed slot recycling mechanism in session_management.md
+**Major Changes**: Added Scheduler constructor documentation, SlotState helper methods, PrefillCandidate structure, BatchPlan helper methods; updated SliceScheduler algorithm to match actual implementation (using quotas vector instead of current_task_remaining); removed SlotAllocator section (now integrated into SlotManager documented in session_management.md)

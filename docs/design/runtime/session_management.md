@@ -4,11 +4,12 @@
 
 ## Overview
 
-**SlotManager** is a unified slot and session management system that integrates slot allocation, token caching, session lifecycle management, LRU eviction, and **delayed slot recycling**. It supports three operation modes through **SessionMode** enum:
+**SlotManager** is a unified slot and session management system that integrates slot allocation, token caching, session lifecycle management, LRU eviction, and **delayed slot recycling**. It supports two operation modes through **SessionMode** enum:
 
 1. **Reusable Mode**: Same `session_id` requests reuse assigned slots with delayed recycling (configurable timeout)
 2. **NonReusable Mode**: Each request allocates a new slot, immediately resets state and releases to pool
-3. **Lru Mode**: Uses LRU eviction when all slots are occupied, with delayed recycling support
+
+**LRU eviction** is always enabled for slot reuse when all slots are occupied, working seamlessly with both modes.
 
 **Core Objectives**: 
 - Optimize inference performance by detecting common prefixes between consecutive requests of the same session
@@ -30,10 +31,14 @@ pub enum SessionMode {
     Reusable,
     /// Non-reusable mode: each request allocates new slot, clears mapping
     NonReusable,
-    /// LRU mode: uses LRU eviction when slots are full
-    Lru,
 }
 ```
+
+**SessionMode Helper Methods**:
+
+| Method | Description |
+|--------|-------------|
+| `is_reusable()` | Returns true if mode is Reusable |
 
 ### DialogueSession
 
@@ -110,7 +115,7 @@ stateDiagram-v2
     
     Available --> Active: acquire_session()
     
-    Active --> Reserved: release_session() (Reusable/Lru mode)
+    Active --> Reserved: release_session() (Reusable mode)
     Active --> Available: release_session() (NonReusable mode, immediate reset)
     
     Reserved --> Active: acquire_session() (same session_id, cancels timer)
@@ -136,7 +141,6 @@ stateDiagram-v2
 - **Mode-aware release**:
   - **Reusable mode**: Remove from session_map, add to reserved_slots with async timer, exclusive to same session during timeout
   - **NonReusable mode**: Immediately reset slot to Start state, remove mapping, add to available_slots
-  - **Lru mode**: Same as Reusable but uses LRU eviction when allocating new slots
 - **Session mapping**: `session_map` maintains bidirectional mapping between session IDs and slot indices
 - **Reserved exclusivity**: During the retention period, reserved slots are ONLY accessible by the original session_id
 - **Timer cancellation**: When a reserved slot is reused, the pending timeout task is cancelled via atomic flag
@@ -367,7 +371,7 @@ flowchart TD
     B -->|NonReusable| C[Immediate Reset]
     C --> D[Add to available_slots]
     
-    B -->|Reusable/Lru| E[Remove from session_map]
+    B -->|Reusable| E[Remove from session_map]
     E --> F[Create cancel_flag]
     F --> G[Add to reserved_slots]
     G --> H[Spawn Async Timer Task]
@@ -465,7 +469,7 @@ sequenceDiagram
         SlotMgr->>SlotMgr: reset_to_start(slot)
         SlotMgr->>SlotMgr: remove session mapping
         SlotMgr->>SlotMgr: add to available pool
-    else Reusable/Lru mode
+    else Reusable mode
         SlotMgr->>SlotMgr: retain session mapping
         SlotMgr->>SlotMgr: add to available pool
     end
@@ -498,7 +502,7 @@ sequenceDiagram
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `num_slots` | batch_size | Number of slots (equals batch size) |
-| `mode` | Lru | Default session management mode |
+| `mode` | Reusable | Default session management mode |
 | `reuse_timeout_ms` | 30000 | Slot retention timeout in milliseconds (configurable) |
 
 **Configuration Example**:
@@ -514,8 +518,24 @@ let slot_manager = Arc::new(SlotManager::new(
 ```
 
 **CLI Parameters**:
+- `--dialogue-cache-enabled`: Enable/disable dialogue cache (default: true)
+  - When `true`: Uses `SessionMode::Reusable` (enables slot reuse with delayed recycling)
+  - When `false`: Uses `SessionMode::NonReusable` (immediate slot release)
 - `--slot-reuse-timeout-ms`: Configure slot retention timeout (default: 30000ms)
-- Session mode can be configured at initialization time
+
+**Configuration Flow**:
+
+```mermaid
+flowchart TD
+    A[CLI: --dialogue-cache-enabled] --> B[SharedArgs.dialogue_cache_enabled]
+    B --> C[Config.scheduler.dialogue_cache_enabled]
+    C --> D[ServingConfig.from_resolved_config]
+    D --> E{dialogue_cache_enabled?}
+    E -->|true| F[SessionMode::Reusable]
+    E -->|false| G[SessionMode::NonReusable]
+    F --> H[SlotManager::new]
+    G --> H
+```
 
 **Recommendations**:
 - **Short conversations** (< 1 min): Use 1-5 minute timeout
@@ -532,7 +552,6 @@ let slot_manager = Arc::new(SlotManager::new(
 src/runtime/session/
 ├── mod.rs                # Session submodule entry
 ├── slot_manager.rs       # SlotManager implementation with LRU
-├── slot_entry.rs         # SlotEntry definitions
 └── types.rs              # SessionMode, SessionHandle, DialogueSession
 ```
 
@@ -589,6 +608,6 @@ slot_manager.release_session(&session_id, token_count).await;
 
 ---
 
-**Document Version**: v3.0  
+**Document Version**: v3.2  
 **Last Updated**: 2026-06-22  
-**Major Changes**: Added comprehensive delayed slot recycling mechanism with configurable timeout, exclusive reservation for same session, async timer with atomic cancellation, updated all data structures and lifecycle diagrams, added detailed architecture documentation and configuration guidelines
+**Major Changes**: Corrected SessionMode to only include Reusable/NonReusable (removed Lru), LRU eviction is always enabled; updated default mode to Reusable; removed slot_entry.rs from module structure; added SessionMode helper method is_reusable(); updated all diagrams and descriptions to remove Lru mode references; added CLI configuration flow showing --dialogue-cache-enabled parameter controls SessionMode selection

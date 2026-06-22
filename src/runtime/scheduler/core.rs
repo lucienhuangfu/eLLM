@@ -264,7 +264,7 @@ mod tests {
         Arc::new(SlotManager::new(
             batch_size,
             batch_sequences,
-            SessionMode::Lru,
+            SessionMode::Reusable,
             600000, // 10 minutes default for tests
         ))
     }

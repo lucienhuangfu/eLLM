@@ -1,27 +1,22 @@
 use std::sync::Arc;
 
-use axum::response::IntoResponse;
-
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::error::SlotError;
 use crate::runtime::session::{SessionHandle, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::shared::SharedState;
 use crate::runtime::{Phase, SlotState};
 
+use super::error::{ApiError, ApiResult};
 use super::parser::ParserOptions;
 use super::requests::ChatMessage;
 
 #[derive(Clone)]
-pub struct ApiState<T>
-where
-    T: Copy + crate::num_traits::FromNumber,
-{
-    pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
+pub struct ApiState {
+    pub batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     pub batch_states: Arc<SharedMut<Vec<SlotState>>>,
     pub shared_state: Arc<SharedState>,
     pub parser_options: ParserOptions,
-    pub slot_manager: Arc<SlotManager<T>>,
+    pub slot_manager: Arc<SlotManager<f16>>,
 }
 
 pub fn build_api_state(
@@ -30,7 +25,7 @@ pub fn build_api_state(
     shared_state: Arc<SharedState>,
     parser_options: ParserOptions,
     slot_manager: Arc<SlotManager<f16>>,
-) -> ApiState<f16> {
+) -> ApiState {
     ApiState {
         batch_sequences,
         batch_states,
@@ -40,34 +35,34 @@ pub fn build_api_state(
     }
 }
 
-impl<T> ApiState<T>
-where
-    T: Copy + crate::num_traits::FromNumber,
-{
-    pub async fn acquire_session(
-        &self,
-        session_id: &str,
-    ) -> Result<SessionHandle, axum::response::Response> {
+impl ApiState {
+    /// 将 ChatMessage 转换为消息对数组
+    fn messages_to_pairs(messages: &[ChatMessage]) -> Vec<(&str, &str)> {
+        messages
+            .iter()
+            .map(|msg| (msg.role.as_str(), msg.content.as_str()))
+            .collect()
+    }
+
+    /// 准备 slot 用于写入
+    fn prepare_slot_for_write(&self, slot_index: usize) -> ApiResult<()> {
+        self.batch_states.with(|batch_list| {
+            let record = &batch_list[slot_index];
+            if !record.is_available() {
+                Err(ApiError::SlotUnavailable(
+                    "slot is not in Start or Eos phase".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    pub async fn acquire_session(&self, session_id: &str) -> ApiResult<SessionHandle> {
         self.slot_manager
             .acquire_session(session_id)
             .await
-            .map_err(|e| match e {
-                SlotError::AllocatorUnavailable => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Slot allocator unavailable".to_string(),
-                )
-                    .into_response(),
-                SlotError::SlotQueueEmpty => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "No available slots".to_string(),
-                )
-                    .into_response(),
-                SlotError::SlotNotFound => (
-                    axum::http::StatusCode::NOT_FOUND,
-                    "Slot not found".to_string(),
-                )
-                    .into_response(),
-            })
+            .map_err(ApiError::from)
     }
 
     pub async fn release_session(&self, session_id: &str, token_count: usize) {
@@ -91,45 +86,29 @@ where
         slot_index: usize,
         messages: &[ChatMessage],
         temperature: Option<f32>,
-    ) -> Result<(usize, Arc<tokio::sync::Notify>), axum::response::Response> {
-        let message_pairs = messages
-            .iter()
-            .map(|msg| (msg.role.as_str(), msg.content.as_str()))
-            .collect::<Vec<_>>();
+    ) -> ApiResult<(usize, Arc<tokio::sync::Notify>)> {
+        self.prepare_slot_for_write(slot_index)?;
 
-        let result = self
-            .batch_states
-            .with_mut(|batch_list| {
-                self.batch_sequences.with_mut(|batch_sequences| {
-                    let record = &mut batch_list[slot_index];
-                    if !record.is_available() {
-                        Err("slot is not in Start or Eos phase".to_string())
-                    } else {
-                        let temperature = temperature.unwrap_or(1.0);
-                        batch_sequences
-                            .write_prompts(slot_index, &message_pairs, temperature)
-                            .map(|write_len| {
-                                record.sequence_index = 0;
-                                record.kv_index = 0;
-                                record.filling_length = write_len;
-                                record.phase = Phase::Prefill;
-                                (write_len, record.notify.clone())
-                            })
-                            .map_err(|e: String| e.to_string())
-                    }
-                })
+        let message_pairs = Self::messages_to_pairs(messages);
+        let temperature = temperature.unwrap_or(1.0);
+
+        let result = self.batch_states.with_mut(|batch_list| {
+            self.batch_sequences.with_mut(|batch_sequences| {
+                batch_sequences
+                    .write_prompts(slot_index, &message_pairs, temperature)
+                    .map(|write_len| {
+                        let record = &mut batch_list[slot_index];
+                        record.sequence_index = 0;
+                        record.kv_index = 0;
+                        record.filling_length = write_len;
+                        record.phase = Phase::Prefill;
+                        (write_len, record.notify.clone())
+                    })
+                    .map_err(|e| ApiError::TokenizationError(e))
             })
-            .map_err(|err: String| {
-                eprintln!("Error writing prompt: {}", err);
-                (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Tokenization failed: {}", err),
-                )
-                    .into_response()
-            })?;
+        })?;
 
-        let _ = self
-            .slot_manager
+        self.slot_manager
             .transition_to_prefill(slot_index, 0, result.0)
             .await;
 
@@ -144,11 +123,8 @@ where
         session_id: &str,
         messages: &[ChatMessage],
         temperature: Option<f32>,
-    ) -> Result<(usize, Arc<tokio::sync::Notify>), axum::response::Response> {
-        let message_pairs = messages
-            .iter()
-            .map(|msg| (msg.role.as_str(), msg.content.as_str()))
-            .collect::<Vec<_>>();
+    ) -> ApiResult<(usize, Arc<tokio::sync::Notify>)> {
+        let message_pairs = Self::messages_to_pairs(messages);
 
         let new_tokens: Vec<u32> = self.batch_sequences.with(|batch_sequences| {
             batch_sequences
@@ -159,37 +135,26 @@ where
         let result = self.get_cached_prefix(session_id, &new_tokens).await;
 
         let (write_len, notify) = match result {
-            Some((prefix_len, delta_tokens)) => self
-                .batch_states
-                .with_mut(|batch_list| {
-                    self.batch_sequences.with_mut(|batch_sequences| {
-                        let record = &mut batch_list[slot_index];
+            Some((prefix_len, delta_tokens)) => {
+                self.prepare_slot_for_write(slot_index)?;
+                let temperature = temperature.unwrap_or(1.0);
 
-                        if !record.is_available() {
-                            Err("slot is not in Start or Eos phase".to_string())
-                        } else {
-                            let temperature = temperature.unwrap_or(1.0);
-                            batch_sequences
-                                .write_tokens(slot_index, &delta_tokens, temperature)
-                                .map(|write_len| {
-                                    record.sequence_index = prefix_len;
-                                    record.kv_index = slot_index;
-                                    record.filling_length = write_len;
-                                    record.phase = Phase::Prefill;
-                                    (write_len, record.notify.clone())
-                                })
-                                .map_err(|e: String| e.to_string())
-                        }
+                self.batch_states.with_mut(|batch_list| {
+                    self.batch_sequences.with_mut(|batch_sequences| {
+                        batch_sequences
+                            .write_tokens(slot_index, &delta_tokens, temperature)
+                            .map(|write_len| {
+                                let record = &mut batch_list[slot_index];
+                                record.sequence_index = prefix_len;
+                                record.kv_index = slot_index;
+                                record.filling_length = write_len;
+                                record.phase = Phase::Prefill;
+                                (write_len, record.notify.clone())
+                            })
+                            .map_err(|e| ApiError::TokenizationError(e))
                     })
-                })
-                .map_err(|err: String| {
-                    eprintln!("Error writing incremental prompt: {}", err);
-                    (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Tokenization failed: {}", err),
-                    )
-                        .into_response()
-                })?,
+                })?
+            }
             None => {
                 return self
                     .write_prompts_and_prepare(slot_index, messages, temperature)

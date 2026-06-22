@@ -369,7 +369,7 @@ mod test {
         let slot_manager = Arc::new(SlotManager::new(
             BATCH_SIZE,
             batch_sequences,
-            SessionMode::Lru,
+            SessionMode::Reusable,
             600000, // 10 minutes
         ));
         let mut scheduler = Scheduler::new(
@@ -638,7 +638,7 @@ mod test {
             let slot_manager = Arc::new(SlotManager::new(
                 BATCH_SIZE,
                 batch_sequences,
-                SessionMode::Lru,
+                SessionMode::Reusable,
                 600000, // 10 minutes
             ));
             let mut scheduler = Scheduler::new(
@@ -787,7 +787,7 @@ mod test {
         let slot_manager = Arc::new(SlotManager::new(
             BATCH_SIZE,
             batch_sequences,
-            SessionMode::Lru,
+            SessionMode::Reusable,
             600000, // 10 minutes
         ));
         let mut scheduler = Scheduler::new(
@@ -1039,7 +1039,7 @@ mod test {
         let slot_manager = Arc::new(SlotManager::new(
             BATCH_SIZE,
             batch_sequences,
-            SessionMode::Lru,
+            SessionMode::Reusable,
             600000, // 10 minutes
         ));
         let mut scheduler = Scheduler::new(
