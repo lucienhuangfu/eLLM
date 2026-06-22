@@ -5,7 +5,7 @@ use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::{
-    BatchSequence, ExecutorPool, SessionMode, SharedState, SlotManager, SlotState,
+    BatchSequence, ExecutorPool, Scheduler, SessionMode, SharedState, SlotManager, SlotState,
 };
 use ellm::serving;
 use ellm::serving::parser::{ParserOptions, ParserRule};
@@ -19,17 +19,81 @@ fn build_sequence_state(batch_size: usize) -> Vec<SlotState> {
         .collect()
 }
 
-fn build_fake_runner(batch_states: Arc<SharedMut<Vec<SlotState>>>) -> ExecutorPool<f16> {
-    let operator_queue = vec![Operator::FakeEcho(FakeEcho)];
-    let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_states), 4, 64, 1));
-    ExecutorPool::new(operator_queue, shared_state, 1)
+fn create_runtime(
+    batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
+    batch_states: Arc<SharedMut<Vec<SlotState>>>,
+    parser_options: ParserOptions,
+) -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error>> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(4)
+        .enable_all()
+        .build()
+        .map_err(Into::into)
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn run_server(
+    batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
+    batch_states: Arc<SharedMut<Vec<SlotState>>>,
+    parser_options: ParserOptions,
+    slot_manager: Arc<SlotManager<f16>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Create broadcast channel for scheduler -> executor communication
+    let (broadcast_sender, broadcast_receiver) = tokio::sync::broadcast::channel(8);
+
+    // Create schedule_tx channel for triggering scheduler
+    let (schedule_tx, _) = tokio::sync::broadcast::channel(16);
+
+    // Create shared_state with schedule_tx
+    let shared_state = Arc::new(SharedState::new(
+        Arc::clone(&batch_states),
+        4,
+        64,
+        1,
+        schedule_tx,
+    ));
+
+    // Build and start executor pool with FakeEcho operator
+    let operator_queue = vec![Operator::<f16>::FakeEcho(FakeEcho)];
+    let executor_pool = ExecutorPool::new(operator_queue, Arc::clone(&shared_state), 1);
+    executor_pool.start(broadcast_receiver);
+
+    let batch_size = batch_states.with(|list| list.len());
+    let sequence_length = 256usize;
+
+    // Create scheduler with shared_state
+    let scheduler = Arc::new(Scheduler::with_shared_state(
+        sequence_length,
+        batch_size,
+        64,
+        1,
+        64,
+        Duration::from_millis(10),
+        broadcast_sender,
+        Arc::clone(&batch_states),
+        Arc::clone(&slot_manager),
+        Arc::clone(&shared_state),
+    ));
+    tokio::spawn(async move {
+        scheduler.run().await;
+    });
+
+    serving::run(
+        batch_sequences,
+        batch_states,
+        shared_state,
+        parser_options,
+        slot_manager,
+    )
+    .await?;
+
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting fake server for runtime + serving integration test...");
 
-    let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
+    let model_dir = "models/MiniMax-M2.5";
     let sequence_length = 256usize;
     let batch_size = 4usize;
     let sequences = {
@@ -56,31 +120,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     let batch_states = Arc::new(SharedMut::new(build_sequence_state(batch_size)));
+
+    // Create slot manager BEFORE entering Tokio runtime
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
         batch_sequences.clone(),
         SessionMode::NonReusable,
         600000, // 10 minutes
     ));
-    let shared_state = Arc::new(SharedState::new(
-        Arc::clone(&batch_states),
-        batch_size,
-        64,
-        1,
-    ));
 
-    let _executor_pool = build_fake_runner(batch_states.clone());
+    let parser_options = ParserOptions::new(ParserRule::for_model_family(&ModelFamily::MiniMaxM2));
 
-    let parser_options = ParserOptions::new(ParserRule::for_model_family(&ModelFamily::Qwen));
+    // Create Tokio runtime explicitly
+    let rt = create_runtime(
+        batch_sequences.clone(),
+        batch_states.clone(),
+        parser_options.clone(),
+    )?;
 
-    serving::run(
-        batch_sequences,
-        batch_states,
-        shared_state,
-        parser_options,
-        SessionMode::NonReusable,
-        600000, // 10 minutes
-    )
-    .await?;
+    rt.block_on(async move {
+        run_server(batch_sequences, batch_states, parser_options, slot_manager).await
+    })?;
+
     Ok(())
 }

@@ -100,6 +100,7 @@ where
     pub _sequences_box: AlignedBox<usize>,
     pub session_mode: SessionMode,
     pub slot_reuse_timeout_ms: usize,
+    pub slot_manager: Arc<SlotManager<T>>,
 }
 
 fn extract_generation_params(
@@ -246,11 +247,16 @@ pub fn initialize_serving_resources(
     let sequences_ptr = sequences_box.as_mut_ptr();
 
     let batch_states = Arc::new(SharedMut::new(build_slot_state(config.batch_size)));
+    
+    // Create schedule_tx channel for triggering scheduler
+    let (schedule_tx, _) = tokio::sync::broadcast::channel(16);
+    
     let shared_state = Arc::new(SharedState::new(
         Arc::clone(&batch_states),
         config.batch_size,
         config.chunk_size,
         thread_config.api_threads,
+        schedule_tx,
     ));
 
     let position_vec = RotaryEmbedding::new(
@@ -301,7 +307,7 @@ pub fn initialize_serving_resources(
         Duration::from_millis(10),
         broadcast_sender,
         Arc::clone(&batch_states),
-        slot_manager,
+        Arc::clone(&slot_manager),
     ));
     tokio::spawn(async move {
         scheduler.run().await;
@@ -317,5 +323,6 @@ pub fn initialize_serving_resources(
         _sequences_box: sequences_box,
         session_mode: config.session_mode,
         slot_reuse_timeout_ms: config.slot_reuse_timeout_ms,
+        slot_manager,
     })
 }

@@ -6,6 +6,9 @@ pub mod scheduler;
 pub mod session;
 pub mod state;
 
+#[cfg(test)]
+pub mod integration_test;
+
 pub use crate::config::generation_config::GenerationConfig;
 pub use crate::config::huggingface_config::HfConfig;
 pub use crate::tensor;

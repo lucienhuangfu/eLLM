@@ -10,6 +10,7 @@ use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::plan::BatchPlan;
 use crate::runtime::session::SlotManager;
 use crate::runtime::state::core::SlotState;
+use crate::runtime::state::shared::SharedState;
 
 pub struct Scheduler {
     batch_list: Arc<SharedMut<Vec<SlotState>>>,
@@ -21,7 +22,7 @@ pub struct Scheduler {
     schedule_tx: broadcast::Sender<()>,
     timeout: Duration,
     broadcast_sender: broadcast::Sender<ScheduleTask>,
-    task_in_flight: Arc<AtomicBool>,
+    shared_state: Arc<SharedState>,
 }
 
 impl Scheduler {
@@ -99,6 +100,34 @@ impl Scheduler {
         )
     }
 
+    pub fn with_shared_state(
+        _sequence_length: usize,
+        batch_size: usize,
+        chunk_size: usize,
+        thread_num: usize,
+        _threshold: usize,
+        timeout: Duration,
+        broadcast_sender: broadcast::Sender<ScheduleTask>,
+        batch_list: Arc<SharedMut<Vec<SlotState>>>,
+        slot_manager: Arc<SlotManager<f16>>,
+        shared_state: Arc<SharedState>,
+    ) -> Self {
+        let (schedule_tx, _) = broadcast::channel(16);
+        Self {
+            batch_list,
+            slot_manager,
+            thread_num: AtomicUsize::new(thread_num),
+            strategy: Box::new(DefaultSchedulerStrategy::new(
+                batch_size, chunk_size, thread_num,
+            )),
+            needs_schedule: AtomicBool::new(false),
+            schedule_tx,
+            timeout,
+            broadcast_sender,
+            shared_state,
+        }
+    }
+
     fn build(
         batch_size: usize,
         chunk_size: usize,
@@ -110,6 +139,8 @@ impl Scheduler {
         strategy: Box<dyn SchedulerStrategy>,
     ) -> Self {
         let (schedule_tx, _) = broadcast::channel(16);
+        let schedule_tx_for_shared = schedule_tx.clone();
+        let batch_list_for_shared = Arc::clone(&batch_list);
         Self {
             batch_list,
             slot_manager,
@@ -119,7 +150,13 @@ impl Scheduler {
             schedule_tx,
             timeout,
             broadcast_sender,
-            task_in_flight: Arc::new(AtomicBool::new(false)),
+            shared_state: Arc::new(SharedState::new(
+                batch_list_for_shared,
+                batch_size,
+                chunk_size,
+                thread_num,
+                schedule_tx_for_shared,
+            )),
         }
     }
 
@@ -135,8 +172,8 @@ impl Scheduler {
         Arc::clone(&self.batch_list)
     }
 
-    pub fn task_in_flight(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.task_in_flight)
+    pub fn shared_state(&self) -> Arc<SharedState> {
+        Arc::clone(&self.shared_state)
     }
 
     pub fn schedule_batch(&self) -> Option<BatchPlan> {
@@ -175,9 +212,8 @@ impl Scheduler {
         loop {
             tokio::select! {
                 _ = schedule_rx.recv() => {
-                    if self.needs_schedule.load(Ordering::Acquire) {
-                        self.trigger_schedule();
-                    }
+                    // 接收到信号时，总是触发调度检查
+                    self.trigger_schedule();
                 }
                 _ = interval.tick() => {
                     if self.needs_schedule.load(Ordering::Acquire) {
@@ -196,24 +232,35 @@ impl Scheduler {
     }
 
     fn trigger_schedule(&self) {
-        if !self.needs_schedule.swap(false, Ordering::AcqRel) {
-            return;
-        }
+        println!("[Scheduler] trigger_schedule 被调用");
 
         if self
+            .shared_state
             .task_in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            self.needs_schedule.store(true, Ordering::Release);
+            // 已经有任务在执行，重置 needs_schedule
+            println!("[Scheduler] 任务已在执行中，重置 needs_schedule");
+            self.needs_schedule.store(false, Ordering::Release);
             return;
         }
 
+        println!("[Scheduler] 开始调度...");
         let plan = match self.schedule_batch() {
-            Some(p) => p,
+            Some(p) => {
+                println!(
+                    "[Scheduler] 调度计划: prefill_size={}, decode_size={}",
+                    p.prefill_size, p.decode_size
+                );
+                p
+            }
             None => {
-                self.task_in_flight.store(false, Ordering::Release);
-                self.needs_schedule.store(true, Ordering::Release);
+                println!("[Scheduler] 没有待处理的任务");
+                self.shared_state
+                    .task_in_flight
+                    .store(false, Ordering::Release);
+                self.needs_schedule.store(false, Ordering::Release);
                 return;
             }
         };
@@ -226,9 +273,16 @@ impl Scheduler {
             plan.task_id,
         );
 
+        println!("[Scheduler] 发送任务到执行器: task_id={}", task.task_id);
         if self.broadcast_sender.send(task).is_err() {
-            self.task_in_flight.store(false, Ordering::Release);
+            println!("[Scheduler] 发送任务失败");
+            self.shared_state
+                .task_in_flight
+                .store(false, Ordering::Release);
             self.needs_schedule.store(true, Ordering::Release);
+        } else {
+            println!("[Scheduler] 发送任务成功");
+            self.needs_schedule.store(false, Ordering::Release);
         }
     }
 }

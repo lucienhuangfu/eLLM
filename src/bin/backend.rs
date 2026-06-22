@@ -165,11 +165,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
     let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
 
+    let (schedule_tx, _) = tokio::sync::broadcast::channel(16);
     let shared_state = Arc::new(SharedState::new(
         Arc::clone(&batch_list_arc),
         batch_size,
         chunk_size,
         thread_num,
+        schedule_tx,
     ));
 
     let executor_pool = ExecutorPool::<f16>::new(

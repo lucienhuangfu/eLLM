@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::runtime::error::SlotError;
 use crate::runtime::state::batch::BatchSequence;
@@ -18,12 +19,12 @@ pub struct SlotManager<T>
 where
     T: Copy + crate::num_traits::FromNumber,
 {
-    slots: Arc<Mutex<Vec<SlotState>>>,
-    active_prefill: Arc<Mutex<Vec<usize>>>,
-    active_decode: Arc<Mutex<Vec<usize>>>,
-    available_slots: Arc<Mutex<Vec<usize>>>,
-    session_map: Arc<Mutex<HashMap<String, usize>>>,
-    reserved_slots: Arc<Mutex<HashMap<String, (usize, Arc<AtomicBool>)>>>, // session_id -> (slot_index, cancel_flag)
+    slots: Arc<StdMutex<Vec<SlotState>>>,
+    active_prefill: Arc<TokioMutex<Vec<usize>>>,
+    active_decode: Arc<TokioMutex<Vec<usize>>>,
+    available_slots: Arc<TokioMutex<Vec<usize>>>,
+    session_map: Arc<TokioMutex<HashMap<String, usize>>>,
+    reserved_slots: Arc<TokioMutex<HashMap<String, (usize, Arc<AtomicBool>)>>>, // session_id -> (slot_index, cancel_flag)
     batch_sequences: Arc<crate::operators::send_sync_ptr::SharedMut<BatchSequence<T>>>,
     mode: SessionMode,
     reuse_timeout: Duration,
@@ -52,23 +53,22 @@ where
         }
 
         let mut slot_manager = Self {
-            slots: Arc::new(Mutex::new(slots)),
-            active_prefill: Arc::new(Mutex::new(Vec::new())),
-            active_decode: Arc::new(Mutex::new(Vec::new())),
-            available_slots: Arc::new(Mutex::new(available_slots)),
-            session_map: Arc::new(Mutex::new(HashMap::new())),
-            reserved_slots: Arc::new(Mutex::new(HashMap::new())),
+            slots: Arc::new(StdMutex::new(slots)),
+            active_prefill: Arc::new(TokioMutex::new(Vec::new())),
+            active_decode: Arc::new(TokioMutex::new(Vec::new())),
+            available_slots: Arc::new(TokioMutex::new(available_slots)),
+            session_map: Arc::new(TokioMutex::new(HashMap::new())),
+            reserved_slots: Arc::new(TokioMutex::new(HashMap::new())),
             batch_sequences,
             mode,
             reuse_timeout: Duration::from_millis(reuse_timeout_ms),
         };
 
-        slot_manager.init_lru();
         slot_manager
     }
 
     fn init_lru(&mut self) {
-        let mut slots = self.slots.blocking_lock();
+        let mut slots = self.slots.lock().unwrap();
         let num_slots = slots.len();
 
         for i in 0..num_slots {
@@ -82,7 +82,7 @@ where
     }
 
     fn touch_lru(&self, slot_index: usize) {
-        let mut slots = self.slots.blocking_lock();
+        let mut slots = self.slots.lock().unwrap();
 
         let prev = slots[slot_index].lru_prev;
         let next = slots[slot_index].lru_next;
@@ -106,7 +106,7 @@ where
     }
 
     fn evict_oldest(&self) -> usize {
-        let mut slots = self.slots.blocking_lock();
+        let mut slots = self.slots.lock().unwrap();
 
         let mut tail = 0;
         while slots[tail].lru_next != LRU_SENTINEL {
@@ -129,7 +129,7 @@ where
         };
 
         if let Some(slot_index) = slot_index_from_map {
-            let mut slots = self.slots.lock().await;
+            let mut slots = self.slots.lock().unwrap();
             if let Some(entry) = slots.get_mut(slot_index) {
                 entry.touch();
                 self.touch_lru(slot_index);
@@ -153,7 +153,7 @@ where
                 session_map.insert(session_id.to_string(), slot_index);
             }
 
-            let mut slots = self.slots.lock().await;
+            let mut slots = self.slots.lock().unwrap();
             if let Some(entry) = slots.get_mut(slot_index) {
                 entry.touch();
                 self.touch_lru(slot_index);
@@ -184,7 +184,7 @@ where
         }
 
         {
-            let mut slots = self.slots.lock().await;
+            let mut slots = self.slots.lock().unwrap();
             let entry = &mut slots[slot_index];
             entry.session_id = Some(session_id.to_string());
             entry.created_at = Instant::now();
@@ -200,53 +200,62 @@ where
     pub async fn release_session(&self, session_id: &str, token_count: usize) {
         let mut session_map = self.session_map.lock().await;
         if let Some(&slot_index) = session_map.get(session_id) {
-            let mut slots = self.slots.lock().await;
-            if let Some(entry) = slots.get_mut(slot_index) {
-                entry.token_count = token_count;
+            {
+                let mut slots = self.slots.lock().unwrap();
+                if let Some(entry) = slots.get_mut(slot_index) {
+                    entry.token_count = token_count;
+                }
+            } // Release slots lock before await
 
-                if self.mode == SessionMode::NonReusable {
-                    // NonReusable 模式：立即重置并释放
-                    SlotStateMachine::reset_to_start(entry);
-                    session_map.remove(session_id);
+            if self.mode == SessionMode::NonReusable {
+                // NonReusable 模式：立即重置并释放
+                {
+                    let mut slots = self.slots.lock().unwrap();
+                    if let Some(entry) = slots.get_mut(slot_index) {
+                        SlotStateMachine::reset_to_start(entry);
+                    }
+                }
+                session_map.remove(session_id);
 
-                    let mut available = self.available_slots.lock().await;
-                    available.push(slot_index);
-                } else {
-                    // Reusable 模式：启动延迟回收定时器，超时后进入LRU队列
-                    let session_id_owned = session_id.to_string();
-                    session_map.remove(session_id);
+                let mut available = self.available_slots.lock().await;
+                available.push(slot_index);
+            } else {
+                // Reusable 模式：启动延迟回收定时器，超时后进入LRU队列
+                let session_id_owned = session_id.to_string();
+                session_map.remove(session_id);
 
-                    // 创建取消标志
-                    let cancel_flag = Arc::new(AtomicBool::new(false));
+                // 创建取消标志
+                let cancel_flag = Arc::new(AtomicBool::new(false));
 
-                    // 添加到保留列表
-                    {
-                        let mut reserved = self.reserved_slots.lock().await;
-                        reserved.insert(
-                            session_id_owned.clone(),
-                            (slot_index, Arc::clone(&cancel_flag)),
-                        );
+                // 添加到保留列表
+                {
+                    let mut reserved = self.reserved_slots.lock().await;
+                    reserved.insert(
+                        session_id_owned.clone(),
+                        (slot_index, Arc::clone(&cancel_flag)),
+                    );
+                }
+
+                // 启动异步计时器
+                let reserved_slots = Arc::clone(&self.reserved_slots);
+                let available_slots = Arc::clone(&self.available_slots);
+                let slots = Arc::clone(&self.slots);
+                let timeout = self.reuse_timeout;
+
+                tokio::spawn(async move {
+                    tokio::time::sleep(timeout).await;
+
+                    // 检查是否被取消
+                    if cancel_flag.load(Ordering::Acquire) {
+                        return; // 已被复用，不执行回收
                     }
 
-                    // 启动异步计时器
-                    let reserved_slots = Arc::clone(&self.reserved_slots);
-                    let available_slots = Arc::clone(&self.available_slots);
-                    let slots = Arc::clone(&self.slots);
-                    let timeout = self.reuse_timeout;
-
-                    tokio::spawn(async move {
-                        tokio::time::sleep(timeout).await;
-
-                        // 检查是否被取消
-                        if cancel_flag.load(Ordering::Acquire) {
-                            return; // 已被复用，不执行回收
-                        }
-
-                        // 超时后从 reserved 移除，更新LRU并加入可用池
-                        let mut reserved = reserved_slots.lock().await;
-                        if let Some((idx, _)) = reserved.remove(&session_id_owned) {
-                            // 更新LRU，将slot放入LRU链表头部（表示最近使用）
-                            let mut slots = slots.lock().await;
+                    // 超时后从 reserved 移除，更新LRU并加入可用池
+                    let mut reserved = reserved_slots.lock().await;
+                    if let Some((idx, _)) = reserved.remove(&session_id_owned) {
+                        // 更新LRU，将slot放入LRU链表头部（表示最近使用）
+                        {
+                            let mut slots = slots.lock().unwrap();
                             let prev = slots[idx].lru_prev;
                             let next = slots[idx].lru_next;
                             if prev != LRU_SENTINEL {
@@ -262,14 +271,14 @@ where
                                 slots[head_prev].lru_next = idx;
                             }
                             slots[0].lru_prev = idx;
+                        } // Release slots lock before await
 
-                            let mut available = available_slots.lock().await;
-                            if !available.contains(&idx) {
-                                available.push(idx);
-                            }
+                        let mut available = available_slots.lock().await;
+                        if !available.contains(&idx) {
+                            available.push(idx);
                         }
-                    });
-                }
+                    }
+                });
             }
         }
     }
@@ -280,52 +289,57 @@ where
         sequence_index: usize,
         filling_length: usize,
     ) {
-        let mut slots = self.slots.lock().await;
-        let entry = &mut slots[slot_index];
-
-        let _ = SlotStateMachine::transition_to_prefill(entry, sequence_index, filling_length);
+        {
+            let mut slots = self.slots.lock().unwrap();
+            let entry = &mut slots[slot_index];
+            let _ = SlotStateMachine::transition_to_prefill(entry, sequence_index, filling_length);
+        } // Release slots lock before await
 
         self.remove_from_available(slot_index).await;
         self.add_to_active_prefill(slot_index).await;
     }
 
     pub async fn transition_to_decode(&self, slot_index: usize) {
-        let mut slots = self.slots.lock().await;
-        let entry = &mut slots[slot_index];
-
-        let _ = SlotStateMachine::transition_to_decode(entry);
+        {
+            let mut slots = self.slots.lock().unwrap();
+            let entry = &mut slots[slot_index];
+            let _ = SlotStateMachine::transition_to_decode(entry);
+        } // Release slots lock before await
 
         self.remove_from_active_prefill(slot_index).await;
         self.add_to_active_decode(slot_index).await;
     }
 
     pub async fn transition_to_eos(&self, slot_index: usize) {
-        let mut slots = self.slots.lock().await;
-        let entry = &mut slots[slot_index];
+        {
+            let mut slots = self.slots.lock().unwrap();
+            let entry = &mut slots[slot_index];
+            let _ = SlotStateMachine::transition_to_eos(entry);
+        } // Release slots lock before await
 
-        let _ = SlotStateMachine::transition_to_eos(entry);
-
-        self.remove_from_active_prefill(slot_index).await;
         self.remove_from_active_decode(slot_index).await;
         self.add_to_available(slot_index).await;
     }
 
     pub async fn transition_to_timeout(&self, slot_index: usize) {
-        let mut slots = self.slots.lock().await;
-        let entry = &mut slots[slot_index];
-
-        let _ = SlotStateMachine::transition_to_timeout(entry);
+        {
+            let mut slots = self.slots.lock().unwrap();
+            let entry = &mut slots[slot_index];
+            let _ = SlotStateMachine::transition_to_timeout(entry);
+        } // Release slots lock before await
 
         self.remove_from_active_prefill(slot_index).await;
         self.remove_from_active_decode(slot_index).await;
     }
 
     pub async fn reset_to_start(&self, slot_index: usize) {
-        let mut slots = self.slots.lock().await;
-        let entry = &mut slots[slot_index];
-
-        let old_phase = entry.phase;
-        SlotStateMachine::reset_to_start(entry);
+        let old_phase = {
+            let mut slots = self.slots.lock().unwrap();
+            let entry = &mut slots[slot_index];
+            let old_phase = entry.phase;
+            SlotStateMachine::reset_to_start(entry);
+            old_phase
+        }; // Release slots lock before await
 
         if matches!(old_phase, Phase::Prefill) {
             self.remove_from_active_prefill(slot_index).await;
@@ -390,12 +404,12 @@ where
     }
 
     pub async fn get_slot(&self, slot_index: usize) -> Option<SlotState> {
-        let slots = self.slots.lock().await;
+        let slots = self.slots.lock().unwrap();
         slots.get(slot_index).cloned()
     }
 
     pub async fn advance_sequence(&self, slot_index: usize, steps: usize) {
-        let mut slots = self.slots.lock().await;
+        let mut slots = self.slots.lock().unwrap();
         if let Some(entry) = slots.get_mut(slot_index) {
             let phase_change = SlotStateMachine::advance_sequence(entry, steps);
 
@@ -409,7 +423,7 @@ where
     pub async fn get_cached_tokens(&self, session_id: &str) -> Option<(usize, usize)> {
         let session_map = self.session_map.lock().await;
         let &slot_index = session_map.get(session_id)?;
-        let slots = self.slots.lock().await;
+        let slots = self.slots.lock().unwrap();
         let entry = slots.get(slot_index)?;
         if entry.token_count > 0 {
             Some((slot_index, entry.token_count))
@@ -448,7 +462,7 @@ where
     }
 
     pub fn total_slots(&self) -> usize {
-        self.slots.blocking_lock().len()
+        self.slots.lock().unwrap().len()
     }
 }
 

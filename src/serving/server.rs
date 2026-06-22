@@ -17,18 +17,9 @@ pub async fn run(
     batch_list: Arc<SharedMut<Vec<SlotState>>>,
     shared_state: Arc<SharedState>,
     parser_options: ParserOptions,
-    session_mode: SessionMode,
-    slot_reuse_timeout_ms: usize,
+    slot_manager: Arc<SlotManager<f16>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动事件驱动的 OpenAI 兼容服务器...");
-
-    let slot_count = batch_list.with(|list| list.len());
-    let slot_manager = Arc::new(SlotManager::new(
-        slot_count,
-        batch_sequences.clone(),
-        session_mode,
-        slot_reuse_timeout_ms as u64,
-    ));
 
     let state = build_api_state(
         batch_sequences,

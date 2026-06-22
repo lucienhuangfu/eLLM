@@ -124,10 +124,14 @@ where
         mut schedule_rx: broadcast::Receiver<ScheduleTask>,
     ) {
         let mut wait = AdaptiveWait::new();
+        println!("[Executor] Worker {} 启动", thread_id);
 
         loop {
             match schedule_rx.try_recv() {
                 Ok(task) => {
+                    println!("[Executor] Worker {} 收到任务: task_id={}, prefill_size={}, decode_size={}", 
+                        thread_id, task.task_id, task.prefill_size, task.decode_size);
+
                     let sequence_count: usize = task.decode_size
                         + if task.prefill_size > 0 {
                             1usize
@@ -137,6 +141,7 @@ where
 
                     shared_state.batch_tracker.reset(sequence_count);
 
+                    println!("[Executor] Worker {} 开始执行任务", thread_id);
                     execute_batch(
                         &shared_state,
                         operator_queue,
@@ -145,8 +150,14 @@ where
                         thread_id,
                         &task,
                     );
+                    println!("[Executor] Worker {} 完成任务执行", thread_id);
 
-                    update_states(&shared_state, &task);
+                    // 只有 thread 0 更新状态
+                    if thread_id == 0 {
+                        println!("[Executor] Worker {} 调用 update_states", thread_id);
+                        update_states(&shared_state, &task);
+                        println!("[Executor] Worker {} 完成 update_states", thread_id);
+                    }
                 }
                 Err(_) => {
                     wait.wait(|| {
@@ -212,13 +223,28 @@ fn execute_batch<T>(
 }
 
 fn update_states(shared_state: &SharedState, task: &ScheduleTask) {
+    println!(
+        "[Executor] update_states: prefill_size={}, decode_size={}",
+        task.prefill_size, task.decode_size
+    );
+
     let batch_list_ptr = shared_state.batch_list.get();
     unsafe {
         let batch_list = &mut *batch_list_ptr;
 
+        // 处理 decode 阶段的序列
         for slice in task.decode_list.iter() {
             if let Some(record) = batch_list.get_mut(slice.batch_index) {
                 SlotStateMachine::advance_sequence(record, slice.length);
+            }
+        }
+
+        // 处理 prefill 阶段的序列
+        for prefill_list in task.prefill_list.iter() {
+            for slice in prefill_list.iter() {
+                if let Some(record) = batch_list.get_mut(slice.batch_index) {
+                    SlotStateMachine::advance_sequence(record, slice.length);
+                }
             }
         }
     }
@@ -229,7 +255,14 @@ fn update_states(shared_state: &SharedState, task: &ScheduleTask) {
         } else {
             0usize
         };
+
     for _ in 0..sequence_count {
         shared_state.batch_tracker.complete_slot();
     }
+
+    // 任务完成后，重置 task_in_flight 标志
+    shared_state
+        .task_in_flight
+        .store(false, std::sync::atomic::Ordering::Release);
+    println!("[Executor] update_states 完成");
 }

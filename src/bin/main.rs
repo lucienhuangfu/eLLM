@@ -24,8 +24,7 @@ async fn run_server(
         resources.batch_states,
         resources.shared_state,
         resources.parser_options,
-        resources.session_mode,
-        resources.slot_reuse_timeout_ms,
+        resources.slot_manager,
     )
     .await?;
 
