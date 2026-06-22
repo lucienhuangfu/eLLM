@@ -43,14 +43,7 @@ fn test_topk_softmax_f32() {
 
     let mut batch_list = Vec::with_capacity(batch_size);
     for i in 0..batch_size {
-        batch_list.push(SequenceState {
-            filling_length: 0,
-            sequence_index: 0,
-            kv_index: 0,
-            phase: Phase::Decode,
-            // prompt_length: i,
-            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        });
+        batch_list.push(SlotState::new_decode_state(0, 0));
     }
     let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
     let mut decode_lists = Vec::with_capacity(thread_num);
@@ -199,14 +192,7 @@ fn test_topk_softmax_f16() {
 
     let mut batch_list = Vec::with_capacity(batch_size);
     for i in 0..batch_size {
-        batch_list.push(SequenceState {
-            filling_length: 0,
-            sequence_index: 0,
-            kv_index: 0,
-            phase: Phase::Decode,
-            // prompt_length: i,
-            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        });
+        batch_list.push(SlotState::new_decode_state(0, 0));
     }
     let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
     let mut decode_lists = Vec::with_capacity(thread_num);

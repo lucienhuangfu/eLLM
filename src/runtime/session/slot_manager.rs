@@ -5,9 +5,10 @@ use tokio::sync::Mutex;
 
 use crate::runtime::error::SlotError;
 use crate::runtime::state::batch::BatchSequence;
+use crate::runtime::state::core::SlotState;
+use crate::runtime::state::machine::SlotStateMachine;
 use crate::runtime::state::types::Phase;
 
-use super::slot_entry::SlotEntry;
 use super::types::{SessionHandle, SessionMode};
 
 const LRU_SENTINEL: usize = usize::MAX;
@@ -16,7 +17,7 @@ pub struct SlotManager<T>
 where
     T: Copy + crate::num_traits::FromNumber,
 {
-    slots: Arc<Mutex<Vec<SlotEntry>>>,
+    slots: Arc<Mutex<Vec<SlotState>>>,
     active_prefill: Arc<Mutex<Vec<usize>>>,
     active_decode: Arc<Mutex<Vec<usize>>>,
     available_slots: Arc<Mutex<Vec<usize>>>,
@@ -42,7 +43,7 @@ where
         let mut available_slots = Vec::with_capacity(num_slots);
 
         for i in 0..num_slots {
-            slots.push(SlotEntry::new_start_state());
+            slots.push(SlotState::new_start_state());
             available_slots.push(i);
         }
 
@@ -169,7 +170,7 @@ where
                 entry.token_count = token_count;
 
                 if self.mode == SessionMode::NonReusable {
-                    entry.reset_to_start();
+                    SlotStateMachine::reset_to_start(entry);
                     session_map.remove(session_id);
 
                     let mut available = self.available_slots.lock().await;
@@ -188,53 +189,41 @@ where
         let mut slots = self.slots.lock().await;
         let entry = &mut slots[slot_index];
 
-        entry.sequence_index = sequence_index;
-        entry.kv_index = sequence_index;
-        entry.filling_length = filling_length;
-        entry.phase = Phase::Prefill;
+        let _ = SlotStateMachine::transition_to_prefill(entry, sequence_index, filling_length);
 
         self.remove_from_available(slot_index).await;
         self.add_to_active_prefill(slot_index).await;
-
-        entry.notify.notify_one();
     }
 
     pub async fn transition_to_decode(&self, slot_index: usize) {
         let mut slots = self.slots.lock().await;
         let entry = &mut slots[slot_index];
 
-        entry.phase = Phase::Decode;
-        entry.filling_length = 0;
+        let _ = SlotStateMachine::transition_to_decode(entry);
 
         self.remove_from_active_prefill(slot_index).await;
         self.add_to_active_decode(slot_index).await;
-
-        entry.notify.notify_one();
     }
 
     pub async fn transition_to_eos(&self, slot_index: usize) {
         let mut slots = self.slots.lock().await;
         let entry = &mut slots[slot_index];
 
-        entry.phase = Phase::Eos;
+        let _ = SlotStateMachine::transition_to_eos(entry);
 
         self.remove_from_active_prefill(slot_index).await;
         self.remove_from_active_decode(slot_index).await;
         self.add_to_available(slot_index).await;
-
-        entry.notify.notify_one();
     }
 
     pub async fn transition_to_timeout(&self, slot_index: usize) {
         let mut slots = self.slots.lock().await;
         let entry = &mut slots[slot_index];
 
-        entry.phase = Phase::Timeout;
+        let _ = SlotStateMachine::transition_to_timeout(entry);
 
         self.remove_from_active_prefill(slot_index).await;
         self.remove_from_active_decode(slot_index).await;
-
-        entry.notify.notify_one();
     }
 
     pub async fn reset_to_start(&self, slot_index: usize) {
@@ -242,7 +231,7 @@ where
         let entry = &mut slots[slot_index];
 
         let old_phase = entry.phase;
-        entry.reset_to_start();
+        SlotStateMachine::reset_to_start(entry);
 
         if matches!(old_phase, Phase::Prefill) {
             self.remove_from_active_prefill(slot_index).await;
@@ -306,7 +295,7 @@ where
         !self.active_prefill.lock().await.is_empty() || !self.active_decode.lock().await.is_empty()
     }
 
-    pub async fn get_slot(&self, slot_index: usize) -> Option<SlotEntry> {
+    pub async fn get_slot(&self, slot_index: usize) -> Option<SlotState> {
         let slots = self.slots.lock().await;
         slots.get(slot_index).cloned()
     }
@@ -314,10 +303,9 @@ where
     pub async fn advance_sequence(&self, slot_index: usize, steps: usize) {
         let mut slots = self.slots.lock().await;
         if let Some(entry) = slots.get_mut(slot_index) {
-            let old_phase = entry.phase;
-            entry.advance_sequence(steps);
+            let phase_change = SlotStateMachine::advance_sequence(entry, steps);
 
-            if old_phase == Phase::Prefill && entry.phase == Phase::Decode {
+            if phase_change == Some(Phase::Decode) {
                 self.remove_from_active_prefill(slot_index).await;
                 self.add_to_active_decode(slot_index).await;
             }

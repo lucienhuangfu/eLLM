@@ -5,8 +5,8 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
-    BatchSequence, ExecutorPool, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SequenceState,
-    SessionMode, SharedState, SlotManager,
+    BatchSequence, ExecutorPool, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SessionMode,
+    SharedState, SlotManager, SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
@@ -160,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         written_lengths
             .iter()
             .enumerate()
-            .map(|(_, &len)| SequenceState::new_prefill_state(0, len.min(sequence_length))),
+            .map(|(_, &len)| SlotState::new_prefill_state(0, len.min(sequence_length))),
     );
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
     let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
@@ -172,9 +172,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         thread_num,
     ));
 
-    let executor_pool =
-        ExecutorPool::<f16>::new(f16::take_operator_queue(), Arc::clone(&shared_state))
-            .with_thread_count(thread_num);
+    let executor_pool = ExecutorPool::<f16>::new(
+        f16::take_operator_queue(),
+        Arc::clone(&shared_state),
+        thread_num,
+    );
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,

@@ -1,4 +1,5 @@
-use super::types::{Phase, SequenceState};
+use super::core::SlotState;
+use super::types::Phase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionError {
@@ -6,23 +7,23 @@ pub enum TransitionError {
     AlreadyInTargetState,
 }
 
-pub struct SequenceStateMachine;
+pub struct SlotStateMachine;
 
-impl SequenceStateMachine {
-    pub fn new_start_state() -> SequenceState {
-        SequenceState::new_start_state()
+impl SlotStateMachine {
+    pub fn new_start_state() -> SlotState {
+        SlotState::new_start_state()
     }
 
-    pub fn new_prefill_state(sequence_index: usize, filling_length: usize) -> SequenceState {
-        SequenceState::new_prefill_state(sequence_index, filling_length)
+    pub fn new_prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+        SlotState::new_prefill_state(sequence_index, filling_length)
     }
 
-    pub fn new_decode_state(sequence_index: usize, kv_index: usize) -> SequenceState {
-        SequenceState::new_decode_state(sequence_index, kv_index)
+    pub fn new_decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+        SlotState::new_decode_state(sequence_index, kv_index)
     }
 
     pub fn transition_to_prefill(
-        state: &mut SequenceState,
+        state: &mut SlotState,
         sequence_index: usize,
         filling_length: usize,
     ) -> Result<(), TransitionError> {
@@ -42,7 +43,7 @@ impl SequenceStateMachine {
         Ok(())
     }
 
-    pub fn transition_to_decode(state: &mut SequenceState) -> Result<(), TransitionError> {
+    pub fn transition_to_decode(state: &mut SlotState) -> Result<(), TransitionError> {
         if state.phase == Phase::Decode {
             return Err(TransitionError::AlreadyInTargetState);
         }
@@ -57,7 +58,7 @@ impl SequenceStateMachine {
         Ok(())
     }
 
-    pub fn transition_to_eos(state: &mut SequenceState) -> Result<(), TransitionError> {
+    pub fn transition_to_eos(state: &mut SlotState) -> Result<(), TransitionError> {
         if state.phase == Phase::Eos {
             return Err(TransitionError::AlreadyInTargetState);
         }
@@ -71,7 +72,7 @@ impl SequenceStateMachine {
         Ok(())
     }
 
-    pub fn transition_to_timeout(state: &mut SequenceState) -> Result<(), TransitionError> {
+    pub fn transition_to_timeout(state: &mut SlotState) -> Result<(), TransitionError> {
         if state.phase == Phase::Timeout {
             return Err(TransitionError::AlreadyInTargetState);
         }
@@ -85,14 +86,16 @@ impl SequenceStateMachine {
         Ok(())
     }
 
-    pub fn reset_to_start(state: &mut SequenceState) {
+    pub fn reset_to_start(state: &mut SlotState) {
         state.sequence_index = usize::MAX;
         state.kv_index = usize::MAX;
         state.filling_length = 0;
         state.phase = Phase::Start;
+        state.session_id = None;
+        state.token_count = 0;
     }
 
-    pub fn advance_sequence(state: &mut SequenceState, steps: usize) -> Option<Phase> {
+    pub fn advance_sequence(state: &mut SlotState, steps: usize) -> Option<Phase> {
         let previous_phase = state.phase;
         state.sequence_index += steps;
 
@@ -111,12 +114,12 @@ impl SequenceStateMachine {
         }
     }
 
-    pub fn is_active(state: &SequenceState) -> bool {
-        matches!(state.phase, Phase::Prefill | Phase::Decode)
+    pub fn is_active(state: &SlotState) -> bool {
+        state.is_active()
     }
 
-    pub fn is_available(state: &SequenceState) -> bool {
-        matches!(state.phase, Phase::Start | Phase::Eos)
+    pub fn is_available(state: &SlotState) -> bool {
+        state.is_available()
     }
 
     pub fn can_transition(from: Phase, to: Phase) -> bool {
@@ -140,10 +143,10 @@ mod tests {
 
     #[test]
     fn transition_from_start_to_prefill() {
-        let mut state = SequenceStateMachine::new_start_state();
+        let mut state = SlotStateMachine::new_start_state();
         assert_eq!(state.phase, Phase::Start);
 
-        let result = SequenceStateMachine::transition_to_prefill(&mut state, 0, 10);
+        let result = SlotStateMachine::transition_to_prefill(&mut state, 0, 10);
         assert!(result.is_ok());
         assert_eq!(state.phase, Phase::Prefill);
         assert_eq!(state.sequence_index, 0);
@@ -152,10 +155,10 @@ mod tests {
 
     #[test]
     fn transition_from_prefill_to_decode() {
-        let mut state = SequenceStateMachine::new_prefill_state(0, 5);
+        let mut state = SlotStateMachine::new_prefill_state(0, 5);
         assert_eq!(state.phase, Phase::Prefill);
 
-        let result = SequenceStateMachine::transition_to_decode(&mut state);
+        let result = SlotStateMachine::transition_to_decode(&mut state);
         assert!(result.is_ok());
         assert_eq!(state.phase, Phase::Decode);
         assert_eq!(state.filling_length, 0);
@@ -163,17 +166,17 @@ mod tests {
 
     #[test]
     fn invalid_transition_returns_error() {
-        let mut state = SequenceStateMachine::new_start_state();
-        let result = SequenceStateMachine::transition_to_decode(&mut state);
+        let mut state = SlotStateMachine::new_start_state();
+        let result = SlotStateMachine::transition_to_decode(&mut state);
         assert!(matches!(result, Err(TransitionError::InvalidTransition)));
     }
 
     #[test]
     fn advance_sequence_automatically_transitions_to_decode() {
-        let mut state = SequenceStateMachine::new_prefill_state(0, 3);
+        let mut state = SlotStateMachine::new_prefill_state(0, 3);
         assert_eq!(state.phase, Phase::Prefill);
 
-        let phase_change = SequenceStateMachine::advance_sequence(&mut state, 3);
+        let phase_change = SlotStateMachine::advance_sequence(&mut state, 3);
         assert_eq!(phase_change, Some(Phase::Decode));
         assert_eq!(state.phase, Phase::Decode);
         assert_eq!(state.sequence_index, 3);
@@ -181,10 +184,10 @@ mod tests {
 
     #[test]
     fn advance_sequence_partial() {
-        let mut state = SequenceStateMachine::new_prefill_state(0, 5);
+        let mut state = SlotStateMachine::new_prefill_state(0, 5);
         assert_eq!(state.phase, Phase::Prefill);
 
-        let phase_change = SequenceStateMachine::advance_sequence(&mut state, 2);
+        let phase_change = SlotStateMachine::advance_sequence(&mut state, 2);
         assert_eq!(phase_change, None);
         assert_eq!(state.phase, Phase::Prefill);
         assert_eq!(state.sequence_index, 2);
@@ -193,35 +196,29 @@ mod tests {
 
     #[test]
     fn can_transition_validates_transitions() {
-        assert!(SequenceStateMachine::can_transition(
+        assert!(SlotStateMachine::can_transition(
             Phase::Start,
             Phase::Prefill
         ));
-        assert!(SequenceStateMachine::can_transition(
+        assert!(SlotStateMachine::can_transition(
             Phase::Prefill,
             Phase::Decode
         ));
-        assert!(SequenceStateMachine::can_transition(
-            Phase::Decode,
-            Phase::Eos
-        ));
-        assert!(!SequenceStateMachine::can_transition(
+        assert!(SlotStateMachine::can_transition(Phase::Decode, Phase::Eos));
+        assert!(!SlotStateMachine::can_transition(
             Phase::Decode,
             Phase::Prefill
         ));
-        assert!(!SequenceStateMachine::can_transition(
-            Phase::Eos,
-            Phase::Decode
-        ));
+        assert!(!SlotStateMachine::can_transition(Phase::Eos, Phase::Decode));
     }
 
     #[test]
     fn reset_to_start_clears_state() {
-        let mut state = SequenceStateMachine::new_decode_state(10, 5);
+        let mut state = SlotStateMachine::new_decode_state(10, 5);
         assert_eq!(state.phase, Phase::Decode);
         assert_eq!(state.sequence_index, 10);
 
-        SequenceStateMachine::reset_to_start(&mut state);
+        SlotStateMachine::reset_to_start(&mut state);
         assert_eq!(state.phase, Phase::Start);
         assert_eq!(state.sequence_index, usize::MAX);
         assert_eq!(state.kv_index, usize::MAX);
@@ -230,16 +227,16 @@ mod tests {
 
     #[test]
     fn transition_to_eos_from_decode() {
-        let mut state = SequenceStateMachine::new_decode_state(10, 5);
-        let result = SequenceStateMachine::transition_to_eos(&mut state);
+        let mut state = SlotStateMachine::new_decode_state(10, 5);
+        let result = SlotStateMachine::transition_to_eos(&mut state);
         assert!(result.is_ok());
         assert_eq!(state.phase, Phase::Eos);
     }
 
     #[test]
     fn transition_to_timeout_from_decode() {
-        let mut state = SequenceStateMachine::new_decode_state(10, 5);
-        let result = SequenceStateMachine::transition_to_timeout(&mut state);
+        let mut state = SlotStateMachine::new_decode_state(10, 5);
+        let result = SlotStateMachine::transition_to_timeout(&mut state);
         assert!(result.is_ok());
         assert_eq!(state.phase, Phase::Timeout);
     }

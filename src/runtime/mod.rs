@@ -16,21 +16,21 @@ pub use io::{load_tiktoken, ChatTemplate, SafeTensorsLoader};
 pub use scheduler::{ScheduleTask, Scheduler};
 pub use session::{SessionHandle, SessionMode, SlotManager};
 pub use state::{
-    build_batch_sequence, build_sequence_state, BatchSequence, DecodeList, DecodeLookupResult,
-    Phase, SequenceSlice, SequenceState, SequenceStateMachine, SharedState, TransitionError,
+    build_batch_sequence, build_slot_state, BatchSequence, DecodeList, DecodeLookupResult,
+    Phase, SequenceSlice, SharedState, SlotState, SlotStateMachine, TransitionError,
 };
 
 #[cfg(test)]
 mod tests {
-    use super::{Phase, SequenceState};
+    use super::{Phase, SlotState};
     use std::sync::Arc;
 
     #[test]
     fn runtime_reexports_are_constructible() {
         use crate::operators::send_sync_ptr::SharedMut;
 
-        let prefill_state = SequenceState::new_prefill_state(8, 4);
-        let decode_state = SequenceState::new_decode_state(16, 16);
+        let prefill_state = SlotState::new_prefill_state(8, 4);
+        let decode_state = SlotState::new_decode_state(16, 16);
 
         assert_eq!(prefill_state.sequence_index, 8);
         assert_eq!(prefill_state.kv_index, 8);

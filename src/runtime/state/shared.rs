@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use super::types::SequenceState;
+use super::core::SlotState;
 use crate::runtime::executor::sync::BatchTracker;
 use crate::runtime::plan::{BatchPlan, PlanBuilder};
 
@@ -15,7 +15,7 @@ pub enum SchedulerState {
 }
 
 pub struct SharedState {
-    pub batch_list: Arc<crate::operators::send_sync_ptr::SharedMut<Vec<SequenceState>>>,
+    pub batch_list: Arc<crate::operators::send_sync_ptr::SharedMut<Vec<SlotState>>>,
     pub request_count: AtomicUsize,
     pub current_batch: AtomicPtr<BatchPlan>,
     pub batch_ready: AtomicBool,
@@ -27,7 +27,7 @@ pub struct SharedState {
 
 impl SharedState {
     pub fn new(
-        batch_list: Arc<crate::operators::send_sync_ptr::SharedMut<Vec<SequenceState>>>,
+        batch_list: Arc<crate::operators::send_sync_ptr::SharedMut<Vec<SlotState>>>,
         max_decode: usize,
         max_prefill: usize,
         thread_num: usize,

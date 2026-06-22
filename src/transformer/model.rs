@@ -262,18 +262,12 @@ mod test {
     // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::mem_mgr::allocator::AlignedBox;
     use crate::runtime::state::sequence::SequenceSlice;
-    use crate::runtime::{Phase, SequenceState};
+    use crate::runtime::{Phase, SlotState};
     use std::collections::HashMap;
 
-    fn build_batch_list(batch_size: usize) -> Vec<SequenceState> {
+    fn build_batch_list(batch_size: usize) -> Vec<SlotState> {
         (0..batch_size)
-            .map(|i| SequenceState {
-                filling_length: 0,
-                sequence_index: i,
-                kv_index: i,
-                phase: Phase::Decode,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-            })
+            .map(|i| SlotState::new_decode_state(i, i))
             .collect()
     }
 

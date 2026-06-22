@@ -9,8 +9,8 @@ fn create_runtime(
     resources: &serving::ServingResources<f16>,
 ) -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error>> {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(resources.worker_threads)
-        .max_blocking_threads(resources.async_threads)
+        .worker_threads(resources.api_threads)
+        .max_blocking_threads(resources.blocking_threads)
         .enable_all()
         .build()
         .map_err(Into::into)

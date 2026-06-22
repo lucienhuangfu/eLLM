@@ -5,7 +5,7 @@ pub(super) use crate::operators::expert::expert_routing::routing_from_dense;
 pub(super) use crate::operators::linear::{MatMul, MatMulAdd};
 pub(super) use crate::operators::operator::Operator;
 pub(super) use crate::runtime::state::sequence::SequenceSlice;
-pub(super) use crate::runtime::{Phase, SequenceState};
+pub(super) use crate::runtime::{Phase, SlotState};
 pub(super) use crate::tensor::GlobalOperatorQueue;
 pub(super) use crate::tensor::Tensor;
 pub(super) use approx::{assert_abs_diff_eq, assert_ulps_eq};

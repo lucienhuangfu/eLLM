@@ -3,26 +3,14 @@ use std::sync::Arc;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::state::batch::BatchSequence;
-use crate::runtime::state::types::SequenceState;
+use crate::runtime::state::core::SlotState;
 
-/// 构建序列状态
-///
-/// 创建指定数量的初始序列状态
-pub fn build_sequence_state(batch_size: usize) -> Vec<SequenceState> {
+pub fn build_slot_state(batch_size: usize) -> Vec<SlotState> {
     (0..batch_size)
-        .map(|_| SequenceState {
-            filling_length: 0,
-            sequence_index: usize::MAX,
-            kv_index: usize::MAX,
-            phase: crate::runtime::state::types::Phase::Start,
-            notify: Arc::new(tokio::sync::Notify::new()),
-        })
+        .map(|_| SlotState::new_start_state())
         .collect()
 }
 
-/// 构建批处理序列
-///
-/// 创建批处理序列和对应的内存分配
 pub fn build_batch_sequence(
     model_dir: &str,
     batch_size: usize,

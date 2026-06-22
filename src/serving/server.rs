@@ -6,7 +6,7 @@ use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::session::{SessionMode, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::shared::SharedState;
-use crate::runtime::state::types::SequenceState;
+use crate::runtime::SlotState;
 
 use super::api::chat_completions;
 use super::parser::ParserOptions;
@@ -14,7 +14,7 @@ use super::state::build_api_state;
 
 pub async fn run(
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
-    batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+    batch_list: Arc<SharedMut<Vec<SlotState>>>,
     shared_state: Arc<SharedState>,
     parser_options: ParserOptions,
     session_mode: SessionMode,

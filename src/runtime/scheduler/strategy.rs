@@ -1,10 +1,10 @@
 use crate::runtime::plan::BatchPlan;
-use crate::runtime::state::types::SequenceState;
+use crate::runtime::state::core::SlotState;
 
 pub trait SchedulerStrategy: Send + Sync + 'static {
     fn plan_next_round(
         &self,
-        batch_list: &[SequenceState],
+        batch_list: &[SlotState],
         max_decode_size: usize,
         max_prefill_size: usize,
     ) -> BatchPlan;
@@ -29,7 +29,7 @@ impl DefaultSchedulerStrategy {
 impl SchedulerStrategy for DefaultSchedulerStrategy {
     fn plan_next_round(
         &self,
-        batch_list: &[SequenceState],
+        batch_list: &[SlotState],
         _max_decode_size: usize,
         _max_prefill_size: usize,
     ) -> BatchPlan {

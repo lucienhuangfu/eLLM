@@ -5,7 +5,7 @@ use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::{
-    BatchSequence, ExecutorPool, SequenceState, SessionMode, SharedState, SlotManager,
+    BatchSequence, ExecutorPool, SessionMode, SharedState, SlotManager, SlotState,
 };
 use ellm::serving;
 use ellm::serving::parser::{ParserOptions, ParserRule};
@@ -13,16 +13,16 @@ use ellm::transformer::config::ModelFamily;
 use std::sync::Arc;
 use std::time::Duration;
 
-fn build_sequence_state(batch_size: usize) -> Vec<SequenceState> {
+fn build_sequence_state(batch_size: usize) -> Vec<SlotState> {
     (0..batch_size)
-        .map(|_| SequenceState::new_start_state())
+        .map(|_| SlotState::new_start_state())
         .collect()
 }
 
-fn build_fake_runner(batch_states: Arc<SharedMut<Vec<SequenceState>>>) -> ExecutorPool<f16> {
+fn build_fake_runner(batch_states: Arc<SharedMut<Vec<SlotState>>>) -> ExecutorPool<f16> {
     let operator_queue = vec![Operator::FakeEcho(FakeEcho)];
     let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_states), 4, 64, 1));
-    ExecutorPool::new(operator_queue, shared_state).with_thread_count(1)
+    ExecutorPool::new(operator_queue, shared_state, 1)
 }
 
 #[tokio::main(flavor = "current_thread")]

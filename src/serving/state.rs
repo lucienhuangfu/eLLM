@@ -7,7 +7,7 @@ use crate::runtime::error::SlotError;
 use crate::runtime::session::{SessionHandle, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::shared::SharedState;
-use crate::runtime::state::types::{Phase, SequenceState};
+use crate::runtime::{Phase, SlotState};
 
 use super::parser::ParserOptions;
 use super::requests::ChatMessage;
@@ -18,7 +18,7 @@ where
     T: Copy + crate::num_traits::FromNumber,
 {
     pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
-    pub batch_states: Arc<SharedMut<Vec<SequenceState>>>,
+    pub batch_states: Arc<SharedMut<Vec<SlotState>>>,
     pub shared_state: Arc<SharedState>,
     pub parser_options: ParserOptions,
     pub slot_manager: Arc<SlotManager<T>>,
@@ -26,7 +26,7 @@ where
 
 pub fn build_api_state(
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
-    batch_states: Arc<SharedMut<Vec<SequenceState>>>,
+    batch_states: Arc<SharedMut<Vec<SlotState>>>,
     shared_state: Arc<SharedState>,
     parser_options: ParserOptions,
     slot_manager: Arc<SlotManager<f16>>,
@@ -71,7 +71,9 @@ where
     }
 
     pub async fn release_session(&self, session_id: &str, token_count: usize) {
-        self.slot_manager.release_session(session_id, token_count).await;
+        self.slot_manager
+            .release_session(session_id, token_count)
+            .await;
     }
 
     pub async fn get_cached_prefix(
@@ -79,7 +81,9 @@ where
         session_id: &str,
         new_tokens: &[u32],
     ) -> Option<(usize, Vec<u32>)> {
-        self.slot_manager.calculate_delta(session_id, new_tokens).await
+        self.slot_manager
+            .calculate_delta(session_id, new_tokens)
+            .await
     }
 
     pub async fn write_prompts_and_prepare(
@@ -111,11 +115,11 @@ where
                                 record.phase = Phase::Prefill;
                                 (write_len, record.notify.clone())
                             })
-                            .map_err(|e| e.to_string())
+                            .map_err(|e: String| e.to_string())
                     }
                 })
             })
-            .map_err(|err| {
+            .map_err(|err: String| {
                 eprintln!("Error writing prompt: {}", err);
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -124,7 +128,10 @@ where
                     .into_response()
             })?;
 
-        let _ = self.slot_manager.transition_to_prefill(slot_index, 0, result.0).await;
+        let _ = self
+            .slot_manager
+            .transition_to_prefill(slot_index, 0, result.0)
+            .await;
 
         self.shared_state.push_request();
 
@@ -171,11 +178,11 @@ where
                                     record.phase = Phase::Prefill;
                                     (write_len, record.notify.clone())
                                 })
-                                .map_err(|e| e.to_string())
+                                .map_err(|e: String| e.to_string())
                         }
                     })
                 })
-                .map_err(|err| {
+                .map_err(|err: String| {
                     eprintln!("Error writing incremental prompt: {}", err);
                     (
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -184,11 +191,15 @@ where
                         .into_response()
                 })?,
             None => {
-                return self.write_prompts_and_prepare(slot_index, messages, temperature).await;
+                return self
+                    .write_prompts_and_prepare(slot_index, messages, temperature)
+                    .await;
             }
         };
 
-        self.slot_manager.transition_to_prefill(slot_index, 0, write_len).await;
+        self.slot_manager
+            .transition_to_prefill(slot_index, 0, write_len)
+            .await;
 
         self.shared_state.push_request();
 

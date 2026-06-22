@@ -8,7 +8,7 @@ use ellm::runtime::io::ChatTemplate;
 use ellm::runtime::io::SafeTensorsLoader;
 use ellm::runtime::{
     BatchSequence, Config, ExecutorPool, GenerationConfig, Phase, ScheduleTask, Scheduler,
-    SequenceState, SessionMode, SharedState, SlotManager,
+    SessionMode, SharedState, SlotManager, SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
@@ -166,9 +166,9 @@ fn main() {
     let (_indices, _values) =
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
 
-    let batch_list: Vec<SequenceState> = written_lengths
+    let batch_list: Vec<SlotState> = written_lengths
         .iter()
-        .map(|&len| SequenceState::new_prefill_state(0, len))
+        .map(|&len| SlotState::new_prefill_state(0, len))
         .collect();
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
     let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
@@ -180,8 +180,11 @@ fn main() {
         thread_num,
     ));
 
-    let executor_pool = ExecutorPool::new(f16::take_operator_queue(), Arc::clone(&shared_state))
-        .with_thread_count(thread_num);
+    let executor_pool = ExecutorPool::new(
+        f16::take_operator_queue(),
+        Arc::clone(&shared_state),
+        thread_num,
+    );
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,

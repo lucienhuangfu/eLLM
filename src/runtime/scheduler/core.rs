@@ -9,10 +9,10 @@ use super::task::ScheduleTask;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::plan::BatchPlan;
 use crate::runtime::session::SlotManager;
-use crate::runtime::state::types::SequenceState;
+use crate::runtime::state::core::SlotState;
 
 pub struct Scheduler {
-    batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+    batch_list: Arc<SharedMut<Vec<SlotState>>>,
     slot_manager: Arc<SlotManager<f16>>,
     strategy: Box<dyn SchedulerStrategy>,
     thread_num: AtomicUsize,
@@ -32,7 +32,7 @@ impl Scheduler {
         _threshold: usize,
         timeout: Duration,
         broadcast_sender: broadcast::Sender<ScheduleTask>,
-        batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+        batch_list: Arc<SharedMut<Vec<SlotState>>>,
         slot_manager: Arc<SlotManager<f16>>,
     ) -> Self {
         Self::build(
@@ -59,7 +59,7 @@ impl Scheduler {
         _threshold: usize,
         timeout: Duration,
         broadcast_sender: broadcast::Sender<ScheduleTask>,
-        batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+        batch_list: Arc<SharedMut<Vec<SlotState>>>,
         slot_manager: Arc<SlotManager<f16>>,
     ) -> Self {
         Self::build(
@@ -83,7 +83,7 @@ impl Scheduler {
         thread_num: usize,
         timeout: Duration,
         broadcast_sender: broadcast::Sender<ScheduleTask>,
-        batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+        batch_list: Arc<SharedMut<Vec<SlotState>>>,
         slot_manager: Arc<SlotManager<f16>>,
         strategy: Box<dyn SchedulerStrategy>,
     ) -> Self {
@@ -105,7 +105,7 @@ impl Scheduler {
         thread_num: usize,
         timeout: Duration,
         broadcast_sender: broadcast::Sender<ScheduleTask>,
-        batch_list: Arc<SharedMut<Vec<SequenceState>>>,
+        batch_list: Arc<SharedMut<Vec<SlotState>>>,
         slot_manager: Arc<SlotManager<f16>>,
         strategy: Box<dyn SchedulerStrategy>,
     ) -> Self {
@@ -131,7 +131,7 @@ impl Scheduler {
         self.thread_num.store(thread_num.max(1), Ordering::Release);
     }
 
-    pub fn batch_list(&self) -> Arc<SharedMut<Vec<SequenceState>>> {
+    pub fn batch_list(&self) -> Arc<SharedMut<Vec<SlotState>>> {
         Arc::clone(&self.batch_list)
     }
 
@@ -238,14 +238,14 @@ mod tests {
     use super::*;
     use crate::runtime::scheduler::strategy::DefaultSchedulerStrategy;
     use crate::runtime::session::{SessionMode, SlotManager};
-    use crate::runtime::state::types::SequenceState;
+    use crate::runtime::state::core::SlotState;
 
-    fn decode_state(sequence_index: usize, kv_index: usize) -> SequenceState {
-        SequenceState::new_decode_state(sequence_index, kv_index)
+    fn decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+        SlotState::new_decode_state(sequence_index, kv_index)
     }
 
-    fn prefill_state(sequence_index: usize, filling_length: usize) -> SequenceState {
-        SequenceState::new_prefill_state(sequence_index, filling_length)
+    fn prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+        SlotState::new_prefill_state(sequence_index, filling_length)
     }
 
     fn create_slot_manager(batch_size: usize) -> Arc<SlotManager<f16>> {

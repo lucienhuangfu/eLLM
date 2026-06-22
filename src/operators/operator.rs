@@ -1,10 +1,8 @@
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, FromNumber, Sigmoid, Sqrt};
 use crate::operators::fake_echo::FakeEcho;
-use crate::runtime::session::{SessionMode, SlotManager};
 use crate::runtime::state::sequence::SequenceSlice;
-use crate::runtime::Scheduler;
-use crate::runtime::SequenceState;
+use crate::runtime::SlotState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::operators::routing::ExpertsSoftmaxNorm;
@@ -86,7 +84,7 @@ where
         thread_id: usize,
         prefill_list: &[Vec<SequenceSlice>],
         decode_list: &[SequenceSlice],
-        batch_list: &mut Vec<SequenceState>,
+        batch_list: &mut Vec<SlotState>,
     ) {
         macro_rules! run_simple {
             ($op:expr) => {
@@ -232,7 +230,7 @@ mod test {
     use crate::operators::expert::expert_routing::ExpertRouting;
     use crate::operators::send_sync_ptr::SharedMut;
     use crate::runtime::state::sequence::SequenceSlice;
-    use crate::runtime::{Phase, SequenceState};
+    use crate::runtime::{Phase, Scheduler, SessionMode, SlotManager, SlotState};
     use approx::assert_ulps_eq;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -296,24 +294,12 @@ mod test {
         None
     }
 
-    fn prefill_state(sequence_index: usize, filling_length: usize) -> SequenceState {
-        SequenceState {
-            sequence_index,
-            kv_index: sequence_index,
-            filling_length,
-            phase: Phase::Prefill,
-            notify: Arc::new(Notify::new()),
-        }
+    fn prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+        SlotState::new_prefill_state(sequence_index, filling_length)
     }
 
-    fn decode_state(sequence_index: usize, kv_index: usize) -> SequenceState {
-        SequenceState {
-            sequence_index,
-            kv_index,
-            filling_length: 0,
-            phase: Phase::Decode,
-            notify: Arc::new(Notify::new()),
-        }
+    fn decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+        SlotState::new_decode_state(sequence_index, kv_index)
     }
 
     fn run_prefill_operator_all_threads(
@@ -323,7 +309,7 @@ mod test {
         thread_num: usize,
         prefill_list: &[Vec<SequenceSlice>],
         decode_list: &[SequenceSlice],
-        batch_list: &mut Vec<SequenceState>,
+        batch_list: &mut Vec<SlotState>,
     ) {
         for thread_id in 0..thread_num {
             operator.run(
@@ -1539,15 +1525,8 @@ mod test {
         let eos_id = 0usize;
         let mut batch_temperature = vec![1.0f32; batch_size];
 
-        let batch_records: Vec<SequenceState> = (0..batch_size)
-            .map(|_| SequenceState {
-                filling_length: 0,
-                sequence_index: 0,
-                kv_index: 0,
-                phase: Phase::Decode,
-                // prompt_length: 0,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-            })
+        let batch_records: Vec<SlotState> = (0..batch_size)
+            .map(|_| SlotState::new_decode_state(0, 0))
             .collect();
         let mut batch_list = batch_records;
 

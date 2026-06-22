@@ -9,7 +9,7 @@
 //! a full model forward pass or any operator-owned state.
 
 use crate::runtime::state::sequence::SequenceSlice;
-use crate::runtime::{Phase, SequenceState};
+use crate::runtime::{Phase, SlotState};
 
 /// A tiny testing operator that completes prefill requests immediately.
 #[derive(Clone)]
@@ -28,7 +28,7 @@ impl FakeEcho {
         &self,
         _prefill_list: &[Vec<SequenceSlice>],
         _decode_list: &[SequenceSlice],
-        batch_list: &mut Vec<SequenceState>,
+        batch_list: &mut Vec<SlotState>,
         thread_id: usize,
     ) {
         // ServingRunner 的 thread_id 从 0 开始，0 号线程负责推进 fake 完成。
@@ -52,19 +52,13 @@ impl FakeEcho {
 mod tests {
     use super::FakeEcho;
     use crate::runtime::state::sequence::SequenceSlice;
-    use crate::runtime::{Phase, SequenceState};
+    use crate::runtime::{Phase, SlotState};
     use std::sync::Arc;
 
     #[test]
     fn fake_echo_completes_prefill_and_finishes_request() {
         let echo = FakeEcho;
-        let mut batch_list = vec![SequenceState {
-            sequence_index: 0,
-            kv_index: 0,
-            filling_length: 3,
-            phase: Phase::Prefill,
-            notify: Arc::new(tokio::sync::Notify::new()),
-        }];
+        let mut batch_list = vec![SlotState::new_prefill_state(0, 3)];
         let prefill_list = vec![vec![SequenceSlice {
             batch_index: 0,
             sequence_index: 0,

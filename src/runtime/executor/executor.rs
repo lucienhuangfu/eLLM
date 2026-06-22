@@ -1,13 +1,13 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::operators::operator::Operator;
 use crate::runtime::executor::sync::{AdaptiveWait, SpinBarrier};
-use crate::runtime::plan::BatchPlan;
+use crate::runtime::state::machine::SlotStateMachine;
 use crate::runtime::state::shared::SharedState;
-use crate::runtime::state::types::Phase;
 use crate::runtime::ScheduleTask;
 
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
@@ -35,8 +35,11 @@ where
         + Sync
         + 'static,
 {
-    pub fn new(operator_queue: Vec<Operator<T>>, shared_state: Arc<SharedState>) -> Self {
-        let thread_num = num_cpus::get();
+    pub fn new(
+        operator_queue: Vec<Operator<T>>,
+        shared_state: Arc<SharedState>,
+        thread_num: usize,
+    ) -> Self {
         Self {
             shared_state,
             operator_queue: operator_queue.into(),
@@ -72,13 +75,7 @@ where
             let batch_list = &mut *batch_list_ptr;
             for slice in decode_list.iter() {
                 if let Some(record) = batch_list.get_mut(slice.batch_index) {
-                    record.sequence_index += slice.length;
-                    if record.phase == Phase::Prefill {
-                        record.filling_length = record.filling_length.saturating_sub(slice.length);
-                        if record.filling_length == 0 {
-                            record.transition_to_decode();
-                        }
-                    }
+                    SlotStateMachine::advance_sequence(record, slice.length);
                 }
             }
         }
@@ -89,7 +86,7 @@ where
         self
     }
 
-    pub fn start(mut self) {
+    pub fn start(mut self, schedule_rx: broadcast::Receiver<ScheduleTask>) {
         let barrier = Arc::new(SpinBarrier::new(self.thread_num));
 
         for thread_id in 0..self.thread_num {
@@ -97,7 +94,7 @@ where
             let operator_queue = Arc::clone(&self.operator_queue);
             let barrier = Arc::clone(&barrier);
             let thread_num = self.thread_num;
-            let is_leader = thread_id == 0;
+            let schedule_rx = schedule_rx.resubscribe();
 
             let handle = tokio::task::spawn_blocking(move || {
                 Self::run_worker(
@@ -106,7 +103,7 @@ where
                     &barrier,
                     thread_num,
                     thread_id,
-                    is_leader,
+                    schedule_rx,
                 );
             });
 
@@ -124,84 +121,41 @@ where
         barrier: &SpinBarrier,
         thread_num: usize,
         thread_id: usize,
-        is_leader: bool,
+        mut schedule_rx: broadcast::Receiver<ScheduleTask>,
     ) {
         let mut wait = AdaptiveWait::new();
 
         loop {
-            if is_leader {
-                wait.wait(|| shared_state.request_count.load(Ordering::Acquire) > 0);
+            match schedule_rx.try_recv() {
+                Ok(task) => {
+                    let sequence_count: usize = task.decode_size
+                        + if task.prefill_size > 0 {
+                            1usize
+                        } else {
+                            0usize
+                        };
 
-                let request_count = shared_state.take_requests();
-                if request_count == 0 {
-                    continue;
+                    shared_state.batch_tracker.reset(sequence_count);
+
+                    execute_batch(
+                        &shared_state,
+                        operator_queue,
+                        barrier,
+                        thread_num,
+                        thread_id,
+                        &task,
+                    );
+
+                    update_states(&shared_state, &task);
                 }
-
-                shared_state
-                    .set_scheduler_state(crate::runtime::state::shared::SchedulerState::Scheduling);
-
-                let plan = build_plan(&shared_state);
-                if plan.is_empty() {
-                    shared_state
-                        .set_scheduler_state(crate::runtime::state::shared::SchedulerState::Idle);
-                    continue;
-                }
-
-                shared_state.batch_tracker.reset(plan.sequence_count());
-                shared_state.publish_batch(Box::new(plan));
-
-                shared_state
-                    .set_scheduler_state(crate::runtime::state::shared::SchedulerState::Executing);
-            } else {
-                wait.wait(|| shared_state.batch_ready.load(Ordering::Acquire));
-            }
-
-            let plan = match shared_state.take_batch() {
-                Some(p) => p,
-                None => {
-                    if is_leader {
-                        shared_state.set_scheduler_state(
-                            crate::runtime::state::shared::SchedulerState::Idle,
-                        );
-                    }
-                    continue;
-                }
-            };
-
-            execute_batch(
-                &shared_state,
-                operator_queue,
-                barrier,
-                thread_num,
-                thread_id,
-                &plan,
-            );
-
-            if is_leader {
-                shared_state
-                    .set_scheduler_state(crate::runtime::state::shared::SchedulerState::Completing);
-
-                update_states(&shared_state, &plan);
-
-                shared_state.clear_batch();
-                shared_state
-                    .set_scheduler_state(crate::runtime::state::shared::SchedulerState::Idle);
-            } else {
-                while shared_state.get_scheduler_state()
-                    == crate::runtime::state::shared::SchedulerState::Executing
-                {
-                    std::hint::spin_loop();
+                Err(_) => {
+                    wait.wait(|| {
+                        shared_state.get_scheduler_state()
+                            != crate::runtime::state::shared::SchedulerState::Idle
+                    });
                 }
             }
         }
-    }
-}
-
-fn build_plan(shared_state: &SharedState) -> BatchPlan {
-    let batch_list_ptr = shared_state.batch_list.get();
-    unsafe {
-        let batch_list = &*batch_list_ptr;
-        shared_state.plan_builder.build_plan(batch_list)
     }
 }
 
@@ -211,7 +165,7 @@ fn execute_batch<T>(
     barrier: &SpinBarrier,
     thread_num: usize,
     thread_id: usize,
-    plan: &BatchPlan,
+    task: &ScheduleTask,
 ) where
     T: Copy
         + Default
@@ -227,10 +181,10 @@ fn execute_batch<T>(
         + Sync
         + 'static,
 {
-    let prefill_size = plan.prefill_size;
-    let decode_size = plan.decode_size;
-    let prefill_list = &plan.prefill_list;
-    let decode_list = &plan.decode_list;
+    let prefill_size = task.prefill_size;
+    let decode_size = task.decode_size;
+    let prefill_list = &task.prefill_list;
+    let decode_list = &task.decode_list;
 
     barrier.wait();
 
@@ -257,26 +211,24 @@ fn execute_batch<T>(
     barrier.wait();
 }
 
-fn update_states(shared_state: &SharedState, plan: &BatchPlan) {
+fn update_states(shared_state: &SharedState, task: &ScheduleTask) {
     let batch_list_ptr = shared_state.batch_list.get();
     unsafe {
         let batch_list = &mut *batch_list_ptr;
 
-        for slice in plan.decode_list.iter() {
+        for slice in task.decode_list.iter() {
             if let Some(record) = batch_list.get_mut(slice.batch_index) {
-                record.sequence_index += slice.length;
-
-                if record.phase == Phase::Prefill {
-                    record.filling_length = record.filling_length.saturating_sub(slice.length);
-                    if record.filling_length == 0 {
-                        record.transition_to_decode();
-                    }
-                }
+                SlotStateMachine::advance_sequence(record, slice.length);
             }
         }
     }
 
-    let sequence_count = plan.sequence_count();
+    let sequence_count: usize = task.decode_size
+        + if task.prefill_size > 0 {
+            1usize
+        } else {
+            0usize
+        };
     for _ in 0..sequence_count {
         shared_state.batch_tracker.complete_slot();
     }

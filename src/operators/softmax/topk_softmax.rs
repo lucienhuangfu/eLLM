@@ -9,8 +9,9 @@ use crate::num_traits::Sqrt;
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::TopKSoftmaxTrait;
+use crate::runtime::state::core::SlotState;
 use crate::runtime::state::sequence::SequenceSlice;
-use crate::runtime::{Phase, SequenceState};
+use crate::runtime::Phase;
 use rand::Rng;
 
 #[derive(Clone)]
@@ -131,7 +132,7 @@ impl<
         thread_id: usize,
         _prefill_list: &[Vec<SequenceSlice>],
         decode_list: &[SequenceSlice],
-        batch_list: &mut Vec<SequenceState>,
+        batch_list: &mut Vec<SlotState>,
     ) {
         if prefill_size == 0 && decode_size == 0 {
             return;
@@ -204,13 +205,13 @@ impl<
         }
     }
 
-    fn update_prefill_state(&self, record: &mut SequenceState, slice_length: usize) {
+    fn update_prefill_state(&self, record: &mut SlotState, slice_length: usize) {
         if matches!(record.phase, Phase::Prefill) {
             record.sequence_index = record.sequence_index.saturating_add(slice_length);
             record.kv_index = record.kv_index.saturating_add(slice_length);
             record.filling_length = record.filling_length.saturating_sub(slice_length);
 
-            if record.filling_length == 0 {
+            if record.filling_length == 0usize {
                 record.phase = Phase::Decode;
             }
         }
@@ -521,7 +522,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 mod test {
     use super::*;
     use crate::runtime::state::sequence::SequenceSlice;
-    use crate::runtime::{Phase, SequenceState};
+    use crate::runtime::{Phase, SlotState};
     use approx::assert_ulps_eq;
 
     #[test]
@@ -540,13 +541,7 @@ mod test {
         let mut user_records_vec = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
-            user_records_vec.push(SequenceState {
-                filling_length: 0,
-                sequence_index: 1,
-                kv_index: 1,
-                phase: Phase::Decode,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-            });
+            user_records_vec.push(SlotState::new_decode_state(1, 1));
             for j in 0..total_candidates_per_item {
                 input_values.push(5.0 - (j as f32 * 0.1) - (i as f32));
                 input_indices.push(i * 1000 + j);
@@ -648,13 +643,7 @@ mod test {
 
         let input_indices = (10usize..18).collect::<Vec<_>>();
         let input_values = vec![8.0f32, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
-        let mut batch_list = vec![SequenceState {
-            filling_length: 0,
-            sequence_index: 1,
-            kv_index: 1,
-            phase: Phase::Decode,
-            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        }];
+        let mut batch_list = vec![SlotState::new_decode_state(1, 1)];
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
@@ -704,13 +693,7 @@ mod test {
 
         let input_indices = vec![10usize, 11, 12, 13];
         let input_values = vec![1.0f32, 0.5, 0.25, 0.125];
-        let mut batch_list = vec![SequenceState {
-            filling_length: 0,
-            sequence_index: 3,
-            kv_index: 3,
-            phase: Phase::Prefill,
-            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        }];
+        let mut batch_list = vec![SlotState::new_prefill_state(3, 0)];
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
@@ -762,13 +745,7 @@ mod test {
 
         let input_indices = vec![10usize, 11];
         let input_values = vec![1.0f32, 0.5];
-        let mut batch_list = vec![SequenceState {
-            filling_length: 0,
-            sequence_index: 3,
-            kv_index: 7,
-            phase: Phase::Decode,
-            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        }];
+        let mut batch_list = vec![SlotState::new_decode_state(3, 7)];
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
@@ -825,13 +802,7 @@ mod test {
             input_indices[index] = 10usize + index;
             input_values[index] = 5.0f32 - index as f32 * 0.1;
         }
-        let mut batch_list = vec![SequenceState {
-            filling_length: 3,
-            sequence_index: 0,
-            kv_index: 0,
-            phase: Phase::Prefill,
-            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        }];
+        let mut batch_list = vec![SlotState::new_prefill_state(0, 3)];
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
@@ -879,13 +850,7 @@ mod test {
 
         let input_indices = vec![10usize, 11, 12, 13];
         let input_values = vec![1.0f32, 0.5, 0.25, 0.125];
-        let mut batch_list = vec![SequenceState {
-            filling_length: 4,
-            sequence_index: 2,
-            kv_index: 2,
-            phase: Phase::Prefill,
-            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        }];
+        let mut batch_list = vec![SlotState::new_prefill_state(2, 4)];
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
@@ -948,13 +913,7 @@ mod test {
         let mut user_records_vec = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
-            user_records_vec.push(SequenceState {
-                filling_length: 0,
-                sequence_index: 1,
-                kv_index: 1,
-                phase: Phase::Decode,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-            });
+            user_records_vec.push(SlotState::new_decode_state(1, 1));
             for j in 0..total_candidates_per_item {
                 let val = 5.0 - (j as f32 * 0.1) - (i as f32);
                 input_values.push(val as f16);

@@ -4,7 +4,7 @@ use tiktoken_rs::CoreBPE;
 
 use crate::num_traits::FromNumber;
 use crate::runtime::io::{load_tiktoken, ChatTemplate};
-use crate::runtime::state::types::SequenceState;
+use crate::runtime::state::core::SlotState;
 
 pub struct BatchSequence<T> {
     pub sequences: *mut usize,
@@ -108,14 +108,12 @@ where
         Ok(write_len)
     }
 
-    pub fn decode_generated_text(&self, slot_index: usize, record: &SequenceState) -> String {
+    pub fn decode_generated_text(&self, slot_index: usize, record: &SlotState) -> String {
         let sequence_index = record.sequence_index;
         let kv_index = record.kv_index;
         self.decode_token_span(slot_index, sequence_index, kv_index)
     }
 
-    /// Decode a single token at `token_index` within the given slot.
-    /// Returns `None` if the index is out of bounds.
     pub fn decode_single_token(&self, slot_index: usize, token_index: usize) -> Option<String> {
         let ids = self.token_ids(slot_index, token_index, token_index + 1);
         if ids.is_empty() {

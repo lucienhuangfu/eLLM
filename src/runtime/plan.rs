@@ -1,7 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::runtime::state::core::SlotState;
 use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
-use crate::runtime::state::types::{Phase, SequenceState};
+use crate::runtime::state::types::Phase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchMode {
@@ -74,7 +75,7 @@ impl PlanBuilder {
         }
     }
 
-    pub fn build_plan(&self, batch_list: &[SequenceState]) -> BatchPlan {
+    pub fn build_plan(&self, batch_list: &[SlotState]) -> BatchPlan {
         let mut plan = BatchPlan::new(self.next_task_id.fetch_add(1, Ordering::Relaxed));
 
         let mut decode_candidates = Vec::with_capacity(self.max_decode_size.min(batch_list.len()));
