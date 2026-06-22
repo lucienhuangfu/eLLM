@@ -4,7 +4,9 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
-use ellm::runtime::{BatchSequence, Scheduler, SequenceState, ServingRunner, SessionMode, SlotManager};
+use ellm::runtime::{
+    BatchSequence, SequenceState, ServingRunner, SessionMode, SharedState, SlotManager,
+};
 use ellm::serving;
 use ellm::serving::parser::{ParserOptions, ParserRule};
 use ellm::transformer::config::ModelFamily;
@@ -62,16 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch_sequences.clone(),
         SessionMode::Lru,
     ));
-    let scheduler = Arc::new(Scheduler::new(
-        sequence_length,
-        batch_size,
-        1,
-        1,
-        Duration::from_millis(10),
-        task_sender.clone(),
-        Arc::clone(&batch_states),
-        slot_manager,
-    ));
+    let shared_state = Arc::new(SharedState::new(batch_states.clone()));
 
     let runner = build_fake_runner(batch_states.clone(), task_sender.clone());
 
@@ -88,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     serving::run(
         batch_sequences,
         batch_states,
-        scheduler,
+        shared_state,
         parser_options,
         SessionMode::NonReusable,
     )

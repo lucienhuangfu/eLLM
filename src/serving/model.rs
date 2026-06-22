@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::config::{GenerationConfig, ResolvedConfig};
 use crate::mem_mgr::allocator::AlignedBox;
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::executor::ExecutorPool;
 use crate::runtime::session::{SessionMode, SlotManager};

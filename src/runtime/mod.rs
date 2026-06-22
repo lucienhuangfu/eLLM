@@ -10,8 +10,9 @@ pub use crate::config::huggingface_config::HfConfig;
 pub use crate::tensor;
 pub use crate::transformer::config::Config;
 
-pub use executor::{ExecutorPool, SpinBarrier};
+pub use executor::{ExecutorPool, ServingRunner, SpinBarrier};
 pub use io::{load_tiktoken, ChatTemplate, SafeTensorsLoader};
+pub use scheduler::{ScheduleTask, Scheduler};
 pub use session::{SessionHandle, SessionMode, SlotManager};
 pub use state::{
     build_batch_sequence, build_sequence_state, BatchSequence, DecodeList, DecodeLookupResult,

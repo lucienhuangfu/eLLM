@@ -67,7 +67,7 @@ pub(super) async fn chat_completions(
         }
     };
 
-    state.scheduler.notify_tokens(write_len).await;
+    state.shared_state.push_request();
 
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)

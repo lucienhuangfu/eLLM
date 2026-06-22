@@ -5,7 +5,7 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
-    BatchSequence, Phase, Runner, SafeTensorsLoader, ScheduleTask, Scheduler, SequenceState,
+    BatchSequence, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SequenceState, ServingRunner,
     SessionMode, SlotManager,
 };
 use ellm::tensor::GlobalOperatorQueue;
@@ -196,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("Starting serving runner...");
     let task_in_flight = Arc::new(AtomicBool::new(false));
-    let runner = Runner::new(
+    let runner = ServingRunner::new(
         f16::take_operator_queue(),
         Arc::clone(&batch_list_ref),
         task_sender.clone(),

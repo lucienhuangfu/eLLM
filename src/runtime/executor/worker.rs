@@ -200,7 +200,7 @@ where
         unsafe {
             let batch_list = &mut *batch_list_ptr;
 
-            for slice in &plan.decode_list {
+            for slice in plan.decode_list.iter() {
                 if let Some(record) = batch_list.get_mut(slice.batch_index) {
                     record.sequence_index += slice.length;
 

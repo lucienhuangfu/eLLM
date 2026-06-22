@@ -8,10 +8,10 @@ use tokio::task::JoinSet;
 use crate::operators::operator::Operator;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::executor::barrier::SpinBarrier;
-use crate::runtime::scheduler::task::ScheduleTask;
 use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
 use crate::runtime::state::types::Phase;
 use crate::runtime::state::types::SequenceState;
+use crate::runtime::ScheduleTask;
 
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
 
@@ -176,7 +176,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::ServingRunner;
-    use crate::runtime::scheduler::task::ScheduleTask;
+    use crate::runtime::ScheduleTask;
     use crate::runtime::{Scheduler, SessionMode, SlotManager};
     use tokio::sync::broadcast;
 
