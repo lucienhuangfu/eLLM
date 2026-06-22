@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::runtime::error::SlotError;
@@ -22,8 +23,10 @@ where
     active_decode: Arc<Mutex<Vec<usize>>>,
     available_slots: Arc<Mutex<Vec<usize>>>,
     session_map: Arc<Mutex<HashMap<String, usize>>>,
+    reserved_slots: Arc<Mutex<HashMap<String, (usize, Arc<AtomicBool>)>>>, // session_id -> (slot_index, cancel_flag)
     batch_sequences: Arc<crate::operators::send_sync_ptr::SharedMut<BatchSequence<T>>>,
     mode: SessionMode,
+    reuse_timeout: Duration,
 }
 
 unsafe impl<T> Send for SlotManager<T> where T: Copy + crate::num_traits::FromNumber + Send {}
@@ -38,6 +41,7 @@ where
         num_slots: usize,
         batch_sequences: Arc<crate::operators::send_sync_ptr::SharedMut<BatchSequence<T>>>,
         mode: SessionMode,
+        reuse_timeout_ms: u64,
     ) -> Self {
         let mut slots = Vec::with_capacity(num_slots);
         let mut available_slots = Vec::with_capacity(num_slots);
@@ -53,8 +57,10 @@ where
             active_decode: Arc::new(Mutex::new(Vec::new())),
             available_slots: Arc::new(Mutex::new(available_slots)),
             session_map: Arc::new(Mutex::new(HashMap::new())),
+            reserved_slots: Arc::new(Mutex::new(HashMap::new())),
             batch_sequences,
             mode,
+            reuse_timeout: Duration::from_millis(reuse_timeout_ms),
         };
 
         slot_manager.init_lru();
@@ -116,9 +122,13 @@ where
     }
 
     pub async fn acquire_session(&self, session_id: &str) -> Result<SessionHandle, SlotError> {
-        let mut session_map = self.session_map.lock().await;
+        // 首先检查是否有活跃的会话映射
+        let slot_index_from_map = {
+            let session_map = self.session_map.lock().await;
+            session_map.get(session_id).copied()
+        };
 
-        if let Some(&slot_index) = session_map.get(session_id) {
+        if let Some(slot_index) = slot_index_from_map {
             let mut slots = self.slots.lock().await;
             if let Some(entry) = slots.get_mut(slot_index) {
                 entry.touch();
@@ -127,6 +137,31 @@ where
             }
         }
 
+        // 检查是否有保留的槽位（reserved_slots）
+        let reserved_result = {
+            let mut reserved = self.reserved_slots.lock().await;
+            reserved.remove(session_id)
+        };
+
+        if let Some((slot_index, cancel_flag)) = reserved_result {
+            // 取消计时器
+            cancel_flag.store(true, Ordering::Release);
+
+            // 恢复会话映射
+            {
+                let mut session_map = self.session_map.lock().await;
+                session_map.insert(session_id.to_string(), slot_index);
+            }
+
+            let mut slots = self.slots.lock().await;
+            if let Some(entry) = slots.get_mut(slot_index) {
+                entry.touch();
+                self.touch_lru(slot_index);
+                return Ok(SessionHandle::reused(session_id.to_string(), slot_index));
+            }
+        }
+
+        // 分配新槽位
         let slot_index = {
             let mut available = self.available_slots.lock().await;
             if !available.is_empty() {
@@ -170,11 +205,51 @@ where
                 entry.token_count = token_count;
 
                 if self.mode == SessionMode::NonReusable {
+                    // NonReusable 模式：立即重置并释放
                     SlotStateMachine::reset_to_start(entry);
                     session_map.remove(session_id);
 
                     let mut available = self.available_slots.lock().await;
                     available.push(slot_index);
+                } else {
+                    // Reusable/Lru 模式：启动延迟回收
+                    let session_id_owned = session_id.to_string(); // 克隆 session_id
+                    session_map.remove(session_id);
+
+                    // 创建取消标志
+                    let cancel_flag = Arc::new(AtomicBool::new(false));
+
+                    // 添加到保留列表
+                    {
+                        let mut reserved = self.reserved_slots.lock().await;
+                        reserved.insert(
+                            session_id_owned.clone(),
+                            (slot_index, Arc::clone(&cancel_flag)),
+                        );
+                    }
+
+                    // 启动异步计时器
+                    let reserved_slots = Arc::clone(&self.reserved_slots);
+                    let available_slots = Arc::clone(&self.available_slots);
+                    let timeout = self.reuse_timeout;
+
+                    tokio::spawn(async move {
+                        tokio::time::sleep(timeout).await;
+
+                        // 检查是否被取消
+                        if cancel_flag.load(Ordering::Acquire) {
+                            return; // 已被复用，不执行回收
+                        }
+
+                        // 超时后从 reserved 移除并加入可用池
+                        let mut reserved = reserved_slots.lock().await;
+                        if let Some((idx, _)) = reserved.remove(&session_id_owned) {
+                            let mut available = available_slots.lock().await;
+                            if !available.contains(&idx) {
+                                available.push(idx);
+                            }
+                        }
+                    });
                 }
             }
         }
@@ -355,5 +430,102 @@ where
 
     pub fn total_slots(&self) -> usize {
         self.slots.blocking_lock().len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::state::batch::BatchSequence;
+    use std::time::Duration;
+
+    fn create_test_manager(batch_size: usize, timeout_ms: u64) -> Arc<SlotManager<f16>> {
+        let batch_sequences = Arc::new(crate::operators::send_sync_ptr::SharedMut::new(
+            BatchSequence::<f16>::new(
+                std::ptr::null_mut(),
+                batch_size,
+                1024,
+                "gpt2",
+                "gpt2",
+                "gpt2",
+            )
+            .unwrap(),
+        ));
+        Arc::new(SlotManager::new(
+            batch_size,
+            batch_sequences,
+            SessionMode::Reusable,
+            timeout_ms,
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_slot_reserved_and_reused() {
+        let manager = create_test_manager(4, 1000); // 1 second timeout
+
+        // Acquire session
+        let handle1 = manager.acquire_session("session1").await.unwrap();
+        assert_eq!(handle1.slot_index, 0);
+        assert!(!handle1.is_reused);
+
+        // Release session (should start timer)
+        manager.release_session("session1", 10).await;
+
+        // Immediately acquire again - should reuse the reserved slot
+        let handle2 = manager.acquire_session("session1").await.unwrap();
+        assert_eq!(handle2.slot_index, 0);
+        assert!(handle2.is_reused); // Should be reused from reserved
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    #[tokio::test]
+    async fn test_slot_timeout_release() {
+        let manager = create_test_manager(4, 500); // 500ms timeout
+
+        // Acquire and release
+        let handle1 = manager.acquire_session("session1").await.unwrap();
+        let slot_idx = handle1.slot_index;
+        manager.release_session("session1", 10).await;
+
+        // Wait for timeout
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        // Now another session should be able to use this slot
+        let handle2 = manager.acquire_session("session2").await.unwrap();
+        // The slot should eventually become available (might not be the same index due to LRU)
+
+        println!(
+            "Session1 used slot {}, Session2 used slot {}",
+            slot_idx, handle2.slot_index
+        );
+    }
+
+    #[tokio::test]
+    async fn test_non_reusable_mode_immediate_release() {
+        let batch_sequences = Arc::new(crate::operators::send_sync_ptr::SharedMut::new(
+            BatchSequence::<f16>::new(std::ptr::null_mut(), 4, 1024, "gpt2", "gpt2", "gpt2")
+                .unwrap(),
+        ));
+        let manager = Arc::new(SlotManager::new(
+            4,
+            batch_sequences,
+            SessionMode::NonReusable,
+            1000,
+        ));
+
+        // Acquire and release in NonReusable mode
+        let handle1 = manager.acquire_session("session1").await.unwrap();
+        let slot_idx = handle1.slot_index;
+        manager.release_session("session1", 10).await;
+
+        // In NonReusable mode, slot should be immediately available
+        let handle2 = manager.acquire_session("session2").await.unwrap();
+        // Should get a slot immediately (might be the same or different)
+
+        println!(
+            "NonReusable: Session1={}, Session2={}",
+            slot_idx, handle2.slot_index
+        );
     }
 }

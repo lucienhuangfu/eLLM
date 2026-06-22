@@ -1,15 +1,20 @@
-# Session Management: Unified Dialogue Session System
+# Session Management: Unified Slot and Session System
 
 ---
 
 ## Overview
 
-**Session Manager** 是一个统一的对话会话管理系统，整合了槽位分配、token 缓存和会话生命周期管理。它通过 **SessionMode** 枚举支持两种运行模式：
+**SlotManager** is a unified slot and session management system that integrates slot allocation, token caching, session lifecycle management, LRU eviction, and **delayed slot recycling**. It supports three operation modes through **SessionMode** enum:
 
-1. **Reusable Mode（复用模式）**：相同 `session_id` 的请求复用已分配的槽位，保留映射关系
-2. **NonReusable Mode（不复用模式）**：每次请求分配新槽位，清除映射关系
+1. **Reusable Mode**: Same `session_id` requests reuse assigned slots with delayed recycling (configurable timeout)
+2. **NonReusable Mode**: Each request allocates a new slot, immediately resets state and releases to pool
+3. **Lru Mode**: Uses LRU eviction when all slots are occupied, with delayed recycling support
 
-**核心目标**：通过检测同一会话连续请求间的公共前缀，仅对新增 token 进行 prefill，优化推理性能，同时提供灵活的槽位管理策略。
+**Core Objectives**: 
+- Optimize inference performance by detecting common prefixes between consecutive requests of the same session
+- Only prefill new tokens for reused sessions
+- Provide flexible slot management with configurable delayed recycling
+- Ensure reserved slots are exclusive to their session during the retention period
 
 ---
 
@@ -17,67 +22,68 @@
 
 ### SessionMode
 
-会话模式枚举：
+Session mode enum:
 
 ```rust
 pub enum SessionMode {
-    /// 复用模式：相同 session_id 复用槽位，保留映射
+    /// Reusable mode: same session_id reuses slot, retains mapping
     Reusable,
-    /// 不复用模式：每次请求分配新槽位，清除映射
+    /// Non-reusable mode: each request allocates new slot, clears mapping
     NonReusable,
+    /// LRU mode: uses LRU eviction when slots are full
+    Lru,
 }
 ```
 
 ### DialogueSession
 
-会话元数据结构（存储会话状态信息）：
+Session metadata structure (stores session state information):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `session_id` | `String` | 会话唯一标识 |
-| `mode` | `SessionMode` | 会话模式 |
-| `slot_index` | `Option<usize>` | 绑定的槽位索引 |
-| `token_count` | `usize` | 已缓存的 token 数量 |
-| `created_at` | `Instant` | 创建时间戳 |
-| `last_accessed` | `Instant` | 最后访问时间戳 |
-| `is_active` | `bool` | 是否正在处理请求 |
+| `session_id` | `String` | Unique session identifier |
+| `slot_index` | `usize` | Bound slot index |
+| `token_count` | `usize` | Number of cached tokens |
+| `created_at` | `Instant` | Creation timestamp |
+| `last_accessed` | `Instant` | Last access timestamp |
 
-**数据引用说明**：
-- **Tokens**：实际 token 序列存储在 `BatchSequence` 中，通过 `slot_index` 定位
-- **KV Cache**：KV 缓存信息存储在 `SequenceState` 中，通过 `slot_index` 关联
+**Data Reference Notes**:
+- **Tokens**: Actual token sequences stored in `BatchSequence`, located via `slot_index`
+- **KV Cache**: KV cache information stored in `SlotState`, associated via `slot_index`
 
 ### SessionHandle
 
-会话句柄（返回给调用方）：
+Session handle (returned to caller):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `session_id` | `String` | 会话 ID |
-| `slot_index` | `usize` | 分配的槽位索引 |
-| `is_reused` | `bool` | 是否为复用的会话 |
+| `session_id` | `String` | Session ID |
+| `slot_index` | `usize` | Allocated slot index |
+| `is_reused` | `bool` | Whether this is a reused session |
 
-### SlotAllocator
+### SlotManager<T>
 
-槽位分配器（管理空闲槽位队列、定时复用状态）：
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `free_slots` | `Arc<Mutex<VecDeque<usize>>>` | 空闲槽位队列（LRU 管理） |
-| `slot_timers` | `Arc<Mutex<HashMap<usize, Arc<Mutex<bool>>>>>` | 槽位计时器取消标志 |
-| `timeout_duration` | `Duration` | 延迟回收超时时间 |
-| `batch_states` | `Arc<SharedMut<Vec<SequenceState>>>` | 批次状态引用 |
-
-### SessionManager<T>
-
-会话管理器（统一管理所有会话）：
+Slot manager (unified management of all slots and sessions):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `sessions` | `Arc<Mutex<HashMap<String, DialogueSession>>>` | 会话存储 |
-| `slot_allocator` | `Arc<SlotAllocator>` | 槽位分配器 |
-| `batch_sequences` | `Arc<SharedMut<BatchSequence<T>>>` | 批量序列引用 |
-| `max_sessions` | `usize` | 最大会话数 |
-| `timeout_duration` | `Duration` | 槽位复用超时时间 |
+| `slots` | `Arc<Mutex<Vec<SlotState>>>` | Slot state array with LRU linked list |
+| `active_prefill` | `Arc<Mutex<Vec<usize>>>` | Active prefill slot indices |
+| `active_decode` | `Arc<Mutex<Vec<usize>>>` | Active decode slot indices |
+| `available_slots` | `Arc<Mutex<Vec<usize>>>` | Available slot indices pool |
+| `session_map` | `Arc<Mutex<HashMap<String, usize>>>` | Session ID to slot index mapping |
+| `reserved_slots` | `Arc<Mutex<HashMap<String, (usize, Arc<AtomicBool>)>>>` | Reserved slots with cancel flags |
+| `batch_sequences` | `Arc<SharedMut<BatchSequence<T>>>` | Batch sequence reference |
+| `mode` | `SessionMode` | Session management mode |
+| `reuse_timeout` | `Duration` | Slot retention timeout duration |
+
+**Key Features**:
+- **LRU Linked List**: Each `SlotState` contains `lru_prev` and `lru_next` pointers for efficient LRU tracking
+- **Active Tracking**: Maintains separate lists for active prefill and decode slots
+- **Available Pool**: Manages available slots for quick allocation
+- **Session Mapping**: Maps session IDs to slot indices for reuse detection
+- **Delayed Recycling**: Released slots are reserved for a configurable timeout period, exclusively accessible by the same session
+- **Async Timer Cancellation**: Uses atomic flags to cancel pending timeout tasks when slots are reused
 
 ---
 
@@ -87,41 +93,53 @@ pub enum SessionMode {
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Inactive: acquire_session (新建)
-    Inactive --> Active: activate (开始处理)
-    Active --> Inactive: deactivate (处理完成)
-    Inactive --> [*]: release_session (NonReusable 模式)
-    Inactive --> Inactive: retain (Reusable 模式，保留映射)
+    [*] --> Inactive: acquire_session (new)
+    Inactive --> Active: activate (start processing)
+    Active --> Inactive: deactivate (processing complete)
+    Inactive --> [*]: release_session (NonReusable mode)
+    Inactive --> Inactive: retain (Reusable mode, keep mapping)
 ```
 
 ### Slot Lifecycle
 
-每个槽位具有独立的生命周期，支持延迟回收和优先复用：
+Each slot has an independent lifecycle with LRU management and optional delayed recycling:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Free: 初始化 (LRU 管理)
+    [*] --> Available: Initialization (in available_slots pool)
     
-    Free --> InUse: allocate() / allocate_preferred()
+    Available --> Active: acquire_session()
     
-    InUse --> Timed: release() (启动延迟回收计时器)
+    Active --> Reserved: release_session() (Reusable/Lru mode)
+    Active --> Available: release_session() (NonReusable mode, immediate reset)
     
-    Timed --> InUse: allocate_preferred() (同 session 复用，取消计时器)
-    Timed --> Free: timeout (计时器到期，返回 LRU 队列)
+    Reserved --> Active: acquire_session() (same session_id, cancels timer)
+    Reserved --> Available: timeout expired (async task releases to pool)
     
-    Free --> InUse: allocate_preferred() (同 session 复用，从 LRU 移除)
+    note right of Reserved
+        Slot is exclusively reserved
+        for the same session_id
+        Other sessions cannot use it
+    end note
+    
+    note right of Available
+        LRU eviction occurs when
+        all slots are occupied
+    end note
 ```
 
 ### Key Rules
 
-- **Active 状态不可复用**：只有 `is_active=false` 的会话才可被复用
-- **访问更新时间戳**：任何操作都会更新 `last_accessed`
-- **LRU 清理**：超过 `max_sessions` 时，移除最久未访问的非活跃会话
-- **模式感知释放**：
-  - Reusable 模式：保留会话和槽位映射，槽位进入定时状态
-  - NonReusable 模式：删除会话，槽位进入定时状态
-- **延迟回收机制**：释放的槽位先进入 `Timed` 状态，超时后才返回 `Free` 队列
-- **优先复用策略**：同 session 请求优先复用原槽位（无论其处于 `Timed` 或 `Free` 状态）
+- **Active tracking**: Slots are tracked in `active_prefill` or `active_decode` lists during processing
+- **Access time update**: Any operation updates `last_accessed` timestamp
+- **LRU eviction**: When all slots are occupied, evict least recently used slot
+- **Mode-aware release**:
+  - **Reusable mode**: Remove from session_map, add to reserved_slots with async timer, exclusive to same session during timeout
+  - **NonReusable mode**: Immediately reset slot to Start state, remove mapping, add to available_slots
+  - **Lru mode**: Same as Reusable but uses LRU eviction when allocating new slots
+- **Session mapping**: `session_map` maintains bidirectional mapping between session IDs and slot indices
+- **Reserved exclusivity**: During the retention period, reserved slots are ONLY accessible by the original session_id
+- **Timer cancellation**: When a reserved slot is reused, the pending timeout task is cancelled via atomic flag
 
 ---
 
@@ -130,127 +148,178 @@ stateDiagram-v2
 ### 1. Acquire Session
 
 ```rust
-acquire_session(session_id: &str, mode: SessionMode) -> SessionResult<SessionHandle>:
-    // 尝试查找现有会话
-    if let Some(session) = sessions.get_mut(session_id):
-        if let Some(preferred_slot) = session.slot_index:
-            // 优先尝试复用原槽位（支持定时状态和 LRU 队列）
-            if allocate_preferred(preferred_slot).is_ok():
-                session.activate()
-                return SessionHandle::reused(session_id, preferred_slot)
+acquire_session(session_id: &str) -> Result<SessionHandle, SlotError>:
+    // Step 1: Check active session mapping
+    if let Some(&slot_index) = session_map.get(session_id):
+        touch_lru(slot_index)  // Update LRU order
+        return SessionHandle::reused(session_id, slot_index)
     
-    // 检查会话数量限制
-    if sessions.len() >= max_sessions:
-        evict_lru_session()  // LRU 清理
+    // Step 2: Check reserved slots (delayed recycling)
+    if let Some((slot_index, cancel_flag)) = reserved_slots.remove(session_id):
+        cancel_flag.store(true)  // Cancel pending timeout task
+        session_map.insert(session_id, slot_index)  // Restore mapping
+        touch_lru(slot_index)
+        return SessionHandle::reused(session_id, slot_index)
     
-    // 分配新槽位
-    slot_index = slot_allocator.allocate()
-    
-    // 创建新会话
-    new_session = DialogueSession {
-        session_id,
-        mode,
-        slot_index: Some(slot_index),
-        token_count: 0,
-        created_at: now(),
-        last_accessed: now(),
-        is_active: true,
+    // Step 3: Allocate new slot
+    slot_index = {
+        if !available_slots.is_empty():
+            available_slots.pop()  // Get from available pool
+        else:
+            evict_oldest()  // LRU eviction when pool is empty
     }
     
-    sessions.insert(session_id, new_session)
+    // Remove old session mapping if slot was previously used
+    remove_old_session_mapping(slot_index)
+    
+    // Create new session mapping
+    session_map.insert(session_id, slot_index)
+    
+    // Initialize slot state
+    slots[slot_index].session_id = Some(session_id)
+    slots[slot_index].token_count = 0
+    slots[slot_index].created_at = now()
+    slots[slot_index].last_accessed = now()
+    
+    touch_lru(slot_index)  // Move to front of LRU list
+    
     return SessionHandle::new(session_id, slot_index)
 ```
+
+**Key Points**:
+- Reserved slots are checked AFTER active sessions but BEFORE new allocation
+- When a reserved slot is reused, the async timeout task is cancelled via atomic flag
+- Reserved slots are exclusive: other sessions cannot allocate them during retention period
 
 ### 2. Release Session
 
 ```rust
 release_session(session_id: &str, token_count: usize):
-    if let Some(session) = sessions.get_mut(session_id):
-        session.deactivate()
-        session.token_count = token_count
+    if let Some(&slot_index) = session_map.get(session_id):
+        slots[slot_index].token_count = token_count
         
-        if session.mode == NonReusable:
-            // 不复用模式：删除会话，槽位进入定时状态
-            slot_index = session.slot_index.take()
-            slot_allocator.release(slot_index)
-            sessions.remove(session_id)
+        if mode == NonReusable:
+            // Non-reusable mode: immediate reset and release
+            SlotStateMachine::reset_to_start(slots[slot_index])
+            session_map.remove(session_id)
+            available_slots.push(slot_index)
         else:
-            // 复用模式：保留会话和槽位映射，槽位进入定时状态
-            if let Some(slot_index) = session.slot_index:
-                slot_allocator.release(slot_index)
+            // Reusable/Lru mode: delayed recycling with exclusive reservation
+            session_map.remove(session_id)
+            
+            // Create cancellation flag for async timer
+            cancel_flag = Arc::new(AtomicBool::new(false))
+            
+            // Add to reserved slots
+            reserved_slots.insert(session_id, (slot_index, cancel_flag))
+            
+            // Spawn async timeout task
+            tokio::spawn(async move {
+                sleep(reuse_timeout).await
+                
+                // Check if cancelled (slot was reused)
+                if cancel_flag.load():
+                    return  // Do nothing, slot already reused
+                
+                // Timeout expired: remove from reserved and add to available
+                if let Some((idx, _)) = reserved_slots.remove(session_id):
+                    available_slots.push(idx)
+            })
 ```
 
-### 3. SlotAllocator.allocate
+**Key Points**:
+- NonReusable mode: Immediate release, no reservation
+- Reusable/Lru mode: Slot enters "Reserved" state, exclusively accessible by same session_id
+- Async timer runs in background, can be cancelled if slot is reused before timeout
+- During reservation, slot is NOT in available_slots pool, preventing other sessions from using it
+
+### 3. LRU Management
+
+The SlotManager implements LRU using a doubly-linked list embedded in each SlotState:
 
 ```rust
-allocate() -> SlotResult<usize>:
-    let mut free_slots = self.free_slots.lock().await
-    if let Some(slot) = free_slots.pop_front():
-        cancel_timer(slot)  // 从 LRU 分配时取消可能存在的计时器
-        return Ok(slot)
-    Err(SlotError::SlotQueueEmpty)
-```
-
-### 4. SlotAllocator.allocate_preferred
-
-```rust
-allocate_preferred(preferred_slot: usize) -> SlotResult<usize>:
-    // 首先尝试从 free_slots 中移除
-    {
-        let mut free_slots = self.free_slots.lock().await
-        if let Some(pos) = free_slots.iter().position(|&s| s == preferred_slot):
-            free_slots.remove(pos)
-            cancel_timer(preferred_slot)
-            return Ok(preferred_slot)
-    }
+touch_lru(slot_index):
+    // Remove slot from current position in LRU list
+    prev = slots[slot_index].lru_prev
+    next = slots[slot_index].lru_next
     
-    // 尝试取消定时状态的计时器
-    if cancel_timer(preferred_slot):
-        return Ok(preferred_slot)
+    if prev != LRU_SENTINEL:
+        slots[prev].lru_next = next
+    if next != LRU_SENTINEL:
+        slots[next].lru_prev = prev
     
-    Err(SlotError::SlotQueueEmpty)
+    // Insert slot at head of LRU list (most recently used)
+    head_prev = slots[0].lru_prev
+    slots[slot_index].lru_prev = LRU_SENTINEL
+    slots[slot_index].lru_next = head_prev
+    
+    if head_prev != LRU_SENTINEL:
+        slots[head_prev].lru_next = slot_index
+    slots[0].lru_prev = slot_index
+
+evict_oldest() -> usize:
+    // Find tail of LRU list (least recently used)
+    tail = 0
+    while slots[tail].lru_next != LRU_SENTINEL:
+        tail = slots[tail].lru_next
+    
+    // Remove tail from list
+    prev = slots[tail].lru_prev
+    if prev != LRU_SENTINEL:
+        slots[prev].lru_next = LRU_SENTINEL
+    
+    return tail
 ```
 
-### 5. SlotAllocator.release
+### 4. State Transitions
+
+SlotManager provides methods to transition slots between phases:
 
 ```rust
-release(slot_index: usize):
-    // 启动异步延迟回收计时器
-    let cancelled = Arc::new(Mutex::new(false))
-    slot_timers.insert(slot_index, Arc::clone(&cancelled))
-    
-    spawn(async move:
-        sleep(timeout_duration).await
-        
-        let mut cancelled_lock = cancelled.lock().await
-        if *cancelled_lock:
-            return  // 计时器已被取消（槽位被复用）
-        
-        // 超时后将槽位放回 LRU 队列
-        let mut free_slots = self.free_slots.lock().await
-        free_slots.push_back(slot_index)
-        slot_timers.remove(&slot_index)
-    )
+transition_to_prefill(slot_index, sequence_index, filling_length):
+    SlotStateMachine::transition_to_prefill(entry, sequence_index, filling_length)
+    remove_from_available(slot_index)
+    add_to_active_prefill(slot_index)
+
+transition_to_decode(slot_index):
+    SlotStateMachine::transition_to_decode(entry)
+    remove_from_active_prefill(slot_index)
+    add_to_active_decode(slot_index)
+
+transition_to_eos(slot_index):
+    SlotStateMachine::transition_to_eos(entry)
+    remove_from_active_prefill(slot_index)
+    remove_from_active_decode(slot_index)
+    add_to_available(slot_index)
+
+advance_sequence(slot_index, steps):
+    phase_change = SlotStateMachine::advance_sequence(entry, steps)
+    if phase_change == Some(Phase::Decode):
+        remove_from_active_prefill(slot_index)
+        add_to_active_decode(slot_index)
 ```
 
-### 6. SlotAllocator.cancel_timer
+### 5. Active Slot Tracking
 
 ```rust
-cancel_timer(slot_index: usize) -> bool:
-    if let Some(cancelled) = slot_timers.get(&slot_index):
-        let mut lock = cancelled.lock().await
-        *lock = true
-        return true
-    false  // 没有找到计时器（不是错误）
+add_to_active_prefill(slot_index):
+    if !active_prefill.contains(&slot_index):
+        active_prefill.push(slot_index)
+
+remove_from_active_prefill(slot_index):
+    if let Some(pos) = active_prefill.iter().position(|&idx| idx == slot_index):
+        active_prefill.swap_remove(pos)
+
+// Similar methods for active_decode tracking
 ```
 
-### 7. Calculate Delta Tokens
+### 6. Calculate Delta Tokens
 
 ```rust
 calculate_delta(session_id: &str, new_tokens: &[u32]) -> Option<(usize, Vec<u32>)>:
     (slot_index, cached_count) = get_cached_tokens(session_id)?
     
-    // 从 BatchSequence 获取已缓存的 tokens
+    // Get cached tokens from BatchSequence
     cached_tokens = batch_sequences.token_ids(slot_index, 0, cached_count)
     
     min_len = min(cached_tokens.len(), new_tokens.len())
@@ -265,32 +334,103 @@ calculate_delta(session_id: &str, new_tokens: &[u32]) -> Option<(usize, Vec<u32>
         return None
 ```
 
-### 8. Get Cached Tokens
+### 7. Get Cached Tokens
 
 ```rust
 get_cached_tokens(session_id: &str) -> Option<(usize, usize)>:
-    sessions.get(session_id)
-        .filter(|s| s.token_count > 0)
-        .and_then(|s| s.slot_index.map(|idx| (idx, s.token_count)))
+    slot_index = session_map.get(session_id)?
+    entry = slots[slot_index]
+    if entry.token_count > 0:
+        Some((slot_index, entry.token_count))
+    else:
+        None
 ```
 
-### 9. LRU Eviction
+### 8. Has Work Check
 
 ```rust
-evict_lru_session(sessions: &mut HashMap<String, DialogueSession>):
-    // 找到最久未访问的非活跃会话
-    oldest_session = None
-    
-    for (id, session) in sessions.iter():
-        if !session.is_active:
-            if oldest_session is None or session.last_accessed < oldest_session.last_accessed:
-                oldest_session = Some((id, session))
-    
-    if let Some((oldest_id, _)) = oldest_session:
-        session = sessions.remove(oldest_id)
-        if let Some(idx) = session.slot_index:
-            slot_allocator.release(idx)
+has_work() -> bool:
+    !active_prefill.is_empty() || !active_decode.is_empty()
 ```
+
+This method is used by the Scheduler to determine if there are pending tasks.
+
+### 9. Delayed Slot Recycling Mechanism
+
+The delayed recycling mechanism allows slots to be reserved for a configurable period after release, enabling efficient reuse by the same session while preventing other sessions from using them.
+
+#### Architecture
+
+```mermaid
+flowchart TD
+    A[release_session] --> B{Mode?}
+    B -->|NonReusable| C[Immediate Reset]
+    C --> D[Add to available_slots]
+    
+    B -->|Reusable/Lru| E[Remove from session_map]
+    E --> F[Create cancel_flag]
+    F --> G[Add to reserved_slots]
+    G --> H[Spawn Async Timer Task]
+    
+    H --> I{Timeout or Reuse?}
+    I -->|Reuse before timeout| J[cancel_flag.store true]
+    J --> K[Timer exits early]
+    
+    I -->|Timeout expired| L[Check cancel_flag]
+    L -->|Not cancelled| M[Remove from reserved_slots]
+    M --> N[Add to available_slots]
+    
+    L -->|Cancelled| O[Do nothing]
+```
+
+#### Data Flow Example
+
+**Scenario**: Session "user123" uses slot 0, releases it, then reuses it 5 minutes later (timeout = 10 minutes)
+
+```
+T0: acquire_session("user123") -> slot_index=0, is_reused=false
+T1: release_session("user123", 100)
+    - Remove from session_map
+    - Add to reserved_slots: {"user123" -> (0, cancel_flag=false)}
+    - Spawn timer: sleep(10 minutes)
+    
+T2 (5 min later): acquire_session("user123")
+    - Check session_map: not found
+    - Check reserved_slots: FOUND!
+    - Set cancel_flag=true (cancels pending timer)
+    - Restore session_map: {"user123" -> 0}
+    - Return: slot_index=0, is_reused=true
+    
+T3 (timer wakes up at T0+10min):
+    - Check cancel_flag: true
+    - Exit early, do nothing
+```
+
+**Alternative Scenario**: Different session tries to use reserved slot
+
+```
+T0: Session "user123" releases slot 0 -> reserved for 10 minutes
+T1: Session "user456" calls acquire_session("user456")
+    - Check session_map: not found
+    - Check reserved_slots: no entry for "user456"
+    - Allocate NEW slot from available_slots (NOT slot 0)
+    - Slot 0 remains reserved exclusively for "user123"
+```
+
+#### Concurrency Safety
+
+| Resource | Protection | Purpose |
+|----------|-----------|---------|
+| `reserved_slots` | `Arc<Mutex<HashMap>>` | Thread-safe access to reserved slots map |
+| `cancel_flag` | `Arc<AtomicBool>` | Lock-free cancellation signal for async tasks |
+| `session_map` | `Arc<Mutex<HashMap>>` | Prevents race conditions in session lookup |
+| `available_slots` | `Arc<Mutex<Vec>>` | Ensures exclusive access during allocation/release |
+
+**Key Invariants**:
+1. A slot is in EXACTLY ONE of: `active_*`, `reserved_slots`, or `available_slots`
+2. Reserved slots are ONLY accessible via their original `session_id`
+3. Cancel flag ensures exactly-once semantics for timeout cleanup
+4. No memory leaks: cancelled timers exit immediately, expired timers clean up
 
 ---
 
@@ -300,38 +440,34 @@ evict_lru_session(sessions: &mut HashMap<String, DialogueSession>):
 sequenceDiagram
     participant Handler as chat_completions
     participant ApiState as ApiState
-    participant SessionMgr as SessionManager
-    participant SlotAlloc as SlotAllocator
+    participant SlotMgr as SlotManager
     participant BatchSeq as BatchSequence
 
-    Handler->>ApiState: acquire_session(session_id, mode)
-    ApiState->>SessionMgr: acquire_session(session_id, mode)
+    Handler->>ApiState: acquire_session(session_id)
+    ApiState->>SlotMgr: acquire_session(session_id)
     
-    alt 会话可复用
-        SessionMgr-->>ApiState: SessionHandle { is_reused: true }
-        ApiState->>SessionMgr: calculate_delta(session_id, tokens)
+    alt Session can be reused
+        SlotMgr-->>ApiState: SessionHandle { is_reused: true }
+        ApiState->>SlotMgr: calculate_delta(session_id, tokens)
         ApiState->>BatchSeq: write_tokens(delta_tokens)
-        Note over BatchSeq: 仅写入新增 tokens
-    else 新建会话
-        SessionMgr->>SlotAlloc: allocate()
-        SlotAlloc-->>SessionMgr: slot_index
-        SessionMgr-->>ApiState: SessionHandle { is_reused: false }
+        Note over BatchSeq: Only write new tokens
+    else New session
+        SlotMgr-->>ApiState: SessionHandle { is_reused: false }
         ApiState->>BatchSeq: write_prompts(all_tokens)
     end
 
     Handler->>Handler: Execute inference...
     
     Handler->>ApiState: release_session(session_id, token_count)
-    ApiState->>SessionMgr: release_session(session_id, token_count)
+    ApiState->>SlotMgr: release_session(session_id, token_count)
     
-    alt NonReusable 模式
-        SessionMgr->>SlotAlloc: release(slot_index)
-        Note over SlotAlloc: 槽位进入定时状态（延迟回收）
-        SessionMgr->>SessionMgr: remove session
-    else Reusable 模式
-        SessionMgr->>SlotAlloc: release(slot_index)
-        Note over SlotAlloc: 槽位进入定时状态（延迟回收）
-        SessionMgr->>SessionMgr: deactivate session (retain mapping)
+    alt NonReusable mode
+        SlotMgr->>SlotMgr: reset_to_start(slot)
+        SlotMgr->>SlotMgr: remove session mapping
+        SlotMgr->>SlotMgr: add to available pool
+    else Reusable/Lru mode
+        SlotMgr->>SlotMgr: retain session mapping
+        SlotMgr->>SlotMgr: add to available pool
     end
 ```
 
@@ -341,19 +477,19 @@ sequenceDiagram
 
 | Operation | Lock Strategy |
 |-----------|---------------|
-| `acquire_session` | Mutex 保护 sessions HashMap |
-| `release_session` | Mutex 保护 sessions HashMap |
-| `get_cached_tokens` | Mutex 保护 sessions HashMap |
-| `calculate_delta` | 先读取 sessions，再访问 batch_sequences |
-| `SlotAllocator.allocate/release` | Mutex 保护 free_slots |
-| `SlotAllocator.allocate_preferred` | Mutex 保护 free_slots + slot_timers |
-| `SlotAllocator.cancel_timer` | Mutex 保护 slot_timers |
+| `acquire_session` | Mutex protects session_map and slots |
+| `release_session` | Mutex protects session_map and slots |
+| `get_cached_tokens` | Mutex protects session_map and slots |
+| `calculate_delta` | Read session_map, then access batch_sequences |
+| `LRU operations` | Mutex protects slots array |
+| `Active tracking` | Separate Mutex for active_prefill and active_decode |
+| `Available pool` | Mutex protects available_slots vector |
 
-**性能优化**：
-- **短锁持有**：仅在必要时持有锁，快速释放
-- **LRU 清理**：在 acquire_session 时惰性清理，避免后台定时任务
-- **索引复用**：SlotAllocator 使用 VecDeque，高效管理空闲槽位
-- **异步延迟回收**：release 后启动异步计时器，不阻塞主线程
+**Performance Optimizations**:
+- **Short lock holding**: Locks held only when necessary, released quickly
+- **LRU management**: Embedded linked list in SlotState avoids separate data structures
+- **Index reuse**: Available slots pool for efficient allocation
+- **Separate active lists**: Fast lookup of active prefill/decode slots without scanning all slots
 
 ---
 
@@ -361,90 +497,98 @@ sequenceDiagram
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `max_sessions` | batch_size | 最大会话数（等于槽位数量） |
-| `session_mode` | NonReusable | 默认会话模式 |
-| `slot_reuse_timeout_ms` | 30000 | 槽位延迟回收超时时间（毫秒） |
+| `num_slots` | batch_size | Number of slots (equals batch size) |
+| `mode` | Lru | Default session management mode |
+| `reuse_timeout_ms` | 30000 | Slot retention timeout in milliseconds (configurable) |
 
-**CLI 参数**：
-- `--slot-reuse-timeout-ms`: 设置槽位复用超时时间（默认 30000ms）
+**Configuration Example**:
+
+```rust
+// Create SlotManager with 10-minute timeout
+let slot_manager = Arc::new(SlotManager::new(
+    batch_size,
+    batch_sequences,
+    SessionMode::Reusable,
+    600000, // 10 minutes in milliseconds
+));
+```
+
+**CLI Parameters**:
+- `--slot-reuse-timeout-ms`: Configure slot retention timeout (default: 30000ms)
+- Session mode can be configured at initialization time
+
+**Recommendations**:
+- **Short conversations** (< 1 min): Use 1-5 minute timeout
+- **Medium conversations** (1-10 min): Use 10-15 minute timeout
+- **Long conversations** (> 10 min): Use 30+ minute timeout or NonReusable mode
+- **High concurrency**: Shorter timeout to free up slots faster
+- **Low concurrency**: Longer timeout to maximize cache hits
 
 ---
 
 ## Module Structure
 
 ```
-src/runtime/scheduling/
-├── mod.rs                # Scheduling submodule entry and re-exports
-├── session.rs            # SessionManager, DialogueSession, SessionHandle, SessionMode
-├── slot_allocator.rs     # SlotAllocator implementation
-├── scheduler.rs          # Scheduler implementation
-├── strategy.rs           # SchedulerStrategy, BatchPlan
-├── types.rs              # Phase, ScheduleTask, SequenceState definitions
-├── state_machine.rs      # SequenceStateMachine state transition logic
-├── sequence_slice.rs     # SequenceSlice, DecodeList definitions
-├── batch_sequence.rs     # BatchSequence implementation
-└── initialization.rs     # build_batch_sequence, build_sequence_state helpers
+src/runtime/session/
+├── mod.rs                # Session submodule entry
+├── slot_manager.rs       # SlotManager implementation with LRU
+├── slot_entry.rs         # SlotEntry definitions
+└── types.rs              # SessionMode, SessionHandle, DialogueSession
 ```
 
-**Removed Files**:
-- ❌ `src/runtime/caching/dialogue_cache.rs` - 功能整合到 SessionManager
-- ❌ `src/runtime/caching/strategy.rs` - LRU 策略不再需要
-- ❌ `src/runtime/caching/lru_list.rs` - 简化为 HashMap + LRU 清理
-- ❌ `src/runtime/scheduling/slot_manager.rs` - 替换为 SlotAllocator
-- ❌ `src/runtime/caching/mod.rs` - caching 目录已删除
+**Related Modules**:
+- `src/runtime/state/core.rs` - SlotState definition with LRU pointers
+- `src/runtime/state/machine.rs` - SlotStateMachine for state transitions
+- `src/runtime/scheduler/core.rs` - Scheduler uses SlotManager for work detection
 
 ---
 
 ## Migration Guide
 
-### From DialogueCache to SessionManager
+### From Old Session Management to SlotManager
 
-**Old Code**:
+**Old Approach** (hypothetical previous design):
 ```rust
-// 获取槽位
-let slot_index = state.acquire_slot().await?;
-
-// 插入缓存
-state.dialogue_cache.insert(dialogue_id, slot_index, token_count).await;
-
-// 查找公共前缀
-let result = state.dialogue_cache.find_common_prefix(dialogue_id, &tokens).await;
-
-// 释放槽位
-state.release_slot(slot_index, true).await;
+// Separate session manager and slot allocator
+let handle = session_manager.acquire(session_id, mode).await?;
+let delta = session_manager.calculate_delta(session_id, &tokens).await;
+slot_allocator.release(slot_index).await;  // With delayed recycling
 ```
 
-**New Code**:
+**New Approach**:
 ```rust
-// 获取会话
-let handle = state.acquire_session(&session_id, mode).await?;
+// Unified slot manager with LRU
+let handle = slot_manager.acquire_session(&session_id).await?;
 let slot_index = handle.slot_index;
 
-// 如果是复用会话，自动计算 delta
+// If reused session, automatically calculate delta
 if handle.is_reused {
-    let (prefix_len, delta_tokens) = state.get_cached_prefix(&session_id, &tokens).await?;
-    // 写入 delta tokens
+    let result = slot_manager.calculate_delta(&session_id, &tokens).await;
+    // Write delta tokens
 } else {
-    // 写入全部 tokens
+    // Write all tokens
 }
 
-// 释放会话（自动根据模式决定行为）
-state.release_session(&session_id, token_count).await;
+// Release session (behavior depends on mode)
+slot_manager.release_session(&session_id, token_count).await;
 ```
 
 ### Key Differences
 
-| Aspect | Old (DialogueCache) | New (SessionManager) |
-|--------|---------------------|----------------------|
-| **职责** | 分散：SlotManager + DialogueCache | 统一：SessionManager |
-| **Permit 管理** | Semaphore permit 计数复杂 | 直接 allocate/release，无 permit |
-| **并发控制** | 检查 SequenceState.is_available() | 使用 is_active 标志 |
-| **模式切换** | 全局 enabled 标志 | 每个会话独立 mode |
-| **客户端控制** | 无法动态选择 | 可通过 session_mode 参数指定 |
-| **槽位复用** | 立即释放到 LRU | 延迟回收 + 优先复用原槽位 |
+| Aspect | Old Design | New SlotManager with Delayed Recycling |
+|--------|-----------|---------------------------------------|
+| **Responsibility** | Split: SessionManager + SlotAllocator | Unified: SlotManager |
+| **LRU Implementation** | Separate data structures | Embedded doubly-linked list in SlotState |
+| **Concurrency Control** | Check SequenceState.is_available() | Use active_prefill/active_decode lists |
+| **Mode Switching** | Global enabled flag | Per-manager mode setting |
+| **Slot Reuse** | Immediate return to pool | Configurable delayed recycling with exclusivity |
+| **Eviction** | Manual LRU cleanup | Automatic eviction when pool is empty |
+| **Reservation** | Not supported | Reserved slots exclusive to original session |
+| **Timer Management** | None | Async tasks with atomic cancellation |
+| **Flexibility** | Fixed behavior | Configurable timeout per deployment |
 
 ---
 
-**Document Version**: v1.1  
-**Last Updated**: 2026-06-17  
-**Major Changes**: Added slot delayed recycling mechanism and preferred slot reuse strategy
+**Document Version**: v3.0  
+**Last Updated**: 2026-06-22  
+**Major Changes**: Added comprehensive delayed slot recycling mechanism with configurable timeout, exclusive reservation for same session, async timer with atomic cancellation, updated all data structures and lifecycle diagrams, added detailed architecture documentation and configuration guidelines

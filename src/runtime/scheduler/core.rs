@@ -265,6 +265,7 @@ mod tests {
             batch_size,
             batch_sequences,
             SessionMode::Lru,
+            600000, // 10 minutes default for tests
         ))
     }
 

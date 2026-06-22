@@ -370,6 +370,7 @@ mod test {
             BATCH_SIZE,
             batch_sequences,
             SessionMode::Lru,
+            600000, // 10 minutes
         ));
         let mut scheduler = Scheduler::new(
             SEQUENCE_LENGTH,
@@ -638,6 +639,7 @@ mod test {
                 BATCH_SIZE,
                 batch_sequences,
                 SessionMode::Lru,
+                600000, // 10 minutes
             ));
             let mut scheduler = Scheduler::new(
                 SEQUENCE_LENGTH,
@@ -786,6 +788,7 @@ mod test {
             BATCH_SIZE,
             batch_sequences,
             SessionMode::Lru,
+            600000, // 10 minutes
         ));
         let mut scheduler = Scheduler::new(
             SEQUENCE_LENGTH,
@@ -1037,6 +1040,7 @@ mod test {
             BATCH_SIZE,
             batch_sequences,
             SessionMode::Lru,
+            600000, // 10 minutes
         ));
         let mut scheduler = Scheduler::new(
             SEQUENCE_LENGTH,

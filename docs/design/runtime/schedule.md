@@ -49,62 +49,62 @@
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `prefill_list` | `UnsafeCell<Vec<Vec<SequenceSlice>>>` | 每个线程的 prefill slice 列表 |
-| `decode_list` | `UnsafeCell<DecodeList>` | Decode/Attention slice 容器 |
-| `batch_list` | `Arc<SharedMut<Vec<SequenceState>>>` | 序列状态共享存储 |
-| `strategy` | `Box<dyn SchedulerStrategy>` | 调度策略（策略模式） |
-| `max_prefill_size` | `usize` | 最大 prefill token 数（由 chunk_size 决定） |
-| `max_decode_size` | `usize` | 最大 decode 序列数（等于 batch_size） |
-| `thread_num` | `AtomicUsize` | 线程数（动态可调整） |
-| `needs_schedule` | `AtomicBool` | 是否需要调度的标志 |
-| `schedule_tx` | `broadcast::Sender<()>` | 调度触发通道 |
-| `timeout` | `Duration` | 超时时间窗口 |
-| `broadcast_sender` | `broadcast::Sender<ScheduleTask>` | 任务广播发送器 |
-| `next_task_id` | `AtomicU64` | 任务 ID 生成器 |
-| `task_in_flight` | `Arc<AtomicBool>` | 防止重复调度的原子标志 |
+| `batch_list` | `Arc<SharedMut<Vec<SlotState>>>` | Slot state shared storage |
+| `slot_manager` | `Arc<SlotManager<f16>>` | Slot and session manager with LRU and delayed recycling |
+| `strategy` | `Box<dyn SchedulerStrategy>` | Scheduling strategy (strategy pattern) |
+| `thread_num` | `AtomicUsize` | Thread count (dynamically adjustable) |
+| `needs_schedule` | `AtomicBool` | Schedule trigger flag |
+| `schedule_tx` | `broadcast::Sender<()>` | Schedule trigger channel |
+| `timeout` | `Duration` | Timeout window |
+| `broadcast_sender` | `broadcast::Sender<ScheduleTask>` | Task broadcast sender |
+| `task_in_flight` | `Arc<AtomicBool>` | Atomic flag to prevent duplicate scheduling |
 
-### 2.2 SequenceState Fields
+### 2.2 SlotState Fields
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `phase` | `Phase` | 当前阶段: `Start`/`Prefill`/`Decode`/`Eos`/`Timeout` |
-| `sequence_index` | `usize` | 当前序列位置，prefill 起始点 |
-| `kv_index` | `usize` | KV 缓存位置，下次写入位置 |
-| `filling_length` | `usize` | 剩余需要处理的 prefill token 数 |
-| `notify` | `Arc<Notify>` | 完成通知同步原语 |
+| `phase` | `Phase` | Current phase: `Start`/`Prefill`/`Decode`/`Eos`/`Timeout` |
+| `sequence_index` | `usize` | Current sequence position, prefill starting point |
+| `kv_index` | `usize` | KV cache position, next write position |
+| `filling_length` | `usize` | Remaining prefill tokens to process |
+| `session_id` | `Option<String>` | Associated session ID |
+| `token_count` | `usize` | Cached token count |
+| `created_at` | `Instant` | Creation timestamp |
+| `last_accessed` | `Instant` | Last access timestamp |
+| `notify` | `Arc<Notify>` | Completion notification primitive |
+| `lru_prev` | `usize` | LRU linked list previous pointer |
+| `lru_next` | `usize` | LRU linked list next pointer |
 
-### 2.3 SequenceSlice Fields
-
-| Field | Type | Purpose |
-|-------|------|---------|
-| `batch_index` | `usize` | Batch slot 索引 |
-| `sequence_index` | `usize` | 序列内起始位置 |
-| `token_start_index` | `usize` | 本轮扁平 token 视图中的起始位置 |
-| `length` | `usize` | 连续 token 长度 |
-| `last_token_flag` | `bool` | 是否为提示词的最后一个 token |
-
-### 2.4 BatchPlan Enum
+### 2.3 BatchPlan Structure
 
 ```rust
-enum BatchPlan {
-    Decode(Vec<(usize, usize)>),       // (batch_index, sequence_index) 列表
-    Prefill {
-        candidates: Vec<PrefillCandidate>,
-        total_tokens: usize,
-    },
-    Idle,
+pub struct BatchPlan {
+    pub mode: BatchMode,           // Decode, Prefill, or Mixed
+    pub prefill_size: usize,       // Number of prefill sequences
+    pub decode_size: usize,        // Number of decode sequences
+    pub prefill_list: Vec<Vec<SequenceSlice>>,  // Per-thread prefill slices
+    pub decode_list: DecodeList,   // Decode slices
+    pub task_id: u64,              // Unique task identifier
 }
 ```
 
-### 2.5 PrefillCandidate Struct
+### 2.4 PlanBuilder
+
+The `PlanBuilder` in `plan.rs` is responsible for constructing batch plans from slot states:
 
 ```rust
-struct PrefillCandidate {
-    batch_index: usize,
-    sequence_index: usize,
-    remaining: usize,
+pub struct PlanBuilder {
+    max_decode_size: usize,
+    max_prefill_size: usize,
+    thread_num: usize,
+    next_task_id: AtomicU64,
 }
 ```
+
+**Key Methods**:
+- `build_plan(batch_list)`: Analyzes slot states and generates appropriate BatchPlan
+- `build_decode()`: Constructs decode slices from candidates
+- `build_prefill()`: Distributes prefill tokens across threads using SliceScheduler
 
 ---
 
@@ -126,46 +126,40 @@ flowchart TD
     H --> K["return (0, 0)"]
 ```
 
-### 3.2 Plan Generation Logic (实际实现)
+### 3.2 Plan Generation Logic (Actual Implementation)
 
 ```text
 plan_next_round() flow:
-1. 委托给 strategy.plan_next_round(batch_list, max_decode_size, max_prefill_size)
-2. 策略遍历 batch_list 收集候选
-3. 如果有 Prefill 候选 -> 返回 BatchPlan::Prefill
-4. 如果有 Decode 候选 -> 返回 BatchPlan::Decode  
-5. 否则返回 BatchPlan::Idle
+1. Delegate to strategy.plan_next_round(batch_list, thread_num, 0)
+2. Strategy uses PlanBuilder to analyze batch_list
+3. Collect decode candidates (Phase::Decode slots up to max_decode_size)
+4. Collect prefill candidates (Phase::Prefill slots)
+5. Determine batch mode:
+   - has_prefill && has_decode -> Mixed
+   - has_prefill only -> Prefill
+   - has_decode only -> Decode
+   - neither -> Empty plan
+6. Build decode slices if needed
+7. Build prefill slices if needed using SliceScheduler
+8. Return BatchPlan with task_id
 
-优先级: Prefill > Decode > Idle
+Priority: Prefill > Decode (implemented in PlanBuilder)
 ```
 
 ### 3.3 SchedulerStrategy Trait
 
 ```rust
-trait SchedulerStrategy: Send + Sync + 'static {
+pub trait SchedulerStrategy: Send + Sync + 'static {
     fn plan_next_round(
         &self,
-        batch_list: &[SequenceState],
+        batch_list: &[SlotState],
         max_decode_size: usize,
         max_prefill_size: usize,
     ) -> BatchPlan;
-
-    fn schedule_decode_round(
-        &self,
-        decode_candidates: Vec<(usize, usize)>,
-        decode_list: &mut DecodeList,
-    ) -> usize;
-
-    fn schedule_prefill_round(
-        &self,
-        candidates: Vec<PrefillCandidate>,
-        total_tokens: usize,
-        prefill_list: &mut Vec<Vec<SequenceSlice>>,
-        decode_list: &mut DecodeList,
-        thread_num: usize,
-    ) -> usize;
 }
 ```
+
+**Note**: The current implementation simplifies the trait to a single method. The `DefaultSchedulerStrategy` delegates to `PlanBuilder` which handles all scheduling logic internally.
 
 ---
 
@@ -290,25 +284,25 @@ schedule_for_sequence:
 
 ## 6. State Machine
 
-### 6.1 SequenceStateMachine 职责
+### 6.1 SlotStateMachine Responsibilities
 
-`SequenceStateMachine` 封装了状态转换的业务逻辑，确保状态转换的合法性和原子性。
+`SlotStateMachine` encapsulates state transition business logic, ensuring legal and atomic state transitions.
 
-### 6.2 支持的状态转换
+### 6.2 Supported State Transitions
 
-| From | To | 条件 | 方法 |
-|------|-----|------|------|
-| `Start` | `Prefill` | 无 | `transition_to_prefill()` |
-| `Eos` | `Prefill` | 无 | `transition_to_prefill()` |
-| `Timeout` | `Prefill` | 无 | `transition_to_prefill()` |
+| From | To | Condition | Method |
+|------|-----|-----------|--------|
+| `Start` | `Prefill` | None | `transition_to_prefill()` |
+| `Eos` | `Prefill` | None | `transition_to_prefill()` |
+| `Timeout` | `Prefill` | None | `transition_to_prefill()` |
 | `Prefill` | `Decode` | `filling_length == 0` | `transition_to_decode()` / `advance_sequence()` |
-| `Decode` | `Eos` | 生成 eos token | `transition_to_eos()` |
-| `Prefill` | `Eos` | 生成 eos token | `transition_to_eos()` |
-| `Decode` | `Timeout` | 超时 | `transition_to_timeout()` |
-| `Prefill` | `Timeout` | 超时 | `transition_to_timeout()` |
-| 任意 | `Start` | 重置 | `reset_to_start()` |
+| `Decode` | `Eos` | Generate eos token | `transition_to_eos()` |
+| `Prefill` | `Eos` | Generate eos token | `transition_to_eos()` |
+| `Decode` | `Timeout` | Timeout | `transition_to_timeout()` |
+| `Prefill` | `Timeout` | Timeout | `transition_to_timeout()` |
+| Any | `Start` | Reset | `reset_to_start()` |
 
-### 6.3 advance_sequence 自动转换
+### 6.3 advance_sequence Automatic Transition
 
 ```text
 advance_sequence(state, steps):
@@ -327,7 +321,7 @@ advance_sequence(state, steps):
         return None
 ```
 
-### 6.4 状态转换验证
+### 6.4 State Transition Validation
 
 ```rust
 fn can_transition(from: Phase, to: Phase) -> bool {
@@ -676,6 +670,6 @@ stateDiagram-v2
 
 ---
 
-**Document Version**: v3.3  
-**Last Updated**: 2026-06-17  
-**Major Changes**: Updated SlotManager to SlotAllocator with delayed recycling mechanism
+**Document Version**: v4.1  
+**Last Updated**: 2026-06-22  
+**Major Changes**: Updated to reflect actual implementation - renamed SequenceState to SlotState, simplified SchedulerStrategy trait, integrated PlanBuilder for batch planning, added BatchMode enum (Decode/Prefill/Mixed), updated SlotState fields with session tracking and LRU pointers, documented delayed slot recycling mechanism in session_management.md

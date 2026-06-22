@@ -182,6 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch_size,
         Arc::clone(&batch_seq_arc),
         SessionMode::Lru,
+        600000, // 10 minutes
     ));
     let mut batch_scheduler = Scheduler::with_mode(
         sequence_length,

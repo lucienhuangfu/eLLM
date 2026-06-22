@@ -26,6 +26,7 @@ pub async fn run(
         slot_count,
         batch_sequences.clone(),
         session_mode,
+        600000, // 10 minutes default
     ));
 
     let state = build_api_state(

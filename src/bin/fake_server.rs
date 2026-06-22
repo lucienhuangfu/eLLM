@@ -60,6 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch_size,
         batch_sequences.clone(),
         SessionMode::NonReusable,
+        600000, // 10 minutes
     ));
     let shared_state = Arc::new(SharedState::new(
         Arc::clone(&batch_states),

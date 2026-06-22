@@ -20,7 +20,7 @@
 - **Input Preparation**: Render chat messages to prompts, encode to tokens
 - **Batch Scheduling**: Generate current-round computation slices by priority rules
 - **Thread Execution**: Manage thread pool to execute operator queues in parallel
-- **Session Management**: Unified dialogue session management with reusable/non-reusable modes
+- **Session Management**: Unified dialogue session management with reusable/non-reusable modes and delayed slot recycling
 
 ---
 
@@ -153,19 +153,19 @@ classDiagram
 
 | Component | Responsibility | File Location |
 |-----------|---------------|---------------|
-| `Scheduler` | Core scheduling logic, event-driven execution | `scheduling/scheduler.rs` |
-| `SchedulerStrategy` | Scheduling strategy trait | `scheduling/strategy.rs` |
-| `DefaultSchedulerStrategy` | Default scheduling implementation | `scheduling/strategy.rs` |
-| `SliceScheduler` | Prefill token distribution across threads | `scheduling/strategy.rs` |
+| `Scheduler` | Core scheduling logic, event-driven execution | `scheduler/core.rs` |
+| `SchedulerStrategy` | Scheduling strategy trait | `scheduler/strategy.rs` |
+| `DefaultSchedulerStrategy` | Default scheduling implementation | `scheduler/strategy.rs` |
+| `PlanBuilder` | Batch plan construction with slice distribution | `plan.rs` |
+| `SliceScheduler` | Prefill token distribution across threads | `plan.rs` |
 | `ExecutorPool` | Leader-follower thread pool executor | `executor/executor.rs` |
-| `SequenceState` | Batch slot state | `scheduling/types.rs` |
-| `SequenceStateMachine` | State transition logic | `scheduling/state_machine.rs` |
-| `SequenceSlice` | Minimal computation unit | `scheduling/sequence_slice.rs` |
-| `ScheduleTask` | Scheduling task carrier | `scheduling/types.rs` |
-| `BatchSequence` | Prompt writing & result decoding | `scheduling/batch_sequence.rs` |
-| `SessionManager` | Unified session lifecycle management | `scheduling/session.rs` |
-| `SlotAllocator` | Simplified slot allocation | `scheduling/slot_allocator.rs` |
-| `DialogueSession` | Session metadata structure | `scheduling/session.rs` |
+| `SlotState` | Slot state tracking (phase, sequence, KV cache) | `state/core.rs` |
+| `SlotStateMachine` | State transition logic | `state/machine.rs` |
+| `SequenceSlice` | Minimal computation unit | `state/sequence.rs` |
+| `ScheduleTask` | Scheduling task carrier | `scheduler/task.rs` |
+| `BatchSequence` | Prompt writing & result decoding | `state/batch.rs` |
+| `SlotManager` | Unified slot and session management with LRU and delayed recycling | `session/slot_manager.rs` |
+| `DialogueSession` | Session metadata structure | `session/types.rs` |
 | `ChatTemplate` | Chat template rendering | `io/chat_template.rs` |
 | `TokenizerLoader` | Tokenizer loading | `io/tokenizer_loader.rs` |
 
@@ -238,34 +238,42 @@ stateDiagram-v2
 
 ```
 src/runtime/
-├── scheduling/
-│   ├── mod.rs                # Scheduling submodule entry and re-exports
-│   ├── scheduler.rs          # Scheduler implementation
-│   ├── strategy.rs           # SchedulerStrategy, BatchPlan, DefaultSchedulerStrategy, SliceScheduler
-│   ├── types.rs              # Phase, ScheduleTask, SequenceState definitions
-│   ├── state_machine.rs      # SequenceStateMachine state transition logic
-│   ├── sequence_slice.rs     # SequenceSlice, DecodeList definitions
-│   ├── batch_sequence.rs     # BatchSequence implementation
-│   ├── session.rs            # SessionManager, DialogueSession, SessionHandle, SessionMode
-│   ├── slot_allocator.rs     # SlotAllocator implementation
-│   └── initialization.rs     # build_batch_sequence, build_sequence_state helpers
+├── scheduler/
+│   ├── mod.rs                # Scheduler submodule entry
+│   ├── core.rs               # Scheduler implementation
+│   ├── strategy.rs           # SchedulerStrategy trait and DefaultSchedulerStrategy
+│   └── task.rs               # ScheduleTask definition
+├── session/
+│   ├── mod.rs                # Session submodule entry
+│   ├── slot_manager.rs       # SlotManager with LRU and session tracking
+│   ├── slot_entry.rs         # SlotEntry definitions
+│   └── types.rs              # SessionMode, SessionHandle, DialogueSession
+├── state/
+│   ├── mod.rs                # State submodule entry
+│   ├── core.rs               # SlotState definition
+│   ├── machine.rs            # SlotStateMachine state transitions
+│   ├── types.rs              # Phase enum
+│   ├── sequence.rs           # SequenceSlice, DecodeList
+│   ├── batch.rs              # BatchSequence implementation
+│   ├── shared.rs             # SharedState for cross-component sharing
+│   └── state_init.rs         # build_batch_sequence, build_slot_state helpers
 ├── executor/
 │   ├── mod.rs                # Executor submodule entry
 │   ├── executor.rs           # ExecutorPool implementation
-│   ├── plan.rs               # BatchPlan, PlanBuilder
-│   └── sync.rs               # SpinBarrier, BatchTracker synchronization primitives
+│   └── sync.rs               # SpinBarrier, AdaptiveWait, BatchTracker
 ├── io/
 │   ├── mod.rs                # IO submodule entry
 │   ├── chat_template.rs      # ChatTemplate implementation
 │   ├── tokenizer_loader.rs   # Tokenizer loading (load_tiktoken)
 │   ├── safetensors_loader.rs # Weight loading (SafeTensorsLoader)
 │   └── from_safetensors.rs   # FromSafetensors trait (type conversion)
+├── plan.rs                   # BatchPlan, PlanBuilder, SliceScheduler
 ├── error.rs                  # Runtime error definitions
 └── mod.rs                    # Module exports
 ```
 
 ---
 
-**Document Version**: v4.1  
-**Last Updated**: 2026-06-17  
-**Major Changes**: Added slot delayed recycling mechanism and preferred slot reuse strategy
+**Document Version**: v5.1  
+**Last Updated**: 2026-06-22  
+**Major Changes**: Restructured to match actual code organization - renamed SequenceState to SlotState, moved components to scheduler/session/state/executor directories, integrated PlanBuilder into plan.rs, replaced SessionManager+SlotAllocator with unified SlotManager with LRU support, added delayed slot recycling mechanism with configurable timeout

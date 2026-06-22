@@ -279,6 +279,7 @@ pub fn initialize_serving_resources(
         config.batch_size,
         batch_sequences.clone(),
         config.session_mode,
+        config.slot_reuse_timeout_ms as u64,
     ));
 
     let (broadcast_sender, broadcast_receiver) = tokio::sync::broadcast::channel(8);

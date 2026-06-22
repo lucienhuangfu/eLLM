@@ -190,6 +190,7 @@ fn main() {
         batch_size,
         Arc::clone(&batch_seq_arc),
         SessionMode::Lru,
+        600000, // 10 minutes
     ));
     let mut batch_scheduler = Scheduler::new(
         sequence_length,
