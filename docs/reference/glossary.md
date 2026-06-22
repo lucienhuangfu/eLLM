@@ -105,7 +105,7 @@ A positional encoding scheme that multiplies Q/K projections by complex rotation
 ## S
 
 **ScheduleTask**  
-The broadcast payload sent from `BatchScheduler` to all `ServingRunner` threads. Carries `prefill_list`, `decode_list`, sizes, a timestamp, and a task ID.
+The payload for batch execution tasks. Carries `prefill_list`, `decode_list`, sizes, and a task ID. Used by ExecutorPool for manual batch execution.
 
 **sequence_index**  
 The current read/write cursor within a sequence's token buffer for a batch slot.
@@ -116,8 +116,8 @@ The minimal computation unit: `batch_index`, `sequence_index`, `token_start_inde
 **SequenceState**  
 Per-slot state tracked by the serving layer: `phase`, `sequence_index`, `kv_index`, `filling_length`, `notify`.
 
-**ServingRunner**  
-The broadcast-subscribed thread-pool executor. Each runner thread subscribes to the broadcast channel and executes the operator queue when a `ScheduleTask` arrives.
+**ExecutorPool**  
+The leader-follower thread-pool executor. Leader thread waits for requests and builds execution plans, follower threads execute the operator queue based on shared state.
 
 ---
 

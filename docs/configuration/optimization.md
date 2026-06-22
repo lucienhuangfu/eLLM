@@ -43,7 +43,7 @@ All parameters are configured via environment variables, read in `ServingConfig:
 | Interface | Compatibility | Description |
 |-----------|---------------|-------------|
 | `BatchScheduler::new()` | Fully compatible | Keep original interface |
-| `ServingRunner::start()` | Fully compatible | Keep original interface |
+| `ExecutorPool::start()` | Fully compatible | Keep original interface |
 | `chat_completions` | Fully compatible | Internal logic upgrade |
 
 ### 3.2 Upgrade Steps
@@ -51,7 +51,7 @@ All parameters are configured via environment variables, read in `ServingConfig:
 ```mermaid
 flowchart TD
     A[Step 1: Add dependencies] --> B[Step 2: Modify BatchScheduler]
-    B --> C[Step 3: Refactor ServingRunner]
+    B --> C[Step 3: Refactor ExecutorPool]
     C --> D[Step 4: Update chat_completions]
     D --> E[Step 5: Update main.rs]
     E --> F[Step 6: Tune parameters]
@@ -81,7 +81,7 @@ src/
 │   │   ├── safetensors_loader.rs # SafeTensorsLoader
 │   │   └── from_safetensors.rs # FromSafetensors trait
 │   ├── batch_sequence.rs     # BatchSequence implementation
-│   ├── runner.rs             # ServingRunner implementation
+│   ├── executor.rs           # ExecutorPool implementation
 │   └── mod.rs                # Runtime module entry and re-exports
 ├── serving/
 │   ├── mod.rs                # HTTP server entry, routes, API data structures

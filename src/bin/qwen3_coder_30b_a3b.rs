@@ -7,8 +7,8 @@ use ellm::runtime::io::load_tiktoken;
 use ellm::runtime::io::ChatTemplate;
 use ellm::runtime::io::SafeTensorsLoader;
 use ellm::runtime::{
-    BatchSequence, Config, GenerationConfig, Phase, ScheduleTask, Scheduler, SequenceState,
-    ServingRunner, SessionMode, SlotManager,
+    BatchSequence, Config, ExecutorPool, GenerationConfig, Phase, ScheduleTask, Scheduler,
+    SequenceState, SessionMode, SharedState, SlotManager,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
@@ -17,7 +17,6 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -247,7 +246,16 @@ fn main() {
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
     let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
 
-    let (task_sender, _) = tokio::sync::broadcast::channel(8);
+    let shared_state = Arc::new(SharedState::new(
+        Arc::clone(&batch_list_arc),
+        batch_size,
+        chunk_size,
+        thread_num,
+    ));
+
+    let executor_pool = ExecutorPool::new(f16::take_operator_queue(), Arc::clone(&shared_state))
+        .with_thread_count(thread_num);
+
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
         batch_seq_arc,
@@ -259,18 +267,18 @@ fn main() {
         thread_num,
         1,
         Duration::from_millis(10),
-        task_sender.clone(),
+        tokio::sync::broadcast::channel(8).0,
         Arc::clone(&batch_list_arc),
         slot_manager,
     );
-    let batch_list_ref = Arc::clone(&batch_list_arc);
-    let sizes = batch_scheduler.schedule_batch();
-    let mut task = ScheduleTask::new(
-        sizes.0,
-        sizes.1,
-        batch_scheduler.prefill_list().clone(),
-        batch_scheduler.decode_list().clone(),
-        1,
+
+    let plan = batch_scheduler.schedule_batch().unwrap();
+    let task = ScheduleTask::new(
+        plan.prefill_size,
+        plan.decode_size,
+        plan.prefill_list,
+        plan.decode_list,
+        plan.task_id,
     );
 
     // ---- force max_output_tokens cutoff after gen ----
@@ -279,43 +287,13 @@ fn main() {
     let max_output_tokens_u = max_output_tokens;
 
     let start = Instant::now();
-    let task_in_flight = Arc::new(AtomicBool::new(false));
-    let runner = ServingRunner::new(
-        f16::take_operator_queue(),
-        Arc::clone(&batch_list_ref),
-        task_sender.clone(),
-    )
-    .with_runner_count(thread_num)
-    .with_task_in_flight(Arc::clone(&task_in_flight));
-    let runner_handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(thread_num)
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(runner.start());
-    });
 
-    // Send prefill task
-    task_in_flight.store(true, Ordering::Release);
-    loop {
-        match task_sender.send(task.clone()) {
-            Ok(_) => break,
-            Err(err) => {
-                task = err.0;
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        }
-    }
+    // Execute prefill task
+    executor_pool.execute_single_thread_batch(&task);
 
     // Decode loop: keep scheduling until all sequences are done
     let mut generated_count = 0usize;
     loop {
-        // Wait for current task to complete
-        while task_in_flight.load(Ordering::Acquire) {
-            std::thread::sleep(std::time::Duration::from_micros(100));
-        }
-
         generated_count += 1;
         if generated_count == 1 {
             log_timing("first_token", start);
@@ -331,41 +309,28 @@ fn main() {
         }
 
         // Schedule next batch (decode step)
-        let sizes = batch_scheduler.schedule_batch();
-        if sizes.1 == 0 {
+        let plan = match batch_scheduler.schedule_batch() {
+            Some(p) => p,
+            None => break,
+        };
+        if plan.decode_size == 0 {
             break;
         }
         let decode_task = ScheduleTask::new(
-            sizes.0,
-            sizes.1,
-            batch_scheduler.prefill_list().clone(),
-            batch_scheduler.decode_list().clone(),
-            1,
+            plan.prefill_size,
+            plan.decode_size,
+            plan.prefill_list,
+            plan.decode_list,
+            plan.task_id,
         );
 
-        task_in_flight.store(true, Ordering::Release);
-        loop {
-            match task_sender.send(decode_task.clone()) {
-                Ok(_) => break,
-                Err(err) => {
-                    let _ = err.0;
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-            }
-        }
+        executor_pool.execute_single_thread_batch(&decode_task);
     }
 
-    // Signal runner to stop
-    drop(task_sender);
-    // Wait for final task to complete
-    while task_in_flight.load(Ordering::Acquire) {
-        std::thread::sleep(std::time::Duration::from_micros(100));
-    }
-    let _ = runner_handle.join();
     let elapsed = start.elapsed();
 
     // Force-cut each sequence to exactly max_output_tokens generated tokens
-    batch_list_ref.with(|list| {
+    batch_list_arc.with(|list| {
         for slot in 0..list.len() {
             let input_len = written_lengths[slot];
             // Hard cutoff: only show the first max_output_tokens generated ids

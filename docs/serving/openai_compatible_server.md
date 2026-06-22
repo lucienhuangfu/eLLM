@@ -129,7 +129,7 @@ The full generated text is split using `split_inclusive(' ')` — each chunk ret
 6. Build `batch_states` (one `SequenceState` per slot)
 7. Create scheduling components (`BatchScheduler` + `TokenCounter` + broadcast channel)
 8. Create RoPE position embeddings, initialize the model, run one forward pass (populates the operator queue)
-9. Create `ServingRunner` (takes the operator list from the global queue)
+9. Create `ExecutorPool` (takes the operator list from the global queue)
 
 Returns `ServingResources` containing all runtime components.
 
@@ -138,7 +138,7 @@ Returns `ServingResources` containing all runtime components.
 ## 8. Current Implementation Traits
 
 * The HTTP layer follows an OpenAI-compatible style
-* Inference is driven by an external `ServingRunner`; the serving layer itself does not run model computation
+* Inference is driven by `ExecutorPool` with leader-follower pattern; the serving layer itself does not run model computation
 * Slot management uses `Semaphore + VecDeque` for backpressure control
 * `temperature` is supported in the request body and written into `batch_temperature` for sampling
 * `max_tokens` and `top_p` are preserved in the request body but are not part of the current scheduling logic

@@ -59,7 +59,7 @@ flowchart TB
 |-------|---------------|----------------|
 | **Input Preparation** | Prompt rendering & token encoding | ChatTemplate, BatchSequence, TokenizerLoader |
 | **Batch Scheduling** | Slice generation & task distribution | Scheduler, SchedulerStrategy, SessionManager |
-| **Thread Execution** | Operator queue parallel execution | ServingRunner, SpinBarrier |
+| **Thread Execution** | Operator queue parallel execution | ExecutorPool, SpinBarrier |
 | **Session Management** | Unified session lifecycle management | SessionManager, SlotAllocator, DialogueSession |
 
 ---
@@ -80,10 +80,11 @@ classDiagram
         +run()
     }
 
-    class ServingRunner {
+    class ExecutorPool {
         -operator_queue: Vec~Operator~T~~
-        -batch_scheduler: Scheduler
+        -shared_state: Arc~SharedState~
         +start()
+        +execute_single_thread_batch()
     }
 
     class SequenceState {
@@ -142,7 +143,7 @@ classDiagram
     Scheduler --> SequenceSlice
     Scheduler --> DecodeList
     Scheduler ..> SchedulerStrategy : uses
-    ServingRunner --> Scheduler
+    ExecutorPool --> SharedState
     SequenceStateMachine ..> SequenceState : operates on
     SessionManager --> SlotAllocator
     SessionManager --> DialogueSession
@@ -156,7 +157,7 @@ classDiagram
 | `SchedulerStrategy` | Scheduling strategy trait | `scheduling/strategy.rs` |
 | `DefaultSchedulerStrategy` | Default scheduling implementation | `scheduling/strategy.rs` |
 | `SliceScheduler` | Prefill token distribution across threads | `scheduling/strategy.rs` |
-| `ServingRunner` | Broadcast-subscribed thread pool executor | `execution/runner.rs` |
+| `ExecutorPool` | Leader-follower thread pool executor | `executor/executor.rs` |
 | `SequenceState` | Batch slot state | `scheduling/types.rs` |
 | `SequenceStateMachine` | State transition logic | `scheduling/state_machine.rs` |
 | `SequenceSlice` | Minimal computation unit | `scheduling/sequence_slice.rs` |
@@ -183,7 +184,7 @@ sequenceDiagram
     participant SessionMgr as SessionManager
     participant BatchSeq as BatchSequence
     participant Scheduler as Scheduler
-    participant Runner as ServingRunner
+    participant Runner as ExecutorPool
     participant Ops as Operators
 
     Client->>Handler: POST /chat/completions
@@ -248,10 +249,11 @@ src/runtime/
 │   ├── session.rs            # SessionManager, DialogueSession, SessionHandle, SessionMode
 │   ├── slot_allocator.rs     # SlotAllocator implementation
 │   └── initialization.rs     # build_batch_sequence, build_sequence_state helpers
-├── execution/
-│   ├── mod.rs                # Execution submodule entry
-│   ├── runner.rs             # ServingRunner implementation
-│   └── spin_barrier.rs       # SpinBarrier synchronization primitive
+├── executor/
+│   ├── mod.rs                # Executor submodule entry
+│   ├── executor.rs           # ExecutorPool implementation
+│   ├── plan.rs               # BatchPlan, PlanBuilder
+│   └── sync.rs               # SpinBarrier, BatchTracker synchronization primitives
 ├── io/
 │   ├── mod.rs                # IO submodule entry
 │   ├── chat_template.rs      # ChatTemplate implementation

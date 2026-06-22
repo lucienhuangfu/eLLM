@@ -5,7 +5,7 @@ use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::{
-    BatchSequence, SequenceState, ServingRunner, SessionMode, SharedState, SlotManager,
+    BatchSequence, ExecutorPool, SequenceState, SessionMode, SharedState, SlotManager,
 };
 use ellm::serving;
 use ellm::serving::parser::{ParserOptions, ParserRule};
@@ -19,12 +19,10 @@ fn build_sequence_state(batch_size: usize) -> Vec<SequenceState> {
         .collect()
 }
 
-fn build_fake_runner(
-    batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    task_sender: tokio::sync::broadcast::Sender<ellm::runtime::ScheduleTask>,
-) -> ServingRunner<f16> {
+fn build_fake_runner(batch_states: Arc<SharedMut<Vec<SequenceState>>>) -> ExecutorPool<f16> {
     let operator_queue = vec![Operator::FakeEcho(FakeEcho)];
-    ServingRunner::new(operator_queue, batch_states, task_sender)
+    let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_states), 4, 64, 1));
+    ExecutorPool::new(operator_queue, shared_state).with_thread_count(1)
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -58,23 +56,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     let batch_states = Arc::new(SharedMut::new(build_sequence_state(batch_size)));
-    let (task_sender, _) = tokio::sync::broadcast::channel(8);
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
         batch_sequences.clone(),
-        SessionMode::Lru,
+        SessionMode::NonReusable,
     ));
-    let shared_state = Arc::new(SharedState::new(batch_states.clone()));
+    let shared_state = Arc::new(SharedState::new(
+        Arc::clone(&batch_states),
+        batch_size,
+        64,
+        1,
+    ));
 
-    let runner = build_fake_runner(batch_states.clone(), task_sender.clone());
-
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(runner.start());
-    });
+    let _executor_pool = build_fake_runner(batch_states.clone());
 
     let parser_options = ParserOptions::new(ParserRule::for_model_family(&ModelFamily::Qwen));
 

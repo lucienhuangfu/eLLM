@@ -1,0 +1,313 @@
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+/// Optimized spin barrier with adaptive backoff for better performance
+#[derive(Debug)]
+pub struct SpinBarrier {
+    count: AtomicUsize,
+    generation: AtomicU64,
+    num_threads: usize,
+}
+
+impl SpinBarrier {
+    #[inline]
+    pub fn new(num_threads: usize) -> Self {
+        assert!(num_threads > 0);
+        Self {
+            count: AtomicUsize::new(0),
+            generation: AtomicU64::new(0),
+            num_threads,
+        }
+    }
+
+    #[inline]
+    pub fn wait(&self) -> bool {
+        let gen = self.generation.load(Ordering::Acquire);
+        let prev = self.count.fetch_add(1, Ordering::AcqRel);
+
+        if prev == self.num_threads - 1 {
+            // Last thread arrives - reset for next generation
+            self.count.store(0, Ordering::Release);
+            self.generation.fetch_add(1, Ordering::Release);
+            true
+        } else {
+            // Adaptive spinning with exponential backoff
+            self.adaptive_spin(gen);
+            false
+        }
+    }
+
+    fn adaptive_spin(&self, expected_gen: u64) {
+        const SPIN_LIMIT: u32 = 100;
+        const YIELD_LIMIT: u32 = 50;
+
+        let mut spin_count = 0u32;
+        let mut yield_count = 0u32;
+
+        while self.generation.load(Ordering::Acquire) == expected_gen {
+            if spin_count < SPIN_LIMIT {
+                std::hint::spin_loop();
+                spin_count += 1;
+            } else if yield_count < YIELD_LIMIT {
+                std::thread::yield_now();
+                yield_count += 1;
+            } else {
+                // Exponential backoff for sleep
+                let sleep_us = 1 << (yield_count - YIELD_LIMIT).min(6);
+                std::thread::sleep(std::time::Duration::from_micros(sleep_us));
+                yield_count += 1;
+            }
+        }
+    }
+}
+
+/// Simplified batch tracker with reduced atomic operations
+#[derive(Debug)]
+pub struct BatchTracker {
+    remaining: AtomicUsize,
+    completed: AtomicBool,
+}
+
+impl BatchTracker {
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            remaining: AtomicUsize::new(0),
+            completed: AtomicBool::new(true),
+        }
+    }
+
+    #[inline]
+    pub fn reset(&self, count: usize) {
+        self.remaining.store(count, Ordering::Release);
+        self.completed.store(count == 0, Ordering::Release);
+    }
+
+    #[inline]
+    pub fn complete_slot(&self) -> bool {
+        let prev = self.remaining.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            self.completed.store(true, Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[inline]
+    pub fn is_complete(&self) -> bool {
+        self.completed.load(Ordering::Acquire)
+    }
+
+    pub fn wait_complete(&self) {
+        const SPIN_LIMIT: u32 = 100;
+        const YIELD_LIMIT: u32 = 50;
+
+        let mut spin_count = 0u32;
+        let mut yield_count = 0u32;
+
+        loop {
+            if self.is_complete() {
+                return;
+            }
+
+            if spin_count < SPIN_LIMIT {
+                std::hint::spin_loop();
+                spin_count += 1;
+            } else if yield_count < YIELD_LIMIT {
+                std::thread::yield_now();
+                yield_count += 1;
+            } else {
+                let sleep_us = 1 << (yield_count - YIELD_LIMIT).min(6);
+                std::thread::sleep(std::time::Duration::from_micros(sleep_us));
+                yield_count += 1;
+            }
+        }
+    }
+
+    #[inline]
+    pub fn remaining(&self) -> usize {
+        self.remaining.load(Ordering::Acquire)
+    }
+}
+
+/// Optimized wait condition with adaptive spinning
+pub struct AdaptiveWait {
+    spin_count: u32,
+    yield_count: u32,
+}
+
+impl AdaptiveWait {
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            spin_count: 0,
+            yield_count: 0,
+        }
+    }
+
+    #[inline]
+    pub fn reset(&mut self) {
+        self.spin_count = 0;
+        self.yield_count = 0;
+    }
+
+    pub fn wait<F>(&mut self, condition: F)
+    where
+        F: Fn() -> bool,
+    {
+        const SPIN_LIMIT: u32 = 100;
+        const YIELD_LIMIT: u32 = 50;
+
+        loop {
+            if condition() {
+                self.reset();
+                return;
+            }
+
+            if self.spin_count < SPIN_LIMIT {
+                std::hint::spin_loop();
+                self.spin_count += 1;
+            } else if self.yield_count < YIELD_LIMIT {
+                std::thread::yield_now();
+                self.yield_count += 1;
+            } else {
+                let sleep_us = 1 << (self.yield_count - YIELD_LIMIT).min(6);
+                std::thread::sleep(std::time::Duration::from_micros(sleep_us));
+                self.yield_count += 1;
+            }
+        }
+    }
+}
+
+impl Default for AdaptiveWait {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    #[test]
+    fn test_spin_barrier_single_thread() {
+        let barrier = SpinBarrier::new(1);
+        let result = barrier.wait();
+        assert!(result, "Single thread should return true from wait()");
+    }
+
+    #[test]
+    fn test_spin_barrier_two_threads() {
+        let barrier = Arc::new(SpinBarrier::new(2));
+        let barrier_clone = barrier.clone();
+
+        let handle = thread::spawn(move || barrier_clone.wait());
+
+        let result1 = barrier.wait();
+        let result2 = handle.join().unwrap();
+
+        assert_ne!(
+            result1, result2,
+            "One thread should return true, the other false"
+        );
+        assert!(result1 || result2, "At least one thread should return true");
+    }
+
+    #[test]
+    fn test_spin_barrier_multiple_threads() {
+        let barrier = Arc::new(SpinBarrier::new(4));
+        let mut handles = Vec::with_capacity(4);
+
+        for _ in 0..4 {
+            let b = barrier.clone();
+            handles.push(thread::spawn(move || b.wait()));
+        }
+
+        let results: Vec<bool> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        let true_count = results.iter().filter(|&&r| r).count();
+        assert_eq!(true_count, 1, "Exactly one thread should return true");
+        assert_eq!(results.len(), 4, "All four threads should complete");
+    }
+
+    #[test]
+    fn test_spin_barrier_multiple_generations() {
+        let barrier = Arc::new(SpinBarrier::new(3));
+        let mut handles = Vec::with_capacity(3);
+
+        for _ in 0..3 {
+            let b = barrier.clone();
+            handles.push(thread::spawn(move || {
+                let first_result = b.wait();
+                thread::yield_now();
+                let second_result = b.wait();
+                (first_result, second_result)
+            }));
+        }
+
+        let results: Vec<(bool, bool)> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        let first_true_count = results.iter().filter(|(r, _)| *r).count();
+        assert_eq!(
+            first_true_count, 1,
+            "First barrier: exactly one thread should return true"
+        );
+
+        let second_true_count = results.iter().filter(|(_, r)| *r).count();
+        assert_eq!(
+            second_true_count, 1,
+            "Second barrier: exactly one thread should return true"
+        );
+    }
+
+    #[test]
+    fn test_batch_tracker_reset() {
+        let tracker = BatchTracker::new();
+        tracker.reset(10);
+        assert_eq!(tracker.remaining(), 10);
+        assert!(!tracker.is_complete());
+    }
+
+    #[test]
+    fn test_batch_tracker_complete() {
+        let tracker = BatchTracker::new();
+        tracker.reset(3);
+
+        assert!(!tracker.complete_slot());
+        assert_eq!(tracker.remaining(), 2);
+
+        assert!(!tracker.complete_slot());
+        assert_eq!(tracker.remaining(), 1);
+
+        assert!(tracker.complete_slot());
+        assert_eq!(tracker.remaining(), 0);
+        assert!(tracker.is_complete());
+    }
+
+    #[test]
+    fn test_batch_tracker_empty() {
+        let tracker = BatchTracker::new();
+        tracker.reset(0);
+        assert!(tracker.is_complete());
+    }
+
+    #[test]
+    fn test_adaptive_wait() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = flag.clone();
+
+        let handle = thread::spawn(move || {
+            thread::sleep(std::time::Duration::from_millis(10));
+            flag_clone.store(true, Ordering::Release);
+        });
+
+        let mut wait = AdaptiveWait::new();
+        wait.wait(|| flag.load(Ordering::Acquire));
+
+        handle.join().unwrap();
+        assert!(flag.load(Ordering::Acquire));
+    }
+}

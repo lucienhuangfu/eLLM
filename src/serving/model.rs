@@ -245,12 +245,12 @@ pub fn initialize_serving_resources(
     let sequences_ptr = sequences_box.as_mut_ptr();
 
     let batch_states = Arc::new(SharedMut::new(build_sequence_state(config.batch_size)));
-    let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_states)));
-    shared_state.set_plan_builder(
+    let shared_state = Arc::new(SharedState::new(
+        Arc::clone(&batch_states),
         config.batch_size,
         config.chunk_size,
         thread_config.worker_threads,
-    );
+    ));
 
     let position_vec = RotaryEmbedding::new(
         model_config.head_dim,

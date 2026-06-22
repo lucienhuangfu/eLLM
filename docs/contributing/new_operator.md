@@ -8,7 +8,7 @@ a new operator in eLLM.
 ## 1. Understand the Operator Model
 
 An operator in eLLM is a unit of computation that is placed into the operator
-queue by `initialize_serving_resources()` and executed by `ServingRunner` each
+queue by `initialize_serving_resources()` and executed by `ExecutorPool` each
 scheduling round.
 
 Key traits and types:
@@ -31,7 +31,7 @@ Example skeleton for a simple elementwise operator:
 ```rust
 // src/operators/elementwise/my_op.rs
 
-use crate::runtime::scheduling::types::ScheduleTask;
+use crate::runtime::ScheduleTask;
 
 pub struct MyOp {
     // configuration captured at construction
@@ -91,7 +91,7 @@ push the new operator:
 operator_queue.push(Operator::MyOp(MyOp::new(/* ... */)));
 ```
 
-The queue is executed in order by `ServingRunner` every round.
+The queue is executed in order by `ExecutorPool` every round.
 
 ---
 

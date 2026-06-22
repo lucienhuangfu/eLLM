@@ -1,12 +1,7 @@
-pub mod barrier;
-pub mod plan;
-pub mod pool;
-pub mod runner;
-pub mod tracker;
-pub mod worker;
+pub mod executor;
+pub mod sync;
 
-pub use barrier::SpinBarrier;
-pub use plan::BatchPlan;
-pub use pool::ExecutorPool;
-pub use runner::ServingRunner;
-pub use tracker::BatchTracker;
+pub use executor::ExecutorPool;
+pub use sync::AdaptiveWait;
+pub use sync::BatchTracker;
+pub use sync::SpinBarrier;

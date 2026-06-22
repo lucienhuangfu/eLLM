@@ -1,42 +1,32 @@
-use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use super::strategy::{BatchPlan, DefaultSchedulerStrategy, PrefillCandidate, SchedulerStrategy};
+use super::strategy::{DefaultSchedulerStrategy, SchedulerStrategy};
 use super::task::ScheduleTask;
 use crate::operators::send_sync_ptr::SharedMut;
+use crate::runtime::plan::BatchPlan;
 use crate::runtime::session::SlotManager;
-use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
-use crate::runtime::state::types::{Phase, SequenceState};
+use crate::runtime::state::types::SequenceState;
 
 pub struct Scheduler {
-    prefill_list: UnsafeCell<Vec<Vec<SequenceSlice>>>,
-    decode_list: UnsafeCell<DecodeList>,
     batch_list: Arc<SharedMut<Vec<SequenceState>>>,
     slot_manager: Arc<SlotManager<f16>>,
     strategy: Box<dyn SchedulerStrategy>,
-    max_prefill_size: usize,
-    max_decode_size: usize,
     thread_num: AtomicUsize,
 
     needs_schedule: AtomicBool,
     schedule_tx: broadcast::Sender<()>,
     timeout: Duration,
     broadcast_sender: broadcast::Sender<ScheduleTask>,
-    next_task_id: AtomicU64,
     task_in_flight: Arc<AtomicBool>,
 }
 
-unsafe impl Sync for Scheduler {}
-
-unsafe impl Send for Scheduler {}
-
 impl Scheduler {
     pub fn new(
-        sequence_length: usize,
+        _sequence_length: usize,
         batch_size: usize,
         thread_num: usize,
         _threshold: usize,
@@ -46,9 +36,8 @@ impl Scheduler {
         slot_manager: Arc<SlotManager<f16>>,
     ) -> Self {
         Self::build(
-            sequence_length,
             batch_size,
-            sequence_length * batch_size,
+            _sequence_length * batch_size,
             thread_num,
             timeout,
             broadcast_sender,
@@ -56,13 +45,14 @@ impl Scheduler {
             slot_manager,
             Box::new(DefaultSchedulerStrategy::new(
                 batch_size,
-                sequence_length * batch_size,
+                _sequence_length * batch_size,
+                thread_num,
             )),
         )
     }
 
     pub fn with_mode(
-        sequence_length: usize,
+        _sequence_length: usize,
         batch_size: usize,
         chunk_size: usize,
         thread_num: usize,
@@ -73,7 +63,6 @@ impl Scheduler {
         slot_manager: Arc<SlotManager<f16>>,
     ) -> Self {
         Self::build(
-            sequence_length,
             batch_size,
             chunk_size,
             thread_num,
@@ -81,12 +70,14 @@ impl Scheduler {
             broadcast_sender,
             batch_list,
             slot_manager,
-            Box::new(DefaultSchedulerStrategy::new(batch_size, chunk_size)),
+            Box::new(DefaultSchedulerStrategy::new(
+                batch_size, chunk_size, thread_num,
+            )),
         )
     }
 
     pub fn with_strategy(
-        sequence_length: usize,
+        _sequence_length: usize,
         batch_size: usize,
         chunk_size: usize,
         thread_num: usize,
@@ -97,7 +88,6 @@ impl Scheduler {
         strategy: Box<dyn SchedulerStrategy>,
     ) -> Self {
         Self::build(
-            sequence_length,
             batch_size,
             chunk_size,
             thread_num,
@@ -110,7 +100,6 @@ impl Scheduler {
     }
 
     fn build(
-        _sequence_length: usize,
         batch_size: usize,
         chunk_size: usize,
         thread_num: usize,
@@ -122,23 +111,14 @@ impl Scheduler {
     ) -> Self {
         let (schedule_tx, _) = broadcast::channel(16);
         Self {
-            max_decode_size: batch_size,
-            max_prefill_size: chunk_size,
             batch_list,
             slot_manager,
             thread_num: AtomicUsize::new(thread_num),
             strategy,
-            prefill_list: UnsafeCell::new(
-                (0..thread_num)
-                    .map(|_| Vec::with_capacity(batch_size))
-                    .collect(),
-            ),
-            decode_list: UnsafeCell::new(DecodeList::with_capacity(batch_size)),
             needs_schedule: AtomicBool::new(false),
             schedule_tx,
             timeout,
             broadcast_sender,
-            next_task_id: AtomicU64::new(1),
             task_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -148,14 +128,7 @@ impl Scheduler {
     }
 
     pub fn set_thread_num(&self, thread_num: usize) {
-        let thread_num = thread_num.max(1);
-        self.thread_num.store(thread_num, Ordering::Release);
-        let prefill_list = unsafe { &mut *self.prefill_list.get() };
-        if prefill_list.len() > thread_num {
-            prefill_list.truncate(thread_num);
-        } else {
-            prefill_list.resize_with(thread_num, || Vec::with_capacity(self.max_decode_size));
-        }
+        self.thread_num.store(thread_num.max(1), Ordering::Release);
     }
 
     pub fn batch_list(&self) -> Arc<SharedMut<Vec<SequenceState>>> {
@@ -166,49 +139,19 @@ impl Scheduler {
         Arc::clone(&self.task_in_flight)
     }
 
-    pub fn prefill_list(&self) -> Vec<Vec<SequenceSlice>> {
-        unsafe { (*self.prefill_list.get()).clone() }
-    }
-
-    pub fn decode_list(&self) -> DecodeList {
-        unsafe { (*self.decode_list.get()).clone() }
-    }
-
-    pub fn schedule_batch(&self) -> (usize, usize) {
-        let thread_num = self.thread_num.load(Ordering::Acquire);
-        let prefill_list = unsafe { &*self.prefill_list.get() };
-        let prefill_task_count = thread_num.min(prefill_list.len());
-
-        if prefill_task_count == 0 {
-            let plan = self.plan_next_round();
-            match plan {
-                BatchPlan::Decode(decode_candidates) => {
-                    let decode_count = self.schedule_decode_round(decode_candidates);
-                    return (0, decode_count);
-                }
-                BatchPlan::Idle => return (0, 0),
-                BatchPlan::Prefill { .. } => unreachable!(),
+    pub fn schedule_batch(&self) -> Option<BatchPlan> {
+        self.batch_list.with(|batch_list| {
+            let plan = self.strategy.plan_next_round(
+                batch_list,
+                self.thread_num.load(Ordering::Acquire),
+                0,
+            );
+            if plan.is_empty() {
+                None
+            } else {
+                Some(plan)
             }
-        }
-
-        match self.plan_next_round() {
-            BatchPlan::Decode(decode_candidates) => {
-                let decode_count = self.schedule_decode_round(decode_candidates);
-                (0, decode_count)
-            }
-            BatchPlan::Prefill {
-                candidates,
-                total_tokens,
-            } => {
-                let prefill_count = self.schedule_prefill_round(candidates, total_tokens);
-                let decode_list = unsafe { &*self.decode_list.get() };
-                (prefill_count, decode_list.len())
-            }
-            BatchPlan::Idle => {
-                self.clear_round_outputs();
-                (0, 0)
-            }
-        }
+        })
     }
 
     pub fn reset(&self) {
@@ -252,77 +195,6 @@ impl Scheduler {
         }
     }
 
-    fn clear_round_outputs(&self) {
-        let prefill_list = unsafe { &mut *self.prefill_list.get() };
-        prefill_list.iter_mut().for_each(Vec::clear);
-        let decode_list = unsafe { &mut *self.decode_list.get() };
-        decode_list.clear();
-    }
-
-    fn plan_next_round(&self) -> BatchPlan {
-        let prefill_slots = self.slot_manager.get_active_prefill();
-        let decode_slots = self.slot_manager.get_active_decode();
-        
-        self.batch_list.with(|batch_list| {
-            let prefill_candidates: Vec<PrefillCandidate> = prefill_slots.iter()
-                .filter_map(|&idx| batch_list.get(idx))
-                .enumerate()
-                .map(|(batch_index, record)| PrefillCandidate {
-                    batch_index,
-                    sequence_index: record.sequence_index,
-                    remaining: record.filling_length,
-                })
-                .collect();
-            
-            let decode_candidates: Vec<(usize, usize)> = decode_slots.iter()
-                .filter_map(|&idx| batch_list.get(idx))
-                .enumerate()
-                .map(|(batch_index, record)| (batch_index, record.sequence_index))
-                .collect();
-            
-            let total_tokens: usize = prefill_candidates.iter()
-                .map(|c| c.remaining)
-                .sum();
-            
-            if !prefill_candidates.is_empty() {
-                BatchPlan::Prefill {
-                    candidates: prefill_candidates,
-                    total_tokens: total_tokens.min(self.max_prefill_size),
-                }
-            } else if !decode_candidates.is_empty() {
-                BatchPlan::Decode(decode_candidates)
-            } else {
-                BatchPlan::Idle
-            }
-        })
-    }
-
-    fn schedule_decode_round(&self, decode_candidates: Vec<(usize, usize)>) -> usize {
-        self.clear_round_outputs();
-        let decode_list = unsafe { &mut *self.decode_list.get() };
-        self.strategy
-            .schedule_decode_round(decode_candidates, decode_list)
-    }
-
-    fn schedule_prefill_round(
-        &self,
-        candidates: Vec<PrefillCandidate>,
-        total_tokens: usize,
-    ) -> usize {
-        self.clear_round_outputs();
-        let prefill_list = unsafe { &mut *self.prefill_list.get() };
-        let decode_list = unsafe { &mut *self.decode_list.get() };
-        let thread_num = self.thread_num.load(Ordering::Acquire);
-
-        self.strategy.schedule_prefill_round(
-            candidates,
-            total_tokens,
-            prefill_list,
-            decode_list,
-            thread_num,
-        )
-    }
-
     fn trigger_schedule(&self) {
         if !self.needs_schedule.swap(false, Ordering::AcqRel) {
             return;
@@ -337,23 +209,24 @@ impl Scheduler {
             return;
         }
 
-        let (prefill_size, decode_size) = self.schedule_batch();
-        if prefill_size == 0 && decode_size == 0 {
-            self.task_in_flight.store(false, Ordering::Release);
-            self.needs_schedule.store(true, Ordering::Release);
-            return;
-        }
+        let plan = match self.schedule_batch() {
+            Some(p) => p,
+            None => {
+                self.task_in_flight.store(false, Ordering::Release);
+                self.needs_schedule.store(true, Ordering::Release);
+                return;
+            }
+        };
 
         let task = ScheduleTask::new(
-            prefill_size,
-            decode_size,
-            unsafe { (*self.prefill_list.get()).clone() },
-            unsafe { (*self.decode_list.get()).clone() },
-            self.next_task_id.fetch_add(1, Ordering::Relaxed),
+            plan.prefill_size,
+            plan.decode_size,
+            plan.prefill_list,
+            plan.decode_list,
+            plan.task_id,
         );
 
-        if self.broadcast_sender.send(task).is_ok() {
-        } else {
+        if self.broadcast_sender.send(task).is_err() {
             self.task_in_flight.store(false, Ordering::Release);
             self.needs_schedule.store(true, Ordering::Release);
         }
@@ -385,188 +258,80 @@ mod tests {
                 "gpt2",
                 "gpt2",
                 "gpt2",
-            ).unwrap()
+            )
+            .unwrap(),
         ));
-        Arc::new(SlotManager::new(batch_size, batch_sequences, SessionMode::Lru))
+        Arc::new(SlotManager::new(
+            batch_size,
+            batch_sequences,
+            SessionMode::Lru,
+        ))
     }
 
     #[test]
-    fn plan_next_round_returns_idle_for_empty_batch() {
+    fn schedule_batch_returns_none_for_empty_batch() {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let slot_manager = create_slot_manager(4);
-        let scheduler = Scheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list, slot_manager);
+        let scheduler = Scheduler::new(
+            16,
+            4,
+            3,
+            1,
+            Duration::from_millis(100),
+            sender,
+            batch_list,
+            slot_manager,
+        );
 
-        match scheduler.plan_next_round() {
-            BatchPlan::Idle => {}
-            _ => panic!("expected idle plan for an empty batch"),
-        }
+        assert!(scheduler.schedule_batch().is_none());
     }
 
     #[test]
-    fn schedule_decode_round_uses_one_decode_sequence() {
+    fn schedule_batch_returns_plan_for_decode() {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let slot_manager = create_slot_manager(4);
-        let scheduler = Scheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list, slot_manager);
+        let scheduler = Scheduler::new(
+            16,
+            4,
+            3,
+            1,
+            Duration::from_millis(100),
+            sender,
+            batch_list,
+            slot_manager,
+        );
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(decode_state(100, 128));
         });
 
-        let (prefill, decode_tokens) = scheduler.schedule_batch();
-
-        assert_eq!(prefill, 0);
-        assert_eq!(decode_tokens, 1);
-
-        assert!(scheduler.prefill_list().iter().all(Vec::is_empty));
-        assert_eq!(scheduler.decode_list().len(), 1);
-
-        let slice = &scheduler.decode_list()[0];
-        assert_eq!(slice.batch_index, 0);
-        assert_eq!(slice.sequence_index, 100);
-        assert_eq!(slice.token_start_index, 0);
-        assert_eq!(slice.length, 1);
-        assert!(slice.last_token_flag);
+        let plan = scheduler.schedule_batch().unwrap();
+        assert_eq!(plan.prefill_size, 0);
+        assert_eq!(plan.decode_size, 1);
     }
 
     #[test]
-    fn set_thread_num_resizes_prefill_work_lists() {
+    fn set_thread_num_updates_thread_count() {
         let (sender, _) = broadcast::channel(16);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let slot_manager = create_slot_manager(4);
-        let scheduler = Scheduler::new(16, 4, 6, 1, Duration::from_millis(100), sender, batch_list, slot_manager);
+        let scheduler = Scheduler::new(
+            16,
+            4,
+            6,
+            1,
+            Duration::from_millis(100),
+            sender,
+            batch_list,
+            slot_manager,
+        );
 
         scheduler.set_thread_num(3);
-
         assert_eq!(scheduler.thread_num(), 3);
-        assert_eq!(scheduler.prefill_list().len(), 3);
 
         scheduler.set_thread_num(5);
-
         assert_eq!(scheduler.thread_num(), 5);
-        assert_eq!(scheduler.prefill_list().len(), 5);
-    }
-
-    #[test]
-    fn schedule_prefill_round_limits_one_sequence_to_max_prefill_size() {
-        let (sender, _) = broadcast::channel(16);
-        let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let slot_manager = create_slot_manager(4);
-        let scheduler = Scheduler::new(8, 4, 3, 1, Duration::from_millis(100), sender, batch_list, slot_manager);
-        scheduler.batch_list.with_mut(|batch_list| {
-            batch_list.push(prefill_state(0, 23));
-        });
-
-        let (prefill_tokens, decode_slices) = scheduler.schedule_batch();
-
-        assert_eq!(prefill_tokens, 23.min(8 * 4));
-        assert_eq!(decode_slices, 1);
-        assert_eq!(scheduler.decode_list().len(), 1);
-
-        let attention_slice = &scheduler.decode_list()[0];
-        assert_eq!(attention_slice.batch_index, 0);
-        assert_eq!(attention_slice.sequence_index, 0);
-        assert_eq!(attention_slice.token_start_index, 0);
-        assert_eq!(attention_slice.length, 23);
-        assert!(attention_slice.last_token_flag);
-
-        assert_eq!(scheduler.prefill_list().len(), 3);
-        assert_eq!(scheduler.prefill_list()[0].len(), 1);
-        assert_eq!(scheduler.prefill_list()[1].len(), 1);
-        assert_eq!(scheduler.prefill_list()[2].len(), 1);
-
-        let t0 = &scheduler.prefill_list()[0][0];
-        assert_eq!(t0.batch_index, 0);
-        assert_eq!(t0.sequence_index, 0);
-        assert_eq!(t0.token_start_index, 0);
-        assert_eq!(t0.length, 8);
-
-        let t1 = &scheduler.prefill_list()[1][0];
-        assert_eq!(t1.batch_index, 0);
-        assert_eq!(t1.sequence_index, 8);
-        assert_eq!(t1.token_start_index, 8);
-        assert_eq!(t1.length, 8);
-
-        let t2 = &scheduler.prefill_list()[2][0];
-        assert_eq!(t2.batch_index, 0);
-        assert_eq!(t2.sequence_index, 16);
-        assert_eq!(t2.token_start_index, 16);
-        assert_eq!(t2.length, 7);
-    }
-
-    #[test]
-    fn schedule_prefill_round_truncates_to_max_prefill_size() {
-        let (sender, _) = broadcast::channel(16);
-        let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let slot_manager = create_slot_manager(2);
-        let scheduler = Scheduler::new(5, 2, 2, 1, Duration::from_millis(100), sender, batch_list, slot_manager);
-        scheduler.batch_list.with_mut(|batch_list| {
-            batch_list.push(prefill_state(0, 13));
-        });
-
-        let (prefill_tokens, decode_slices) = scheduler.schedule_batch();
-
-        assert_eq!(prefill_tokens, 10);
-        assert_eq!(decode_slices, 1);
-        assert_eq!(scheduler.decode_list().len(), 1);
-
-        let attention_slice = &scheduler.decode_list()[0];
-        assert_eq!(attention_slice.batch_index, 0);
-        assert_eq!(attention_slice.sequence_index, 0);
-        assert_eq!(attention_slice.token_start_index, 0);
-        assert_eq!(attention_slice.length, 10);
-        assert!(!attention_slice.last_token_flag);
-
-        assert_eq!(scheduler.prefill_list().len(), 2);
-        assert_eq!(scheduler.prefill_list()[0].len(), 1);
-        assert_eq!(scheduler.prefill_list()[1].len(), 1);
-
-        let first = &scheduler.prefill_list()[0][0];
-        assert_eq!(first.batch_index, 0);
-        assert_eq!(first.sequence_index, 0);
-        assert_eq!(first.token_start_index, 0);
-        assert_eq!(first.length, 5);
-        assert!(!first.last_token_flag);
-
-        let second = &scheduler.prefill_list()[1][0];
-        assert_eq!(second.batch_index, 0);
-        assert_eq!(second.sequence_index, 5);
-        assert_eq!(second.token_start_index, 5);
-        assert_eq!(second.length, 5);
-        assert!(!second.last_token_flag);
-    }
-
-    #[test]
-    fn schedule_batch_finishes_prefill_when_both_phases_exist() {
-        let (sender, _) = broadcast::channel(16);
-        let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let slot_manager = create_slot_manager(4);
-        let scheduler = Scheduler::new(16, 4, 3, 1, Duration::from_millis(100), sender, batch_list, slot_manager);
-        scheduler.batch_list.with_mut(|batch_list| {
-            batch_list.push(prefill_state(0, 6));
-            batch_list.push(decode_state(100, 128));
-            batch_list.push(prefill_state(32, 3));
-        });
-
-        let (prefill_tokens, decode_tokens) = scheduler.schedule_batch();
-
-        assert_eq!(prefill_tokens, 9);
-        assert_eq!(decode_tokens, 2);
-        assert_eq!(scheduler.decode_list().len(), 2);
-
-        let first = &scheduler.decode_list()[0];
-        assert_eq!(first.batch_index, 0);
-        assert_eq!(first.sequence_index, 0);
-        assert_eq!(first.token_start_index, 0);
-        assert_eq!(first.length, 6);
-        assert!(first.last_token_flag);
-
-        let second = &scheduler.decode_list()[1];
-        assert_eq!(second.batch_index, 2);
-        assert_eq!(second.sequence_index, 32);
-        assert_eq!(second.token_start_index, 6);
-        assert_eq!(second.length, 3);
-        assert!(second.last_token_flag);
     }
 
     #[test]
@@ -575,7 +340,7 @@ mod tests {
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let slot_manager = create_slot_manager(4);
 
-        let strategy = Box::new(DefaultSchedulerStrategy::new(4, 32));
+        let strategy = Box::new(DefaultSchedulerStrategy::new(4, 32, 2));
         let scheduler = Scheduler::with_strategy(
             16,
             4,
