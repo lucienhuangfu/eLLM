@@ -259,6 +259,7 @@ fn main() {
         f16::take_operator_queue(),
         Arc::clone(&shared_state),
         thread_num,
+        chunk_size,
         slot_manager.clone(),
         Duration::from_millis(10),
     );
@@ -286,7 +287,7 @@ fn main() {
     let start = Instant::now();
 
     // Execute prefill task
-    executor_pool.execute_task(&task);
+    // executor_pool.execute_task(&task);
 
     // Decode loop: keep scheduling until all sequences are done
     let mut generated_count = 0usize;
@@ -321,7 +322,7 @@ fn main() {
             plan.task_id,
         );
 
-        executor_pool.execute_task(&decode_task);
+        // executor_pool.execute_task(&decode_task);
     }
 
     let elapsed = start.elapsed();

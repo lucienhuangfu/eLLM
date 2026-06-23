@@ -2,9 +2,15 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Notify;
 
-use super::types::Phase;
+use crate::runtime::state::types::Phase;
 
 const LRU_SENTINEL: usize = usize::MAX;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionError {
+    InvalidTransition,
+    AlreadyInTargetState,
+}
 
 #[derive(Clone)]
 pub struct SlotState {
@@ -88,6 +94,116 @@ impl SlotState {
 
     pub fn notify(&self) -> Arc<Notify> {
         Arc::clone(&self.notify)
+    }
+
+    pub fn transition_to_prefill(
+        &mut self,
+        sequence_index: usize,
+        filling_length: usize,
+    ) -> Result<(), TransitionError> {
+        if self.phase == Phase::Prefill {
+            return Err(TransitionError::AlreadyInTargetState);
+        }
+
+        if !matches!(self.phase, Phase::Start | Phase::Eos | Phase::Timeout) {
+            return Err(TransitionError::InvalidTransition);
+        }
+
+        self.sequence_index = sequence_index;
+        self.kv_index = sequence_index;
+        self.filling_length = filling_length;
+        self.phase = Phase::Prefill;
+        self.notify.notify_one();
+        Ok(())
+    }
+
+    pub fn transition_to_decode(&mut self) -> Result<(), TransitionError> {
+        if self.phase == Phase::Decode {
+            return Err(TransitionError::AlreadyInTargetState);
+        }
+
+        if self.phase != Phase::Prefill {
+            return Err(TransitionError::InvalidTransition);
+        }
+
+        self.phase = Phase::Decode;
+        self.filling_length = 0;
+        self.notify.notify_one();
+        Ok(())
+    }
+
+    pub fn transition_to_eos(&mut self) -> Result<(), TransitionError> {
+        if self.phase == Phase::Eos {
+            return Err(TransitionError::AlreadyInTargetState);
+        }
+
+        if !matches!(self.phase, Phase::Decode | Phase::Prefill) {
+            return Err(TransitionError::InvalidTransition);
+        }
+
+        self.phase = Phase::Eos;
+        self.notify.notify_one();
+        Ok(())
+    }
+
+    pub fn transition_to_timeout(&mut self) -> Result<(), TransitionError> {
+        if self.phase == Phase::Timeout {
+            return Err(TransitionError::AlreadyInTargetState);
+        }
+
+        if !matches!(self.phase, Phase::Decode | Phase::Prefill) {
+            return Err(TransitionError::InvalidTransition);
+        }
+
+        self.phase = Phase::Timeout;
+        self.notify.notify_one();
+        Ok(())
+    }
+
+    pub fn reset_to_start(&mut self) {
+        self.sequence_index = usize::MAX;
+        self.kv_index = usize::MAX;
+        self.filling_length = 0;
+        self.phase = Phase::Start;
+        self.session_id = None;
+        self.token_count = 0;
+    }
+
+    pub fn advance_sequence(&mut self, steps: usize) -> Option<Phase> {
+        let previous_phase = self.phase;
+        if self.phase == Phase::Eos {
+            return None;
+        }
+        self.sequence_index += steps;
+
+        if self.phase == Phase::Prefill {
+            self.filling_length = self.filling_length.saturating_sub(steps);
+            if self.filling_length == 0 {
+                self.phase = Phase::Decode;
+                self.notify.notify_one();
+                return Some(Phase::Decode);
+            }
+        }
+
+        if previous_phase != self.phase {
+            Some(self.phase)
+        } else {
+            None
+        }
+    }
+
+    pub fn can_transition(from: Phase, to: Phase) -> bool {
+        match (from, to) {
+            (Phase::Start, Phase::Prefill) => true,
+            (Phase::Eos, Phase::Prefill) => true,
+            (Phase::Timeout, Phase::Prefill) => true,
+            (Phase::Prefill, Phase::Decode) => true,
+            (Phase::Decode, Phase::Eos) => true,
+            (Phase::Prefill, Phase::Eos) => true,
+            (Phase::Decode, Phase::Timeout) => true,
+            (Phase::Prefill, Phase::Timeout) => true,
+            _ => false,
+        }
     }
 }
 

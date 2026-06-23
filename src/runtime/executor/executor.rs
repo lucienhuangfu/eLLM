@@ -5,11 +5,10 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 use crate::operators::operator::Operator;
-use crate::runtime::executor::sync::{AdaptiveWait, SpinBarrier};
+use crate::runtime::executor::sync::SpinBarrier;
 use crate::runtime::plan::BatchPlan;
 use crate::runtime::scheduler::{DefaultSchedulerStrategy, ScheduleTask, SchedulerStrategy};
 use crate::runtime::session::SlotManager;
-use crate::runtime::state::machine::SlotStateMachine;
 use crate::runtime::state::shared::SharedState;
 
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
@@ -44,14 +43,13 @@ where
         operator_queue: Vec<Operator<T>>,
         shared_state: Arc<SharedState>,
         thread_num: usize,
+        chunk_size: usize,
         slot_manager: Arc<SlotManager<f16>>,
         timeout: Duration,
     ) -> Self {
         let batch_size = shared_state.batch_list.with(|list| list.len());
         let strategy = Arc::new(DefaultSchedulerStrategy::new(
-            batch_size,
-            batch_size * 1024,
-            thread_num,
+            batch_size, chunk_size, thread_num,
         ));
         Self {
             shared_state,
@@ -72,19 +70,6 @@ where
     pub fn with_thread_count(mut self, thread_num: usize) -> Self {
         self.thread_num = thread_num.max(1);
         self
-    }
-
-    pub fn execute_task(&self, task: &ScheduleTask) {
-        let barrier = SpinBarrier::new(self.thread_num);
-        execute_batch(
-            &self.shared_state,
-            self.operator_queue.as_ref(),
-            &barrier,
-            self.thread_num,
-            0,
-            task,
-        );
-        update_states(&self.shared_state, task);
     }
 
     pub fn start(mut self) {
@@ -146,78 +131,65 @@ where
         slot_manager: Arc<SlotManager<f16>>,
         timeout: Duration,
     ) {
-        let mut wait = AdaptiveWait::new();
         println!("[Executor] Worker {} 启动", thread_id);
 
         loop {
             if thread_id == 0 {
-                if shared_state
-                    .task_in_flight
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_err()
-                {
-                    wait.wait(|| shared_state.task_in_flight.load(Ordering::Acquire) == false);
+                let has_work = slot_manager.has_work_blocking();
+
+                if has_work {
+                    match Self::schedule_batch(&*strategy, &shared_state.batch_list) {
+                        Some(plan) => {
+                            let t = ScheduleTask::new(
+                                plan.prefill_size,
+                                plan.decode_size,
+                                plan.prefill_list,
+                                plan.decode_list,
+                                plan.task_id,
+                            );
+                            println!(
+                                "[Executor] Worker {} 调度任务: task_id={}, prefill_size={}, decode_size={}",
+                                thread_id, t.task_id, t.prefill_size, t.decode_size
+                            );
+                            *shared_state.last_task.lock().unwrap() = Some(t.clone());
+                            shared_state.has_work.store(true, Ordering::Release);
+                            shared_state.work_available.notify_all();
+                        }
+                        None => {
+                            *shared_state.last_task.lock().unwrap() = None;
+                            std::thread::sleep(timeout);
+                            continue;
+                        }
+                    }
+                } else {
+                    std::thread::sleep(timeout);
                     continue;
                 }
+            } else {
+                let mut guard = shared_state.work_mutex.lock().unwrap();
+                while !shared_state.has_work.load(Ordering::Acquire) {
+                    guard = shared_state.work_available.wait(guard).unwrap();
+                }
+                drop(guard);
+            }
 
-                let plan = match Self::schedule_batch(&*strategy, &shared_state.batch_list) {
-                    Some(p) => p,
-                    None => {
-                        shared_state.task_in_flight.store(false, Ordering::Release);
+            barrier.wait();
 
-                        let has_work = slot_manager.has_work_blocking();
-                        if !has_work {
-                            std::thread::sleep(timeout);
-                        }
-                        continue;
-                    }
-                };
-
-                let task = ScheduleTask::new(
-                    plan.prefill_size,
-                    plan.decode_size,
-                    plan.prefill_list,
-                    plan.decode_list,
-                    plan.task_id,
-                );
-
-                println!(
-                    "[Executor] Worker {} 调度任务: task_id={}, prefill_size={}, decode_size={}",
-                    thread_id, task.task_id, task.prefill_size, task.decode_size
-                );
-
-                *shared_state.last_task.lock().unwrap() = Some(task.clone());
-
+            if let Some(ref t) = *shared_state.last_task.lock().unwrap() {
                 execute_batch(
                     &shared_state,
                     operator_queue,
                     barrier,
                     thread_num,
                     thread_id,
-                    &task,
+                    t,
                 );
+            }
 
-                update_states(&shared_state, &task);
+            barrier.wait();
 
-                shared_state.task_in_flight.store(false, Ordering::Release);
-
-                wait.reset();
-            } else {
-                wait.wait(|| shared_state.task_in_flight.load(Ordering::Acquire) == true);
-
-                if shared_state.task_in_flight.load(Ordering::Acquire) {
-                    if let Some(ref task) = *shared_state.last_task.lock().unwrap() {
-                        execute_batch(
-                            &shared_state,
-                            operator_queue,
-                            barrier,
-                            thread_num,
-                            thread_id,
-                            task,
-                        );
-                    }
-                    wait.reset();
-                }
+            if thread_id == 0 {
+                shared_state.has_work.store(false, Ordering::Release);
             }
         }
     }
@@ -273,25 +245,4 @@ fn execute_batch<T>(
     }
 
     barrier.wait();
-}
-
-fn update_states(shared_state: &SharedState, task: &ScheduleTask) {
-    let batch_list_ptr = shared_state.batch_list.get();
-    unsafe {
-        let batch_list = &mut *batch_list_ptr;
-
-        for slice in task.decode_list.iter() {
-            if let Some(record) = batch_list.get_mut(slice.batch_index) {
-                SlotStateMachine::advance_sequence(record, slice.length);
-            }
-        }
-
-        for prefill_list in task.prefill_list.iter() {
-            for slice in prefill_list.iter() {
-                if let Some(record) = batch_list.get_mut(slice.batch_index) {
-                    SlotStateMachine::advance_sequence(record, slice.length);
-                }
-            }
-        }
-    }
 }

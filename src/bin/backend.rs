@@ -178,6 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         f16::take_operator_queue(),
         Arc::clone(&shared_state),
         thread_num,
+        chunk_size,
         slot_manager.clone(),
         Duration::from_millis(10),
     );
@@ -201,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Execute prefill task
-    executor_pool.execute_task(&task);
+    // executor_pool.execute_task(&task);
 
     // Decode loop
     let mut generated_count = 0usize;
@@ -229,7 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             plan.task_id,
         );
 
-        executor_pool.execute_task(&decode_task);
+        // executor_pool.execute_task(&decode_task);
     }
 
     println!("\n=== Generated Output ===");

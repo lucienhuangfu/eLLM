@@ -283,6 +283,7 @@ pub fn initialize_serving_resources(
         operator_queue,
         Arc::clone(&shared_state),
         thread_config.api_threads,
+        config.chunk_size,
         slot_manager.clone(),
         Duration::from_millis(10),
     );

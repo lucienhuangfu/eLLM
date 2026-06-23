@@ -38,6 +38,7 @@ async fn run_server(
         operator_queue,
         Arc::clone(&shared_state),
         4,
+        64,
         slot_manager.clone(),
         Duration::from_millis(10),
     );

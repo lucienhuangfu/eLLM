@@ -402,11 +402,11 @@ fn test_shared_state_basic_operations() {
     let batch_list = Arc::new(SharedMut::new(Vec::new()));
     let shared_state = SharedState::new(batch_list.clone());
 
-    assert!(!shared_state.task_in_flight.load(Ordering::SeqCst));
+    assert!(!shared_state.has_work.load(Ordering::SeqCst));
 
-    // 设置 task_in_flight
-    shared_state.task_in_flight.store(true, Ordering::SeqCst);
-    assert!(shared_state.task_in_flight.load(Ordering::SeqCst));
+    // 设置 has_work
+    shared_state.has_work.store(true, Ordering::SeqCst);
+    assert!(shared_state.has_work.load(Ordering::SeqCst));
 }
 
 /// ========================================
