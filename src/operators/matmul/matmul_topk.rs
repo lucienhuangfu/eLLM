@@ -67,6 +67,10 @@ pub struct MatMulTopK<T> {
     // 每个 (batch, thread) 对应一棵 heap。
     heaps: Box<[FixedMinHeap<T>]>,
 
+    // Final logits are lifted into decode batch rows before top-k; in that mode
+    // prefill should score only decode rows, not every prompt row.
+    prefill_uses_decode_rows: bool,
+
     _marker: PhantomData<T>,
 }
 
@@ -99,6 +103,7 @@ where
         batch_max: usize,
         thread_num: usize,
         topk_simd: usize,
+        prefill_uses_decode_rows: bool,
     ) -> Self {
         let params = MatMulParams {
             a_row_step_macro,
@@ -170,6 +175,7 @@ where
             c_tile_stride_elems,
 
             heaps: heaps_vec.into_boxed_slice(),
+            prefill_uses_decode_rows,
             _marker: PhantomData,
         }
     }
@@ -259,7 +265,9 @@ where
         thread_id: usize,
     ) {
         unsafe {
-            let active_input_rows = if prefill_size > 0 {
+            let active_input_rows = if prefill_size > 0 && self.prefill_uses_decode_rows {
+                decode_size
+            } else if prefill_size > 0 {
                 prefill_size
             } else {
                 decode_size
@@ -299,8 +307,8 @@ where
             for batch_row in 0..active_input_rows {
                 let heap_ptr = self.heap_for(batch_row, thread_id);
                 (*heap_ptr).clear();
-                let base = batch_row * self.thread_max * self.topk_simd
-                    + thread_id * self.topk_simd;
+                let base =
+                    batch_row * self.thread_max * self.topk_simd + thread_id * self.topk_simd;
                 for rank in 0..self.topk_simd {
                     ptr::write(self.value_ptr.ptr.add(base + rank), T::neg_infinity());
                     ptr::write(self.indice_ptr.ptr.add(base + rank), 0usize);
@@ -695,6 +703,7 @@ mod tests {
                 M,
                 thread_max,
                 TOPK,
+                false,
             );
 
             let used = cpu_num.min(runner.thread_max());
@@ -765,6 +774,7 @@ mod tests {
                 M,
                 thread_max,
                 TOPK,
+                false,
             );
 
             let used = cpu_num.min(runner.thread_max());
@@ -833,6 +843,7 @@ mod tests {
                 M,
                 thread_max,
                 TOPK,
+                false,
             );
 
             let used = cpu_num.min(runner.thread_max());
@@ -908,6 +919,7 @@ mod tests {
                 M_MAX, // batch_max (capacity)
                 thread_max,
                 TOPK,
+                false,
             );
 
             let used = cpu_num.min(runner.thread_max());
@@ -975,6 +987,7 @@ mod tests {
                 M_MAX,
                 THREADS,
                 TOPK,
+                false,
             );
 
             for tid in 0..THREADS {

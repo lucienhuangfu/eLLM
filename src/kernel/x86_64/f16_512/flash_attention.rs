@@ -1,12 +1,18 @@
 use std::f16;
 // use num::{complex::ComplexFloat, Zero};
 use std::arch::x86_64::{
-    __m512h, _mm512_fmadd_ph, _mm512_load_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_reduce_add_ph,
-    _mm512_set1_ph, _mm512_setzero_ph, _mm512_store_ph, _mm512_storeu_ph, _mm_prefetch,
-    _MM_HINT_T2,
+    __m512h, _mm512_add_ps, _mm512_castph_si512, _mm512_castsi512_si256, _mm512_cvtph_ps,
+    _mm512_div_ph, _mm512_extracti64x4_epi64, _mm512_fmadd_ph, _mm512_fmadd_ps, _mm512_load_ph,
+    _mm512_loadu_ph, _mm512_mul_ph, _mm512_reduce_add_ph, _mm512_reduce_add_ps, _mm512_set1_ph,
+    _mm512_setzero_ph, _mm512_setzero_ps, _mm512_store_ph, _mm512_storeu_ph, _mm512_sub_ph,
+    _mm_prefetch, _MM_HINT_T2,
 }; // Add this line
 
+use crate::kernel::x86_64::f16_512::activation::exp512;
+
 use super::dot_product::_dot_product;
+
+const GQA8_COL_BLOCK: usize = 32;
 
 // 标量和向量相乘并累加到结果向量
 #[inline(always)]
@@ -94,11 +100,84 @@ pub fn flash_attention(
 
 #[inline(always)]
 unsafe fn dot_product_avx512(q: *const f16, k: *const f16, head_size: usize) -> f16 {
-    let mut sum = 0.0f32;
-    for index in 0..head_size {
+    let simd_end = head_size / 32 * 32;
+    let mut acc_lower = _mm512_setzero_ps();
+    let mut acc_upper = _mm512_setzero_ps();
+
+    for index in (0..simd_end).step_by(32) {
+        let q_chunk = _mm512_loadu_ph(q.add(index) as *const _);
+        let k_chunk = _mm512_loadu_ph(k.add(index) as *const _);
+        let q_i = _mm512_castph_si512(q_chunk);
+        let k_i = _mm512_castph_si512(k_chunk);
+
+        let q_lower = _mm512_cvtph_ps(_mm512_castsi512_si256(q_i));
+        let q_upper = _mm512_cvtph_ps(_mm512_extracti64x4_epi64::<1>(q_i));
+        let k_lower = _mm512_cvtph_ps(_mm512_castsi512_si256(k_i));
+        let k_upper = _mm512_cvtph_ps(_mm512_extracti64x4_epi64::<1>(k_i));
+
+        acc_lower = _mm512_fmadd_ps(q_lower, k_lower, acc_lower);
+        acc_upper = _mm512_fmadd_ps(q_upper, k_upper, acc_upper);
+    }
+
+    let mut sum = _mm512_reduce_add_ps(_mm512_add_ps(acc_lower, acc_upper));
+
+    for index in simd_end..head_size {
         sum += (*q.add(index) as f32) * (*k.add(index) as f32);
     }
     sum as f16
+}
+
+#[inline(always)]
+unsafe fn dot_product_gqa8_avx512(
+    q_group: *const f16,
+    key_row: *const f16,
+    head_size: usize,
+) -> [f16; 8] {
+    let simd_end = head_size / 32 * 32;
+    let mut acc_lower = [_mm512_setzero_ps(); 8];
+    let mut acc_upper = [_mm512_setzero_ps(); 8];
+
+    for index in (0..simd_end).step_by(32) {
+        let k_chunk = _mm512_loadu_ph(key_row.add(index) as *const _);
+        let k_i = _mm512_castph_si512(k_chunk);
+        let k_lower = _mm512_cvtph_ps(_mm512_castsi512_si256(k_i));
+        let k_upper = _mm512_cvtph_ps(_mm512_extracti64x4_epi64::<1>(k_i));
+
+        for local_head in 0..8 {
+            let q = q_group.add(local_head * head_size + index);
+            let q_chunk = _mm512_loadu_ph(q as *const _);
+            let q_i = _mm512_castph_si512(q_chunk);
+            let q_lower = _mm512_cvtph_ps(_mm512_castsi512_si256(q_i));
+            let q_upper = _mm512_cvtph_ps(_mm512_extracti64x4_epi64::<1>(q_i));
+
+            acc_lower[local_head] = _mm512_fmadd_ps(q_lower, k_lower, acc_lower[local_head]);
+            acc_upper[local_head] = _mm512_fmadd_ps(q_upper, k_upper, acc_upper[local_head]);
+        }
+    }
+
+    let mut sums = [0.0f32; 8];
+    for local_head in 0..8 {
+        sums[local_head] =
+            _mm512_reduce_add_ps(_mm512_add_ps(acc_lower[local_head], acc_upper[local_head]));
+    }
+
+    for index in simd_end..head_size {
+        let k_item = *key_row.add(index) as f32;
+        for local_head in 0..8 {
+            sums[local_head] += (*q_group.add(local_head * head_size + index) as f32) * k_item;
+        }
+    }
+
+    [
+        sums[0] as f16,
+        sums[1] as f16,
+        sums[2] as f16,
+        sums[3] as f16,
+        sums[4] as f16,
+        sums[5] as f16,
+        sums[6] as f16,
+        sums[7] as f16,
+    ]
 }
 
 #[inline(always)]
@@ -135,6 +214,159 @@ unsafe fn add_weighted_value_avx512(
 
     for index in simd_end..head_size {
         *output.add(index) += *value.add(index) * weight;
+    }
+}
+
+#[inline(always)]
+unsafe fn clear_output_avx512(output: *mut f16, head_size: usize) {
+    let simd_end = head_size / 32 * 32;
+    let zero = _mm512_setzero_ph();
+
+    for offset in (0..simd_end).step_by(32) {
+        _mm512_storeu_ph(output.add(offset), zero);
+    }
+
+    for index in simd_end..head_size {
+        *output.add(index) = 0.0;
+    }
+}
+
+#[inline(always)]
+unsafe fn add_weighted_value_gqa8_avx512(
+    output_group: *mut f16,
+    value: *const f16,
+    head_size: usize,
+    weights: &[f16; 8],
+) {
+    let simd_end = head_size / 32 * 32;
+    let weight_chunks = [
+        _mm512_set1_ph(weights[0]),
+        _mm512_set1_ph(weights[1]),
+        _mm512_set1_ph(weights[2]),
+        _mm512_set1_ph(weights[3]),
+        _mm512_set1_ph(weights[4]),
+        _mm512_set1_ph(weights[5]),
+        _mm512_set1_ph(weights[6]),
+        _mm512_set1_ph(weights[7]),
+    ];
+
+    for offset in (0..simd_end).step_by(32) {
+        let value_chunk = _mm512_loadu_ph(value.add(offset));
+        for local_head in 0..8 {
+            let output = output_group.add(local_head * head_size + offset);
+            let output_chunk = _mm512_loadu_ph(output);
+            let next_output = _mm512_fmadd_ph(value_chunk, weight_chunks[local_head], output_chunk);
+            _mm512_storeu_ph(output, next_output);
+        }
+    }
+
+    for index in simd_end..head_size {
+        let value_item = *value.add(index);
+        for local_head in 0..8 {
+            *output_group.add(local_head * head_size + index) += value_item * weights[local_head];
+        }
+    }
+}
+
+#[inline(always)]
+pub unsafe fn block_flash_attention_gqa8(
+    q_group_ptr: *const f16,
+    output_group_ptr: *mut f16,
+    row_begin: usize,
+    row_end: usize,
+    total_col_end: usize,
+    k_head_ptr: *const f16,
+    v_head_ptr: *const f16,
+    k_seq_stride: usize,
+    v_seq_stride: usize,
+    q_seq_stride: usize,
+    head_size: usize,
+    inverse_sqrt_head: f16,
+    sequence_index: usize,
+) {
+    for row in row_begin..row_end {
+        let visible_col_end = (sequence_index + row + 1).min(total_col_end);
+        if visible_col_end == 0 {
+            continue;
+        }
+
+        let q_row_group_ptr = q_group_ptr.add(row * q_seq_stride);
+        let output_row_group_ptr = output_group_ptr.add(row * q_seq_stride);
+        for local_head in 0..8 {
+            clear_output_avx512(output_row_group_ptr.add(local_head * head_size), head_size);
+        }
+
+        let mut running_max = [f16::NEG_INFINITY; 8];
+        let mut running_denom = [0.0f16; 8];
+        let mut scores = [[0.0f16; GQA8_COL_BLOCK]; 8];
+
+        for col_begin in (0..visible_col_end).step_by(GQA8_COL_BLOCK) {
+            let row_col_end = (col_begin + GQA8_COL_BLOCK).min(visible_col_end);
+            let block_len = row_col_end - col_begin;
+            let mut block_max = [f16::NEG_INFINITY; 8];
+
+            for offset in 0..block_len {
+                let key_row_ptr = k_head_ptr.add((col_begin + offset) * k_seq_stride);
+                let score_group = dot_product_gqa8_avx512(q_row_group_ptr, key_row_ptr, head_size);
+                for local_head in 0..8 {
+                    let score = score_group[local_head] * inverse_sqrt_head;
+                    scores[local_head][offset] = score;
+                    if score > block_max[local_head] {
+                        block_max[local_head] = score;
+                    }
+                }
+            }
+            for offset in block_len..GQA8_COL_BLOCK {
+                for local_head in 0..8 {
+                    scores[local_head][offset] = f16::NEG_INFINITY;
+                }
+            }
+
+            let mut weights = [[0.0f16; 8]; GQA8_COL_BLOCK];
+            for local_head in 0..8 {
+                let next_max = if block_max[local_head] > running_max[local_head] {
+                    block_max[local_head]
+                } else {
+                    running_max[local_head]
+                };
+
+                let carry =
+                    running_denom[local_head] * f16::exp(running_max[local_head] - next_max);
+                let shifted = _mm512_sub_ph(
+                    _mm512_loadu_ph(scores[local_head].as_ptr()),
+                    _mm512_set1_ph(next_max),
+                );
+                let exp_scores = exp512(shifted);
+                let next_denom = carry + _mm512_reduce_add_ph(exp_scores);
+
+                let previous_weight = carry / next_denom;
+                scale_output_avx512(
+                    output_row_group_ptr.add(local_head * head_size),
+                    head_size,
+                    previous_weight,
+                );
+
+                let normalized = _mm512_div_ph(exp_scores, _mm512_set1_ph(next_denom));
+                let mut normalized_scores = [0.0f16; GQA8_COL_BLOCK];
+                _mm512_storeu_ph(normalized_scores.as_mut_ptr(), normalized);
+                for offset in 0..block_len {
+                    weights[offset][local_head] = normalized_scores[offset];
+                }
+
+                running_max[local_head] = next_max;
+                running_denom[local_head] = next_denom;
+            }
+
+            for offset in 0..block_len {
+                let value_row_ptr = v_head_ptr.add((col_begin + offset) * v_seq_stride);
+                add_weighted_value_gqa8_avx512(
+                    output_row_group_ptr,
+                    value_row_ptr,
+                    head_size,
+                    &weights[offset],
+                );
+            }
+        }
     }
 }
 
@@ -181,7 +413,6 @@ pub unsafe fn block_flash_attention(
                 block_max = score;
             }
         }
-
         let next_max = if block_max > running_max[row_offset] {
             block_max
         } else {
@@ -189,20 +420,48 @@ pub unsafe fn block_flash_attention(
         };
 
         let carry = running_denom[row_offset] * f16::exp(running_max[row_offset] - next_max);
-        let mut next_denom = carry;
-        for offset in 0..block_len {
-            next_denom += f16::exp(scores[offset] - next_max);
-        }
+        let next_denom = if scores.len() >= GQA8_COL_BLOCK {
+            for offset in block_len..GQA8_COL_BLOCK {
+                scores[offset] = f16::NEG_INFINITY;
+            }
+            let shifted = _mm512_sub_ph(_mm512_loadu_ph(scores.as_ptr()), _mm512_set1_ph(next_max));
+            let exp_scores = exp512(shifted);
+            let next_denom = carry + _mm512_reduce_add_ph(exp_scores);
 
-        let previous_weight = carry / next_denom;
-        scale_output_avx512(output_row_ptr, head_size, previous_weight);
+            let previous_weight = carry / next_denom;
+            scale_output_avx512(output_row_ptr, head_size, previous_weight);
 
-        for offset in 0..block_len {
-            let col = col_begin + offset;
-            let value_row_ptr = v_head_ptr.add(col * v_seq_stride);
-            let weight = f16::exp(scores[offset] - next_max) / next_denom;
-            add_weighted_value_avx512(output_row_ptr, value_row_ptr, head_size, weight);
-        }
+            let normalized = _mm512_div_ph(exp_scores, _mm512_set1_ph(next_denom));
+            let mut normalized_scores = [0.0f16; GQA8_COL_BLOCK];
+            _mm512_storeu_ph(normalized_scores.as_mut_ptr(), normalized);
+            for offset in 0..block_len {
+                let col = col_begin + offset;
+                let value_row_ptr = v_head_ptr.add(col * v_seq_stride);
+                add_weighted_value_avx512(
+                    output_row_ptr,
+                    value_row_ptr,
+                    head_size,
+                    normalized_scores[offset],
+                );
+            }
+            next_denom
+        } else {
+            let mut next_denom = carry;
+            for offset in 0..block_len {
+                next_denom += f16::exp(scores[offset] - next_max);
+            }
+
+            let previous_weight = carry / next_denom;
+            scale_output_avx512(output_row_ptr, head_size, previous_weight);
+
+            for offset in 0..block_len {
+                let col = col_begin + offset;
+                let value_row_ptr = v_head_ptr.add(col * v_seq_stride);
+                let weight = f16::exp(scores[offset] - next_max) / next_denom;
+                add_weighted_value_avx512(output_row_ptr, value_row_ptr, head_size, weight);
+            }
+            next_denom
+        };
 
         running_max[row_offset] = next_max;
         running_denom[row_offset] = next_denom;

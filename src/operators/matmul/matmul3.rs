@@ -9,7 +9,7 @@ use crate::kernel::common::matmul_params::MatMulParams;
 use crate::num_traits::{FromNumber, Sqrt};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 
-use crate::operators::assign::{assign, KqvPath};
+use crate::operators::assign::KqvPath;
 use crate::operators::traits::MatMulkqvTrait;
 use crate::runtime::scheduling::SequenceSlice;
 
@@ -463,9 +463,8 @@ where
         debug_assert_eq!(micro_tile_cols, 32);
         debug_assert_eq!(self.head_dim % micro_tile_cols, 0);
 
-        for head_col in 0..self.head_dim {
-            *dst_head.add(head_col) = T::default();
-        }
+        // Zero-init removed: compute_head_gemv starts accumulators from zero internally.
+        // 移除 zero-init：compute_head_gemv 内部从零开始累加。
 
         let head_col0 = head_index * self.head_dim;
         let head_output_panel0 = head_col0 / micro_tile_cols;
@@ -521,6 +520,199 @@ where
         Some((KqvPath::Q, task_id / q_head_num, task_id % q_head_num))
     }
 
+    #[inline(always)]
+    fn can_use_prefill_row_tiles(&self, row_map: &[(usize, usize, usize)]) -> bool {
+        if self.batch_size != 1 || row_map.len() < self.params.a_row_step_micro.max(1) {
+            return false;
+        }
+        row_map
+            .iter()
+            .enumerate()
+            .all(|(row, &(token_index, batch_index, sequence_index))| {
+                token_index == row && batch_index == 0 && sequence_index == row
+            })
+    }
+
+    #[inline(always)]
+    unsafe fn compute_head_tile_from_packed(
+        &self,
+        input_row: *const T,
+        dst_head: *mut T,
+        packed_b: &[T],
+        n_total: usize,
+        output_row_stride: usize,
+        head_index: usize,
+        valid_rows: usize,
+        apply_rope: bool,
+        norm_weight: *const T,
+        sequence_index: usize,
+    ) where
+        Self: MatMulkqvTrait<T>,
+    {
+        let reduction_cols = self.col;
+        let reduction_block_cols = self.params.column_step_macro.max(1);
+        let micro_tile_rows = self.params.a_row_step_micro.max(1);
+        let micro_tile_cols = self.params.b_row_step_micro.max(1);
+        debug_assert_eq!(micro_tile_rows, 3);
+        debug_assert_eq!(micro_tile_cols, 32);
+        debug_assert!(valid_rows <= micro_tile_rows);
+
+        if valid_rows < micro_tile_rows {
+            // Partial rows: use compute_head_from_packed (AVX-512 GEMV, no external zero-init needed).
+            for row in 0..valid_rows {
+                self.compute_head_from_packed(
+                    input_row.add(row * reduction_cols),
+                    dst_head.add(row * output_row_stride),
+                    packed_b,
+                    n_total,
+                    head_index,
+                    apply_rope,
+                    norm_weight,
+                    sequence_index + row,
+                );
+            }
+            return;
+        }
+
+        // Full 3-row tile: first panel uses compute1_init (starts from zero, no C load),
+        // subsequent panels use compute1 (accumulate). Zero-init pass eliminated.
+        let head_col0 = head_index * self.head_dim;
+        let output_panel_count = n_total.div_ceil(micro_tile_cols);
+        for head_col in (0..self.head_dim).step_by(micro_tile_cols) {
+            let output_panel = (head_col0 + head_col) / micro_tile_cols;
+            let mut reduction_col_start = 0usize;
+            let mut is_first = true;
+            while reduction_col_start < reduction_cols {
+                let reduction_cols_this =
+                    reduction_block_cols.min(reduction_cols - reduction_col_start);
+                let reduction_panel = reduction_col_start / reduction_block_cols;
+                let weight_panel = packed_b.as_ptr().add(
+                    (reduction_panel * output_panel_count + output_panel)
+                        * reduction_block_cols
+                        * micro_tile_cols,
+                );
+                if is_first {
+                    self.compute1_init(
+                        input_row.add(reduction_col_start),
+                        weight_panel,
+                        dst_head.add(head_col),
+                        reduction_cols,
+                        output_row_stride,
+                        reduction_cols_this,
+                    );
+                    is_first = false;
+                } else {
+                    self.compute1(
+                        input_row.add(reduction_col_start),
+                        weight_panel,
+                        dst_head.add(head_col),
+                        reduction_cols,
+                        output_row_stride,
+                        reduction_cols_this,
+                    );
+                }
+                reduction_col_start += reduction_cols_this;
+            }
+        }
+
+        if apply_rope {
+            let eps = T::from_f32(1e-6);
+            for row in 0..micro_tile_rows {
+                let row_head = dst_head.add(row * output_row_stride);
+                let rope_ptr = self
+                    .rope_ptr
+                    .ptr
+                    .add((sequence_index + row) * self.head_dim);
+                if self.use_qk_norm {
+                    self.compute_norm_rope(row_head, norm_weight, rope_ptr, self.head_dim, eps);
+                } else {
+                    rotate_half_rope(row_head, rope_ptr, self.head_dim);
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn run_prefill_row_tiled(&self, row_count: usize, thread_num: usize, thread_id: usize)
+    where
+        Self: MatMulkqvTrait<T>,
+    {
+        let reduction_cols = self.col;
+        let query_output_cols = self.kv_head_num * self.group_num * self.head_dim;
+        let key_value_output_cols = self.kv_head_num * self.head_dim;
+        let query_head_count = self.kv_head_num * self.group_num;
+        let row_step = self.params.a_row_step_micro.max(1);
+        let row_tile_count = row_count.div_ceil(row_step);
+
+        let a_base = self.hidden_ptr.ptr;
+        let cq_base = self.q_state_ptr.ptr;
+        let ck_base = self.k_state_ptr.ptr;
+        let cv_base = self.v_state_ptr.ptr;
+
+        let total_tasks = row_tile_count * (self.kv_head_num * 2 + query_head_count);
+        for task_id in (thread_id..total_tasks).step_by(thread_num) {
+            let Some((path, row_tile_id, head_index)) =
+                Self::path_task(row_tile_count, self.kv_head_num, query_head_count, task_id)
+            else {
+                continue;
+            };
+            let row_begin = row_tile_id * row_step;
+            let valid_rows = (row_count - row_begin).min(row_step);
+            let input_row = a_base.add(row_begin * reduction_cols);
+
+            match path {
+                KqvPath::V => {
+                    let dst_head =
+                        cv_base.add(row_begin * key_value_output_cols + head_index * self.head_dim);
+                    self.compute_head_tile_from_packed(
+                        input_row,
+                        dst_head,
+                        &self.packed_v,
+                        key_value_output_cols,
+                        key_value_output_cols,
+                        head_index,
+                        valid_rows,
+                        false,
+                        self.k_norm_weight.ptr,
+                        row_begin,
+                    );
+                }
+                KqvPath::K => {
+                    let dst_head =
+                        ck_base.add(row_begin * key_value_output_cols + head_index * self.head_dim);
+                    self.compute_head_tile_from_packed(
+                        input_row,
+                        dst_head,
+                        &self.packed_k,
+                        key_value_output_cols,
+                        key_value_output_cols,
+                        head_index,
+                        valid_rows,
+                        true,
+                        self.k_norm_weight.ptr,
+                        row_begin,
+                    );
+                }
+                KqvPath::Q => {
+                    let dst_head =
+                        cq_base.add(row_begin * query_output_cols + head_index * self.head_dim);
+                    self.compute_head_tile_from_packed(
+                        input_row,
+                        dst_head,
+                        &self.packed_q,
+                        query_output_cols,
+                        query_output_cols,
+                        head_index,
+                        valid_rows,
+                        true,
+                        self.q_norm_weight.ptr,
+                        row_begin,
+                    );
+                }
+            }
+        }
+    }
+
     /// 入口：不再有 S 维度，只针对当前 A[M×K] 做一次 K/Q/V。
     pub fn run(
         &self,
@@ -542,6 +734,10 @@ where
             if row_count == 0 || thread_id >= thread_num || thread_num == 0 {
                 return;
             }
+            if self.can_use_prefill_row_tiles(&row_map) {
+                self.run_prefill_row_tiled(row_count, thread_num, thread_id);
+                return;
+            }
 
             let a_base = self.hidden_ptr.ptr;
             let cq_base = self.q_state_ptr.ptr;
@@ -552,68 +748,66 @@ where
             let key_row_stride = key_value_output_cols;
             let value_row_stride = key_value_output_cols;
             let total_tasks = row_count * (self.kv_head_num * 2 + query_head_count);
-            if let Some((task_begin, task_end)) = assign(total_tasks, thread_num, thread_id) {
-                for task_id in task_begin..task_end {
-                    let Some((path, row_idx, head_index)) =
-                        Self::path_task(row_count, self.kv_head_num, query_head_count, task_id)
-                    else {
-                        continue;
-                    };
+            for task_id in (thread_id..total_tasks).step_by(thread_num) {
+                let Some((path, row_idx, head_index)) =
+                    Self::path_task(row_count, self.kv_head_num, query_head_count, task_id)
+                else {
+                    continue;
+                };
 
-                    let (token_index, batch_index, sequence_index) = row_map[row_idx];
-                    let input_row = a_base.add(token_index * reduction_cols);
+                let (token_index, batch_index, sequence_index) = row_map[row_idx];
+                let input_row = a_base.add(token_index * reduction_cols);
 
-                    let rope_sequence_index = if attention_list.is_empty() {
-                        0
-                    } else {
-                        sequence_index
-                    };
+                let rope_sequence_index = if attention_list.is_empty() {
+                    0
+                } else {
+                    sequence_index
+                };
 
-                    match path {
-                        KqvPath::V => {
-                            let cache_row =
-                                (sequence_index * self.batch_size + batch_index) * value_row_stride;
-                            let dst_head = cv_base.add(cache_row + head_index * self.head_dim);
-                            self.compute_head_from_packed(
-                                input_row,
-                                dst_head,
-                                &self.packed_v,
-                                key_value_output_cols,
-                                head_index,
-                                false,
-                                self.k_norm_weight.ptr,
-                                rope_sequence_index,
-                            );
-                        }
-                        KqvPath::K => {
-                            let cache_row =
-                                (sequence_index * self.batch_size + batch_index) * key_row_stride;
-                            let dst_head = ck_base.add(cache_row + head_index * self.head_dim);
-                            self.compute_head_from_packed(
-                                input_row,
-                                dst_head,
-                                &self.packed_k,
-                                key_value_output_cols,
-                                head_index,
-                                true,
-                                self.k_norm_weight.ptr,
-                                rope_sequence_index,
-                            );
-                        }
-                        KqvPath::Q => {
-                            let dst_head = cq_base
-                                .add(token_index * query_row_stride + head_index * self.head_dim);
-                            self.compute_head_from_packed(
-                                input_row,
-                                dst_head,
-                                &self.packed_q,
-                                query_output_cols,
-                                head_index,
-                                true,
-                                self.q_norm_weight.ptr,
-                                rope_sequence_index,
-                            );
-                        }
+                match path {
+                    KqvPath::V => {
+                        let cache_row =
+                            (sequence_index * self.batch_size + batch_index) * value_row_stride;
+                        let dst_head = cv_base.add(cache_row + head_index * self.head_dim);
+                        self.compute_head_from_packed(
+                            input_row,
+                            dst_head,
+                            &self.packed_v,
+                            key_value_output_cols,
+                            head_index,
+                            false,
+                            self.k_norm_weight.ptr,
+                            rope_sequence_index,
+                        );
+                    }
+                    KqvPath::K => {
+                        let cache_row =
+                            (sequence_index * self.batch_size + batch_index) * key_row_stride;
+                        let dst_head = ck_base.add(cache_row + head_index * self.head_dim);
+                        self.compute_head_from_packed(
+                            input_row,
+                            dst_head,
+                            &self.packed_k,
+                            key_value_output_cols,
+                            head_index,
+                            true,
+                            self.k_norm_weight.ptr,
+                            rope_sequence_index,
+                        );
+                    }
+                    KqvPath::Q => {
+                        let dst_head = cq_base
+                            .add(token_index * query_row_stride + head_index * self.head_dim);
+                        self.compute_head_from_packed(
+                            input_row,
+                            dst_head,
+                            &self.packed_q,
+                            query_output_cols,
+                            head_index,
+                            true,
+                            self.q_norm_weight.ptr,
+                            rope_sequence_index,
+                        );
                     }
                 }
             }
@@ -697,6 +891,20 @@ where
             }
         }
     }
+
+    #[inline]
+    default fn compute1_init(
+        &self,
+        a: *const T,
+        b_panel: *const T,
+        c: *mut T,
+        lda: usize,
+        ldc: usize,
+        kc: usize,
+    ) {
+        // default: fall back to accum (caller must ensure C is zero-initialized)
+        self.compute1(a, b_panel, c, lda, ldc, kc);
+    }
 }
 
 // f16 specialization: call the AVX-512 micro-kernel.
@@ -730,6 +938,29 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
                     *c.add(m * ldc + n) = sum as f16;
                 }
             }
+        }
+    }
+
+    #[inline]
+    fn compute1_init(
+        &self,
+        a: *const f16,
+        b_panel: *const f16,
+        c: *mut f16,
+        lda: usize,
+        ldc: usize,
+        kc: usize,
+    ) {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            crate::kernel::x86_64::f16_512::matmul_rms_complex::matmul_update_inplace_3x32_first(
+                a, b_panel, c, lda, ldc, kc,
+            );
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        {
+            // fallback: accum with zero-init required by caller
+            self.compute1(a, b_panel, c, lda, ldc, kc);
         }
     }
 
@@ -772,7 +1003,16 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
             length,
             eps,
         );
-        rotate_half_rope(c_head, rope_head, length);
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            crate::kernel::x86_64::f16_512::rope::rotate_half_rope_avx512(
+                c_head, rope_head, length,
+            );
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        {
+            rotate_half_rope(c_head, rope_head, length);
+        }
     }
 
     #[inline]
@@ -825,34 +1065,36 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
 
             #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
             {
-            for head_col in (0..head_dim).step_by(micro_tile_cols) {
-                let output_panel = head_output_panel + head_col / micro_tile_cols;
-                let mut acc = [0.0f32; 32];
-                let mut reduction_col_start = 0usize;
-                while reduction_col_start < reduction_cols {
-                    let reduction_cols_this =
-                        reduction_block_cols.min(reduction_cols - reduction_col_start);
-                    let reduction_panel = reduction_col_start / reduction_block_cols;
-                    let weight_panel = packed_b.add(
-                        (reduction_panel * output_panel_count + output_panel)
-                            * reduction_block_cols
-                            * micro_tile_cols,
-                    );
-                    for reduction_lane in 0..reduction_cols_this {
-                        let input_value = *a_row.add(reduction_col_start + reduction_lane) as f32;
-                        for output_lane in 0..micro_tile_cols {
-                            acc[output_lane] += input_value
-                                * (*weight_panel.add(reduction_lane * micro_tile_cols + output_lane)
-                                    as f32);
+                for head_col in (0..head_dim).step_by(micro_tile_cols) {
+                    let output_panel = head_output_panel + head_col / micro_tile_cols;
+                    let mut acc = [0.0f32; 32];
+                    let mut reduction_col_start = 0usize;
+                    while reduction_col_start < reduction_cols {
+                        let reduction_cols_this =
+                            reduction_block_cols.min(reduction_cols - reduction_col_start);
+                        let reduction_panel = reduction_col_start / reduction_block_cols;
+                        let weight_panel = packed_b.add(
+                            (reduction_panel * output_panel_count + output_panel)
+                                * reduction_block_cols
+                                * micro_tile_cols,
+                        );
+                        for reduction_lane in 0..reduction_cols_this {
+                            let input_value =
+                                *a_row.add(reduction_col_start + reduction_lane) as f32;
+                            for output_lane in 0..micro_tile_cols {
+                                acc[output_lane] += input_value
+                                    * (*weight_panel
+                                        .add(reduction_lane * micro_tile_cols + output_lane)
+                                        as f32);
+                            }
                         }
+                        reduction_col_start += reduction_cols_this;
                     }
-                    reduction_col_start += reduction_cols_this;
-                }
 
-                for output_lane in 0..micro_tile_cols {
-                    *dst_head.add(head_col + output_lane) = acc[output_lane] as f16;
+                    for output_lane in 0..micro_tile_cols {
+                        *dst_head.add(head_col + output_lane) = acc[output_lane] as f16;
+                    }
                 }
-            }
             }
         }
     }

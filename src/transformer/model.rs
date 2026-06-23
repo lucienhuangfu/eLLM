@@ -218,7 +218,7 @@ where
         if trace_alignment {
             eprintln!("building lm_head/topk");
         }
-        let (indices_ptr, values_tensor) = norm_state.matmul_local_topk(
+        let (indices_ptr, values_tensor) = norm_state.matmul_local_topk_decode_rows(
             &self.lm_head_weight,
             MatMulParams {
                 a_row_step_macro: 3,

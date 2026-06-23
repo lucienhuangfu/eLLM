@@ -55,7 +55,7 @@ where
             v_tensor.strides[2],
             self.strides[0],
             1,
-            8,
+            32,
             self.shape[3],
             inverse_sqrt_head,
             decode_only_flag,
@@ -210,6 +210,29 @@ where
         thread_num: usize,
         scope_name: String,
     ) -> (*const usize, Self) {
+        self.matmul_local_topk_impl(tensor2, params, top_k_simd, thread_num, false, scope_name)
+    }
+
+    pub fn matmul_local_topk_decode_rows(
+        &self,
+        tensor2: &Tensor<T>,
+        params: MatMulParams,
+        top_k_simd: usize,
+        thread_num: usize,
+        scope_name: String,
+    ) -> (*const usize, Self) {
+        self.matmul_local_topk_impl(tensor2, params, top_k_simd, thread_num, true, scope_name)
+    }
+
+    fn matmul_local_topk_impl(
+        &self,
+        tensor2: &Tensor<T>,
+        params: MatMulParams,
+        top_k_simd: usize,
+        thread_num: usize,
+        prefill_uses_decode_rows: bool,
+        scope_name: String,
+    ) -> (*const usize, Self) {
         let trace_alignment = std::env::var_os("ELLM_ALIGN_TRACE").is_some();
         let n = tensor2.shape[0];
         let m = self.row_count();
@@ -247,6 +270,7 @@ where
                 m,
                 thread_num,
                 top_k_simd,
+                prefill_uses_decode_rows,
             ))
         };
 

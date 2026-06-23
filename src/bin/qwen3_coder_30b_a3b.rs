@@ -12,11 +12,12 @@ use ellm::runtime::{
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
+use std::collections::HashSet;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -51,17 +52,73 @@ fn log_timing(label: &str, start: Instant) {
 }
 
 fn physical_core_thread_limit(requested_thread_num: usize) -> usize {
-    let all_core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    let physical_core_count = all_core_ids
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| i % 2 == 0)
-        .count();
+    let physical_core_count = physical_core_ids().len();
 
     if physical_core_count == 0 {
         requested_thread_num.max(1)
     } else {
         requested_thread_num.min(physical_core_count).max(1)
+    }
+}
+
+fn read_trimmed(path: impl AsRef<Path>) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn physical_core_ids() -> Vec<core_affinity::CoreId> {
+    let all_core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    if all_core_ids.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen = HashSet::new();
+    let mut physical = Vec::new();
+    for core_id in &all_core_ids {
+        let topology_dir = format!("/sys/devices/system/cpu/cpu{}/topology", core_id.id);
+        let package_id = read_trimmed(format!("{topology_dir}/physical_package_id"));
+        let core_index = read_trimmed(format!("{topology_dir}/core_id"));
+        let Some(package_id) = package_id else {
+            continue;
+        };
+        let Some(core_index) = core_index else {
+            continue;
+        };
+        if seen.insert((package_id, core_index)) {
+            physical.push(*core_id);
+        }
+    }
+
+    if physical.is_empty() {
+        all_core_ids
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, core_id)| (index % 2 == 0).then_some(core_id))
+            .collect()
+    } else {
+        physical
+    }
+}
+
+fn runner_core_ids(thread_num: usize, allow_logical_threads: bool) -> Vec<core_affinity::CoreId> {
+    let all_core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    if allow_logical_threads {
+        // Stack physical cores first, then HT siblings, so that
+        // threads 0..N_phys get dedicated physical cores.
+        let physical = physical_core_ids();
+        let logical: Vec<_> = all_core_ids
+            .into_iter()
+            .filter(|c| !physical.contains(c))
+            .collect();
+        physical
+            .into_iter()
+            .chain(logical)
+            .take(thread_num)
+            .collect()
+    } else {
+        physical_core_ids().into_iter().take(thread_num).collect()
     }
 }
 
@@ -134,7 +191,11 @@ fn main() {
         "Explain how to implement a zero-copy parser in Rust using slices and references.",
         "Write a Python async function that fetches data from multiple APIs concurrently with rate limiting.",
     ];
-    let env_prompt = env::var("ELLM_PROMPT").ok();
+    let env_prompt = if let Ok(prompt_file) = env::var("ELLM_PROMPT_FILE") {
+        Some(std::fs::read_to_string(prompt_file).expect("failed to read ELLM_PROMPT_FILE"))
+    } else {
+        env::var("ELLM_PROMPT").ok()
+    };
     let mut prompts = Vec::with_capacity(batch_size);
     for slot in 0..batch_size {
         if let Some(prompt) = env_prompt.as_deref() {
@@ -213,12 +274,24 @@ fn main() {
             .map(|n| n.get())
             .unwrap_or(1),
     );
-    let thread_num = if parse_env_bool("ELLM_ALLOW_LOGICAL_THREADS") {
+    let allow_logical_threads = parse_env_bool("ELLM_ALLOW_LOGICAL_THREADS");
+    let thread_num = if allow_logical_threads {
         requested_thread_num.max(1)
     } else {
         physical_core_thread_limit(requested_thread_num)
     };
     eprintln!("threads: {thread_num}");
+    let pinned_core_ids = runner_core_ids(thread_num, allow_logical_threads);
+    if pinned_core_ids.len() == thread_num {
+        let cpu_ids = pinned_core_ids
+            .iter()
+            .map(|core_id| core_id.id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        eprintln!("runner_affinity: {cpu_ids}");
+    } else {
+        eprintln!("runner_affinity: disabled");
+    }
 
     let mut model = Model::<f16>::with_sampling(
         &config,
@@ -262,7 +335,8 @@ fn main() {
         batch_scheduler.prefill_list.clone(),
         batch_scheduler.decode_list.clone(),
         1,
-    );
+    )
+    .with_thread_count(thread_num);
 
     // ---- force max_output_tokens cutoff after gen ----
     let sequence_length_u = sequence_length;
@@ -278,16 +352,25 @@ fn main() {
     )
     .with_runner_count(thread_num)
     .with_task_in_flight(Arc::clone(&task_in_flight));
+    let pinned_core_ids = Arc::new(pinned_core_ids);
     let runner_handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(thread_num)
-            .enable_all()
-            .build()
-            .unwrap();
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.worker_threads(thread_num).enable_all();
+        if pinned_core_ids.len() == thread_num {
+            let next_core = Arc::new(AtomicUsize::new(0));
+            let pin_core_ids = Arc::clone(&pinned_core_ids);
+            builder.on_thread_start(move || {
+                let index = next_core.fetch_add(1, Ordering::Relaxed);
+                if let Some(core_id) = pin_core_ids.get(index % pin_core_ids.len()) {
+                    core_affinity::set_for_current(*core_id);
+                }
+            });
+        }
+        let rt = builder.build().unwrap();
         rt.block_on(runner.start());
     });
 
-    // Send prefill task
+    // Send prefill task — all 48 threads pick it up (thread_count=48).
     task_in_flight.store(true, Ordering::Release);
     loop {
         match task_sender.send(task.clone()) {
@@ -332,7 +415,8 @@ fn main() {
             batch_scheduler.prefill_list.clone(),
             batch_scheduler.decode_list.clone(),
             1,
-        );
+        )
+        .with_thread_count(thread_num);
 
         task_in_flight.store(true, Ordering::Release);
         loop {

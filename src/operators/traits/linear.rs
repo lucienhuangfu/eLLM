@@ -19,6 +19,24 @@ pub trait AttentionTrait<T> {
         running_denom: &mut [T],
         scores: &mut [T],
     );
+
+    #[allow(clippy::too_many_arguments)]
+    fn compute_gqa8(
+        &self,
+        _q_group_ptr: *const T,
+        _k_head_ptr: *const T,
+        _v_head_ptr: *const T,
+        _output_group_ptr: *mut T,
+        _row_begin: usize,
+        _row_end: usize,
+        _total_col_end: usize,
+        _sequence_index: usize,
+        _k_seq_stride: usize,
+        _v_seq_stride: usize,
+        _q_seq_stride: usize,
+    ) -> bool {
+        false
+    }
 }
 
 pub trait MatMulTrait<T> {
@@ -44,10 +62,29 @@ pub trait MatMulAddTrait<T> {
         output_ptr: *mut T,
     );
 
+    fn compute_init(
+        &self,
+        input_ptr1: *const T,
+        weight_panel: *const T,
+        residual_ptr: *const T,
+        output_ptr: *mut T,
+        kc: usize,
+    );
+
     fn compute_rows(
         &self,
         input_row: *const T,
         weight_panel: *const T,
+        output_row: *mut T,
+        kc: usize,
+        rows: usize,
+    );
+
+    fn compute_rows_init(
+        &self,
+        input_row: *const T,
+        weight_panel: *const T,
+        residual_row: *const T,
         output_row: *mut T,
         kc: usize,
         rows: usize,
@@ -60,6 +97,18 @@ pub trait MatMulSigmoidTrait<T> {
 
 pub trait MatMulkqvTrait<T> {
     fn compute1(
+        &self,
+        a: *const T,
+        b_panel: *const T,
+        c: *mut T,
+        lda: usize,
+        ldc: usize,
+        kc: usize,
+    );
+
+    /// compute1_init: C = A × B_panel（first K-block, no prior C load）.
+    /// Eliminates the external zero-init pass for the 3-row tile path.
+    fn compute1_init(
         &self,
         a: *const T,
         b_panel: *const T,

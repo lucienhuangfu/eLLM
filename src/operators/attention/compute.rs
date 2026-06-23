@@ -59,6 +59,36 @@ where
             scores,
         );
     }
+
+    default fn compute_gqa8(
+        &self,
+        q_group_ptr: *const T,
+        k_head_ptr: *const T,
+        v_head_ptr: *const T,
+        output_group_ptr: *mut T,
+        row_begin: usize,
+        row_end: usize,
+        total_col_end: usize,
+        sequence_index: usize,
+        k_seq_stride: usize,
+        v_seq_stride: usize,
+        q_seq_stride: usize,
+    ) -> bool {
+        let _ = (
+            q_group_ptr,
+            k_head_ptr,
+            v_head_ptr,
+            output_group_ptr,
+            row_begin,
+            row_end,
+            total_col_end,
+            sequence_index,
+            k_seq_stride,
+            v_seq_stride,
+            q_seq_stride,
+        );
+        false
+    }
 }
 
 impl AttentionTrait<f16> for Attention<f16> {
@@ -126,6 +156,59 @@ impl AttentionTrait<f16> for Attention<f16> {
             running_denom,
             scores,
         );
+    }
+
+    fn compute_gqa8(
+        &self,
+        q_group_ptr: *const f16,
+        k_head_ptr: *const f16,
+        v_head_ptr: *const f16,
+        output_group_ptr: *mut f16,
+        row_begin: usize,
+        row_end: usize,
+        total_col_end: usize,
+        sequence_index: usize,
+        k_seq_stride: usize,
+        v_seq_stride: usize,
+        q_seq_stride: usize,
+    ) -> bool {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            kernel::x86_64::f16_512::flash_attention::block_flash_attention_gqa8(
+                q_group_ptr,
+                output_group_ptr,
+                row_begin,
+                row_end,
+                total_col_end,
+                k_head_ptr,
+                v_head_ptr,
+                k_seq_stride,
+                v_seq_stride,
+                q_seq_stride,
+                self.head_size,
+                self.inverse_sqrt_head,
+                sequence_index,
+            );
+            true
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        {
+            let _ = (
+                q_group_ptr,
+                k_head_ptr,
+                v_head_ptr,
+                output_group_ptr,
+                row_begin,
+                row_end,
+                total_col_end,
+                sequence_index,
+                k_seq_stride,
+                v_seq_stride,
+                q_seq_stride,
+            );
+            false
+        }
     }
 }
 

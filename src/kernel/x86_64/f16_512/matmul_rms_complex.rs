@@ -66,6 +66,45 @@ pub unsafe fn matmul_update_inplace_3x32_accum(
     _mm512_storeu_ph(c.add(2 * ldc), c2);
 }
 
+/// 3×32 first-panel 初始化：C = A×B_panel，不加载旧值。
+/// 用于消除 K 循环外层对 C 的 zero-init pass。
+///
+/// 与 accum 版本的区别：累加器从 _mm512_setzero_ph() 开始，
+/// 而非 _mm512_loadu_ph(c)。
+#[target_feature(enable = "avx512fp16")]
+pub unsafe fn matmul_update_inplace_3x32_first(
+    a: *const f16,       // 3×kc
+    b_panel: *const f16, // kc×32
+    c: *mut f16,         // 3×32
+    lda: usize,          // A 行距 = K
+    ldc: usize,          // C 行距 = 当前矩阵的 N
+    kc: usize,           // 当前 K block 长度
+) {
+    let nr = 32usize;
+    debug_assert_eq!(nr, 32);
+
+    // 累加器从零开始，不加载 C 旧值
+    let mut c0 = _mm512_set1_ph(0.0_f16);
+    let mut c1 = _mm512_set1_ph(0.0_f16);
+    let mut c2 = _mm512_set1_ph(0.0_f16);
+
+    for k in 0..kc {
+        let b = _mm512_loadu_ph(b_panel.add(k * nr));
+
+        let a0k = _mm512_set1_ph(*a.add(k));
+        let a1k = _mm512_set1_ph(*a.add(lda + k));
+        let a2k = _mm512_set1_ph(*a.add(2 * lda + k));
+
+        c0 = _mm512_fmadd_ph(a0k, b, c0);
+        c1 = _mm512_fmadd_ph(a1k, b, c1);
+        c2 = _mm512_fmadd_ph(a2k, b, c2);
+    }
+
+    _mm512_storeu_ph(c.add(0 * ldc), c0);
+    _mm512_storeu_ph(c.add(1 * ldc), c1);
+    _mm512_storeu_ph(c.add(2 * ldc), c2);
+}
+
 /// 3×128 收尾：在 C 上 **原地** 做 RMSNorm(weight=1) + RoPE
 ///
 /// - c:        指向 3×128 tile 左上角

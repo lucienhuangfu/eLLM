@@ -308,22 +308,24 @@ where
         let value_tensor =
             Self::from_mem_pool(output_shape, format!("{}.output_value.output", scope_name));
 
-        let operator = Operator::TopKSoftmax(TopKSoftmax::with_sampling(
-            indices_ptr,
-            self.data,
-            indice_ptr,
-            value_tensor.data,
-            output_sequences,
-            batch_temperature,
-            sequence_stride,
-            input_top_k,
-            num_topk,
-            top_p,
-            min_p,
-            do_sample,
-            eos_ids,
-        )
-        .with_input_thread_capacity(input_thread_capacity));
+        let operator = Operator::TopKSoftmax(
+            TopKSoftmax::with_sampling(
+                indices_ptr,
+                self.data,
+                indice_ptr,
+                value_tensor.data,
+                output_sequences,
+                batch_temperature,
+                sequence_stride,
+                input_top_k,
+                num_topk,
+                top_p,
+                min_p,
+                do_sample,
+                eos_ids,
+            )
+            .with_input_thread_capacity(input_thread_capacity),
+        );
 
         Self::enqueue(operator);
         (indice_ptr, value_tensor)

@@ -29,6 +29,9 @@ pub struct ScheduleTask {
     pub decode_list: DecodeList,
     pub timestamp: Instant,
     pub task_id: u64,
+    /// Number of threads participating in this task.
+    /// Threads with id >= thread_count skip work and barriers.
+    pub thread_count: usize,
 }
 
 impl ScheduleTask {
@@ -46,6 +49,12 @@ impl ScheduleTask {
             decode_list,
             timestamp: Instant::now(),
             task_id,
+            thread_count: 1,
         }
+    }
+
+    pub fn with_thread_count(mut self, n: usize) -> Self {
+        self.thread_count = n.max(1);
+        self
     }
 }

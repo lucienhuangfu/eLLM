@@ -12,5 +12,6 @@ pub mod moe_down;
 pub mod moe_merge;
 pub mod moe_silu;
 pub mod rms_norm;
+pub mod rope;
 pub mod silu;
 pub mod truncated_topk_softmax;

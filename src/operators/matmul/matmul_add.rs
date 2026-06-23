@@ -225,48 +225,9 @@ where
                             && output_cols_in_block % micro_tile_cols == 0
                     );
 
-                    // Copy residual tile into output before accumulation.
-                    // 累加前先把 residual tile 拷贝到 output。
-                    let mut output_col_offset = 0;
-                    while output_col_offset < output_cols_in_block {
-                        let mut input_row_offset = 0;
-                        while input_row_offset < input_rows_in_block {
-                            let row_start = input_row_start + input_row_offset;
-                            let active_rows_in_micro = active_input_rows
-                                .saturating_sub(row_start)
-                                .min(micro_tile_rows);
-                            let residual_tile = residual_base.add(
-                                row_start * output_row_stride
-                                    + (output_col_start + output_col_offset),
-                            );
-                            let output_tile = output_base.add(
-                                row_start * output_row_stride
-                                    + (output_col_start + output_col_offset),
-                            );
-
-                            let copy_rows = if active_rows_in_micro < micro_tile_rows {
-                                active_rows_in_micro
-                            } else {
-                                micro_tile_rows
-                            };
-                            for row_in_tile in 0..copy_rows {
-                                let residual_row =
-                                    residual_tile.add(row_in_tile * output_row_stride);
-                                let output_row = output_tile.add(row_in_tile * output_row_stride);
-                                std::ptr::copy_nonoverlapping(
-                                    residual_row,
-                                    output_row,
-                                    micro_tile_cols,
-                                );
-                            }
-
-                            input_row_offset += micro_tile_rows;
-                        }
-                        output_col_offset += micro_tile_cols;
-                    }
-
-                    // Accumulate output += input * weight.
-                    // 累加 output += input * weight。
+                    // Accumulate output = residual + input * weight. The first reduction panel
+                    // initializes accumulators from residual, avoiding a separate copy pass.
+                    // 累加 output = residual + input * weight；第一个规约 panel 直接从 residual 初始化。
                     let mut reduction_col_start = 0;
                     while reduction_col_start < reduction_cols {
                         let mut output_col_offset = 0;
@@ -284,18 +245,41 @@ where
                                     .min(micro_tile_rows);
                                 let input_tile = input_base
                                     .add(row_start * input_row_stride + reduction_col_start);
+                                let residual_tile = residual_base.add(
+                                    row_start * output_row_stride
+                                        + (output_col_start + output_col_offset),
+                                );
                                 let output_tile = output_base.add(
                                     row_start * output_row_stride
                                         + (output_col_start + output_col_offset),
                                 );
 
                                 if active_rows_in_micro < micro_tile_rows {
-                                    self.compute_rows(
+                                    if reduction_col_start == 0 {
+                                        self.compute_rows_init(
+                                            input_tile,
+                                            weight_panel_ptr,
+                                            residual_tile,
+                                            output_tile,
+                                            reduction_block_cols,
+                                            active_rows_in_micro,
+                                        );
+                                    } else {
+                                        self.compute_rows(
+                                            input_tile,
+                                            weight_panel_ptr,
+                                            output_tile,
+                                            reduction_block_cols,
+                                            active_rows_in_micro,
+                                        );
+                                    }
+                                } else if reduction_col_start == 0 {
+                                    self.compute_init(
                                         input_tile,
                                         weight_panel_ptr,
+                                        residual_tile,
                                         output_tile,
                                         reduction_block_cols,
-                                        active_rows_in_micro,
                                     );
                                 } else {
                                     self.compute(
@@ -343,6 +327,24 @@ where
         kernel::scalar::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
     }
 
+    default fn compute_init(
+        &self,
+        input_ptr1: *const T,
+        weight_panel: *const T,
+        residual_ptr: *const T,
+        output_ptr: *mut T,
+        kc: usize,
+    ) {
+        self.compute_rows_init(
+            input_ptr1,
+            weight_panel,
+            residual_ptr,
+            output_ptr,
+            kc,
+            self.params.a_row_step_micro.max(1),
+        );
+    }
+
     default fn compute_rows(
         &self,
         input_row: *const T,
@@ -358,6 +360,33 @@ where
             for row in 0..rows {
                 for col_in_tile in 0..micro_tile_cols {
                     let mut acc = *output_row.add(row * output_row_stride + col_in_tile);
+                    for reduction_lane in 0..kc {
+                        acc = acc
+                            + *input_row.add(row * input_row_stride + reduction_lane)
+                                * *weight_panel.add(reduction_lane * micro_tile_cols + col_in_tile);
+                    }
+                    *output_row.add(row * output_row_stride + col_in_tile) = acc;
+                }
+            }
+        }
+    }
+
+    default fn compute_rows_init(
+        &self,
+        input_row: *const T,
+        weight_panel: *const T,
+        residual_row: *const T,
+        output_row: *mut T,
+        kc: usize,
+        rows: usize,
+    ) {
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            let input_row_stride = self.k_max;
+            let output_row_stride = self.n_max;
+            for row in 0..rows {
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut acc = *residual_row.add(row * output_row_stride + col_in_tile);
                     for reduction_lane in 0..kc {
                         acc = acc
                             + *input_row.add(row * input_row_stride + reduction_lane)
@@ -402,6 +431,52 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
         kernel::scalar::matmul_block::matmul_block(input_ptr1, input_ptr2, output_ptr, &call_param);
     }
 
+    fn compute_init(
+        &self,
+        input_ptr1: *const f16,
+        weight_panel: *const f16,
+        residual_ptr: *const f16,
+        output_ptr: *mut f16,
+        kc: usize,
+    ) {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            use std::arch::x86_64::{
+                _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_set1_ph, _mm512_storeu_ph,
+            };
+
+            let input_row_stride = self.k_max;
+            let output_row_stride = self.n_max;
+            let mut acc0 = _mm512_loadu_ph(residual_ptr);
+            let mut acc1 = _mm512_loadu_ph(residual_ptr.add(output_row_stride));
+            let mut acc2 = _mm512_loadu_ph(residual_ptr.add(output_row_stride * 2));
+
+            for reduction_lane in 0..kc {
+                let weight = _mm512_loadu_ph(weight_panel.add(reduction_lane * 32));
+                let input0 = _mm512_set1_ph(*input_ptr1.add(reduction_lane));
+                let input1 = _mm512_set1_ph(*input_ptr1.add(input_row_stride + reduction_lane));
+                let input2 = _mm512_set1_ph(*input_ptr1.add(input_row_stride * 2 + reduction_lane));
+                acc0 = _mm512_fmadd_ph(input0, weight, acc0);
+                acc1 = _mm512_fmadd_ph(input1, weight, acc1);
+                acc2 = _mm512_fmadd_ph(input2, weight, acc2);
+            }
+
+            _mm512_storeu_ph(output_ptr, acc0);
+            _mm512_storeu_ph(output_ptr.add(output_row_stride), acc1);
+            _mm512_storeu_ph(output_ptr.add(output_row_stride * 2), acc2);
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        self.compute_rows_init(
+            input_ptr1,
+            weight_panel,
+            residual_ptr,
+            output_ptr,
+            kc,
+            self.params.a_row_step_micro.max(1),
+        );
+    }
+
     fn compute_rows(
         &self,
         input_row: *const f16,
@@ -428,6 +503,11 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
             } else {
                 _mm512_set1_ph(0.0)
             };
+            let mut acc2 = if rows > 2 {
+                _mm512_loadu_ph(output_row.add(output_row_stride * 2))
+            } else {
+                _mm512_set1_ph(0.0)
+            };
             for reduction_lane in 0..kc {
                 let weight = _mm512_loadu_ph(weight_panel.add(reduction_lane * 32));
                 if rows > 0 {
@@ -438,12 +518,20 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
                     let input = _mm512_set1_ph(*input_row.add(input_row_stride + reduction_lane));
                     acc1 = _mm512_fmadd_ph(input, weight, acc1);
                 }
+                if rows > 2 {
+                    let input =
+                        _mm512_set1_ph(*input_row.add(input_row_stride * 2 + reduction_lane));
+                    acc2 = _mm512_fmadd_ph(input, weight, acc2);
+                }
             }
             if rows > 0 {
                 _mm512_storeu_ph(output_row, acc0);
             }
             if rows > 1 {
                 _mm512_storeu_ph(output_row.add(output_row_stride), acc1);
+            }
+            if rows > 2 {
+                _mm512_storeu_ph(output_row.add(output_row_stride * 2), acc2);
             }
         }
 
@@ -455,6 +543,84 @@ impl MatMulAddTrait<f16> for MatMulAdd<f16> {
             for row in 0..rows {
                 for col_in_tile in 0..micro_tile_cols {
                     let mut acc = *output_row.add(row * output_row_stride + col_in_tile) as f32;
+                    for reduction_lane in 0..kc {
+                        acc += (*input_row.add(row * input_row_stride + reduction_lane) as f32)
+                            * (*weight_panel.add(reduction_lane * micro_tile_cols + col_in_tile)
+                                as f32);
+                    }
+                    *output_row.add(row * output_row_stride + col_in_tile) = acc as f16;
+                }
+            }
+        }
+    }
+
+    fn compute_rows_init(
+        &self,
+        input_row: *const f16,
+        weight_panel: *const f16,
+        residual_row: *const f16,
+        output_row: *mut f16,
+        kc: usize,
+        rows: usize,
+    ) {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+        unsafe {
+            use std::arch::x86_64::{
+                _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_set1_ph, _mm512_storeu_ph,
+            };
+
+            let input_row_stride = self.k_max;
+            let output_row_stride = self.n_max;
+            let mut acc0 = if rows > 0 {
+                _mm512_loadu_ph(residual_row)
+            } else {
+                _mm512_set1_ph(0.0)
+            };
+            let mut acc1 = if rows > 1 {
+                _mm512_loadu_ph(residual_row.add(output_row_stride))
+            } else {
+                _mm512_set1_ph(0.0)
+            };
+            let mut acc2 = if rows > 2 {
+                _mm512_loadu_ph(residual_row.add(output_row_stride * 2))
+            } else {
+                _mm512_set1_ph(0.0)
+            };
+            for reduction_lane in 0..kc {
+                let weight = _mm512_loadu_ph(weight_panel.add(reduction_lane * 32));
+                if rows > 0 {
+                    let input = _mm512_set1_ph(*input_row.add(reduction_lane));
+                    acc0 = _mm512_fmadd_ph(input, weight, acc0);
+                }
+                if rows > 1 {
+                    let input = _mm512_set1_ph(*input_row.add(input_row_stride + reduction_lane));
+                    acc1 = _mm512_fmadd_ph(input, weight, acc1);
+                }
+                if rows > 2 {
+                    let input =
+                        _mm512_set1_ph(*input_row.add(input_row_stride * 2 + reduction_lane));
+                    acc2 = _mm512_fmadd_ph(input, weight, acc2);
+                }
+            }
+            if rows > 0 {
+                _mm512_storeu_ph(output_row, acc0);
+            }
+            if rows > 1 {
+                _mm512_storeu_ph(output_row.add(output_row_stride), acc1);
+            }
+            if rows > 2 {
+                _mm512_storeu_ph(output_row.add(output_row_stride * 2), acc2);
+            }
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
+        unsafe {
+            let micro_tile_cols = self.params.b_row_step_micro.max(1);
+            let input_row_stride = self.k_max;
+            let output_row_stride = self.n_max;
+            for row in 0..rows {
+                for col_in_tile in 0..micro_tile_cols {
+                    let mut acc = *residual_row.add(row * output_row_stride + col_in_tile) as f32;
                     for reduction_lane in 0..kc {
                         acc += (*input_row.add(row * input_row_stride + reduction_lane) as f32)
                             * (*weight_panel.add(reduction_lane * micro_tile_cols + col_in_tile)

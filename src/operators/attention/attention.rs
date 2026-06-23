@@ -32,6 +32,10 @@ pub struct Attention<T> {
     pub(super) row_step: usize,
     pub(super) col_step: usize,
     pub(super) decode_only_flag: bool,
+    pub(super) hybrid_split: bool,
+    pub(super) profile_split: bool,
+    pub(super) force_head_split: bool,
+    pub(super) decode_gqa8: bool,
     pub(super) thread_num: usize,
     scratch: AttentionScratch<T>,
 }
@@ -72,6 +76,22 @@ where
     ) -> Self {
         let thread_num = thread_num.max(1);
         let row_step = row_step.max(1);
+        let hybrid_split = std::env::var("ELLM_ATTENTION_HYBRID_SPLIT")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
+        let profile_split = std::env::var("ELLM_PROFILE_ATTENTION_SPLIT")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
+        let force_head_split = std::env::var("ELLM_ATTENTION_FORCE_HEAD_SPLIT")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
+        let decode_gqa8 = std::env::var("ELLM_ATTENTION_DECODE_GQA8")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
 
         Self {
             q_ptr: ConstPtr { ptr: q_ptr },
@@ -94,6 +114,10 @@ where
             head_size,
             inverse_sqrt_head,
             decode_only_flag,
+            hybrid_split,
+            profile_split,
+            force_head_split,
+            decode_gqa8,
             thread_num,
             scratch: AttentionScratch::new(thread_num, row_step, col_step),
         }
@@ -339,6 +363,198 @@ where
         for kv_head in 0..self.kv_head_num {
             let k_head_ptr = k_batch_ptr.add(kv_head * k_head_stride);
             let v_head_ptr = v_batch_ptr.add(kv_head * v_head_stride);
+            if attention_heads_per_kv == 8 {
+                let q_group_offset = kv_head * attention_heads_per_kv * self.head_size;
+                let q_group_ptr = q_slice_ptr.add(q_group_offset);
+                let output_group_ptr = output_slice_ptr.add(q_group_offset);
+                let mut gqa8_handled = false;
+                let mut gqa8_supported = true;
+
+                if let Some((row_begin, row_end)) = row_plan.main {
+                    gqa8_supported &= AttentionTrait::compute_gqa8(
+                        self,
+                        q_group_ptr,
+                        k_head_ptr,
+                        v_head_ptr,
+                        output_group_ptr,
+                        row_begin,
+                        row_end,
+                        col_end,
+                        sequence_index,
+                        self.k_seq_stride,
+                        self.v_seq_stride,
+                        self.q_seq_stride,
+                    );
+                    gqa8_handled = true;
+                }
+
+                if let Some((row_begin, row_end)) = row_plan.tail {
+                    gqa8_supported &= AttentionTrait::compute_gqa8(
+                        self,
+                        q_group_ptr,
+                        k_head_ptr,
+                        v_head_ptr,
+                        output_group_ptr,
+                        row_begin,
+                        row_end,
+                        col_end,
+                        sequence_index,
+                        self.k_seq_stride,
+                        self.v_seq_stride,
+                        self.q_seq_stride,
+                    );
+                    gqa8_handled = true;
+                }
+
+                if gqa8_handled && gqa8_supported {
+                    continue;
+                }
+            }
+
+            for local_head in 0..attention_heads_per_kv {
+                let attention_head = kv_head * attention_heads_per_kv + local_head;
+                let q_head_offset = attention_head * self.head_size;
+                let q_head_ptr = q_slice_ptr.add(q_head_offset);
+                let output_head_ptr = output_slice_ptr.add(q_head_offset);
+
+                self.visit_blocks_for_head(
+                    q_head_ptr,
+                    output_head_ptr,
+                    k_head_ptr,
+                    v_head_ptr,
+                    thread_id,
+                    sequence_index,
+                    col_end,
+                    row_plan,
+                );
+            }
+        }
+    }
+
+    /// Run long prefill with a 2D static split:
+    /// each task owns one KV group and a triangle-balanced row range.
+    unsafe fn run_grouped_sequence_split(
+        &self,
+        q_slice_ptr: *const T,
+        output_slice_ptr: *mut T,
+        k_batch_ptr: *const T,
+        v_batch_ptr: *const T,
+        sequence_index: usize,
+        col_end: usize,
+        slice_len: usize,
+        aligned_len: usize,
+        thread_num: usize,
+        thread_id: usize,
+        k_head_stride: usize,
+        v_head_stride: usize,
+        attention_heads_per_kv: usize,
+    ) {
+        if thread_num == 0
+            || thread_id >= thread_num
+            || self.kv_head_num == 0
+            || attention_heads_per_kv == 0
+        {
+            return;
+        }
+
+        let row_parts_per_kv = thread_num.div_ceil(self.kv_head_num).max(1);
+        if row_parts_per_kv == 1 {
+            self.run_sequence_split(
+                q_slice_ptr,
+                output_slice_ptr,
+                k_batch_ptr,
+                v_batch_ptr,
+                sequence_index,
+                col_end,
+                slice_len,
+                aligned_len,
+                thread_num,
+                thread_id,
+                k_head_stride,
+                v_head_stride,
+                attention_heads_per_kv,
+            );
+            return;
+        }
+
+        let total_tasks = self.kv_head_num * row_parts_per_kv;
+        let Some((task_begin, task_end)) =
+            Self::split_contiguous_range(total_tasks, thread_num, thread_id)
+        else {
+            return;
+        };
+
+        for task_id in task_begin..task_end {
+            let kv_head = task_id / row_parts_per_kv;
+            let row_part = task_id % row_parts_per_kv;
+            if kv_head >= self.kv_head_num {
+                continue;
+            }
+
+            let row_plan = RowVisitPlan {
+                main: split_sequence_by_triangle(
+                    aligned_len,
+                    self.row_step,
+                    row_parts_per_kv,
+                    row_part,
+                ),
+                tail: if aligned_len < slice_len && row_part + 1 == row_parts_per_kv {
+                    Some((aligned_len, slice_len))
+                } else {
+                    None
+                },
+            };
+
+            let k_head_ptr = k_batch_ptr.add(kv_head * k_head_stride);
+            let v_head_ptr = v_batch_ptr.add(kv_head * v_head_stride);
+
+            if attention_heads_per_kv == 8 {
+                let q_group_offset = kv_head * attention_heads_per_kv * self.head_size;
+                let q_group_ptr = q_slice_ptr.add(q_group_offset);
+                let output_group_ptr = output_slice_ptr.add(q_group_offset);
+                let mut gqa8_handled = false;
+                let mut gqa8_supported = true;
+
+                if let Some((row_begin, row_end)) = row_plan.main {
+                    gqa8_supported &= AttentionTrait::compute_gqa8(
+                        self,
+                        q_group_ptr,
+                        k_head_ptr,
+                        v_head_ptr,
+                        output_group_ptr,
+                        row_begin,
+                        row_end,
+                        col_end,
+                        sequence_index,
+                        self.k_seq_stride,
+                        self.v_seq_stride,
+                        self.q_seq_stride,
+                    );
+                    gqa8_handled = true;
+                }
+
+                if let Some((row_begin, row_end)) = row_plan.tail {
+                    gqa8_supported &= AttentionTrait::compute_gqa8(
+                        self,
+                        q_group_ptr,
+                        k_head_ptr,
+                        v_head_ptr,
+                        output_group_ptr,
+                        row_begin,
+                        row_end,
+                        col_end,
+                        sequence_index,
+                        self.k_seq_stride,
+                        self.v_seq_stride,
+                        self.q_seq_stride,
+                    );
+                    gqa8_handled = true;
+                }
+
+                if gqa8_handled && gqa8_supported {
+                    continue;
+                }
+            }
 
             for local_head in 0..attention_heads_per_kv {
                 let attention_head = kv_head * attention_heads_per_kv + local_head;
@@ -390,6 +606,79 @@ where
             main: (aligned_len != 0).then_some((0, aligned_len)),
             tail: (aligned_len < slice_len).then_some((aligned_len, slice_len)),
         };
+
+        if self.decode_gqa8 && slice_len == 1 && attention_heads_per_kv == 8 {
+            let active_thread_num = thread_num.min(self.kv_head_num);
+            if thread_id >= active_thread_num {
+                return;
+            }
+
+            let Some((kv_begin, kv_end)) =
+                Self::split_contiguous_range(self.kv_head_num, active_thread_num, thread_id)
+            else {
+                return;
+            };
+
+            for kv_head in kv_begin..kv_end {
+                let k_head_ptr = k_batch_ptr.add(kv_head * k_head_stride);
+                let v_head_ptr = v_batch_ptr.add(kv_head * v_head_stride);
+                let q_group_offset = kv_head * attention_heads_per_kv * self.head_size;
+                let q_group_ptr = q_slice_ptr.add(q_group_offset);
+                let output_group_ptr = output_slice_ptr.add(q_group_offset);
+                let mut handled = false;
+
+                if let Some((row_begin, row_end)) = row_plan.main {
+                    handled |= AttentionTrait::compute_gqa8(
+                        self,
+                        q_group_ptr,
+                        k_head_ptr,
+                        v_head_ptr,
+                        output_group_ptr,
+                        row_begin,
+                        row_end,
+                        col_end,
+                        sequence_index,
+                        self.k_seq_stride,
+                        self.v_seq_stride,
+                        self.q_seq_stride,
+                    );
+                }
+                if let Some((row_begin, row_end)) = row_plan.tail {
+                    handled |= AttentionTrait::compute_gqa8(
+                        self,
+                        q_group_ptr,
+                        k_head_ptr,
+                        v_head_ptr,
+                        output_group_ptr,
+                        row_begin,
+                        row_end,
+                        col_end,
+                        sequence_index,
+                        self.k_seq_stride,
+                        self.v_seq_stride,
+                        self.q_seq_stride,
+                    );
+                }
+
+                if !handled {
+                    for local_head in 0..attention_heads_per_kv {
+                        let attention_head = kv_head * attention_heads_per_kv + local_head;
+                        let q_head_offset = attention_head * self.head_size;
+                        self.visit_blocks_for_head(
+                            q_slice_ptr.add(q_head_offset),
+                            output_slice_ptr.add(q_head_offset),
+                            k_head_ptr,
+                            v_head_ptr,
+                            thread_id,
+                            sequence_index,
+                            col_end,
+                            row_plan,
+                        );
+                    }
+                }
+            }
+            return;
+        }
 
         let kv_heads_per_wave = self.kv_heads_per_wave(active_thread_num, attention_heads_per_kv);
         if kv_heads_per_wave == 0 {
@@ -463,9 +752,40 @@ where
                 let v_batch_ptr = v_ptr.add(slice.batch_index * self.v_batch_stride);
                 let col_end = slice.sequence_index + slice.length;
                 let aligned_len = slice.length / self.row_step * self.row_step;
-                let use_head_split = slice.length > 0
-                    && thread_num > 0
-                    && slice.length.div_ceil(self.row_step.max(1)) < thread_num;
+                let use_head_split = self.force_head_split
+                    || (slice.length > 0
+                        && thread_num > 0
+                        && slice.length.div_ceil(self.row_step.max(1)) < thread_num);
+
+                let use_grouped_sequence_split = self.hybrid_split
+                    && !use_head_split
+                    && thread_num > self.kv_head_num
+                    && self.kv_head_num > 1
+                    && attention_heads_per_kv > 1
+                    && slice.length >= thread_num;
+                if self.profile_split && thread_id == 0 {
+                    let mode = if use_head_split {
+                        "head"
+                    } else if use_grouped_sequence_split {
+                        "hybrid"
+                    } else {
+                        "sequence"
+                    };
+                    let row_parts_per_kv = thread_num.div_ceil(self.kv_head_num.max(1)).max(1);
+                    eprintln!(
+                        "attention_split mode={mode} slice_len={} aligned_len={} thread_num={} q_heads={} kv_heads={} q_per_kv={} row_step={} col_step={} row_parts_per_kv={} hybrid_enabled={}",
+                        slice.length,
+                        aligned_len,
+                        thread_num,
+                        self.attention_head_num,
+                        self.kv_head_num,
+                        attention_heads_per_kv,
+                        self.row_step,
+                        self.col_step,
+                        row_parts_per_kv,
+                        self.hybrid_split
+                    );
+                }
 
                 if use_head_split {
                     self.run_head_split(
@@ -482,6 +802,22 @@ where
                         attention_heads_per_kv,
                         self.k_head_stride,
                         self.v_head_stride,
+                    );
+                } else if use_grouped_sequence_split {
+                    self.run_grouped_sequence_split(
+                        q_slice_ptr,
+                        output_slice_ptr,
+                        k_batch_ptr,
+                        v_batch_ptr,
+                        slice.sequence_index,
+                        col_end,
+                        slice.length,
+                        aligned_len,
+                        thread_num,
+                        thread_id,
+                        self.k_head_stride,
+                        self.v_head_stride,
+                        attention_heads_per_kv,
                     );
                 } else {
                     self.run_sequence_split(

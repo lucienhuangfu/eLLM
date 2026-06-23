@@ -218,9 +218,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         generated_count += 1;
 
-        let all_done = batch_scheduler.batch_list.with(|list| {
-            list.iter().all(|s| matches!(s.phase, Phase::Eos))
-        });
+        let all_done = batch_scheduler
+            .batch_list
+            .with(|list| list.iter().all(|s| matches!(s.phase, Phase::Eos)));
         if all_done {
             break;
         }

@@ -12,6 +12,32 @@ pub trait ExpertsDownTrait<T> {
         rows: usize,
     );
 
+    fn compute1_gather_rows(
+        &self,
+        input_base: *const T,
+        input_row_stride: usize,
+        idx_buf: *const usize,
+        idx_off: usize,
+        reduction_col_start: usize,
+        b_panel: *const T,
+        acc: *mut T,
+        kc: usize,
+    );
+
+    /// 2-row gather micro-kernel for partial tiles: skip a_tile pack, direct gather+FMA.
+    /// 两行 gather 微内核（partial tile）：跳过 a_tile pack，直接 gather+FMA。
+    fn compute1_gather_2rows(
+        &self,
+        input_base: *const T,
+        input_row_stride: usize,
+        idx_buf: *const usize,
+        idx_off: usize,
+        reduction_col_start: usize,
+        b_panel: *const T,
+        acc: *mut T,
+        kc: usize,
+    );
+
     fn compute2(&self, out_row: *mut T, acc_row: *const T, factor: *const T, len: usize);
 }
 
@@ -45,6 +71,20 @@ pub trait ExpertsSiluTrait<T> {
         up_acc: *mut T,
         kc: usize,
         rows: usize,
+    );
+
+    fn compute1_gather_rows(
+        &self,
+        input_base: *const T,
+        input_row_stride: usize,
+        idx_buf: *const usize,
+        idx_off: usize,
+        reduction_col_start: usize,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
     );
 
     fn compute2(&self, gate_row: *const T, up_row: *const T, c_row: *mut T);
