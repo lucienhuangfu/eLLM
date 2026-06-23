@@ -446,3 +446,341 @@ decode 的核心矛盾是：
 - **trait dispatch 对小操作（96 元素 zero）开销过大**：vtable call > 96 次标量写入
 - **per-thread `run` 波动 ±30%+**，必须用 wall clock（R+B）或 first_token 判断
 - **kernel 改动需要确认热路径是否命中**：rope AVX-512 只命中 tail row，prefill 收益可忽略
+
+## 10. 第三轮线程级 profile 与 attention hybrid A/B（2026-06-23）
+
+目标：在用户 push 后的代码基础上，确认 4000 input / 16 output / 48 线程下的 barrier 来源，并重新评估 prefill attention 是否应该改成更偏 head/kv-head 的分配。
+
+### 10.1 新增线程级算子 profile（✅ 保留）
+
+新增 `ELLM_PROFILE_OP_THREADS=1`，在已有 `ELLM_PROFILE_OPS=1` 或 `ELLM_PROFILE_DECODE_OPS=1` 时输出每个线程本地的算子计时：
+
+```text
+prefill_profile_thread thread_id=... kind=... count=... run=... post_barrier=...
+decode_profile_thread thread_id=... kind=... count=... run=... post_barrier=...
+```
+
+这个开关默认关闭，只用于定位 load imbalance，不改变计算路径。leader 线程原有的 `prefill_profile kind=...` 汇总保持不变。
+
+### 10.2 4000 prompt 默认 sequence split profile
+
+命令条件：
+
+```bash
+ELLM_LOAD_THREADS=16 \
+ELLM_ALLOW_LOGICAL_THREADS=1 \
+ELLM_BATCH=1 \
+ELLM_THREAD_NUM=48 \
+ELLM_MAX_OUTPUT_TOKENS=16 \
+ELLM_PROFILE_OPS=1 \
+ELLM_PROFILE_OP_THREADS=1 \
+ELLM_PROFILE_ATTENTION_SPLIT=1 \
+ELLM_PROMPT_FILE=/tmp/qwen3_coder_prompt4000.txt \
+./target/release/qwen3_coder_30b_a3b
+```
+
+输入通过 tiktoken 确认为 `长度: 4000`，输出仍有语义：
+
+```text
+Hello! It looks like you're saying hello a lot!
+```
+
+结果：
+
+| 指标 | 时间 |
+|------|------|
+| load_weights | 144.631s |
+| build_graph | 176.142s |
+| first_token | 15.778s |
+| generate(16) | 19.052s |
+
+prefill 汇总：
+
+| 算子 | leader run | leader barrier | per-thread run spread |
+|------|------------|----------------|-----------------------|
+| Attention | 4.267898s | 1.092722s | 4.267898s - 5.340467s（1.25x） |
+| ExpertsMatMulSilu | 2.674073s | 1.586875s | 2.544856s - 4.226974s（1.66x） |
+| MatMulAdd | 1.662207s | 0.268381s | 1.039637s - 1.887386s（1.82x） |
+| ExpertsMatMulDown | 1.378105s | 0.330440s | 1.378105s - 1.495564s（1.09x） |
+| MatMul3 | 2.190017s | 0.119305s | 1.595763s - 2.198816s（1.38x） |
+
+结论：
+
+- Attention 仍然是最大 run hotspot，但线程 spread 不算最坏，当前慢主要是每线程实算量大。
+- Silu 和 MatMulAdd 的线程 spread 更明显，是后续削 barrier 的主要候选。
+- Down 已比较均衡，继续微调分配的收益可能不高。
+
+### 10.3 Attention hybrid split A/B（⚠️ 暂不设为默认）
+
+启用：
+
+```bash
+ELLM_ATTENTION_HYBRID_SPLIT=1
+```
+
+hybrid 模式不是纯 head split，而是 `(kv_head, row_part)` 任务：
+
+- 每个任务固定一个 KV head，内部仍处理对应的 8 个 Q heads，符合 GQA `1 KV -> 8 Q` 的结构。
+- `row_part` 内仍按 causal sequence row 切分，保留三角负载平衡优势。
+- 相比纯 sequence split，它让 kv-head 边界更显式，但不会让同一个 GQA 组被拆错。
+
+A/B 结果：
+
+| 模式 | first_token | prefill run_sum | prefill barrier_sum | Attention run | Attention barrier |
+|------|-------------|-----------------|---------------------|---------------|-------------------|
+| 默认 sequence | 15.778s | 12.361841s | 3.405891s | 4.267898s | 1.092722s |
+| hybrid | 15.608s | 12.539037s | 3.058565s | 4.412866s | 1.028157s |
+
+hybrid 的 first token 快约 0.17s，但 Attention run 变慢，整体 run_sum 也变慢，只是 barrier 有所下降。这个结果不足以证明 hybrid 应该成为默认策略，暂时仅作为环境变量保留，后续需要用更长输出或更多 prompt 长度重复验证。
+
+### 10.4 下一步优先级
+
+1. **MoE Silu 分配**：thread spread 1.66x，且 leader barrier 高。优先考虑 work-aware expert task 分配，但必须保留 expert 内 token 连续性和 gate/up pack 复用，避免重复 §9.3 中双 weight gather 退化。
+2. **MatMulAdd 分配**：thread spread 1.82x。可以试 block-cyclic 或 tile-cost aware 分配，但要记住历史上从“巧妙分配”退回 naive 是为了均衡，所以只能 A/B 后保留。
+3. **Attention 内部 micro-profile**：当前只知道 op 级 run，下一步需要把 QK、softmax、V accumulate、写回分段统计出来，判断是否是 softmax/score buffer 或 V accumulate 主导。
+4. **decode 512 profile**：长输出测试建议固定 4000 prompt / 512 output，打开 `ELLM_PROFILE_DECODE_OPS=1` 和 `ELLM_PROFILE_OP_THREADS=1`，抓指定 step 的 decode attention/MoE spread，再决定 KV split 或 partial softmax merge 是否值得做。
+
+### 10.5 4000 prompt / 512 output decode step profile
+
+条件：4000 input token / 512 output token / 48 线程，仅在 `decode_step=512` 打开 decode op profile。
+
+```bash
+ELLM_LOAD_THREADS=16 \
+ELLM_ALLOW_LOGICAL_THREADS=1 \
+ELLM_BATCH=1 \
+ELLM_THREAD_NUM=48 \
+ELLM_MAX_OUTPUT_TOKENS=512 \
+ELLM_PROFILE_DECODE_OPS=1 \
+ELLM_PROFILE_DECODE_STEP=512 \
+ELLM_PROFILE_OP_THREADS=1 \
+ELLM_PROMPT_FILE=/tmp/qwen3_coder_prompt4000.txt \
+./target/release/qwen3_coder_30b_a3b
+```
+
+结果：
+
+| 指标 | 时间 |
+|------|------|
+| load_weights | 144.303s |
+| build_graph | 176.613s |
+| first_token | 15.291s |
+| generate(512) | 55.143s |
+
+输出开头仍有语义：
+
+```text
+Hello! It looks like you're saying hello a lot!
+
+Is there something I can help you with?
+```
+
+后段出现 hello prompt 诱导下的复读/chat 片段拼接，不作为算子正确性错误证据。
+
+decode step 512：
+
+| 算子 | leader run | leader barrier | per-thread run spread |
+|------|------------|----------------|-----------------------|
+| Attention | 0.026198s | 0.000213s | 0.000007s - 0.026260s |
+| ExpertsMatMulSilu | 0.014248s | 0.000491s | 0.012990s - 0.014451s |
+| MatMulAdd | 0.008309s | 0.002183s | 0.000006s - 0.010441s |
+| ExpertsMatMulDown | 0.007552s | 0.000431s | 0.005461s - 0.007731s |
+| MatMul3 | 0.006665s | 0.000624s | 0.000027s - 0.007069s |
+| MatMulTopK | 0.003818s | 0.000057s | 0.003698s - 0.003873s |
+
+decode 与 prefill 的问题不同：
+
+- Attention 是单步最大热点，但当前 head split 只有 32 Q heads / 4 KV heads，48 线程下必然有线程没活或活很少。
+- MoE Silu 在 decode 末端反而比较均衡，说明长 decode 的首要矛盾不是 Silu routing。
+- MatMulAdd/MatMul3 也有 idle 线程，属于小 batch decode 下任务粒度不足。
+
+后续 decode 加速方向应优先考虑 **decode attention 的 KV-length split + partial softmax merge**，让同一 head 的长 KV 序列可被多个线程分担；否则仅靠 head split，48 线程无法被充分利用。这个方向需要保证 softmax 的数值正确性：每个 KV block 先算 local max/local sum/local weighted V，再按全局 max 合并 sum 和 V。
+
+### 10.6 当前 qwen3-coder-30b-a3b benchmark 默认配置
+
+为了让常用测试命令更短，`qwen3_coder_30b_a3b` 当前默认值调整为近期 profile 使用的配置：
+
+| 配置 | env | 默认值 |
+|------|-----|--------|
+| batch size | `ELLM_BATCH` | `1` |
+| max output tokens | `ELLM_MAX_OUTPUT_TOKENS` | `512` |
+| runner threads | `ELLM_THREAD_NUM` | `48` |
+| allow logical threads | `ELLM_ALLOW_LOGICAL_THREADS` | `true` |
+| weight load threads | `ELLM_LOAD_THREADS` | `16` |
+
+profiling 相关开关仍默认关闭：`ELLM_PROFILE_OPS`、`ELLM_PROFILE_OP_THREADS`、`ELLM_PROFILE_DECODE_OPS`、`ELLM_ATTENTION_HYBRID_SPLIT` 都需要显式设置。
+
+### 10.7 失败的轻量分配实验（❌ 已回退）
+
+#### MoE Silu chunked cyclic task
+
+尝试把 `ExpertsMatMulSilu` 从逐 task cyclic：
+
+```text
+thread_id, thread_id + thread_num, ...
+```
+
+改成小块连续 task 后再 cyclic（实验 chunk=2），希望在保持一定均衡的同时增加 expert/output panel 连续性。
+
+4000 input / 16 output / 48 线程结果：
+
+| 配置 | first_token | Silu run | Silu barrier | Silu per-thread spread |
+|------|-------------|----------|--------------|------------------------|
+| 原始逐 task cyclic | 15.624s | 2.978410s | 1.250323s | 1.67x |
+| chunk=2 | 16.862s | 2.698187s | 2.519629s | 1.95x |
+
+虽然 leader 看到的 Silu run 降了一些，但 barrier 翻倍，first token 明显变差。说明当前 workload 下 Silu 的首要问题仍是尾部均衡，不能为了局部连续性牺牲 cyclic 的细粒度平衡。已回退。
+
+#### MatMulAdd cyclic task
+
+尝试把 `MatMulAdd` 从 contiguous range 分配改为 dense tile cyclic，希望削减 per-thread 尾部差异。
+
+4000 input / 16 output / 48 线程结果：
+
+| 配置 | first_token | MatMulAdd run | MatMulAdd barrier | MatMulAdd run+barrier |
+|------|-------------|---------------|-------------------|-----------------------|
+| contiguous range | 15.624s | 1.594411s | 0.265441s | 1.859852s |
+| cyclic | 15.465s | 1.843764s | 0.107182s | 1.950946s |
+
+cyclic 降低了 barrier，但 MatMulAdd 自身 run 变慢，run+barrier 变差；first token 的 0.16s 提升不足以证明是稳定收益。已回退。
+
+后续分配优化要避免只看 barrier：必须同时看 `run + barrier` 和 first_token。当前更值得做的是更细的算子内部 profile，尤其是 Attention 的 QK / softmax / V accumulate 分段，以及 decode attention 的 KV split。
+
+### 10.8 Attention kernel profile + GQA8 Q/V 优化（✅ 保留）
+
+用户确认后把优化重心切回 Attention，gate/up 优先级后移。
+
+新增默认关闭的 kernel 内部分段 profile：
+
+```bash
+ELLM_PROFILE_ATTENTION_KERNEL=1
+```
+
+统计位置：`qwen3_coder_30b_a3b` 在 prefill task 发送前 reset，在 first token 输出时打印：
+
+```text
+attention_kernel_profile label=first_token_prefill ...
+```
+
+4000 input / 16 output / 48 线程下，prefill attention 全部走 GQA8 kernel，regular path 为 0。优化前 kernel profile：
+
+| 阶段 | 累计线程时间 | 占比 |
+|------|--------------|------|
+| GQA8 QK | 135.643291s | 60.5% |
+| GQA8 softmax | 27.366722s | 12.2% |
+| GQA8 value accumulate | 61.001012s | 27.2% |
+| clear output | 0.189447s | 0.1% |
+| **GQA8 total** | **224.200472s** | 100% |
+
+结论：核心瓶颈是 QK。原 `dot_product_gqa8_avx512` 对每个 key row 都重复 load/convert 8 个 Q heads；但同一个 query row 内，Q 对所有 key row 是常量。
+
+优化：针对 Qwen3-Coder 当前 `head_dim=128` 的 GQA8 path，进入一个 query row 后预先把 8 个 Q heads 的 4 个 32-wide chunk 转成 f32 lower/upper register 数组，后续每个 key row 只 load/convert K，然后复用预转换后的 Q：
+
+```text
+preload_q_gqa8_head128(q_group)
+dot_product_gqa8_preloaded_q128_avx512(q_lower, q_upper, key_row)
+```
+
+非 `head_dim=128` 时仍回退原实现，保证泛化安全。
+
+#### GQA8 Q preload
+
+无 kernel 内部打点的正常 profile：
+
+| 配置 | first_token | Attention run | Attention barrier | generate(16) |
+|------|-------------|---------------|-------------------|--------------|
+| 优化前参考 | 15.624s | 4.263051s | 1.067415s | 18.894s |
+| Q preload 后 | 13.763s | 3.038789s | 0.870444s | 17.064s |
+
+带 kernel profile 的验证（profile 会放大绝对时间，只看比例）：
+
+| 配置 | GQA8 total | QK | softmax | value |
+|------|-----------|----|---------|-------|
+| 优化前 | 224.200472s | 135.643291s | 27.366722s | 61.001012s |
+| Q preload 后 | 171.004552s | 77.959180s | 28.644600s | 64.263167s |
+
+QK 累计线程时间下降约 42.5%，Attention op wall time 下降约 28.7%。输出开头仍正常：
+
+```text
+Hello! It looks like you're saying hello a lot!
+```
+
+#### GQA8 value block accumulate
+
+Q preload 后，value accumulate 成为新的大块。原实现每处理一个 value row 都调用一次 `add_weighted_value_gqa8_avx512`，对 8 个 Q heads 的 output 反复 load/store：
+
+```text
+for value row in block:
+  load output head0..7
+  output += weight * value
+  store output head0..7
+```
+
+优化：针对 `head_dim=128`，每个 32-wide chunk 先 load 8 个 heads 的 output 到寄存器，循环一个 32-col block 内的 value rows 做 FMA，最后每个 head 只 store 一次：
+
+```text
+for chunk in 0..4:
+  acc[8] = load output heads
+  for value row in block:
+    value = load V chunk
+    acc[head] += weight[row][head] * value
+  store acc[8]
+```
+
+非 `head_dim=128` 继续走原实现。
+
+正常 profile：
+
+| 配置 | first_token | Attention run | Attention barrier | generate(16) |
+|------|-------------|---------------|-------------------|--------------|
+| Q preload | 13.763s | 3.038789s | 0.870444s | 17.064s |
+| Q preload + value block | 13.279s | 2.681648s | 0.630918s | 16.673s |
+
+kernel profile 验证（profile 会放大绝对 wall time，只看累计阶段比例）：
+
+| 配置 | GQA8 total | QK | softmax | value |
+|------|-----------|----|---------|-------|
+| Q preload | 171.004552s | 77.959180s | 28.644600s | 64.263167s |
+| Q preload + value block | 132.552652s | 72.151649s | 28.046437s | 32.207800s |
+
+value accumulate 累计线程时间下降约 49.9%，Attention op wall time 继续下降约 11.8%。
+
+#### GQA8 softmax weights head-major layout（✅ 保留）
+
+value block 后继续看 softmax。原实现 softmax 先把每个 head 的 normalized scores 存到临时 `[32]`，再标量转置到 row-major `weights[offset][head]`：
+
+```text
+store normalized_scores[32]
+for offset:
+  weights[offset][head] = normalized_scores[offset]
+```
+
+改成 head-major：
+
+```text
+weights_by_head[head][32]
+store normalized directly into weights_by_head[head]
+```
+
+这样 softmax 阶段少一次 32x8 的标量搬运。value block 读取从 `weights[row][head]` 改为 `weights_by_head[head][row]`。
+
+正常 profile：
+
+| 配置 | first_token | Attention run | Attention barrier | generate(16) |
+|------|-------------|---------------|-------------------|--------------|
+| Q preload + value block | 13.279s | 2.681648s | 0.630918s | 16.673s |
+| + softmax head-major weights | 13.307s | 2.474897s | 0.526439s | 16.607s |
+
+kernel profile：
+
+| 配置 | GQA8 total | QK | softmax | value |
+|------|-----------|----|---------|-------|
+| Q preload + value block | 132.552652s | 72.151649s | 28.046437s | 32.207800s |
+| + softmax head-major weights | 124.001518s | 71.556225s | 15.200622s | 37.098664s |
+
+softmax 累计线程时间下降约 45.8%。value 因权重读取布局变化上升一些，但总 GQA8 累计时间仍下降约 6.5%。正常 first token 基本持平，Attention run 继续下降，保留。
+
+下一步 attention 优先级：
+
+1. QK 仍是最大块，可以继续看 K 侧预取/布局、减少 f32 reduce 开销，以及是否能一次处理更多 key row。
+2. softmax head-major 后 value 有轻微回涨，可继续看 value block 内权重读取和寄存器调度。
+3. decode 侧仍需要 KV-length split + partial softmax merge，因为 head split 无法铺满 48 线程。

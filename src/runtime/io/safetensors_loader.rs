@@ -3,7 +3,7 @@ use std::fs::File;
 use std::path::Path;
 use std::thread;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use memmap2::MmapOptions;
 use safetensors::SafeTensors;
 
@@ -84,11 +84,7 @@ impl SafeTensorsLoader {
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
-            .unwrap_or_else(|| {
-                std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(1)
-            })
+            .unwrap_or(16)
             .min(self.model_files.len())
             .max(1);
 

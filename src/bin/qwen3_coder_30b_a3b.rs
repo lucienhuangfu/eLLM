@@ -3,9 +3,9 @@
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::io::load_tiktoken;
 use ellm::runtime::io::ChatTemplate;
 use ellm::runtime::io::SafeTensorsLoader;
+use ellm::runtime::io::load_tiktoken;
 use ellm::runtime::{
     BatchScheduler, Config, GenerationConfig, Phase, ScheduleTask, SequenceState, ServingRunner,
 };
@@ -17,8 +17,8 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 fn parse_env_usize(name: &str, default: usize) -> usize {
@@ -29,11 +29,11 @@ fn parse_env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn parse_env_bool(name: &str) -> bool {
+fn parse_env_bool(name: &str, default: bool) -> bool {
     env::var(name)
         .ok()
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
+        .unwrap_or(default)
 }
 
 fn unix_timestamp_ms() -> u128 {
@@ -168,8 +168,8 @@ fn main() {
         }
     };
 
-    let batch_size = parse_env_usize("ELLM_BATCH", 3);
-    let max_output_tokens: usize = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 128);
+    let batch_size = parse_env_usize("ELLM_BATCH", 1);
+    let max_output_tokens: usize = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 512);
     let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
     let program_start = Instant::now();
 
@@ -268,13 +268,8 @@ fn main() {
     let top_p = gen_cfg.as_ref().and_then(|g| g.top_p).unwrap_or(1.0) as f32;
     let min_p: f32 = 0.0;
     let do_sample = gen_cfg.as_ref().and_then(|g| g.do_sample).unwrap_or(false);
-    let requested_thread_num = parse_env_usize(
-        "ELLM_THREAD_NUM",
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1),
-    );
-    let allow_logical_threads = parse_env_bool("ELLM_ALLOW_LOGICAL_THREADS");
+    let requested_thread_num = parse_env_usize("ELLM_THREAD_NUM", 48);
+    let allow_logical_threads = parse_env_bool("ELLM_ALLOW_LOGICAL_THREADS", true);
     let thread_num = if allow_logical_threads {
         requested_thread_num.max(1)
     } else {
@@ -371,6 +366,8 @@ fn main() {
     });
 
     // Send prefill task — all 48 threads pick it up (thread_count=48).
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+    ellm::kernel::x86_64::f16_512::flash_attention::reset_attention_kernel_profile();
     task_in_flight.store(true, Ordering::Release);
     loop {
         match task_sender.send(task.clone()) {
@@ -393,6 +390,10 @@ fn main() {
         generated_count += 1;
         if generated_count == 1 {
             log_timing("first_token", start);
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
+            ellm::kernel::x86_64::f16_512::flash_attention::print_attention_kernel_profile(
+                "first_token_prefill",
+            );
         }
 
         // Check if all sequences are finished

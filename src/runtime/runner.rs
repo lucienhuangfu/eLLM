@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::{AddAssign, Neg, Sub};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use tokio::sync::broadcast;
@@ -12,9 +12,9 @@ use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::spin_barrier::SpinBarrier;
 
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
+use crate::runtime::SequenceState;
 use crate::runtime::scheduling::types::Phase;
 use crate::runtime::scheduling::types::ScheduleTask;
-use crate::runtime::SequenceState;
 
 struct ProfileRow {
     kind: &'static str,
@@ -136,6 +136,10 @@ where
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(1);
+        let profile_op_threads = std::env::var("ELLM_PROFILE_OP_THREADS")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
 
         let mut join_set = JoinSet::new();
 
@@ -147,6 +151,7 @@ where
             let mut receiver = task_sender.subscribe();
             let profile_ops = profile_ops;
             let profile_decode_ops = profile_decode_ops;
+            let profile_op_threads = profile_op_threads;
 
             join_set.spawn(async move {
                 let mut profile_rows: Vec<ProfileRow> = Vec::new();
@@ -165,7 +170,7 @@ where
                     if prefill_size == 0 && decode_size > 0 {
                         decode_task_index += 1;
                     }
-                    let profile_prefix = if profile_ops && thread_id == 0 && prefill_size > 0 {
+                    let leader_profile_prefix = if profile_ops && thread_id == 0 && prefill_size > 0 {
                         Some("prefill_profile")
                     } else if profile_decode_ops
                         && thread_id == 0
@@ -177,6 +182,22 @@ where
                     } else {
                         None
                     };
+                    let thread_profile_prefix = if profile_op_threads
+                        && profile_ops
+                        && prefill_size > 0
+                    {
+                        Some("prefill_profile_thread")
+                    } else if profile_op_threads
+                        && profile_decode_ops
+                        && prefill_size == 0
+                        && decode_size > 0
+                        && decode_task_index == profile_decode_step
+                    {
+                        Some("decode_profile_thread")
+                    } else {
+                        None
+                    };
+                    let profile_prefix = leader_profile_prefix.or(thread_profile_prefix);
                     let profile_this_task = profile_prefix.is_some();
                     if profile_this_task {
                         profile_rows.clear();
@@ -268,32 +289,45 @@ where
                             entry.3 += row.post_barrier;
                         }
                         post_barrier_total += profile_leader_barrier;
-                        let profile_prefix = profile_prefix.unwrap();
-                        eprintln!(
-                            "{profile_prefix} total_ops={} run_sum={:.6}s barrier_sum={:.6}s pre_barrier_sum={:.6}s post_barrier_sum={:.6}s prefill_size={} decode_size={} decode_step={}",
-                            profile_rows.len(),
-                            run_total,
-                            pre_barrier_total + post_barrier_total,
-                            pre_barrier_total,
-                            post_barrier_total,
-                            prefill_size,
-                            decode_size,
-                            decode_task_index
-                        );
-                        eprintln!(
-                            "{profile_prefix} barriers task_start={:.6}s leader={:.6}s final_pending",
-                            profile_task_start_barrier,
-                            profile_leader_barrier
-                        );
-                        for (kind, (count, run, pre_barrier, post_barrier)) in by_kind {
+                        if let Some(profile_prefix) = leader_profile_prefix {
                             eprintln!(
-                                "{profile_prefix} kind={kind} count={count} run={:.6}s run_avg={:.6}s pre_barrier={:.6}s post_barrier={:.6}s barrier={:.6}s",
-                                run,
-                                run / count as f64,
-                                pre_barrier,
-                                post_barrier,
-                                pre_barrier + post_barrier
+                                "{profile_prefix} total_ops={} run_sum={:.6}s barrier_sum={:.6}s pre_barrier_sum={:.6}s post_barrier_sum={:.6}s prefill_size={} decode_size={} decode_step={}",
+                                profile_rows.len(),
+                                run_total,
+                                pre_barrier_total + post_barrier_total,
+                                pre_barrier_total,
+                                post_barrier_total,
+                                prefill_size,
+                                decode_size,
+                                decode_task_index
                             );
+                            eprintln!(
+                                "{profile_prefix} barriers task_start={:.6}s leader={:.6}s final_pending",
+                                profile_task_start_barrier,
+                                profile_leader_barrier
+                            );
+                            for (kind, (count, run, pre_barrier, post_barrier)) in &by_kind {
+                                eprintln!(
+                                    "{profile_prefix} kind={kind} count={count} run={:.6}s run_avg={:.6}s pre_barrier={:.6}s post_barrier={:.6}s barrier={:.6}s",
+                                    run,
+                                    run / *count as f64,
+                                    pre_barrier,
+                                    post_barrier,
+                                    pre_barrier + post_barrier
+                                );
+                            }
+                        }
+                        if let Some(profile_prefix) = thread_profile_prefix {
+                            for (kind, (count, run, pre_barrier, post_barrier)) in &by_kind {
+                                eprintln!(
+                                    "{profile_prefix} thread_id={thread_id} kind={kind} count={count} run={:.6}s run_avg={:.6}s pre_barrier={:.6}s post_barrier={:.6}s barrier={:.6}s",
+                                    run,
+                                    run / *count as f64,
+                                    pre_barrier,
+                                    post_barrier,
+                                    pre_barrier + post_barrier
+                                );
+                            }
                         }
                     }
                     let final_barrier_start = if profile_this_task {
@@ -327,8 +361,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::ServingRunner;
-    use crate::runtime::scheduling::types::ScheduleTask;
     use crate::runtime::BatchScheduler;
+    use crate::runtime::scheduling::types::ScheduleTask;
     use tokio::sync::broadcast;
 
     #[tokio::test]
