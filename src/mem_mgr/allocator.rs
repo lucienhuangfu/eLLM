@@ -1,6 +1,44 @@
 use std::alloc::{self, Layout};
 use std::{mem, ops, ptr, slice};
 
+/// Threshold for MADV_HUGEPAGE hint (glibc switches to mmap at ~128 KiB).
+/// 触发 MADV_HUGEPAGE 提示的阈值（glibc 在 128 KiB 以上使用 mmap）。
+const HUGEPAGE_HINT_THRESHOLD: usize = 128 * 1024;
+
+/// Allocate a zero-initialised `Box<[T]>` via `alloc_zeroed`.
+/// Much faster than `vec![T::default(); size]` because partial-panel
+/// tails must be zero for the micro-kernel, and the OS can supply
+/// pre-zeroed pages for large allocations.
+/// 通过 `alloc_zeroed` 分配零初始化的 `Box<[T]>`。比逐元素标量循环
+/// 快得多，因为 OS 可以为大块分配提供预零页。
+pub fn alloc_zeroed_box<T>(size: usize) -> Box<[T]> {
+    assert!(size > 0, "alloc_zeroed_box: size must be > 0");
+    let layout = Layout::array::<T>(size)
+        .unwrap_or_else(|_| panic!("alloc_zeroed_box: layout overflow for {size} T"));
+    unsafe {
+        let ptr = alloc::alloc_zeroed(layout) as *mut T;
+        if ptr.is_null() {
+            alloc::handle_alloc_error(layout);
+        }
+        hint_huge_page(ptr as *mut u8, layout.size());
+        Box::from_raw(slice::from_raw_parts_mut(ptr, size))
+    }
+}
+
+/// Hint the kernel to use transparent huge pages for this allocation.
+/// 提示内核为此分配使用透明大页。
+fn hint_huge_page(ptr: *mut u8, size_bytes: usize) {
+    #[cfg(target_os = "linux")]
+    if size_bytes >= HUGEPAGE_HINT_THRESHOLD {
+        extern "C" {
+            fn madvise(addr: *mut u8, len: usize, advice: i32) -> i32;
+        }
+        // MADV_HUGEPAGE = 14 on Linux
+        unsafe { madvise(ptr, size_bytes, 14); }
+    }
+    let _ = (ptr, size_bytes);
+}
+
 /// 对齐内存管理器，64字节对齐，适合SIMD512操作
 #[derive(Debug)]
 pub struct AlignedBox<T> {
@@ -19,6 +57,7 @@ impl<T> AlignedBox<T> {
             if ptr.is_null() {
                 std::alloc::handle_alloc_error(layout);
             }
+            hint_huge_page(ptr as *mut u8, layout.size());
             AlignedBox {
                 ptr,
                 length,
@@ -40,6 +79,25 @@ impl<T> AlignedBox<T> {
             }
         }
         boxed
+    }
+
+    /// Zero-initialize via `write_bytes`. Only safe for types where
+    /// all-zero-bytes equals `T::default()` (f16, f32, usize, etc.).
+    /// 用 `write_bytes` 做零初始化，只适用于零字节等于默认值的类型
+    /// （f16, f32, usize 等）。
+    pub fn allocate_zero(length: usize) -> Self {
+        let mut boxed = Self::allocate(length);
+        unsafe {
+            std::ptr::write_bytes(boxed.ptr as *mut u8, 0, length * mem::size_of::<T>());
+        }
+        boxed
+    }
+
+    /// Allocate without initializing. Caller must ensure every element
+    /// is written before reading.
+    /// 分配但不初始化。调用者必须保证每个元素在读之前被写入。
+    pub fn allocate_uninit(length: usize) -> Self {
+        Self::allocate(length)
     }
 
     #[inline]

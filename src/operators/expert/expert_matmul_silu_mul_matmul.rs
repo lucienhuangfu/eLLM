@@ -107,7 +107,10 @@ where
         a_row_step_micro: usize,  // micro tile rows. 微内核行数。
         b_row_step_micro: usize,  // micro tile cols. 微内核列数。
         decode_only_flag: bool,
-    ) -> Self {
+    ) -> Self
+    where
+        T: Send + 'static,
+    {
         let token_block_rows = a_row_step_macro.max(1);
         let reduction_block_cols = column_step_macro.max(1);
         let micro_tile_rows = a_row_step_micro.max(1);
@@ -117,22 +120,27 @@ where
         let acc_stride = micro_tile_rows * micro_tile_cols;
         let a_tile_stride = micro_tile_rows * reduction_block_cols;
 
-        let packed_gate = Self::pack_expert_b_panels(
-            gate_nt_ptr,
-            num_experts,
-            inter,
-            hidden,
-            reduction_block_cols,
-            micro_tile_cols,
-        );
-        let packed_up = Self::pack_expert_b_panels(
-            up_nt_ptr,
-            num_experts,
-            inter,
-            hidden,
-            reduction_block_cols,
-            micro_tile_cols,
-        );
+        // Pack gate/up expert weight panels in parallel.
+        // gate/up 专家权重 panel 并行打包。
+        struct SendFn<T>(Box<dyn FnOnce() -> Box<[T]>>);
+        unsafe impl<T> Send for SendFn<T> {}
+        impl<T> SendFn<T> { fn call(self) -> Box<[T]> { (self.0)() } }
+        struct SendBox<T>(T);
+        unsafe impl<T> Send for SendBox<T> {}
+
+        let g_addr = gate_nt_ptr;
+        let u_addr = up_nt_ptr;
+        let n_exp = num_experts;
+        let n_inter = inter;
+        let n_hidden = hidden;
+        let kc = reduction_block_cols;
+        let nr = micro_tile_cols;
+
+        let task_g = SendFn(Box::new(move || Self::pack_expert_b_panels(g_addr, n_exp, n_inter, n_hidden, kc, nr)));
+        let gh = std::thread::spawn(move || SendBox(task_g.call()));
+        // Pack up on the current thread while gate runs in parallel.
+        let packed_up = Self::pack_expert_b_panels(u_addr, n_exp, n_inter, n_hidden, kc, nr);
+        let packed_gate = gh.join().unwrap().0;
 
         // Detect thread count once and allocate all per-thread scratch in new().
         // 线程数只在 new() 中探测一次，并在这里分配所有每线程 scratch。
@@ -217,7 +225,8 @@ where
         let output_panel_count = output_cols.div_ceil(micro_tile_cols);
         let panel_stride = reduction_block_cols * micro_tile_cols;
         let expert_stride = reduction_panel_count * output_panel_count * panel_stride;
-        let mut packed = vec![T::default(); expert_count * expert_stride];
+        let total_size = expert_count * expert_stride;
+        let mut packed = crate::mem_mgr::allocator::alloc_zeroed_box::<T>(total_size);
 
         unsafe {
             for expert_id in 0..expert_count {
@@ -248,7 +257,7 @@ where
             }
         }
 
-        packed.into_boxed_slice()
+        packed
     }
 
     #[inline(always)]

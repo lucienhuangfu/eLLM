@@ -147,31 +147,44 @@ where
         column_step_macro: usize,
         a_row_step_micro: usize,
         b_row_step_micro: usize,
-    ) -> Self {
+    ) -> Self
+    where
+        T: Send + 'static,
+    {
         let reduction_block_cols = column_step_macro.max(1);
         let micro_tile_cols = b_row_step_micro.max(1);
         let packed_panel_stride = reduction_block_cols * micro_tile_cols;
-        let packed_q = Self::pack_b_panels(
-            q_weight_ptr_nt,
-            kv_head_num * group_num * head_dim,
-            col,
-            reduction_block_cols,
-            micro_tile_cols,
-        );
-        let packed_k = Self::pack_b_panels(
-            k_weight_ptr_nt,
-            kv_head_num * head_dim,
-            col,
-            reduction_block_cols,
-            micro_tile_cols,
-        );
-        let packed_v = Self::pack_b_panels(
-            v_weight_ptr_nt,
-            kv_head_num * head_dim,
-            col,
-            reduction_block_cols,
-            micro_tile_cols,
-        );
+
+        // Pack Q/K/V weight panels in parallel — three independent copies.
+        // Q/K/V 三路权重 panel 并行打包。
+        let nq = kv_head_num * group_num * head_dim;
+        let nkv = kv_head_num * head_dim;
+        // Pack Q and K in parallel on background threads, V on current thread.
+        // SendFn / SendBox wrappers avoid propagating T: Send through the
+        // codebase – at runtime T is f16 or f32, both Send.
+        // Q/K 在后台线程并行打包，V 在当前线程。
+        struct SendFn<T>(Box<dyn FnOnce() -> Box<[T]>>);
+        unsafe impl<T> Send for SendFn<T> {}
+        impl<T> SendFn<T> { fn call(self) -> Box<[T]> { (self.0)() } }
+        struct SendBox<T>(T);
+        unsafe impl<T> Send for SendBox<T> {}
+
+        let q_addr = q_weight_ptr_nt;
+        let k_addr = k_weight_ptr_nt;
+        let v_addr = v_weight_ptr_nt;
+        let kc = reduction_block_cols;
+        let nr = micro_tile_cols;
+        let col_v = col;
+        let nq_v = nq;
+        let nkv_v = nkv;
+
+        let task_q = SendFn(Box::new(move || Self::pack_b_panels(q_addr, nq_v, col_v, kc, nr)));
+        let task_k = SendFn(Box::new(move || Self::pack_b_panels(k_addr, nkv_v, col_v, kc, nr)));
+        let qh = std::thread::spawn(move || SendBox(task_q.call()));
+        let kh = std::thread::spawn(move || SendBox(task_k.call()));
+        let packed_v = Self::pack_b_panels(v_addr, nkv_v, col_v, kc, nr);
+        let packed_q = qh.join().unwrap().0;
+        let packed_k = kh.join().unwrap().0;
 
         Self {
             hidden_ptr: ConstPtr { ptr: hidden_ptr },
@@ -224,8 +237,10 @@ where
         let reduction_panel_count = reduction_cols.div_ceil(reduction_block_cols);
         let output_panel_count = output_cols.div_ceil(micro_tile_cols);
         let panel_stride = reduction_block_cols * micro_tile_cols;
-        let mut packed =
-            vec![T::default(); reduction_panel_count * output_panel_count * panel_stride];
+        let total_size = reduction_panel_count * output_panel_count * panel_stride;
+        // alloc_zeroed_box for fast zero-init (partial-panel tails must be zero).
+        // alloc_zeroed_box 快速零初始化（面板尾部区域必须为零）。
+        let mut packed = crate::mem_mgr::allocator::alloc_zeroed_box::<T>(total_size);
 
         unsafe {
             for reduction_panel_index in 0..reduction_panel_count {
@@ -252,7 +267,7 @@ where
             }
         }
 
-        packed.into_boxed_slice()
+        packed
     }
 
     #[inline(always)]

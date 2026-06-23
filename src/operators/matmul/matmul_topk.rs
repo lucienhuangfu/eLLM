@@ -212,8 +212,8 @@ where
         let reduction_panel_count = reduction_cols.div_ceil(reduction_block_cols);
         let output_panel_count = output_cols.div_ceil(micro_tile_cols);
         let panel_stride = reduction_block_cols * micro_tile_cols;
-        let mut packed =
-            vec![T::default(); reduction_panel_count * output_panel_count * panel_stride];
+        let total_size = reduction_panel_count * output_panel_count * panel_stride;
+        let mut packed = crate::mem_mgr::allocator::alloc_zeroed_box::<T>(total_size);
 
         unsafe {
             for reduction_panel_index in 0..reduction_panel_count {
@@ -240,7 +240,7 @@ where
             }
         }
 
-        packed.into_boxed_slice()
+        packed
     }
 
     #[inline(always)]

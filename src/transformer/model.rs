@@ -63,6 +63,7 @@ where
         + AddAssign
         + Send
         + Sync
+        + 'static
         + GlobalMemPool
         + GlobalOperatorQueue,
 {
@@ -111,6 +112,12 @@ where
 
         T::init_operator_queue();
 
+        // Use min(chunk_size, batch * sequence_length) for intermediate tensor
+        // dimensions: we never chunk prefills, so the actual row count needed is
+        // bounded by batch × sequence, not the theoretical chunk_size ceiling.
+        // 中间 tensor 维度使用 min：系统不做 chunk，实际行数上限由 batch×sequence 决定。
+        let effective_chunk = chunk_size.min(sequence_length * batch_size);
+
         // Create default tensors
         let word_embedding = Rc::new(Tensor::zeros(
             vec![config.vocab_size, config.hidden_size],
@@ -128,7 +135,7 @@ where
             layers.push(DecoderLayer::<T>::new(
                 &config,
                 i,
-                chunk_size,
+                effective_chunk,
                 sequence_length,
                 batch_size,
                 word_embedding.clone(),
@@ -150,7 +157,7 @@ where
             ),
             norm_weight: Tensor::zeros(vec![config.hidden_size], model_names.norm_weight.clone()),
             layers: layers,
-            chunk_size: chunk_size,
+            chunk_size: effective_chunk,
             sequence_length: sequence_length,
             batch_size: batch_size,
             hidden_size: config.hidden_size,

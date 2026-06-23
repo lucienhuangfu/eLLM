@@ -95,6 +95,9 @@ where
             ))
         };
 
+        // Packed copy now lives in the operator; free original from pool.
+        T::with_global(|pool| pool.remove(&tensor2.tensor_name));
+
         Self::enqueue(operator);
         output_tensor
     }
@@ -129,6 +132,8 @@ where
             )
         });
 
+        T::with_global(|pool| pool.remove(&tensor2.tensor_name));
+
         Self::enqueue(operator);
         output_tensor
     }
@@ -149,7 +154,10 @@ where
         use_qk_norm: bool,
         params: MatMulParams,
         scope_name: String,
-    ) -> (Self, Self, Self) {
+    ) -> (Self, Self, Self)
+    where
+        T: Send + 'static,
+    {
         let (active_sequence_length, active_batch_size, hidden_size) = if self.shape.len() >= 3 {
             (self.shape[0], self.shape[1], self.shape[2])
         } else {
@@ -197,6 +205,13 @@ where
             params.a_row_step_micro,
             params.b_row_step_micro,
         ));
+
+        // Packed copies now live in MatMul3; free originals from pool.
+        T::with_global(|pool| {
+            pool.remove(&q_weight.tensor_name);
+            pool.remove(&k_weight.tensor_name);
+            pool.remove(&v_weight.tensor_name);
+        });
 
         Self::enqueue(operator);
         (q_state, k_state, v_state)
@@ -273,6 +288,8 @@ where
                 prefill_uses_decode_rows,
             ))
         };
+
+        T::with_global(|pool| pool.remove(&tensor2.tensor_name));
 
         if trace_alignment {
             eprintln!("created MatMulTopK operator");

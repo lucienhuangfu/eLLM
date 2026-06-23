@@ -155,7 +155,10 @@ where
         residual: &Tensor<T>,
         decode_only_flag: bool,
         tensor_name: String,
-    ) -> Tensor<T> {
+    ) -> Tensor<T>
+    where
+        T: Send + 'static,
+    {
         let _ = tensor_name;
         let routing = self.router.forward(hidden_states, decode_only_flag);
 

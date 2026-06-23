@@ -96,7 +96,10 @@ where
         position_embedding: &Tensor<T>,
         decode_only_flag: bool,
         _tensor_name: String,
-    ) -> Tensor<T> {
+    ) -> Tensor<T>
+    where
+        T: Send + 'static,
+    {
         {
             //println!("hidden_states shape: {:?}", hidden_states.shape);
 

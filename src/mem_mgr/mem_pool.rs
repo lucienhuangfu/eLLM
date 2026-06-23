@@ -272,18 +272,30 @@ where
 
         for (base_key, mut experts) in expert_groups {
             experts.sort_by_key(|(idx, _)| *idx);
-            let mut all_expert_data = Vec::new();
-            let mut expert_sizes = Vec::new();
+            // Copy each expert's data directly into the AlignedBox, skipping
+            // the intermediate Vec to avoid an extra copy.
+            // 直接将每个 expert 的数据拷贝到 AlignedBox，省去中间 Vec 的额外拷贝。
+            let total_len: usize = experts
+                .iter()
+                .filter_map(|(_, key)| pool.parameters.get(key).map(|v| v.len()))
+                .sum();
+            let mut base_box = AlignedBox::<T>::allocate(total_len);
+            let mut expert_sizes = Vec::with_capacity(experts.len());
+            let mut offset = 0usize;
             for (_, key) in &experts {
                 if let Some(data) = pool.parameters.remove(key) {
                     expert_sizes.push(data.len());
-                    all_expert_data.extend(data);
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            data.as_ptr(),
+                            base_box.as_mut_ptr().add(offset),
+                            data.len(),
+                        );
+                    }
+                    offset += data.len();
                 }
             }
-
-            let total_len = all_expert_data.len();
-            let mut base_box = AlignedBox::allocate(total_len);
-            base_box.as_mut_slice().copy_from_slice(&all_expert_data);
+            debug_assert_eq!(offset, total_len);
             let parent_arc = Arc::new(base_box);
 
             pool.blocks
@@ -345,6 +357,25 @@ where
         self.blocks.get_mut(name).unwrap()
     }
 
+    /// Replace a weight entry with a pre-packed `AlignedBox`, freeing the
+    /// original. Returns a pointer to the packed data (valid for the pool's
+    /// lifetime). This eliminates the duplicate between the operator's
+    /// Box<[T]> and the pool's original weight.
+    /// 用预打包的 AlignedBox 替换权重条目，释放原始数据，消除双份存储。
+    pub fn replace_weight(&mut self, name: &str, packed: AlignedBox<T>) -> *const T {
+        let ptr = packed.as_ptr();
+        self.blocks
+            .insert(name.to_string(), MemoryBlock::Full(Arc::new(packed)));
+        ptr
+    }
+
+    /// Remove a weight entry from the pool, freeing its memory.
+    /// Use after packing: the operator's `Box<[T]>` holds the only copy.
+    /// 从池中移除权重条目并释放内存。用于 pack 后消除双份存储。
+    pub fn remove(&mut self, name: &str) {
+        self.blocks.remove(name);
+    }
+
     fn get_or_allocate_full(
         &mut self,
         name: &str,
@@ -357,7 +388,12 @@ where
         );
 
         if self.get_existing_if_valid(name, size).is_none() {
-            let boxed = AlignedBox::allocate_init(size, init.unwrap_or_default());
+            // Use allocate_zero (write_bytes) instead of allocate_init
+            // (scalar loop) for the common zero-init path.
+            let boxed = match init {
+                Some(value) => AlignedBox::allocate_init(size, value),
+                None => AlignedBox::allocate_zero(size),
+            };
             self.blocks
                 .insert(name.to_string(), MemoryBlock::Full(Arc::new(boxed)));
         } else if let Some(value) = init {
