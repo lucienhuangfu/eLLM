@@ -26,6 +26,16 @@ impl DefaultSchedulerStrategy {
     }
 }
 
+impl Clone for DefaultSchedulerStrategy {
+    fn clone(&self) -> Self {
+        Self {
+            max_decode_size: self.max_decode_size,
+            max_prefill_size: self.max_prefill_size,
+            thread_num: self.thread_num,
+        }
+    }
+}
+
 impl SchedulerStrategy for DefaultSchedulerStrategy {
     fn plan_next_round(
         &self,

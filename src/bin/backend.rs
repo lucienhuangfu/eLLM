@@ -165,20 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
     let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
 
-    let (schedule_tx, _) = tokio::sync::broadcast::channel(16);
-    let shared_state = Arc::new(SharedState::new(
-        Arc::clone(&batch_list_arc),
-        batch_size,
-        chunk_size,
-        thread_num,
-        schedule_tx,
-    ));
-
-    let executor_pool = ExecutorPool::<f16>::new(
-        f16::take_operator_queue(),
-        Arc::clone(&shared_state),
-        thread_num,
-    );
+    let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_list_arc)));
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
@@ -186,6 +173,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SessionMode::Reusable,
         600000, // 10 minutes
     ));
+
+    let executor_pool = ExecutorPool::<f16>::new(
+        f16::take_operator_queue(),
+        Arc::clone(&shared_state),
+        thread_num,
+        slot_manager.clone(),
+        Duration::from_millis(10),
+    );
     let mut batch_scheduler = Scheduler::with_mode(
         sequence_length,
         batch_size,
@@ -210,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Execute prefill task
-    executor_pool.execute_single_thread_batch(&task);
+    executor_pool.execute_task(&task);
 
     // Decode loop
     let mut generated_count = 0usize;
@@ -238,7 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             plan.task_id,
         );
 
-        executor_pool.execute_single_thread_batch(&decode_task);
+        executor_pool.execute_task(&decode_task);
     }
 
     println!("\n=== Generated Output ===");

@@ -403,6 +403,10 @@ where
         !self.active_prefill.lock().await.is_empty() || !self.active_decode.lock().await.is_empty()
     }
 
+    pub fn has_work_blocking(&self) -> bool {
+        !self.active_prefill.blocking_lock().is_empty() || !self.active_decode.blocking_lock().is_empty()
+    }
+
     pub async fn get_slot(&self, slot_index: usize) -> Option<SlotState> {
         let slots = self.slots.lock().unwrap();
         slots.get(slot_index).cloned()

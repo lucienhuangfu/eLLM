@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 
-use super::error::ApiResult;
 use super::parser::{IncrementalStreamingParser, ParserEvent, StreamingParser};
 use super::requests::{ChatCompletionRequest, ChatMessage};
 use super::responses::{ChatCompletionChoice, ChatCompletionResponse};
@@ -30,7 +29,6 @@ pub(super) async fn chat_completions(
 
     let session_id = request.session_id.unwrap_or_else(|| request_id.clone());
 
-    // 获取会话
     let handle = match state.acquire_session(&session_id).await {
         Ok(h) => h,
         Err(e) => return e.into_response(),
@@ -38,9 +36,8 @@ pub(super) async fn chat_completions(
 
     let slot_index = handle.slot_index;
 
-    // 尝试增量预填充（如果是复用会话且有缓存）
-    let (write_len, notifier) = if handle.is_reused {
-        match state
+    let (write_len, notifier) = match if handle.is_reused {
+        state
             .write_prompts_with_incremental_prefill(
                 slot_index,
                 &session_id,
@@ -48,23 +45,15 @@ pub(super) async fn chat_completions(
                 request.temperature,
             )
             .await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                state.release_session(&session_id, 0).await;
-                return e.into_response();
-            }
-        }
     } else {
-        match state
+        state
             .write_prompts_and_prepare(slot_index, &request.messages, request.temperature)
             .await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                state.release_session(&session_id, 0).await;
-                return e.into_response();
-            }
+    } {
+        Ok(result) => result,
+        Err(e) => {
+            state.release_session(&session_id, 0).await;
+            return e.into_response();
         }
     };
 
@@ -86,12 +75,8 @@ pub(super) async fn chat_completions(
             created,
         )
     } else {
-        loop {
+        while !state.is_eos(slot_index) {
             notifier.notified().await;
-
-            if state.is_eos(slot_index) {
-                break;
-            }
         }
 
         let generated_text = state.decode_generated_text(slot_index);
@@ -134,6 +119,7 @@ fn build_stream_response(
     let mut parser = IncrementalStreamingParser::with_options(state.parser_options);
     let mut role_sent = false;
     let mut tool_call_index = 0u32;
+
     let stream_body = stream! {
         loop {
             notifier.notified().await;

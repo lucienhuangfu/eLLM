@@ -3,14 +3,14 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::session::{SessionMode, SlotManager};
+use crate::runtime::session::SlotManager;
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::shared::SharedState;
 use crate::runtime::SlotState;
 
 use super::api::chat_completions;
 use super::parser::ParserOptions;
-use super::state::build_api_state;
+use super::state::ApiState;
 
 pub async fn run(
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
@@ -21,13 +21,13 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动事件驱动的 OpenAI 兼容服务器...");
 
-    let state = build_api_state(
+    let state = ApiState {
         batch_sequences,
-        batch_list,
+        batch_states: batch_list,
         shared_state,
         parser_options,
         slot_manager,
-    );
+    };
 
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))

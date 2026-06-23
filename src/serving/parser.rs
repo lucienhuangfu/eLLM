@@ -6,17 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio_stream::{Stream, StreamExt};
 
 use crate::transformer::config::ModelFamily;
-
-pub type RequestId = String;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextDelta {
-    pub request_id: RequestId,
-    pub text: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -646,20 +637,6 @@ fn longest_suffix_prefix_len(text: &str, options: ParserOptions) -> usize {
     }
 
     keep
-}
-
-pub fn parser_event_stream<S, P>(mut parser: P, mut deltas: S) -> impl Stream<Item = ParserEvent>
-where
-    S: Stream<Item = TextDelta> + Unpin,
-    P: StreamingParser + Unpin,
-{
-    async_stream::stream! {
-        while let Some(delta) = deltas.next().await {
-            for event in parser.feed(&delta.text) {
-                yield event;
-            }
-        }
-    }
 }
 
 #[cfg(test)]

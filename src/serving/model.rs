@@ -71,20 +71,20 @@ impl ServingConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct GenerationParameters {
-    pub top_k: usize,
-    pub top_k_simd: usize,
-    pub top_p: f16,
-    pub min_p: f16,
-    pub do_sample: bool,
-    pub eos_token_id_list: Vec<usize>,
+struct GenerationParameters {
+    top_k: usize,
+    top_k_simd: usize,
+    top_p: f16,
+    min_p: f16,
+    do_sample: bool,
+    eos_token_id_list: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ThreadingConfig {
-    pub api_threads: usize,
-    pub blocking_threads: usize,
-    pub total_threads: usize,
+struct ThreadingConfig {
+    api_threads: usize,
+    blocking_threads: usize,
+    total_threads: usize,
 }
 
 pub struct ServingResources<T>
@@ -247,17 +247,7 @@ pub fn initialize_serving_resources(
     let sequences_ptr = sequences_box.as_mut_ptr();
 
     let batch_states = Arc::new(SharedMut::new(build_slot_state(config.batch_size)));
-    
-    // Create schedule_tx channel for triggering scheduler
-    let (schedule_tx, _) = tokio::sync::broadcast::channel(16);
-    
-    let shared_state = Arc::new(SharedState::new(
-        Arc::clone(&batch_states),
-        config.batch_size,
-        config.chunk_size,
-        thread_config.api_threads,
-        schedule_tx,
-    ));
+    let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_states)));
 
     let position_vec = RotaryEmbedding::new(
         model_config.head_dim,
@@ -288,15 +278,17 @@ pub fn initialize_serving_resources(
         config.slot_reuse_timeout_ms as u64,
     ));
 
-    let (broadcast_sender, broadcast_receiver) = tokio::sync::broadcast::channel(8);
+    let (broadcast_sender, _) = tokio::sync::broadcast::channel(8);
 
     let operator_queue = f16::take_operator_queue();
     let executor_pool = ExecutorPool::new(
         operator_queue,
         Arc::clone(&shared_state),
         thread_config.api_threads,
+        slot_manager.clone(),
+        Duration::from_millis(10),
     );
-    executor_pool.start(broadcast_receiver);
+    executor_pool.start();
 
     let scheduler = Arc::new(Scheduler::with_mode(
         config.sequence_length,

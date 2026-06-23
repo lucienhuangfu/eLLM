@@ -1,5 +1,34 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+const SPIN_LIMIT: u32 = 100;
+const YIELD_LIMIT: u32 = 50;
+
+fn adaptive_spin_loop<F>(condition: F)
+where
+    F: Fn() -> bool,
+{
+    let mut spin_count = 0u32;
+    let mut yield_count = 0u32;
+
+    loop {
+        if condition() {
+            return;
+        }
+
+        if spin_count < SPIN_LIMIT {
+            std::hint::spin_loop();
+            spin_count += 1;
+        } else if yield_count < YIELD_LIMIT {
+            std::thread::yield_now();
+            yield_count += 1;
+        } else {
+            let sleep_us = 1 << (yield_count - YIELD_LIMIT).min(6);
+            std::thread::sleep(std::time::Duration::from_micros(sleep_us));
+            yield_count += 1;
+        }
+    }
+}
+
 /// Optimized spin barrier with adaptive backoff for better performance
 #[derive(Debug)]
 pub struct SpinBarrier {
@@ -37,96 +66,7 @@ impl SpinBarrier {
     }
 
     fn adaptive_spin(&self, expected_gen: u64) {
-        const SPIN_LIMIT: u32 = 100;
-        const YIELD_LIMIT: u32 = 50;
-
-        let mut spin_count = 0u32;
-        let mut yield_count = 0u32;
-
-        while self.generation.load(Ordering::Acquire) == expected_gen {
-            if spin_count < SPIN_LIMIT {
-                std::hint::spin_loop();
-                spin_count += 1;
-            } else if yield_count < YIELD_LIMIT {
-                std::thread::yield_now();
-                yield_count += 1;
-            } else {
-                // Exponential backoff for sleep
-                let sleep_us = 1 << (yield_count - YIELD_LIMIT).min(6);
-                std::thread::sleep(std::time::Duration::from_micros(sleep_us));
-                yield_count += 1;
-            }
-        }
-    }
-}
-
-/// Simplified batch tracker with reduced atomic operations
-#[derive(Debug)]
-pub struct BatchTracker {
-    remaining: AtomicUsize,
-    completed: AtomicBool,
-}
-
-impl BatchTracker {
-    #[inline]
-    pub fn new() -> Self {
-        Self {
-            remaining: AtomicUsize::new(0),
-            completed: AtomicBool::new(true),
-        }
-    }
-
-    #[inline]
-    pub fn reset(&self, count: usize) {
-        self.remaining.store(count, Ordering::Release);
-        self.completed.store(count == 0, Ordering::Release);
-    }
-
-    #[inline]
-    pub fn complete_slot(&self) -> bool {
-        let prev = self.remaining.fetch_sub(1, Ordering::AcqRel);
-        if prev == 1 {
-            self.completed.store(true, Ordering::Release);
-            true
-        } else {
-            false
-        }
-    }
-
-    #[inline]
-    pub fn is_complete(&self) -> bool {
-        self.completed.load(Ordering::Acquire)
-    }
-
-    pub fn wait_complete(&self) {
-        const SPIN_LIMIT: u32 = 100;
-        const YIELD_LIMIT: u32 = 50;
-
-        let mut spin_count = 0u32;
-        let mut yield_count = 0u32;
-
-        loop {
-            if self.is_complete() {
-                return;
-            }
-
-            if spin_count < SPIN_LIMIT {
-                std::hint::spin_loop();
-                spin_count += 1;
-            } else if yield_count < YIELD_LIMIT {
-                std::thread::yield_now();
-                yield_count += 1;
-            } else {
-                let sleep_us = 1 << (yield_count - YIELD_LIMIT).min(6);
-                std::thread::sleep(std::time::Duration::from_micros(sleep_us));
-                yield_count += 1;
-            }
-        }
-    }
-
-    #[inline]
-    pub fn remaining(&self) -> usize {
-        self.remaining.load(Ordering::Acquire)
+        adaptive_spin_loop(|| self.generation.load(Ordering::Acquire) != expected_gen);
     }
 }
 
@@ -155,9 +95,6 @@ impl AdaptiveWait {
     where
         F: Fn() -> bool,
     {
-        const SPIN_LIMIT: u32 = 100;
-        const YIELD_LIMIT: u32 = 50;
-
         loop {
             if condition() {
                 self.reset();
@@ -260,37 +197,6 @@ mod tests {
             second_true_count, 1,
             "Second barrier: exactly one thread should return true"
         );
-    }
-
-    #[test]
-    fn test_batch_tracker_reset() {
-        let tracker = BatchTracker::new();
-        tracker.reset(10);
-        assert_eq!(tracker.remaining(), 10);
-        assert!(!tracker.is_complete());
-    }
-
-    #[test]
-    fn test_batch_tracker_complete() {
-        let tracker = BatchTracker::new();
-        tracker.reset(3);
-
-        assert!(!tracker.complete_slot());
-        assert_eq!(tracker.remaining(), 2);
-
-        assert!(!tracker.complete_slot());
-        assert_eq!(tracker.remaining(), 1);
-
-        assert!(tracker.complete_slot());
-        assert_eq!(tracker.remaining(), 0);
-        assert!(tracker.is_complete());
-    }
-
-    #[test]
-    fn test_batch_tracker_empty() {
-        let tracker = BatchTracker::new();
-        tracker.reset(0);
-        assert!(tracker.is_complete());
     }
 
     #[test]

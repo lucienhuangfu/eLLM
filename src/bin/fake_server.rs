@@ -41,22 +41,12 @@ async fn run_server(
     // Create broadcast channel for scheduler -> executor communication
     let (broadcast_sender, broadcast_receiver) = tokio::sync::broadcast::channel(8);
 
-    // Create schedule_tx channel for triggering scheduler
-    let (schedule_tx, _) = tokio::sync::broadcast::channel(16);
-
-    // Create shared_state with schedule_tx
-    let shared_state = Arc::new(SharedState::new(
-        Arc::clone(&batch_states),
-        4,
-        64,
-        1,
-        schedule_tx,
-    ));
+    let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_states)));
 
     // Build and start executor pool with FakeEcho operator
     let operator_queue = vec![Operator::<f16>::FakeEcho(FakeEcho)];
-    let executor_pool = ExecutorPool::new(operator_queue, Arc::clone(&shared_state), 1);
-    executor_pool.start(broadcast_receiver);
+    let executor_pool = ExecutorPool::new(operator_queue, Arc::clone(&shared_state), 1, slot_manager.clone(), Duration::from_millis(10));
+    executor_pool.start();
 
     let batch_size = batch_states.with(|list| list.len());
     let sequence_length = 256usize;

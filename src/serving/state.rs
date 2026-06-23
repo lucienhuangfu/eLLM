@@ -19,21 +19,7 @@ pub struct ApiState {
     pub slot_manager: Arc<SlotManager<f16>>,
 }
 
-pub fn build_api_state(
-    batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
-    batch_states: Arc<SharedMut<Vec<SlotState>>>,
-    shared_state: Arc<SharedState>,
-    parser_options: ParserOptions,
-    slot_manager: Arc<SlotManager<f16>>,
-) -> ApiState {
-    ApiState {
-        batch_sequences,
-        batch_states,
-        shared_state,
-        parser_options,
-        slot_manager,
-    }
-}
+
 
 impl ApiState {
     /// 将 ChatMessage 转换为消息对数组

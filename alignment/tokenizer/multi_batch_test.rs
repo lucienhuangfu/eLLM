@@ -8,7 +8,7 @@ use ellm::runtime::io::load_tiktoken;
 use ellm::runtime::io::ChatTemplate;
 use ellm::runtime::io::SafeTensorsLoader;
 use ellm::runtime::state::sequence::SequenceSlice;
-use ellm::runtime::{Config, GenerationConfig, Phase, SequenceState};
+use ellm::runtime::{Config, GenerationConfig, Phase};
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;

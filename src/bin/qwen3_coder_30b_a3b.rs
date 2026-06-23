@@ -246,20 +246,7 @@ fn main() {
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
     let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
 
-    let (schedule_tx, _) = tokio::sync::broadcast::channel(16);
-    let shared_state = Arc::new(SharedState::new(
-        Arc::clone(&batch_list_arc),
-        batch_size,
-        chunk_size,
-        thread_num,
-        schedule_tx,
-    ));
-
-    let executor_pool = ExecutorPool::new(
-        f16::take_operator_queue(),
-        Arc::clone(&shared_state),
-        thread_num,
-    );
+    let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_list_arc)));
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
@@ -267,6 +254,14 @@ fn main() {
         SessionMode::Reusable,
         600000, // 10 minutes
     ));
+
+    let executor_pool = ExecutorPool::new(
+        f16::take_operator_queue(),
+        Arc::clone(&shared_state),
+        thread_num,
+        slot_manager.clone(),
+        Duration::from_millis(10),
+    );
     let mut batch_scheduler = Scheduler::new(
         sequence_length,
         batch_size,
@@ -295,7 +290,7 @@ fn main() {
     let start = Instant::now();
 
     // Execute prefill task
-    executor_pool.execute_single_thread_batch(&task);
+    executor_pool.execute_task(&task);
 
     // Decode loop: keep scheduling until all sequences are done
     let mut generated_count = 0usize;
@@ -330,7 +325,7 @@ fn main() {
             plan.task_id,
         );
 
-        executor_pool.execute_single_thread_batch(&decode_task);
+        executor_pool.execute_task(&decode_task);
     }
 
     let elapsed = start.elapsed();

@@ -139,8 +139,7 @@ impl Scheduler {
         strategy: Box<dyn SchedulerStrategy>,
     ) -> Self {
         let (schedule_tx, _) = broadcast::channel(16);
-        let schedule_tx_for_shared = schedule_tx.clone();
-        let batch_list_for_shared = Arc::clone(&batch_list);
+        let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_list)));
         Self {
             batch_list,
             slot_manager,
@@ -150,13 +149,7 @@ impl Scheduler {
             schedule_tx,
             timeout,
             broadcast_sender,
-            shared_state: Arc::new(SharedState::new(
-                batch_list_for_shared,
-                batch_size,
-                chunk_size,
-                thread_num,
-                schedule_tx_for_shared,
-            )),
+            shared_state,
         }
     }
 
