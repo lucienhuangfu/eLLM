@@ -184,7 +184,15 @@ where
                 run_simple!(operator);
             }
             Self::FakeEcho(operator) => {
-                operator.run(prefill_list, decode_list, batch_list, thread_id);
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    cpu_num,
+                    thread_id,
+                    prefill_list,
+                    decode_list,
+                    batch_list,
+                );
             }
         }
     }
@@ -353,7 +361,6 @@ mod test {
         sequences[0..SEQUENCE_LENGTH].copy_from_slice(&[1, 2, 3, 0, 0]);
         sequences[SEQUENCE_LENGTH..SEQUENCE_LENGTH * 2].copy_from_slice(&[4, 5, 6, 7, 0]);
 
-        let (sender, _) = tokio::sync::broadcast::channel(4);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let batch_sequences = Arc::new(SharedMut::new(
             crate::runtime::state::batch::BatchSequence::<f16>::new(
@@ -372,16 +379,7 @@ mod test {
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
-        let mut scheduler = Scheduler::new(
-            SEQUENCE_LENGTH,
-            BATCH_SIZE,
-            THREAD_NUM,
-            1,
-            std::time::Duration::from_millis(100),
-            sender,
-            batch_list,
-            slot_manager,
-        );
+        let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
         scheduler.batch_list().with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 3));
             batch_list.push(prefill_state(0, 4));
@@ -622,7 +620,6 @@ mod test {
 
         fn run_chain(thread_num: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
             let sequences = vec![1usize, 2, 3, 0, 0, 0, 4, 5, 6, 7, 0, 0];
-            let (sender, _) = tokio::sync::broadcast::channel(4);
             let batch_list = Arc::new(SharedMut::new(Vec::new()));
             let batch_sequences = Arc::new(SharedMut::new(
                 crate::runtime::state::batch::BatchSequence::<f16>::new(
@@ -641,16 +638,7 @@ mod test {
                 SessionMode::Reusable,
                 600000, // 10 minutes
             ));
-            let mut scheduler = Scheduler::new(
-                SEQUENCE_LENGTH,
-                BATCH_SIZE,
-                thread_num,
-                1,
-                std::time::Duration::from_millis(100),
-                sender,
-                batch_list,
-                slot_manager,
-            );
+            let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, thread_num, batch_list);
             scheduler.batch_list().with_mut(|batch_list| {
                 batch_list.push(prefill_state(0, 3));
                 batch_list.push(prefill_state(0, 4));
@@ -771,7 +759,6 @@ mod test {
         sequences[0..SEQUENCE_LENGTH].copy_from_slice(&[1, 2, 3, 42, 0, 0]);
         sequences[SEQUENCE_LENGTH..SEQUENCE_LENGTH * 2].copy_from_slice(&[4, 5, 6, 7, 77, 0]);
 
-        let (sender, _) = tokio::sync::broadcast::channel(4);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let batch_sequences = Arc::new(SharedMut::new(
             crate::runtime::state::batch::BatchSequence::<f16>::new(
@@ -790,16 +777,7 @@ mod test {
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
-        let mut scheduler = Scheduler::new(
-            SEQUENCE_LENGTH,
-            BATCH_SIZE,
-            THREAD_NUM,
-            1,
-            std::time::Duration::from_millis(100),
-            sender,
-            batch_list,
-            slot_manager,
-        );
+        let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
         scheduler.batch_list().with_mut(|batch_list| {
             batch_list.push(decode_state(3, 4));
             batch_list.push(decode_state(4, 5));
@@ -1023,7 +1001,6 @@ mod test {
         const TOPK: usize = 8;
 
         let mut sequences = vec![10usize, 11, 12, 0, 0, 0];
-        let (sender, _) = tokio::sync::broadcast::channel(4);
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let batch_sequences = Arc::new(SharedMut::new(
             crate::runtime::state::batch::BatchSequence::<f16>::new(
@@ -1042,16 +1019,7 @@ mod test {
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
-        let mut scheduler = Scheduler::new(
-            SEQUENCE_LENGTH,
-            BATCH_SIZE,
-            THREAD_NUM,
-            1,
-            std::time::Duration::from_millis(100),
-            sender,
-            batch_list,
-            slot_manager,
-        );
+        let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
         scheduler.batch_list().with_mut(|batch_list| {
             batch_list.push(prefill_state(0, 3));
         });

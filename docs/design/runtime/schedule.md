@@ -56,16 +56,15 @@
 | `needs_schedule` | `AtomicBool` | Schedule trigger flag |
 | `schedule_tx` | `broadcast::Sender<()>` | Schedule trigger channel |
 | `timeout` | `Duration` | Timeout window |
-| `broadcast_sender` | `broadcast::Sender<ScheduleTask>` | Task broadcast sender |
 | `task_in_flight` | `Arc<AtomicBool>` | Atomic flag to prevent duplicate scheduling |
 
 ### 2.1.1 Scheduler Constructors
 
 | Constructor | Parameters | Description |
 |-------------|------------|-------------|
-| `new()` | `_sequence_length`, `batch_size`, `thread_num`, `_threshold`, `timeout`, `broadcast_sender`, `batch_list`, `slot_manager` | Creates scheduler with default strategy |
-| `with_mode()` | `_sequence_length`, `batch_size`, `chunk_size`, `thread_num`, `_threshold`, `timeout`, `broadcast_sender`, `batch_list`, `slot_manager` | Creates scheduler with configurable chunk_size |
-| `with_strategy()` | `_sequence_length`, `batch_size`, `chunk_size`, `thread_num`, `timeout`, `broadcast_sender`, `batch_list`, `slot_manager`, `strategy` | Creates scheduler with custom strategy |
+| `new()` | `_sequence_length`, `batch_size`, `thread_num`, `_threshold`, `timeout`, `batch_list`, `slot_manager` | Creates scheduler with default strategy |
+| `with_mode()` | `_sequence_length`, `batch_size`, `chunk_size`, `thread_num`, `_threshold`, `timeout`, `batch_list`, `slot_manager` | Creates scheduler with configurable chunk_size |
+| `with_strategy()` | `_sequence_length`, `batch_size`, `chunk_size`, `thread_num`, `timeout`, `batch_list`, `slot_manager`, `strategy` | Creates scheduler with custom strategy |
 
 ### 2.2 SlotState Fields
 

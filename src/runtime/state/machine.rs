@@ -97,6 +97,9 @@ impl SlotStateMachine {
 
     pub fn advance_sequence(state: &mut SlotState, steps: usize) -> Option<Phase> {
         let previous_phase = state.phase;
+        if state.phase == Phase::Eos {
+            return None;
+        }
         state.sequence_index += steps;
 
         if state.phase == Phase::Prefill {

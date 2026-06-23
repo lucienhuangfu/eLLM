@@ -111,7 +111,7 @@ where
     pub fn decode_generated_text(&self, slot_index: usize, record: &SlotState) -> String {
         let sequence_index = record.sequence_index;
         let kv_index = record.kv_index;
-        self.decode_token_span(slot_index, sequence_index, kv_index)
+        self.decode_token_span(slot_index, kv_index, sequence_index)
     }
 
     pub fn decode_single_token(&self, slot_index: usize, token_index: usize) -> Option<String> {

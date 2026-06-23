@@ -262,15 +262,11 @@ fn main() {
         slot_manager.clone(),
         Duration::from_millis(10),
     );
-    let mut batch_scheduler = Scheduler::new(
+    let batch_scheduler = Scheduler::new(
         sequence_length,
         batch_size,
         thread_num,
-        1,
-        Duration::from_millis(10),
-        tokio::sync::broadcast::channel(8).0,
         Arc::clone(&batch_list_arc),
-        slot_manager,
     );
 
     let plan = batch_scheduler.schedule_batch().unwrap();

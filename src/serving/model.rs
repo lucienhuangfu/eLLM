@@ -278,8 +278,6 @@ pub fn initialize_serving_resources(
         config.slot_reuse_timeout_ms as u64,
     ));
 
-    let (broadcast_sender, _) = tokio::sync::broadcast::channel(8);
-
     let operator_queue = f16::take_operator_queue();
     let executor_pool = ExecutorPool::new(
         operator_queue,
@@ -290,20 +288,14 @@ pub fn initialize_serving_resources(
     );
     executor_pool.start();
 
-    let scheduler = Arc::new(Scheduler::with_mode(
+    // Scheduler 已在 ExecutorPool 中实现，此处不再需要独立运行
+    let _ = Arc::new(Scheduler::with_mode(
         config.sequence_length,
         config.batch_size,
         config.chunk_size,
         thread_config.api_threads,
-        config.chunk_size,
-        Duration::from_millis(10),
-        broadcast_sender,
         Arc::clone(&batch_states),
-        Arc::clone(&slot_manager),
     ));
-    tokio::spawn(async move {
-        scheduler.run().await;
-    });
 
     Ok(ServingResources {
         batch_sequences,

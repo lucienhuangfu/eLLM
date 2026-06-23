@@ -181,16 +181,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         slot_manager.clone(),
         Duration::from_millis(10),
     );
-    let mut batch_scheduler = Scheduler::with_mode(
+    let batch_scheduler = Scheduler::with_mode(
         sequence_length,
         batch_size,
         chunk_size,
         thread_num,
-        chunk_size,
-        Duration::from_millis(10),
-        tokio::sync::broadcast::channel(8).0,
         Arc::clone(&batch_list_arc),
-        slot_manager,
     );
 
     println!("Starting inference with ExecutorPool...");

@@ -181,6 +181,7 @@ impl PlanBuilder {
         }
 
         plan.prefill_size = prefill_count;
+        plan.decode_size = plan.decode_list.len();
     }
 }
 
