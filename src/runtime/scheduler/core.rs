@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use super::strategy::{DefaultSchedulerStrategy, SchedulerStrategy};
@@ -7,38 +6,15 @@ use crate::runtime::plan::BatchPlan;
 use crate::runtime::state::core::SlotState;
 use crate::runtime::state::shared::SharedState;
 
-/// Scheduler 配置容器，提供调度策略和 batch 配置
-/// 注意：实际调度逻辑在 ExecutorPool 中执行
 pub struct Scheduler {
     batch_list: Arc<SharedMut<Vec<SlotState>>>,
     strategy: Box<dyn SchedulerStrategy>,
-    thread_num: AtomicUsize,
+    thread_num: usize,
     shared_state: Arc<SharedState>,
 }
 
 impl Scheduler {
     pub fn new(
-        _sequence_length: usize,
-        batch_size: usize,
-        thread_num: usize,
-        batch_list: Arc<SharedMut<Vec<SlotState>>>,
-    ) -> Self {
-        Self::build(
-            batch_size,
-            _sequence_length * batch_size,
-            thread_num,
-            batch_list,
-            None,
-            Box::new(DefaultSchedulerStrategy::new(
-                batch_size,
-                _sequence_length * batch_size,
-                thread_num,
-            )),
-        )
-    }
-
-    pub fn with_mode(
-        _sequence_length: usize,
         batch_size: usize,
         chunk_size: usize,
         thread_num: usize,
@@ -57,7 +33,6 @@ impl Scheduler {
     }
 
     pub fn with_strategy(
-        _sequence_length: usize,
         batch_size: usize,
         chunk_size: usize,
         thread_num: usize,
@@ -70,7 +45,6 @@ impl Scheduler {
     }
 
     pub fn with_shared_state(
-        _sequence_length: usize,
         batch_size: usize,
         chunk_size: usize,
         thread_num: usize,
@@ -90,8 +64,8 @@ impl Scheduler {
     }
 
     fn build(
-        batch_size: usize,
-        chunk_size: usize,
+        _batch_size: usize,
+        _chunk_size: usize,
         thread_num: usize,
         batch_list: Arc<SharedMut<Vec<SlotState>>>,
         shared_state: Option<Arc<SharedState>>,
@@ -101,35 +75,35 @@ impl Scheduler {
             shared_state.unwrap_or_else(|| Arc::new(SharedState::new(Arc::clone(&batch_list))));
         Self {
             batch_list,
-            thread_num: AtomicUsize::new(thread_num),
+            thread_num: thread_num.max(1),
             strategy,
             shared_state,
         }
     }
 
+    #[inline]
     pub fn thread_num(&self) -> usize {
-        self.thread_num.load(Ordering::Acquire)
+        self.thread_num
     }
 
-    pub fn set_thread_num(&self, thread_num: usize) {
-        self.thread_num.store(thread_num.max(1), Ordering::Release);
+    pub fn set_thread_num(&mut self, thread_num: usize) {
+        self.thread_num = thread_num.max(1);
     }
 
+    #[inline]
     pub fn batch_list(&self) -> Arc<SharedMut<Vec<SlotState>>> {
         Arc::clone(&self.batch_list)
     }
 
+    #[inline]
     pub fn shared_state(&self) -> Arc<SharedState> {
         Arc::clone(&self.shared_state)
     }
 
+    #[inline]
     pub fn schedule_batch(&self) -> Option<BatchPlan> {
         self.batch_list.with(|batch_list| {
-            let plan = self.strategy.plan_next_round(
-                batch_list,
-                self.thread_num.load(Ordering::Acquire),
-                0,
-            );
+            let plan = self.strategy.plan_next_round(batch_list);
             if plan.is_empty() {
                 None
             } else {
@@ -176,7 +150,7 @@ mod tests {
     #[test]
     fn set_thread_num_updates_thread_count() {
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
-        let scheduler = Scheduler::new(16, 4, 6, batch_list);
+        let mut scheduler = Scheduler::new(16, 4, 6, batch_list);
 
         scheduler.set_thread_num(3);
         assert_eq!(scheduler.thread_num(), 3);
@@ -190,7 +164,7 @@ mod tests {
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
 
         let strategy = Box::new(DefaultSchedulerStrategy::new(4, 32, 2));
-        let scheduler = Scheduler::with_strategy(16, 4, 32, 2, batch_list, strategy);
+        let scheduler = Scheduler::with_strategy(4, 32, 2, batch_list, strategy);
 
         assert_eq!(scheduler.thread_num(), 2);
     }

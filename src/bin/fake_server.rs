@@ -39,7 +39,6 @@ async fn run_server(
         Arc::clone(&shared_state),
         4,
         64,
-        slot_manager.clone(),
         Duration::from_millis(10),
     );
     executor_pool.start();
@@ -47,7 +46,6 @@ async fn run_server(
     let batch_size = batch_states.with(|list| list.len());
 
     let _ = Arc::new(Scheduler::with_shared_state(
-        sequence_length,
         batch_size,
         64,
         4,

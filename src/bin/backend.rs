@@ -179,11 +179,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&shared_state),
         thread_num,
         chunk_size,
-        slot_manager.clone(),
         Duration::from_millis(10),
     );
-    let batch_scheduler = Scheduler::with_mode(
-        sequence_length,
+    let batch_scheduler = Scheduler::new(
         batch_size,
         chunk_size,
         thread_num,

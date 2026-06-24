@@ -12,8 +12,7 @@ use crate::runtime::plan::{BatchMode, BatchPlan, PlanBuilder};
 use crate::runtime::scheduler::ScheduleTask;
 use crate::runtime::session::{SessionHandle, SessionMode, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
-use crate::runtime::state::core::SlotState;
-use crate::runtime::state::machine::{SlotStateMachine, TransitionError};
+use crate::runtime::state::core::{SlotState, TransitionError};
 use crate::runtime::state::sequence::{DecodeList, DecodeLookupResult, SequenceSlice};
 use crate::runtime::state::shared::SharedState;
 use crate::runtime::state::types::Phase;
@@ -30,21 +29,21 @@ fn test_phase_lifecycle_integration() {
     assert_eq!(state.phase, Phase::Start);
 
     // Start -> Prefill
-    SlotStateMachine::transition_to_prefill(&mut state, 0, 10).unwrap();
+    state.transition_to_prefill(0, 10).unwrap();
     assert_eq!(state.phase, Phase::Prefill);
     assert_eq!(state.filling_length, 10);
 
     // Prefill -> Decode (通过 advance_sequence)
-    let phase_changed = SlotStateMachine::advance_sequence(&mut state, 10);
+    let phase_changed = state.advance_sequence(10);
     assert_eq!(phase_changed, Some(Phase::Decode));
     assert_eq!(state.phase, Phase::Decode);
 
     // Decode -> Eos
-    SlotStateMachine::transition_to_eos(&mut state).unwrap();
+    state.transition_to_eos().unwrap();
     assert_eq!(state.phase, Phase::Eos);
 
     // Eos 可以回到 Prefill
-    SlotStateMachine::transition_to_prefill(&mut state, 5, 20).unwrap();
+    state.transition_to_prefill(5, 20).unwrap();
     assert_eq!(state.phase, Phase::Prefill);
 }
 
@@ -54,11 +53,11 @@ fn test_phase_timeout_recovery() {
     assert_eq!(state.phase, Phase::Prefill);
 
     // Prefill -> Timeout
-    SlotStateMachine::transition_to_timeout(&mut state).unwrap();
+    state.transition_to_timeout().unwrap();
     assert_eq!(state.phase, Phase::Timeout);
 
     // Timeout -> Prefill (恢复)
-    SlotStateMachine::transition_to_prefill(&mut state, 10, 50).unwrap();
+    state.transition_to_prefill(10, 50).unwrap();
     assert_eq!(state.phase, Phase::Prefill);
     assert_eq!(state.sequence_index, 10);
     assert_eq!(state.filling_length, 50);
@@ -69,57 +68,36 @@ fn test_invalid_phase_transitions() {
     let mut state = SlotState::new_start_state();
 
     // Start 不能直接到 Decode
-    let result = SlotStateMachine::transition_to_decode(&mut state);
+    let result = state.transition_to_decode();
     assert!(matches!(result, Err(TransitionError::InvalidTransition)));
 
     // Start 不能直接到 Eos
-    let result = SlotStateMachine::transition_to_eos(&mut state);
+    let result = state.transition_to_eos();
     assert!(matches!(result, Err(TransitionError::InvalidTransition)));
 
     // Decode 不能到 Prefill (只能往前)
     state.phase = Phase::Decode;
-    let result = SlotStateMachine::transition_to_prefill(&mut state, 0, 10);
+    let result = state.transition_to_prefill(0, 10);
     assert!(matches!(result, Err(TransitionError::InvalidTransition)));
 }
 
 #[test]
 fn test_can_transition_validates_all_combinations() {
     // 有效转换
-    assert!(SlotStateMachine::can_transition(
-        Phase::Start,
-        Phase::Prefill
-    ));
-    assert!(SlotStateMachine::can_transition(Phase::Eos, Phase::Prefill));
-    assert!(SlotStateMachine::can_transition(
-        Phase::Timeout,
-        Phase::Prefill
-    ));
-    assert!(SlotStateMachine::can_transition(
-        Phase::Prefill,
-        Phase::Decode
-    ));
-    assert!(SlotStateMachine::can_transition(Phase::Decode, Phase::Eos));
-    assert!(SlotStateMachine::can_transition(Phase::Prefill, Phase::Eos));
-    assert!(SlotStateMachine::can_transition(
-        Phase::Decode,
-        Phase::Timeout
-    ));
-    assert!(SlotStateMachine::can_transition(
-        Phase::Prefill,
-        Phase::Timeout
-    ));
+    assert!(SlotState::can_transition(Phase::Start, Phase::Prefill));
+    assert!(SlotState::can_transition(Phase::Eos, Phase::Prefill));
+    assert!(SlotState::can_transition(Phase::Timeout, Phase::Prefill));
+    assert!(SlotState::can_transition(Phase::Prefill, Phase::Decode));
+    assert!(SlotState::can_transition(Phase::Decode, Phase::Eos));
+    assert!(SlotState::can_transition(Phase::Prefill, Phase::Eos));
+    assert!(SlotState::can_transition(Phase::Decode, Phase::Timeout));
+    assert!(SlotState::can_transition(Phase::Prefill, Phase::Timeout));
 
     // 无效转换
-    assert!(!SlotStateMachine::can_transition(
-        Phase::Start,
-        Phase::Decode
-    ));
-    assert!(!SlotStateMachine::can_transition(
-        Phase::Decode,
-        Phase::Prefill
-    ));
-    assert!(!SlotStateMachine::can_transition(Phase::Eos, Phase::Decode));
-    assert!(!SlotStateMachine::can_transition(Phase::Start, Phase::Eos));
+    assert!(!SlotState::can_transition(Phase::Start, Phase::Decode));
+    assert!(!SlotState::can_transition(Phase::Decode, Phase::Prefill));
+    assert!(!SlotState::can_transition(Phase::Eos, Phase::Decode));
+    assert!(!SlotState::can_transition(Phase::Start, Phase::Eos));
 }
 
 /// ========================================
@@ -377,7 +355,7 @@ fn test_schedule_task_lifecycle() {
 }
 
 #[test]
-fn test_schedule_task_arc_sharing() {
+fn test_schedule_task_clone() {
     let prefill_list = vec![vec![SequenceSlice {
         token_start_index: 0,
         batch_index: 0,
@@ -389,8 +367,9 @@ fn test_schedule_task_arc_sharing() {
     let task = ScheduleTask::new(5, 0, prefill_list, DecodeList::with_capacity(0), 1);
     let cloned_task = task.clone();
 
-    // Arc 应该被共享
-    assert!(Arc::ptr_eq(&task.prefill_list, &cloned_task.prefill_list));
+    assert_eq!(task.prefill_size, cloned_task.prefill_size);
+    assert_eq!(task.decode_size, cloned_task.decode_size);
+    assert_eq!(task.task_id, cloned_task.task_id);
 }
 
 /// ========================================
@@ -533,13 +512,13 @@ fn test_full_decode_workflow() {
     let mut state = SlotState::new_start_state();
 
     // 1. 开始 prefill
-    SlotStateMachine::transition_to_prefill(&mut state, 0, 100).unwrap();
+    state.transition_to_prefill(0, 100).unwrap();
     assert_eq!(state.phase, Phase::Prefill);
     assert_eq!(state.filling_length, 100);
 
     // 2. 逐步消耗 prefill tokens
     for step in 0..10 {
-        let phase_changed = SlotStateMachine::advance_sequence(&mut state, 10);
+        let phase_changed = state.advance_sequence(10);
         if step < 9 {
             assert!(phase_changed.is_none());
             assert_eq!(state.phase, Phase::Prefill);
@@ -556,7 +535,7 @@ fn test_full_decode_workflow() {
     }
 
     // 4. 结束
-    SlotStateMachine::transition_to_eos(&mut state).unwrap();
+    state.transition_to_eos().unwrap();
     assert_eq!(state.phase, Phase::Eos);
     assert!(!state.is_active());
 }
@@ -724,7 +703,7 @@ fn test_advance_sequence_saturation() {
     let mut state = SlotState::new_prefill_state(0, 5);
 
     // 消耗超过 remaining 的 tokens
-    let result = SlotStateMachine::advance_sequence(&mut state, 100);
+    let result = state.advance_sequence(100);
     assert_eq!(result, Some(Phase::Decode));
     assert_eq!(state.filling_length, 0);
 }

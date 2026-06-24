@@ -8,7 +8,6 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::runtime::error::SlotError;
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::core::SlotState;
-use crate::runtime::state::machine::SlotStateMachine;
 use crate::runtime::state::types::Phase;
 
 use super::types::{SessionHandle, SessionMode};
@@ -20,8 +19,6 @@ where
     T: Copy + crate::num_traits::FromNumber,
 {
     slots: Arc<StdMutex<Vec<SlotState>>>,
-    active_prefill: Arc<TokioMutex<Vec<usize>>>,
-    active_decode: Arc<TokioMutex<Vec<usize>>>,
     available_slots: Arc<TokioMutex<Vec<usize>>>,
     session_map: Arc<TokioMutex<HashMap<String, usize>>>,
     reserved_slots: Arc<TokioMutex<HashMap<String, (usize, Arc<AtomicBool>)>>>, // session_id -> (slot_index, cancel_flag)
@@ -54,8 +51,6 @@ where
 
         let mut slot_manager = Self {
             slots: Arc::new(StdMutex::new(slots)),
-            active_prefill: Arc::new(TokioMutex::new(Vec::new())),
-            active_decode: Arc::new(TokioMutex::new(Vec::new())),
             available_slots: Arc::new(TokioMutex::new(available_slots)),
             session_map: Arc::new(TokioMutex::new(HashMap::new())),
             reserved_slots: Arc::new(TokioMutex::new(HashMap::new())),
@@ -212,7 +207,7 @@ where
                 {
                     let mut slots = self.slots.lock().unwrap();
                     if let Some(entry) = slots.get_mut(slot_index) {
-                        SlotStateMachine::reset_to_start(entry);
+                        entry.reset_to_start();
                     }
                 }
                 session_map.remove(session_id);
@@ -283,145 +278,16 @@ where
         }
     }
 
-    pub async fn transition_to_prefill(
-        &self,
-        slot_index: usize,
-        sequence_index: usize,
-        filling_length: usize,
-    ) {
-        {
-            let mut slots = self.slots.lock().unwrap();
-            let entry = &mut slots[slot_index];
-            let _ = SlotStateMachine::transition_to_prefill(entry, sequence_index, filling_length);
-        } // Release slots lock before await
-
-        self.remove_from_available(slot_index).await;
-        self.add_to_active_prefill(slot_index).await;
-    }
-
-    pub async fn transition_to_decode(&self, slot_index: usize) {
-        {
-            let mut slots = self.slots.lock().unwrap();
-            let entry = &mut slots[slot_index];
-            let _ = SlotStateMachine::transition_to_decode(entry);
-        } // Release slots lock before await
-
-        self.remove_from_active_prefill(slot_index).await;
-        self.add_to_active_decode(slot_index).await;
-    }
-
-    pub async fn transition_to_eos(&self, slot_index: usize) {
-        {
-            let mut slots = self.slots.lock().unwrap();
-            let entry = &mut slots[slot_index];
-            let _ = SlotStateMachine::transition_to_eos(entry);
-        } // Release slots lock before await
-
-        self.remove_from_active_decode(slot_index).await;
-        self.add_to_available(slot_index).await;
-    }
-
-    pub async fn transition_to_timeout(&self, slot_index: usize) {
-        {
-            let mut slots = self.slots.lock().unwrap();
-            let entry = &mut slots[slot_index];
-            let _ = SlotStateMachine::transition_to_timeout(entry);
-        } // Release slots lock before await
-
-        self.remove_from_active_prefill(slot_index).await;
-        self.remove_from_active_decode(slot_index).await;
-    }
-
-    pub async fn reset_to_start(&self, slot_index: usize) {
-        let old_phase = {
-            let mut slots = self.slots.lock().unwrap();
-            let entry = &mut slots[slot_index];
-            let old_phase = entry.phase;
-            SlotStateMachine::reset_to_start(entry);
-            old_phase
-        }; // Release slots lock before await
-
-        if matches!(old_phase, Phase::Prefill) {
-            self.remove_from_active_prefill(slot_index).await;
-        } else if matches!(old_phase, Phase::Decode) {
-            self.remove_from_active_decode(slot_index).await;
-        }
-        self.add_to_available(slot_index).await;
-    }
-
-    async fn add_to_active_prefill(&self, slot_index: usize) {
-        let mut active = self.active_prefill.lock().await;
-        if !active.contains(&slot_index) {
-            active.push(slot_index);
-        }
-    }
-
-    async fn remove_from_active_prefill(&self, slot_index: usize) {
-        let mut active = self.active_prefill.lock().await;
-        if let Some(pos) = active.iter().position(|&idx| idx == slot_index) {
-            active.swap_remove(pos);
-        }
-    }
-
-    async fn add_to_active_decode(&self, slot_index: usize) {
-        let mut active = self.active_decode.lock().await;
-        if !active.contains(&slot_index) {
-            active.push(slot_index);
-        }
-    }
-
-    async fn remove_from_active_decode(&self, slot_index: usize) {
-        let mut active = self.active_decode.lock().await;
-        if let Some(pos) = active.iter().position(|&idx| idx == slot_index) {
-            active.swap_remove(pos);
-        }
-    }
-
-    async fn add_to_available(&self, slot_index: usize) {
-        let mut available = self.available_slots.lock().await;
-        if !available.contains(&slot_index) {
-            available.push(slot_index);
-        }
-    }
-
-    async fn remove_from_available(&self, slot_index: usize) {
+    pub async fn remove_from_available(&self, slot_index: usize) {
         let mut available = self.available_slots.lock().await;
         if let Some(pos) = available.iter().position(|&idx| idx == slot_index) {
             available.swap_remove(pos);
         }
     }
 
-    pub fn get_active_prefill(&self) -> Vec<usize> {
-        self.active_prefill.blocking_lock().clone()
-    }
-
-    pub fn get_active_decode(&self) -> Vec<usize> {
-        self.active_decode.blocking_lock().clone()
-    }
-
-    pub async fn has_work(&self) -> bool {
-        !self.active_prefill.lock().await.is_empty() || !self.active_decode.lock().await.is_empty()
-    }
-
-    pub fn has_work_blocking(&self) -> bool {
-        !self.active_prefill.blocking_lock().is_empty() || !self.active_decode.blocking_lock().is_empty()
-    }
-
     pub async fn get_slot(&self, slot_index: usize) -> Option<SlotState> {
         let slots = self.slots.lock().unwrap();
         slots.get(slot_index).cloned()
-    }
-
-    pub async fn advance_sequence(&self, slot_index: usize, steps: usize) {
-        let mut slots = self.slots.lock().unwrap();
-        if let Some(entry) = slots.get_mut(slot_index) {
-            let phase_change = SlotStateMachine::advance_sequence(entry, steps);
-
-            if phase_change == Some(Phase::Decode) {
-                self.remove_from_active_prefill(slot_index).await;
-                self.add_to_active_decode(slot_index).await;
-            }
-        }
     }
 
     pub async fn get_cached_tokens(&self, session_id: &str) -> Option<(usize, usize)> {

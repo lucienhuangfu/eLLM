@@ -20,5 +20,5 @@ pub use scheduler::{ScheduleTask, Scheduler};
 pub use session::{SessionHandle, SessionMode, SlotManager};
 pub use state::{
     build_batch_sequence, build_slot_state, BatchSequence, DecodeList, DecodeLookupResult, Phase,
-    SequenceSlice, SharedState, SlotState, SlotStateMachine, TransitionError,
+    SequenceSlice, SharedState, SlotState, TransitionError,
 };

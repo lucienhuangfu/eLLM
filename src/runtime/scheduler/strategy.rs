@@ -2,12 +2,7 @@ use crate::runtime::plan::BatchPlan;
 use crate::runtime::state::core::SlotState;
 
 pub trait SchedulerStrategy: Send + Sync + 'static {
-    fn plan_next_round(
-        &self,
-        batch_list: &[SlotState],
-        max_decode_size: usize,
-        max_prefill_size: usize,
-    ) -> BatchPlan;
+    fn plan_next_round(&self, batch_list: &[SlotState]) -> BatchPlan;
 }
 
 pub struct DefaultSchedulerStrategy {
@@ -37,12 +32,8 @@ impl Clone for DefaultSchedulerStrategy {
 }
 
 impl SchedulerStrategy for DefaultSchedulerStrategy {
-    fn plan_next_round(
-        &self,
-        batch_list: &[SlotState],
-        _max_decode_size: usize,
-        _max_prefill_size: usize,
-    ) -> BatchPlan {
+    #[inline]
+    fn plan_next_round(&self, batch_list: &[SlotState]) -> BatchPlan {
         let builder = crate::runtime::plan::PlanBuilder::new(
             self.max_decode_size,
             self.max_prefill_size,
@@ -63,7 +54,7 @@ mod tests {
     fn test_default_scheduler_strategy_new() {
         let strategy = DefaultSchedulerStrategy::new(32, 1024, 4);
         // 验证策略创建成功
-        let plan = strategy.plan_next_round(&[], 0, 0);
+        let plan = strategy.plan_next_round(&[]);
         assert!(plan.is_empty());
     }
 
@@ -71,7 +62,7 @@ mod tests {
     #[test]
     fn test_strategy_plan_empty_batch() {
         let strategy = DefaultSchedulerStrategy::new(32, 1024, 4);
-        let plan = strategy.plan_next_round(&[], 0, 0);
+        let plan = strategy.plan_next_round(&[]);
 
         assert!(plan.is_empty());
         assert_eq!(plan.mode, BatchMode::Decode);
@@ -89,7 +80,7 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         assert_eq!(plan.mode, BatchMode::Decode);
         assert_eq!(plan.decode_size, 5);
         assert_eq!(plan.prefill_size, 0);
@@ -102,7 +93,7 @@ mod tests {
 
         let batch_list = vec![SlotState::new_prefill_state(0, 100)];
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         assert_eq!(plan.mode, BatchMode::Prefill);
         assert!(plan.prefill_size > 0);
     }
@@ -121,7 +112,7 @@ mod tests {
         // Prefill 状态
         batch_list.push(SlotState::new_prefill_state(10, 50));
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         assert_eq!(plan.mode, BatchMode::Mixed);
         assert_eq!(plan.decode_size, 1);
         assert!(plan.prefill_size > 0);
@@ -140,7 +131,7 @@ mod tests {
         let batch_list = vec![SlotState::new_prefill_state(0, 100)];
 
         for strategy in &strategies {
-            let plan = strategy.plan_next_round(&batch_list, 0, 0);
+            let plan = strategy.plan_next_round(&batch_list);
             assert_eq!(plan.mode, BatchMode::Prefill);
         }
     }
@@ -161,13 +152,13 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan1 = strategies[0].plan_next_round(&batch_list, 0, 0);
+        let plan1 = strategies[0].plan_next_round(&batch_list);
         assert_eq!(plan1.decode_size, 1);
 
-        let plan2 = strategies[1].plan_next_round(&batch_list, 0, 0);
+        let plan2 = strategies[1].plan_next_round(&batch_list);
         assert_eq!(plan2.decode_size, 10);
 
-        let plan3 = strategies[2].plan_next_round(&batch_list, 0, 0);
+        let plan3 = strategies[2].plan_next_round(&batch_list);
         assert_eq!(plan3.decode_size, 50);
     }
 
@@ -183,7 +174,7 @@ mod tests {
         let batch_list = vec![SlotState::new_prefill_state(0, 150)];
 
         for strategy in &strategies {
-            let plan = strategy.plan_next_round(&batch_list, 0, 0);
+            let plan = strategy.plan_next_round(&batch_list);
             assert!(plan.prefill_size <= strategy.max_prefill_size);
         }
     }
@@ -194,7 +185,7 @@ mod tests {
         let strategy: Box<dyn SchedulerStrategy> =
             Box::new(DefaultSchedulerStrategy::new(32, 1024, 4));
 
-        let plan = strategy.plan_next_round(&[], 0, 0);
+        let plan = strategy.plan_next_round(&[]);
         assert!(plan.is_empty());
     }
 
@@ -202,7 +193,7 @@ mod tests {
     #[test]
     fn test_scheduler_strategy_polymorphism() {
         fn use_strategy(strategy: &dyn SchedulerStrategy) -> BatchPlan {
-            strategy.plan_next_round(&[], 0, 0)
+            strategy.plan_next_round(&[])
         }
 
         let strategy = DefaultSchedulerStrategy::new(32, 1024, 4);
@@ -221,7 +212,7 @@ mod tests {
             SlotState::new_start_state(),
         ];
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         assert!(plan.is_empty());
     }
 
@@ -237,7 +228,7 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         assert!(plan.is_empty());
     }
 
@@ -253,7 +244,7 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         assert!(plan.is_empty());
     }
 
@@ -273,7 +264,7 @@ mod tests {
         timeout_state.phase = Phase::Timeout;
         batch_list.push(timeout_state);
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         assert!(plan.is_empty());
     }
 
@@ -285,8 +276,8 @@ mod tests {
         let decode_list = vec![SlotState::new_decode_state(0, 0)];
         let prefill_list = vec![SlotState::new_prefill_state(0, 100)];
 
-        let plan1 = strategy.plan_next_round(&decode_list, 0, 0);
-        let plan2 = strategy.plan_next_round(&prefill_list, 0, 0);
+        let plan1 = strategy.plan_next_round(&decode_list);
+        let plan2 = strategy.plan_next_round(&prefill_list);
 
         assert_eq!(plan1.mode, BatchMode::Decode);
         assert_eq!(plan2.mode, BatchMode::Prefill);
@@ -304,7 +295,7 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         assert_eq!(plan.decode_size, 32); // 应该被限制
     }
 
@@ -315,7 +306,7 @@ mod tests {
 
         let batch_list = vec![SlotState::new_prefill_state(0, 0)];
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         assert_eq!(plan.prefill_size, 0);
     }
 
@@ -330,7 +321,7 @@ mod tests {
             SlotState::new_prefill_state(200, 100),
         ];
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         assert!(plan.prefill_size <= 200); // 应该被限制
     }
 
@@ -346,13 +337,9 @@ mod tests {
             batch_list.push(state);
         }
 
-        // 传入不同的参数，但策略应该使用内部配置
-        let plan1 = strategy.plan_next_round(&batch_list, 100, 1000);
-        let plan2 = strategy.plan_next_round(&batch_list, 1, 1);
+        let plan = strategy.plan_next_round(&batch_list);
 
-        // 结果应该相同，因为策略使用内部配置
-        assert_eq!(plan1.decode_size, plan2.decode_size);
-        assert_eq!(plan1.decode_size, 10); // 使用内部 max_decode_size
+        assert_eq!(plan.decode_size, 10);
     }
 
     /// 测试 DefaultSchedulerStrategy 边界值 - decode_size 为 0
@@ -367,7 +354,7 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         // decode_size 为 0 时，decode_candidates 容量为 0，不会添加任何 decode
         assert_eq!(plan.decode_size, 0);
     }
@@ -379,7 +366,7 @@ mod tests {
 
         let batch_list = vec![SlotState::new_prefill_state(0, 100)];
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
         assert_eq!(plan.prefill_size, 0);
     }
 
@@ -399,9 +386,9 @@ mod tests {
 
         // 注意：DefaultSchedulerStrategy 每次调用都会创建新的 PlanBuilder，
         // 所以 task_id 可能不会递增。这个测试验证 task_id 是有效的。
-        let plan1 = strategy.plan_next_round(&[], 0, 0);
-        let plan2 = strategy.plan_next_round(&[], 0, 0);
-        let plan3 = strategy.plan_next_round(&[], 0, 0);
+        let plan1 = strategy.plan_next_round(&[]);
+        let plan2 = strategy.plan_next_round(&[]);
+        let plan3 = strategy.plan_next_round(&[]);
 
         // 验证 task_id 都是有效的（>= 0）
         assert!(plan1.task_id >= 0);
@@ -421,7 +408,7 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan = strategy.plan_next_round(&batch_list, 0, 0);
+        let plan = strategy.plan_next_round(&batch_list);
 
         // 验证计划结构与 PlanBuilder 生成的相同
         assert_eq!(plan.mode, BatchMode::Decode);

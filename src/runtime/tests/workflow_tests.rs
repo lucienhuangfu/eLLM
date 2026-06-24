@@ -14,7 +14,6 @@ use crate::runtime::plan::{BatchMode, PlanBuilder};
 use crate::runtime::scheduler::ScheduleTask;
 use crate::runtime::session::SessionHandle;
 use crate::runtime::state::core::SlotState;
-use crate::runtime::state::machine::SlotStateMachine;
 use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
 use crate::runtime::state::types::Phase;
 
@@ -29,7 +28,7 @@ fn test_complete_slot_lifecycle() {
     assert!(state.is_available());
 
     // 2. 进入 prefill
-    SlotStateMachine::transition_to_prefill(&mut state, 100, 50).unwrap();
+    state.transition_to_prefill(100, 50).unwrap();
     assert_eq!(state.phase, Phase::Prefill);
     assert!(state.is_active());
     assert!(!state.is_available());
@@ -38,14 +37,14 @@ fn test_complete_slot_lifecycle() {
     assert_eq!(state.filling_length, 50);
 
     // 3. 逐步执行 prefill (消耗 tokens)
-    let phase_change = SlotStateMachine::advance_sequence(&mut state, 30);
+    let phase_change = state.advance_sequence(30);
     assert!(phase_change.is_none()); // 还在 prefill
     assert_eq!(state.phase, Phase::Prefill);
     assert_eq!(state.filling_length, 20);
     assert_eq!(state.sequence_index, 130);
 
     // 4. 完成 prefill 进入 decode
-    let phase_change = SlotStateMachine::advance_sequence(&mut state, 20);
+    let phase_change = state.advance_sequence(20);
     assert_eq!(phase_change, Some(Phase::Decode));
     assert_eq!(state.phase, Phase::Decode);
     assert_eq!(state.filling_length, 0);
@@ -53,19 +52,19 @@ fn test_complete_slot_lifecycle() {
 
     // 5. 执行多个 decode 步骤
     for _ in 0..10 {
-        SlotStateMachine::advance_sequence(&mut state, 1);
+        state.advance_sequence(1);
     }
     assert_eq!(state.phase, Phase::Decode);
     assert_eq!(state.sequence_index, 160);
 
     // 6. 达到 EOS
-    SlotStateMachine::transition_to_eos(&mut state).unwrap();
+    state.transition_to_eos().unwrap();
     assert_eq!(state.phase, Phase::Eos);
     assert!(!state.is_active());
     assert!(state.is_available());
 
     // 7. 重置到 start
-    SlotStateMachine::reset_to_start(&mut state);
+    state.reset_to_start();
     assert_eq!(state.phase, Phase::Start);
     assert_eq!(state.sequence_index, usize::MAX);
     assert_eq!(state.kv_index, usize::MAX);
@@ -255,7 +254,7 @@ fn test_concurrent_state_transitions() {
         let state = Arc::clone(&state);
         let handle = thread::spawn(move || {
             let mut state = state.lock().unwrap();
-            let _ = SlotStateMachine::transition_to_prefill(&mut state, 0, 10);
+            let _ = state.transition_to_prefill(0, 10);
         });
         handles.push(handle);
     }
@@ -360,26 +359,20 @@ fn test_full_state_machine_traversal() {
     let mut state = SlotState::new_start_state();
 
     // Start -> Prefill
-    assert!(SlotStateMachine::can_transition(
-        Phase::Start,
-        Phase::Prefill
-    ));
-    SlotStateMachine::transition_to_prefill(&mut state, 0, 5).unwrap();
+    assert!(SlotState::can_transition(Phase::Start, Phase::Prefill));
+    state.transition_to_prefill(0, 5).unwrap();
 
     // Prefill -> Decode
-    assert!(SlotStateMachine::can_transition(
-        Phase::Prefill,
-        Phase::Decode
-    ));
-    let change = SlotStateMachine::advance_sequence(&mut state, 5);
+    assert!(SlotState::can_transition(Phase::Prefill, Phase::Decode));
+    let change = state.advance_sequence(5);
     assert_eq!(change, Some(Phase::Decode));
 
     // Decode -> Eos
-    assert!(SlotStateMachine::can_transition(Phase::Decode, Phase::Eos));
-    SlotStateMachine::transition_to_eos(&mut state).unwrap();
+    assert!(SlotState::can_transition(Phase::Decode, Phase::Eos));
+    state.transition_to_eos().unwrap();
 
     // Eos -> Start (reset)
-    SlotStateMachine::reset_to_start(&mut state);
+    state.reset_to_start();
     assert_eq!(state.phase, Phase::Start);
 }
 
@@ -389,7 +382,7 @@ fn test_state_machine_error_recovery() {
     let mut state = SlotState::new_start_state();
 
     // 尝试无效转换
-    let result = SlotStateMachine::transition_to_decode(&mut state);
+    let result = state.transition_to_decode();
     assert!(result.is_err());
 
     // 状态应该保持不变
@@ -397,11 +390,11 @@ fn test_state_machine_error_recovery() {
 
     // 转换到 timeout
     state.phase = Phase::Prefill;
-    SlotStateMachine::transition_to_timeout(&mut state).unwrap();
+    state.transition_to_timeout().unwrap();
     assert_eq!(state.phase, Phase::Timeout);
 
     // 从 timeout 恢复
-    SlotStateMachine::transition_to_prefill(&mut state, 0, 10).unwrap();
+    state.transition_to_prefill(0, 10).unwrap();
     assert_eq!(state.phase, Phase::Prefill);
 }
 
@@ -411,21 +404,21 @@ fn test_advance_sequence_partial_processing() {
     let mut state = SlotState::new_prefill_state(0, 10);
 
     // 部分处理
-    let result = SlotStateMachine::advance_sequence(&mut state, 3);
+    let result = state.advance_sequence(3);
     assert_eq!(result, None);
     assert_eq!(state.phase, Phase::Prefill);
     assert_eq!(state.filling_length, 7);
     assert_eq!(state.sequence_index, 3);
 
     // 继续部分处理
-    let result = SlotStateMachine::advance_sequence(&mut state, 5);
+    let result = state.advance_sequence(5);
     assert_eq!(result, None);
     assert_eq!(state.phase, Phase::Prefill);
     assert_eq!(state.filling_length, 2);
     assert_eq!(state.sequence_index, 8);
 
     // 最后部分
-    let result = SlotStateMachine::advance_sequence(&mut state, 2);
+    let result = state.advance_sequence(2);
     assert_eq!(result, Some(Phase::Decode));
     assert_eq!(state.phase, Phase::Decode);
     assert_eq!(state.filling_length, 0);
@@ -469,9 +462,9 @@ fn test_performance_large_slot_management() {
         states.push(state);
     }
 
-    let _ = SlotStateMachine::advance_sequence(&mut states[0], 50);
-    let _ = SlotStateMachine::advance_sequence(&mut states[500], 100);
-    let _ = SlotStateMachine::transition_to_eos(&mut states[999]).unwrap();
+    let _ = states[0].advance_sequence(50);
+    let _ = states[500].advance_sequence(100);
+    let _ = states[999].transition_to_eos().unwrap();
 
     let duration = start.elapsed();
     assert!(duration.as_secs() < 1); // 应该在 1 秒内完成

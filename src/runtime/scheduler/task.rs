@@ -1,15 +1,11 @@
-use std::sync::Arc;
-use std::time::Instant;
-
 use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
 
 #[derive(Debug, Clone)]
 pub struct ScheduleTask {
     pub prefill_size: usize,
     pub decode_size: usize,
-    pub prefill_list: Arc<Vec<Vec<SequenceSlice>>>,
-    pub decode_list: Arc<DecodeList>,
-    pub timestamp: Instant,
+    pub prefill_list: Vec<Vec<SequenceSlice>>,
+    pub decode_list: DecodeList,
     pub task_id: u64,
 }
 
@@ -24,11 +20,15 @@ impl ScheduleTask {
         Self {
             prefill_size,
             decode_size,
-            prefill_list: Arc::new(prefill_list),
-            decode_list: Arc::new(decode_list),
-            timestamp: Instant::now(),
+            prefill_list,
+            decode_list,
             task_id,
         }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.prefill_size == 0 && self.decode_size == 0
     }
 }
 
@@ -60,15 +60,13 @@ mod tests {
     /// 测试 ScheduleTask 仅 prefill
     #[test]
     fn test_schedule_task_prefill_only() {
-        let prefill_list = vec![
-            vec![SequenceSlice {
-                batch_index: 0,
-                sequence_index: 0,
-                token_start_index: 0,
-                length: 10,
-                last_token_flag: false,
-            }],
-        ];
+        let prefill_list = vec![vec![SequenceSlice {
+            batch_index: 0,
+            sequence_index: 0,
+            token_start_index: 0,
+            length: 10,
+            last_token_flag: false,
+        }]];
 
         let task = ScheduleTask::new(10, 0, prefill_list, DecodeList::with_capacity(0), 1);
 
@@ -101,15 +99,13 @@ mod tests {
     /// 测试 ScheduleTask 混合模式
     #[test]
     fn test_schedule_task_mixed() {
-        let prefill_list = vec![
-            vec![SequenceSlice {
-                batch_index: 0,
-                sequence_index: 0,
-                token_start_index: 0,
-                length: 10,
-                last_token_flag: false,
-            }],
-        ];
+        let prefill_list = vec![vec![SequenceSlice {
+            batch_index: 0,
+            sequence_index: 0,
+            token_start_index: 0,
+            length: 10,
+            last_token_flag: false,
+        }]];
 
         let mut decode_list = DecodeList::with_capacity(3);
         for i in 0..3 {
@@ -151,27 +147,6 @@ mod tests {
         assert!(debug_str.contains("task_id"));
     }
 
-    /// 测试 ScheduleTask timestamp
-    #[test]
-    fn test_schedule_task_timestamp() {
-        let before = Instant::now();
-        let task = ScheduleTask::new(0, 0, Vec::new(), DecodeList::with_capacity(0), 0);
-        let after = Instant::now();
-
-        assert!(task.timestamp >= before);
-        assert!(task.timestamp <= after);
-    }
-
-    /// 测试 ScheduleTask timestamp 不同任务
-    #[test]
-    fn test_schedule_task_timestamp_different() {
-        let task1 = ScheduleTask::new(0, 0, Vec::new(), DecodeList::with_capacity(0), 1);
-        std::thread::sleep(std::time::Duration::from_micros(1));
-        let task2 = ScheduleTask::new(0, 0, Vec::new(), DecodeList::with_capacity(0), 2);
-
-        assert!(task2.timestamp >= task1.timestamp);
-    }
-
     /// 测试 ScheduleTask task_id 边界值
     #[test]
     fn test_schedule_task_task_id_boundary() {
@@ -180,40 +155,6 @@ mod tests {
 
         let task_max = ScheduleTask::new(0, 0, Vec::new(), DecodeList::with_capacity(0), u64::MAX);
         assert_eq!(task_max.task_id, u64::MAX);
-    }
-
-    /// 测试 ScheduleTask prefill_list Arc 共享
-    #[test]
-    fn test_schedule_task_prefill_list_arc() {
-        let prefill_list = vec![
-            vec![SequenceSlice {
-                batch_index: 0,
-                sequence_index: 0,
-                token_start_index: 0,
-                length: 10,
-                last_token_flag: false,
-            }],
-        ];
-
-        let task = ScheduleTask::new(10, 0, prefill_list, DecodeList::with_capacity(0), 1);
-        let cloned = task.clone();
-
-        // Arc 应该共享同一个数据
-        assert_eq!(Arc::strong_count(&task.prefill_list), 2);
-        assert_eq!(task.prefill_list.as_ptr(), cloned.prefill_list.as_ptr());
-    }
-
-    /// 测试 ScheduleTask decode_list Arc 共享
-    #[test]
-    fn test_schedule_task_decode_list_arc() {
-        let mut decode_list = DecodeList::with_capacity(1);
-        decode_list.push(SequenceSlice::default());
-
-        let task = ScheduleTask::new(0, 1, Vec::new(), decode_list, 1);
-        let cloned = task.clone();
-
-        // Arc 应该共享同一个数据
-        assert_eq!(Arc::strong_count(&task.decode_list), 2);
     }
 
     /// 测试 ScheduleTask 多线程 prefill_list
@@ -307,24 +248,22 @@ mod tests {
     /// 测试 ScheduleTask prefill_list 内容访问
     #[test]
     fn test_schedule_task_prefill_list_access() {
-        let prefill_list = vec![
-            vec![
-                SequenceSlice {
-                    batch_index: 0,
-                    sequence_index: 0,
-                    token_start_index: 0,
-                    length: 5,
-                    last_token_flag: false,
-                },
-                SequenceSlice {
-                    batch_index: 0,
-                    sequence_index: 5,
-                    token_start_index: 5,
-                    length: 5,
-                    last_token_flag: false,
-                },
-            ],
-        ];
+        let prefill_list = vec![vec![
+            SequenceSlice {
+                batch_index: 0,
+                sequence_index: 0,
+                token_start_index: 0,
+                length: 5,
+                last_token_flag: false,
+            },
+            SequenceSlice {
+                batch_index: 0,
+                sequence_index: 5,
+                token_start_index: 5,
+                length: 5,
+                last_token_flag: false,
+            },
+        ]];
 
         let task = ScheduleTask::new(10, 0, prefill_list, DecodeList::with_capacity(0), 1);
 
@@ -339,46 +278,14 @@ mod tests {
         let task1 = ScheduleTask::new(0, 0, Vec::new(), DecodeList::with_capacity(0), 1);
         let task2 = task1.clone();
 
-        // 空数据也应该共享
         assert_eq!(task1.prefill_list.len(), task2.prefill_list.len());
         assert_eq!(task1.decode_list.len(), task2.decode_list.len());
-    }
-
-    /// 测试 ScheduleTask 时间戳顺序
-    #[test]
-    fn test_schedule_task_timestamp_order() {
-        let mut tasks = Vec::new();
-        for i in 0..10 {
-            tasks.push(ScheduleTask::new(0, 0, Vec::new(), DecodeList::with_capacity(0), i));
-            std::thread::sleep(std::time::Duration::from_micros(10));
-        }
-
-        // 验证时间戳递增
-        for i in 1..tasks.len() {
-            assert!(tasks[i].timestamp >= tasks[i - 1].timestamp);
-        }
-    }
-
-    /// 测试 ScheduleTask 多次 clone
-    #[test]
-    fn test_schedule_task_multiple_clones() {
-        let mut decode_list = DecodeList::with_capacity(1);
-        decode_list.push(SequenceSlice::default());
-
-        let task = ScheduleTask::new(0, 1, Vec::new(), decode_list, 1);
-
-        let clones: Vec<ScheduleTask> = (0..5).map(|_| task.clone()).collect();
-
-        // Arc 引用计数应该增加
-        assert_eq!(Arc::strong_count(&task.decode_list), 6);
     }
 
     /// 测试 ScheduleTask 结构体大小
     #[test]
     fn test_schedule_task_size() {
         let size = std::mem::size_of::<ScheduleTask>();
-        // usize: 8 bytes * 2, Arc: 8 bytes * 2, Instant: ~12-16 bytes, u64: 8 bytes
-        // 总大小应该在合理范围内
         assert!(size > 0);
         assert!(size < 100);
     }
@@ -409,8 +316,7 @@ mod tests {
             .map(|i| ScheduleTask::new(0, 0, Vec::new(), DecodeList::with_capacity(0), i))
             .collect();
 
-        let task_ids: std::collections::HashSet<u64> =
-            tasks.iter().map(|t| t.task_id).collect();
+        let task_ids: std::collections::HashSet<u64> = tasks.iter().map(|t| t.task_id).collect();
 
         assert_eq!(task_ids.len(), 100);
     }
@@ -418,15 +324,13 @@ mod tests {
     /// 测试 ScheduleTask prefill_list 和 decode_list 独立性
     #[test]
     fn test_schedule_task_prefill_decode_independence() {
-        let prefill_list = vec![
-            vec![SequenceSlice {
-                batch_index: 0,
-                sequence_index: 0,
-                token_start_index: 0,
-                length: 10,
-                last_token_flag: false,
-            }],
-        ];
+        let prefill_list = vec![vec![SequenceSlice {
+            batch_index: 0,
+            sequence_index: 0,
+            token_start_index: 0,
+            length: 10,
+            last_token_flag: false,
+        }]];
 
         let mut decode_list = DecodeList::with_capacity(1);
         decode_list.push(SequenceSlice {
@@ -439,24 +343,26 @@ mod tests {
 
         let task = ScheduleTask::new(10, 1, prefill_list, decode_list, 1);
 
-        // prefill 和 decode 数据应该独立
-        assert_ne!(task.prefill_list[0][0].batch_index, task.decode_list[0].batch_index);
+        assert_ne!(
+            task.prefill_list[0][0].batch_index,
+            task.decode_list[0].batch_index
+        );
     }
 
-    /// 测试 ScheduleTask Arc 引用释放
+    /// 测试 ScheduleTask is_empty
     #[test]
-    fn test_schedule_task_arc_release() {
-        let mut decode_list = DecodeList::with_capacity(1);
-        decode_list.push(SequenceSlice::default());
+    fn test_schedule_task_is_empty() {
+        let empty_task = ScheduleTask::new(0, 0, Vec::new(), DecodeList::with_capacity(0), 0);
+        assert!(empty_task.is_empty());
 
-        let task = ScheduleTask::new(0, 1, Vec::new(), decode_list, 1);
-        assert_eq!(Arc::strong_count(&task.decode_list), 1);
+        let decode_task = ScheduleTask::new(0, 5, Vec::new(), DecodeList::with_capacity(5), 1);
+        assert!(!decode_task.is_empty());
 
-        let cloned = task.clone();
-        assert_eq!(Arc::strong_count(&task.decode_list), 2);
+        let prefill_task = ScheduleTask::new(10, 0, vec![vec![]], DecodeList::with_capacity(0), 2);
+        assert!(!prefill_task.is_empty());
 
-        drop(cloned);
-        assert_eq!(Arc::strong_count(&task.decode_list), 1);
+        let mixed_task = ScheduleTask::new(10, 5, vec![vec![]], DecodeList::with_capacity(5), 3);
+        assert!(!mixed_task.is_empty());
     }
 
     /// 测试 ScheduleTask 跨线程共享

@@ -284,19 +284,9 @@ pub fn initialize_serving_resources(
         Arc::clone(&shared_state),
         thread_config.api_threads,
         config.chunk_size,
-        slot_manager.clone(),
         Duration::from_millis(10),
     );
     executor_pool.start();
-
-    // Scheduler 已在 ExecutorPool 中实现，此处不再需要独立运行
-    let _ = Arc::new(Scheduler::with_mode(
-        config.sequence_length,
-        config.batch_size,
-        config.chunk_size,
-        thread_config.api_threads,
-        Arc::clone(&batch_states),
-    ));
 
     Ok(ServingResources {
         batch_sequences,

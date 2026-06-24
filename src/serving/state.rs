@@ -19,8 +19,6 @@ pub struct ApiState {
     pub slot_manager: Arc<SlotManager<f16>>,
 }
 
-
-
 impl ApiState {
     /// 将 ChatMessage 转换为消息对数组
     fn messages_to_pairs(messages: &[ChatMessage]) -> Vec<(&str, &str)> {
@@ -74,6 +72,7 @@ impl ApiState {
         temperature: Option<f32>,
     ) -> ApiResult<(usize, Arc<tokio::sync::Notify>)> {
         self.prepare_slot_for_write(slot_index)?;
+        self.slot_manager.remove_from_available(slot_index).await;
 
         let message_pairs = Self::messages_to_pairs(messages);
         let temperature = temperature.unwrap_or(1.0);
@@ -93,10 +92,6 @@ impl ApiState {
                     .map_err(|e| ApiError::TokenizationError(e))
             })
         })?;
-
-        self.slot_manager
-            .transition_to_prefill(slot_index, 0, result.0)
-            .await;
 
         self.shared_state.push_request();
 
@@ -123,6 +118,7 @@ impl ApiState {
         let (write_len, notify) = match result {
             Some((prefix_len, delta_tokens)) => {
                 self.prepare_slot_for_write(slot_index)?;
+                self.slot_manager.remove_from_available(slot_index).await;
                 let temperature = temperature.unwrap_or(1.0);
 
                 self.batch_states.with_mut(|batch_list| {
@@ -147,10 +143,6 @@ impl ApiState {
                     .await;
             }
         };
-
-        self.slot_manager
-            .transition_to_prefill(slot_index, 0, write_len)
-            .await;
 
         self.shared_state.push_request();
 
