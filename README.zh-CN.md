@@ -1,4 +1,4 @@
-# eLLM：让长程 LLM 推理在 CPUs 上快过 GPUs
+# eLLM：让 CPU 在长程推理中跑赢 GPU
 ## eLLM：让 CPU 成为 AI 推理芯片的首选
 👉 项目主页：[https://github.com/lucienhuangfu/eLLM](https://github.com/lucienhuangfu/eLLM)  
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)  
@@ -65,6 +65,10 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 
 ## Benchmark
 我们已经与SGLang (CPU end) 的输出完全对齐，对比了性能
+
+
+长程
+
 
 
 

@@ -1,12 +1,29 @@
 ## 实验
-截至目前，eLLM 的最小原型已经完成。为验证它的性能潜力，我们设计了短文本与长文本两类实验，并分别考察 Prefill 和 Decode 两个阶段，比较单块 CPU 服务器与由 8 块 GPU 组成的推理节点在不同场景下的表现。短文本推理场景下，CPU 明显落后于 GPU；但在长文本推理场景下，eLLM 有机会凭借 CPU 的大内存优势实现反超。
+截至目前，eLLM 已经与 SGLang 的整体输出完全对齐，说明实现方案是可行的， 详细过程可以参看alignment skill 及 align 文件夹。Beta 版本已经发布，基本功能已经可以使用。但是整体系统还不完善，仅建议用做测试，不建议用做生产环境。需要耐心等待正式版本的发布。
+
+为验证它的性能潜力，我们设计了
+
+短程任务与长程任务两类实验。
+
+eLLM 和 CPU baseline 运行在 单块 CPU 服务器。
+GPU baseline 运行在 GPU 服务器。
+
+短程任务只有一轮交互，分别考察 Prefill 和 Decode 两个阶段。
+
+eLLM 显然是比 CPU baseline 快很多。
+eLLM 在短文本时，明显落后 GPU baseline。
+eLLM 在长文本时，速度逐渐超越 GPU baseline。 
+
+但在长程推理场景下，eLLM 是比。
+
 
 ### 实验设置
 - CPU baseline：SGLang CPU endpoint（单块 CPU 服务器）
-- GPU baseline：SGLang GPU endpoint v0.5.9（多卡 GPU 服务器，示例使用 8x H20 节点）
+- GPU baseline：Aliyun 的 API
 - 当前实验运行在公有云上的 CPU 虚拟机中，仅占服务器的一小部分资源
 - Prefill 指标：TTFT（Time to First Token，ms）
 - Decode 指标：TPOT（Time Per Output Token，ms/token）
+- Time-to-Completion (TTC)：完成整个任务所需时间（wall-clock
 
 ### 硬件对比
 
@@ -22,15 +39,8 @@
 
 
 
-### 实验说明
-- 当前实验聚焦于 **benchmark 与系统性能评估**。
-- **算子层面**已完成测试与对齐，说明底层执行链路已经具备基本可用性。
-- **模型层面**的输出未与参考实现完全一致。
-  - 当前加载的是 **随机初始化参数**，尚未接入真实模型权重。
-  - 本阶段尚未纳入 **attention** 和 **切词（tokenization）** 流程。
 
-
-#### 短文本实验（已完成）
+#### 短程任务实验（已完成）
 
 **实验设置**
 - 模型：Qwen3-Coder-30B-A3B-Instruct（FP16）
@@ -45,6 +55,14 @@
 | 环境 | CPU 虚拟机 |
 | 配置核数 | 48 |
 | 配置内存容量（TB） | 0.192 |
+
+
+**Prefill 结果**
+
+
+
+
+
 
 **Decode 结果**
 在 `prompt_len=128/256/512` 的三组测试中，eLLM 均稳定优于 SgLang CPU baseline，在 CPU 上表现出更低的 TPOT。综合来看，eLLM 约带来 `1.6×` 的性能提升，对应约 `38%` 的延迟下降。随着上下文长度增加，两者的 TPOT 都呈近似线性增长，但 eLLM 的斜率更低，说明其在短上下文范围内已经展现出更好的效率趋势。
@@ -67,6 +85,8 @@ xychart-beta
 - KV Cache 管理：自回归 Decode 需要持续保存历史 token 的 KV 状态，并处理 KV block 的分配、回收和地址映射；这些操作单次开销不大，但频率极高，容易放大元数据和访存成本。
 - 中间张量管理：Decode 过程中仍会产生 Q、K、V 投影、attention 中间结果、MLP 激活和 residual buffer 等临时 tensor；如果不能稳定复用，就会引入频繁分配与释放、内存碎片和带宽压力。
 - 服务框架/运行时开销：API 服务、请求生命周期和 streaming 调度都会带来额外成本；GIL、上下文切换和动态数据结构操作也会进一步拖慢端到端延迟。
+
+
 
 #### 长文本实验（预计 5 月底完成）
 GPU 显存容量较小，chunk size 受限，使得长 Prompt 必须分段处理，同时也限制了 batch size 的规模。在 Prefill 阶段，需要对分段后的长上下文进行重复处理，带来额外开销。在 Decode 阶段，小 batch size 会导致并行度不足，从而引起性能明显下降。
