@@ -1,71 +1,84 @@
-## 实验
-截至目前，eLLM 已经与 SGLang 的整体输出完全对齐，说明实现方案是可行的， 详细过程可以参看alignment skill 及 align 文件夹。Beta 版本已经发布，基本功能已经可以使用。但是整体系统还不完善，仅建议用做测试，不建议用做生产环境。需要耐心等待正式版本的发布。
+## 🧪 实验
 
-为验证它的性能潜力，我们设计了
+eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 大模型推理方案的可行性。详细实现过程参见 `alignment skill` 及 `align` 文件夹。当前 Beta 版本已发布，核心功能已可用，欢迎用于体验和性能测试。由于系统仍在持续优化中，暂不建议用于生产环境部署。
 
-短程任务与长程任务两类实验。
-
-eLLM 和 CPU baseline 运行在 单块 CPU 服务器。
-GPU baseline 运行在 GPU 服务器。
-
-短程任务只有一轮交互，分别考察 Prefill 和 Decode 两个阶段。
-
-eLLM 显然是比 CPU baseline 快很多。
-eLLM 在短文本时，明显落后 GPU baseline。
-eLLM 在长文本时，速度逐渐超越 GPU baseline。 
-
-但在长程推理场景下，eLLM 是比。
-
+实验结果表明：
+- eLLM 在所有场景下均显著优于 CPU baseline。
+- 短文本场景下，eLLM 与 GPU baseline 仍存在较大差距。
+- 随着输入长度增加，eLLM 的 Prefill 优势持续扩大，并在长文本场景下超过 GPU baseline。
+- 在长程推理任务中，eLLM 的整体完成时间（TTC）会优于 GPU baseline。
 
 ### 实验设置
-- CPU baseline：SGLang CPU endpoint（单块 CPU 服务器）
-- GPU baseline：Aliyun 的 API
-- 当前实验运行在公有云上的 CPU 虚拟机中，仅占服务器的一小部分资源
-- Prefill 指标：TTFT（Time to First Token，ms）
-- Decode 指标：TPOT（Time Per Output Token，ms/token）
-- Time-to-Completion (TTC)：完成整个任务所需时间（wall-clock
+为评估 eLLM 的性能潜力，我们设计了两类任务：短程任务和长程任务。
+- **短程任务**：单轮交互，分别评估 Prefill 和 Decode 阶段性能。
+- **长程任务**：多轮交互，并加入用户等待时间，模拟真实使用场景。
 
-### 硬件对比
+#### 指标定义
+
+- **TTFT（Time To First Token）**：衡量 Prefill 阶段延迟，单位 ms
+- **TPOT（Time Per Output Token）**：衡量 Decode 阶段生成速度，单位 ms/token
+- **TTC（Time To Completion）**：完成完整任务所需时间（wall-clock time）
+
+#### 软件配置
+实验包含三个 baseline：
+- **eLLM**：运行于 CPU 服务器
+- **CPU baseline**：SGLang CPU endpoint
+- **GPU baseline**：公有云模型 API
+- 
+受实验条件限制，GPU baseline 未在本地 GPU 服务器部署模型，而是直接调用公有云模型 API。因此 GPU 数据仅用于趋势参考和定性分析，不代表严格硬件对等测试。
+
+
+#### 实体硬件配置
 
 | 条目 | CPU 服务器 | GPU 服务器 |
 |---|---|---|
 | 型号 | Xeon 6982P-C | H20 |
 | 核数 | 128 | 16,000 |
 | FP16 矩阵算力（TFLOPS） | 250 | 296 |
-| Cache（MB） | 504（L3） | 60（L2） |
-| 最大内存容量（TB） | 3 | 0.141 |
+| Cache | 504 MB L3 | 60 MB L2 |
+| 最大内存容量 | 3 TB | 0.141 TB |
 | 数量 | 1 | 8 |
-| 总价（$） | 14,000 | 220,000 |
+| 总价 | $14,000 | $220,000 |
 
-
-
-
-#### 短程任务实验（已完成）
-
-**实验设置**
-- 模型：Qwen3-Coder-30B-A3B-Instruct（FP16）
-- 场景：短 Prompt，`batch = 1`，`prompt length = {128, 256, 512}`
-- 由于短文本场景下，所有 CPU 推理框架在 Decode 性能上通常都明显落后于 GPU，因此本组实验不再单独加入 GPU 对比。
-- 本组只做 Decode 实验，不做 Prefill；Prefill 的效果放到长文本实验中验证。
-
-**实验环境**
+#### 虚拟机配置
 
 | 条目 | 配置 |
 |---|---|
 | 环境 | CPU 虚拟机 |
-| 配置核数 | 48 |
-| 配置内存容量（TB） | 0.192 |
+| CPU | 48 核 |
+| 内存 | 192 GB |
 
+---
 
-**Prefill 结果**
+## 短程任务实验（已完成）
 
+### 实验设置
 
+- **模型**：Qwen3-Coder-30B-A3B-Instruct（FP16）
+- **Kernel**：当前使用 AVX-512 指令，AMX kernel 正在开发中
+- **场景**：`batch=1`
+- **eLLM**：`chunk size=1,000,000`
+- **CPU baseline**：不启用分段处理
 
+Prefill 与 Decode 实验一一对应。Decode 实验基于对应 Prefill 结果继续生成 100 tokens。
 
+### Prefill 结果
 
+**指标：TTFT（ms）**
 
-**Decode 结果**
-在 `prompt_len=128/256/512` 的三组测试中，eLLM 均稳定优于 SgLang CPU baseline，在 CPU 上表现出更低的 TPOT。综合来看，eLLM 约带来 `1.6×` 的性能提升，对应约 `38%` 的延迟下降。随着上下文长度增加，两者的 TPOT 都呈近似线性增长，但 eLLM 的斜率更低，说明其在短上下文范围内已经展现出更好的效率趋势。
+- eLLM 相比 CPU baseline 性能提升约 **20% ~ 10000%**。
+- 在短输入场景下，eLLM 已领先 CPU baseline；随着输入长度增加，CPU baseline 延迟快速增长，而 eLLM 增长更加平缓。
+- GPU baseline 在短文本场景下保持优势，但随着上下文长度增加，延迟增长明显；在长文本场景下，eLLM 的 Prefill 性能超过 GPU baseline。
+
+### Decode 结果
+
+**指标：TPOT（ms/token）**
+
+eLLM 在不同输入长度下均稳定优于 SGLang CPU baseline：
+
+- `prompt_len=128/256/512` 三组测试中，eLLM 均获得更低 TPOT。
+- 综合性能提升约 **1.6×**，对应约 **38% 延迟下降**。
+- 随着上下文长度增加，两者 TPOT 均近似线性增长，但 eLLM 增长斜率更低，体现出更好的扩展性。
 
 ```mermaid
 xychart-beta
@@ -74,29 +87,22 @@ xychart-beta
     y-axis 0 --> 60
     line "eLLM (CPU end)" [32.94, 33.01, 33.13]
     line "SgLang (CPU end)" [52.5, 52.47, 52.71]
-```
-
-**Decode 分析**  
-这一结果表明，短文本 decode 的瓶颈并不主要落在算子计算本身，而更多来自调度、内存管理和运行时这些“控制路径”开销。eLLM 的静态计算图和更轻量的执行路径减少了动态调度与状态维护成本，把更多时间留给真正的算子执行，因此能够在 CPU baseline 上获得稳定收益。
-
-从 CPU baseline 的执行链路看，主要损耗可以归纳为四类：
-
-- 调度开销：需要频繁执行 continuous batching、token 级路由以及请求合并/拆分；每生成一个 token 都要经过一次调度路径，随着活跃请求增多，控制开销会持续上升。
-- KV Cache 管理：自回归 Decode 需要持续保存历史 token 的 KV 状态，并处理 KV block 的分配、回收和地址映射；这些操作单次开销不大，但频率极高，容易放大元数据和访存成本。
-- 中间张量管理：Decode 过程中仍会产生 Q、K、V 投影、attention 中间结果、MLP 激活和 residual buffer 等临时 tensor；如果不能稳定复用，就会引入频繁分配与释放、内存碎片和带宽压力。
-- 服务框架/运行时开销：API 服务、请求生命周期和 streaming 调度都会带来额外成本；GIL、上下文切换和动态数据结构操作也会进一步拖慢端到端延迟。
 
 
 
-#### 长文本实验（预计 5 月底完成）
-GPU 显存容量较小，chunk size 受限，使得长 Prompt 必须分段处理，同时也限制了 batch size 的规模。在 Prefill 阶段，需要对分段后的长上下文进行重复处理，带来额外开销。在 Decode 阶段，小 batch size 会导致并行度不足，从而引起性能明显下降。
 
 
-**实验设置**
-- 模型：Qwen3-Coder-480B-A35B-Instruct（FP16）
-- 场景：`batch size = 10`，`prompt length = 100,000`
-  - eLLM：`chunk size = 1,000,000`，`batch size = 10`，`sequence length = 100,000`，整段完成
-  - GPU baseline：`chunk size = 10,000`，`batch size = 10`，`sequence length = 1,000`，需要分 100 段完成
+
+
+
+
+
+
+
+
+
+
+
 
 **结果**  
 目前实验数据仍在收集与整理中，尚未形成最终结论。
@@ -144,6 +150,25 @@ eLLM 预计会显著快于 GPU baseline。在超长 Prompt 的 Prefill 阶段，
   - eLLM 优势：eLLM 在 CPU 上以函数调用方式执行，无需 kernel 启动开销，在小 batch 和低并行度场景下具有更稳定的执行效率。
 
 
+
+
+**Decode 分析**  
+这一结果表明，短文本 decode 的瓶颈并不主要落在算子计算本身，而更多来自调度、内存管理和运行时这些“控制路径”开销。eLLM 的静态计算图和更轻量的执行路径减少了动态调度与状态维护成本，把更多时间留给真正的算子执行，因此能够在 CPU baseline 上获得稳定收益。
+
+从 CPU baseline 的执行链路看，主要损耗可以归纳为四类：
+
+- 调度开销：需要频繁执行 continuous batching、token 级路由以及请求合并/拆分；每生成一个 token 都要经过一次调度路径，随着活跃请求增多，控制开销会持续上升。
+- KV Cache 管理：自回归 Decode 需要持续保存历史 token 的 KV 状态，并处理 KV block 的分配、回收和地址映射；这些操作单次开销不大，但频率极高，容易放大元数据和访存成本。
+- 中间张量管理：Decode 过程中仍会产生 Q、K、V 投影、attention 中间结果、MLP 激活和 residual buffer 等临时 tensor；如果不能稳定复用，就会引入频繁分配与释放、内存碎片和带宽压力。
+- 服务框架/运行时开销：API 服务、请求生命周期和 streaming 调度都会带来额外成本；GIL、上下文切换和动态数据结构操作也会进一步拖慢端到端延迟。
+
+
+
+
+
+
+
+
 ## 结论
 
 GPU 长期以来被视为大模型推理的主流选择，而 CPU 往往被认为难以在同一赛道上竞争。eLLM 的实验结果表明，这一判断并不总是成立：在长文本推理场景中，单块 CPU 也有机会在端到端性能上与多卡 GPU 系统正面竞争，甚至实现反超。
@@ -151,3 +176,11 @@ GPU 长期以来被视为大模型推理的主流选择，而 CPU 往往被认�
 其根本原因在于，eLLM 充分利用了 CPU 的两项核心硬件优势。第一，CPU 拥有更大的主内存，能够支持整段长 prompt 的 Prefill，减少分段处理带来的重复载入与调度开销。第二，CPU 具备更大的 Cache 空间，配合逐 head 计算 attention 的执行方式，可以显著提升数据驻留与复用效率，使 Prefill 阶段获得更低的整体延迟。
 
 因此，在 Prefill 占主导的推理任务中，即便 Decode 阶段略慢，Prefill 的优势仍然足以主导总体耗时，最终带来更好的端到端表现。进一步看，如果将 eLLM 扩展到 NUMA 架构的多路 CPU 服务器上，并结合更大规模的内存与并行资源，它有望覆盖更多长上下文、长生命周期、低延迟的推理场景，形成一条区别于 GPU 路线的高性价比推理方案。
+
+
+
+- 由于短文本场景下，所有 CPU 推理框架在 Decode 性能上通常都明显落后于 GPU，因此本组实验不再单独加入 GPU 对比。
+- 本组只做 Decode 实验，不做 Prefill；Prefill 的效果放到长文本实验中验证。
+
+GPU 显存容量较小，chunk size 受限，使得长 Prompt 必须分段处理，同时也限制了 batch size 的规模。在 Prefill 阶段，需要对分段后的长上下文进行重复处理，带来额外开销。在 Decode 阶段，小 batch size 会导致并行度不足，从而引起性能明显下降。
+

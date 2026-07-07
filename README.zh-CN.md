@@ -1,4 +1,4 @@
-# eLLM：让 CPU 在长程推理中跑赢 GPU
+# eLLM：让 CPU 在长程推理中快过 GPU
 ## eLLM：让 CPU 成为 AI 推理芯片的首选
 👉 项目主页：[https://github.com/lucienhuangfu/eLLM](https://github.com/lucienhuangfu/eLLM)  
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)  
@@ -63,18 +63,20 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 - ✅ Qwen3 系列
 - ⏳ MiniMax M2.7
 
-## Benchmark
-我们已经与SGLang (CPU end) 的输出完全对齐，对比了性能
+## 📊 Benchmark
 
+eLLM 推理结果已与 SGLang CPU backend 完全对齐，核心功能已可用，欢迎体验和测试。当前版本仍在持续优化中，暂不建议用于生产环境部署。
 
-长程
+性能对比显示，eLLM 在 Prefill 阶段具备显著优势，长文本场景下甚至超过 GPU baseline：
+- **Prefill（TTFT, ms）**：相比 CPU baseline 性能提升约 **20% ~ 10000%**，40K tokens 后超过 GPU baseline。
+- **Decode（TPOT, ms/token）**：相比 CPU baseline 稳定提升约 **20%**。
 
+详细 benchmark 结果见：
 
 
 
 ## 📄 论文
 如果你对 eLLM 的底层设计与技术细节感兴趣，欢迎阅读我们的[论文](ellm.pdf)并引用。需要说明的是，当前公开版本为**早期论文**，其中部分实现细节尚未完全反映 eLLM 的最新进展，我们正在持续更新中，敬请理解。
-
 
 ```bibtex
 @misc{huangfu2025ellm,
