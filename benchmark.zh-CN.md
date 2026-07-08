@@ -21,46 +21,37 @@ eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推�
 * **CPU baseline**：SGLang CPU backend
 * **GPU baseline**：公有云模型 API
 
-受实验条件限制，GPU baseline 未在独占 GPU 服务器上部署模型，而是直接调用公有云模型 API。因此 GPU 数据仅用于趋势分析和定性比较，不作为严格硬件对等测试。
+受实验条件限制，GPU baseline 未在独占 GPU 服务器上部署模型，而是直接调用公有云模型 API。因此 GPU 数据仅用于趋势分析和定性比较，不作为严格硬件对等测试。受条件限制，我们租用的是公有云的CPU虚拟机，相比裸机性能略差。
 
-#### 实体硬件
+#### 机器配置
 
-| 条目                |      CPU 服务器 |  GPU 服务器 |
-| ----------------- | -----------: | -------: |
+
+| 条目                |      CPU 虚拟机 | GPU 服务器 |
+| ----------------- | -----------: |-----: |
 | 型号                | Xeon 6982P-C |      H20 |
-| 数量                |            1 |        8 |
-| 核数                |          128 |   16,000 |
+| 数量                |            1 |    8 |
+| 核数                |         48 of 128 |  16,000 |
 | FP16 矩阵算力（TFLOPS） |          250 |      296 |
-| Cache             |    504 MB L3 | 60 MB L2 |
-| 最大内存容量            |         3 TB | 0.141 TB |
+| Cache             |    504 MB L3 | | 60 MB L2 |
+| 最大内存容量            |        0.192 of 3 TB |0.141 TB |
 | 总价（USD）           |       14,000 |  220,000 |
 
-#### 运行配置
 
-| 条目  | 配置      |
-| --- | ------- |
-| 环境  | CPU 虚拟机 |
-| CPU | 48 核    |
-| 内存  | 192 GB  |
-
----
 
 ### 短程任务实验（已完成）
 
 #### 实验设置
 
-短程任务采用单轮交互，分别评估 **Prefill** 与 **Decode** 两个阶段的性能。
+短程任务采用单轮交互，分别评估 **Prefill** 与 **Decode** 两个阶段的性能。Prefill 与 Decode 实验一一对应，其中 Decode 在对应 Prefill 完成后继续生成 **100 Tokens**。
 
 * **模型**：Qwen3-Coder-30B-A3B-Instruct（FP16）
 * **Kernel**：当前使用 AVX-512，AMX Kernel 正在开发中
 * **Batch Size**：1
-* **输入长度**：覆盖短文本至长文本
-* **eLLM**：`chunk size = 1,000,000`
-* **CPU baseline**：关闭 Chunking
-* **TTFT（Time To First Token）**：Prefill 延迟（ms）
-* **TPOT（Time Per Output Token）**：Decode 延迟（ms/token）
+* **输入**：`batch = 1`, sequence 从短到长
+* **chunking**：`ellm chunk size = 1,000,000`, `CPU baseline 关闭 Chunking`
+* **Prefill 指标**：TTFT（Time To First Token, ms）
+* **Decode 指标**：TPOT（Time Per Output Token，ms/token）
 
-Prefill 与 Decode 实验一一对应，其中 Decode 在对应 Prefill 完成后继续生成 **100 Tokens**。
 
 #### Prefill
 

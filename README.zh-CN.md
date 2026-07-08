@@ -62,16 +62,17 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 ## 🤖 支持模型
 - ✅ Qwen3 系列
 - ⏳ MiniMax M2.7
-
+- ⏳ GLM 5.2
 ## 📊 Benchmark
 
 eLLM 推理结果已与 SGLang CPU backend 完全对齐，核心功能已可用，欢迎试用。当前版本仍在持续优化中，暂不建议用于生产环境部署。
+
 
 性能对比显示，eLLM 在 Prefill 阶段具备显著优势，长文本场景下甚至超过 GPU baseline：
 - **Prefill（TTFT, ms）**：相比 CPU baseline 性能提升约 **20% ~ 10000%**，40K tokens 后超过 GPU baseline。
 - **Decode（TPOT, ms/token）**：相比 CPU baseline 稳定提升约 **20%**。
 
-详细 benchmark 结果见：
+详细 benchmark 结果见：[benchmark.zh-CN.md](benchmark.zh-CN.md)。
 
 
 
