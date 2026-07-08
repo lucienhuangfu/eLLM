@@ -54,7 +54,7 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
   为 KV Cache 预分配固定形状的 tensor，不依赖分页式 block 管理；读写时直接按张量坐标定位 KV，并沿 sequence 维度连续读取 KV，减少元数据维护、地址映射和动态分配开销，尽量避免 TLB miss 和 cache miss。
 - 📦 **超大维度张量**
   为张量预留足够大的 token/sequence 维度，构建近似“无限长度”的 KV tensor，支持整段 Prefill，从而尽量避免重复 Prefill 和参数反复载入，适配超长 Prompt 和长上下文。
-- 🔁 **Session Cache（跨轮状态保持）**
+- 🔁 **Session Cache**
   在多轮交互中持续保留 KV 状态，仅对新输入进行增量 Prefill，而无需重复计算历史上下文；从机制上实现“状态连续性”，支撑 Agent 在长时间任务中保持上下文一致与执行连贯。
 - **⚡ 逐头计算 Attention**
   在 Prefill 阶段，以“单个 token 的单个 KV head”为基本计算单元，CPU 完成一个 head 的计算后再切换到下一个 head。该设计更契合 CPU 核数有限但缓存容量较大的硬件特性：尽可能让单个 head 的 KV 数据长期驻留在片上 Cache 中，从而减少重复内存加载。
@@ -65,7 +65,7 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 
 ## 📊 Benchmark
 
-eLLM 推理结果已与 SGLang CPU backend 完全对齐，核心功能已可用，欢迎体验和测试。当前版本仍在持续优化中，暂不建议用于生产环境部署。
+eLLM 推理结果已与 SGLang CPU backend 完全对齐，核心功能已可用，欢迎试用。当前版本仍在持续优化中，暂不建议用于生产环境部署。
 
 性能对比显示，eLLM 在 Prefill 阶段具备显著优势，长文本场景下甚至超过 GPU baseline：
 - **Prefill（TTFT, ms）**：相比 CPU baseline 性能提升约 **20% ~ 10000%**，40K tokens 后超过 GPU baseline。

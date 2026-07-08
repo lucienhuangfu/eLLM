@@ -1,84 +1,82 @@
 ## 🧪 实验
 
-eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 大模型推理方案的可行性。详细实现过程参见 `alignment skill` 及 `align` 文件夹。当前 Beta 版本已发布，核心功能已可用，欢迎用于体验和性能测试。由于系统仍在持续优化中，暂不建议用于生产环境部署。
+eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推理方案的正确性与可行性。详细实现过程参见 `alignment skill` 及 `align` 文件夹。
 
-实验结果表明：
-- eLLM 在所有场景下均显著优于 CPU baseline。
-- 短文本场景下，eLLM 与 GPU baseline 仍存在较大差距。
-- 随着输入长度增加，eLLM 的 Prefill 优势持续扩大，并在长文本场景下超过 GPU baseline。
-- 在长程推理任务中，eLLM 的整体完成时间（TTC）会优于 GPU baseline。
+当前 Beta 版本已发布，核心功能已具备可用性，欢迎体验和测试。由于系统仍在持续优化中，暂不建议部署于生产环境。
 
-### 实验设置
-为评估 eLLM 的性能潜力，我们设计了两类任务：短程任务和长程任务。
-- **短程任务**：单轮交互，分别评估 Prefill 和 Decode 阶段性能。
-- **长程任务**：多轮交互，并加入用户等待时间，模拟真实使用场景。
+### 实验结论
 
-#### 指标定义
+为验证 eLLM 在不同推理场景下的性能，我们设计了**短程任务**（单轮交互）和**长程任务**（多轮交互）两类实验。
 
-- **TTFT（Time To First Token）**：衡量 Prefill 阶段延迟，单位 ms
-- **TPOT（Time Per Output Token）**：衡量 Decode 阶段生成速度，单位 ms/token
-- **TTC（Time To Completion）**：完成完整任务所需时间（wall-clock time）
+目前实验结果表明：
+* **大幅领先 CPU baseline**：在所有测试场景中，eLLM 均显著优于 SGLang CPU backend。 
+* **长上下文优势显著**：随着上下文长度的增加，eLLM 的优势持续扩大，Prefill 和 Decode 或可快过 GPU baseline。
+* **长程任务整体更快**：在多轮交互场景中，eLLM 的整体任务完成时间（TTC）预计优于 GPU baseline。
 
-#### 软件配置
-实验包含三个 baseline：
-- **eLLM**：运行于 CPU 服务器
-- **CPU baseline**：SGLang CPU endpoint
-- **GPU baseline**：公有云模型 API
-- 
-受实验条件限制，GPU baseline 未在本地 GPU 服务器部署模型，而是直接调用公有云模型 API。因此 GPU 数据仅用于趋势参考和定性分析，不代表严格硬件对等测试。
+### 实验环境
 
+实验包含三个对比对象：
 
-#### 实体硬件配置
+* **eLLM**：运行于 CPU 服务器
+* **CPU baseline**：SGLang CPU backend
+* **GPU baseline**：公有云模型 API
 
-| 条目 | CPU 服务器 | GPU 服务器 |
-|---|---|---|
-| 型号 | Xeon 6982P-C | H20 |
-| 核数 | 128 | 16,000 |
-| FP16 矩阵算力（TFLOPS） | 250 | 296 |
-| Cache | 504 MB L3 | 60 MB L2 |
-| 最大内存容量 | 3 TB | 0.141 TB |
-| 数量 | 1 | 8 |
-| 总价 | $14,000 | $220,000 |
+受实验条件限制，GPU baseline 未在独占 GPU 服务器上部署模型，而是直接调用公有云模型 API。因此 GPU 数据仅用于趋势分析和定性比较，不作为严格硬件对等测试。
 
-#### 虚拟机配置
+#### 实体硬件
 
-| 条目 | 配置 |
-|---|---|
-| 环境 | CPU 虚拟机 |
-| CPU | 48 核 |
-| 内存 | 192 GB |
+| 条目                |      CPU 服务器 |  GPU 服务器 |
+| ----------------- | -----------: | -------: |
+| 型号                | Xeon 6982P-C |      H20 |
+| 数量                |            1 |        8 |
+| 核数                |          128 |   16,000 |
+| FP16 矩阵算力（TFLOPS） |          250 |      296 |
+| Cache             |    504 MB L3 | 60 MB L2 |
+| 最大内存容量            |         3 TB | 0.141 TB |
+| 总价（USD）           |       14,000 |  220,000 |
+
+#### 运行配置
+
+| 条目  | 配置      |
+| --- | ------- |
+| 环境  | CPU 虚拟机 |
+| CPU | 48 核    |
+| 内存  | 192 GB  |
 
 ---
 
-## 短程任务实验（已完成）
+### 短程任务实验（已完成）
 
-### 实验设置
+#### 实验设置
 
-- **模型**：Qwen3-Coder-30B-A3B-Instruct（FP16）
-- **Kernel**：当前使用 AVX-512 指令，AMX kernel 正在开发中
-- **场景**：`batch=1`
-- **eLLM**：`chunk size=1,000,000`
-- **CPU baseline**：不启用分段处理
+短程任务采用单轮交互，分别评估 **Prefill** 与 **Decode** 两个阶段的性能。
 
-Prefill 与 Decode 实验一一对应。Decode 实验基于对应 Prefill 结果继续生成 100 tokens。
+* **模型**：Qwen3-Coder-30B-A3B-Instruct（FP16）
+* **Kernel**：当前使用 AVX-512，AMX Kernel 正在开发中
+* **Batch Size**：1
+* **输入长度**：覆盖短文本至长文本
+* **eLLM**：`chunk size = 1,000,000`
+* **CPU baseline**：关闭 Chunking
+* **TTFT（Time To First Token）**：Prefill 延迟（ms）
+* **TPOT（Time Per Output Token）**：Decode 延迟（ms/token）
 
-### Prefill 结果
+Prefill 与 Decode 实验一一对应，其中 Decode 在对应 Prefill 完成后继续生成 **100 Tokens**。
 
-**指标：TTFT（ms）**
+#### Prefill
 
-- eLLM 相比 CPU baseline 性能提升约 **20% ~ 10000%**。
-- 在短输入场景下，eLLM 已领先 CPU baseline；随着输入长度增加，CPU baseline 延迟快速增长，而 eLLM 增长更加平缓。
-- GPU baseline 在短文本场景下保持优势，但随着上下文长度增加，延迟增长明显；在长文本场景下，eLLM 的 Prefill 性能超过 GPU baseline。
+随着上下文长度增加，eLLM 的优势不断扩大：
 
-### Decode 结果
+* 相比 CPU baseline，性能提升约 **20% ～ 10000%**。
+* CPU baseline 的 TTFT 随输入长度快速增长，而 eLLM 增长更加平缓。
+* GPU baseline 在短文本场景仍具有优势，但随着上下文增加，其 TTFT 增长速度明显快于 eLLM；在长文本场景下，eLLM 已超过 GPU baseline。
 
-**指标：TPOT（ms/token）**
+#### Decode
 
-eLLM 在不同输入长度下均稳定优于 SGLang CPU baseline：
+Decode 阶段，eLLM 在所有测试长度下均稳定优于 CPU baseline：
 
-- `prompt_len=128/256/512` 三组测试中，eLLM 均获得更低 TPOT。
-- 综合性能提升约 **1.6×**，对应约 **38% 延迟下降**。
-- 随着上下文长度增加，两者 TPOT 均近似线性增长，但 eLLM 增长斜率更低，体现出更好的扩展性。
+* 综合性能提升约 **1.6×**
+* 延迟下降约 **38%**
+* 随着上下文长度增加，两者 TPOT 均近似线性增长，但 eLLM 的增长斜率更低，说明其具有更好的可扩展性。
 
 ```mermaid
 xychart-beta
@@ -87,9 +85,13 @@ xychart-beta
     y-axis 0 --> 60
     line "eLLM (CPU end)" [32.94, 33.01, 33.13]
     line "SgLang (CPU end)" [52.5, 52.47, 52.71]
+```
 
 
+### 长程任务实验（预计 8 月底完成）
 
+长程任务采用多轮交互，并在轮次之间加入用户等待时间，以模拟真实使用场景。实验采用 **TTC（Time To Completion）** 作为核心指标，即完成整个任务所需的实际时间（wall-clock time），用于评估端到端推理效率。
+ 
 
 
 
