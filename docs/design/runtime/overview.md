@@ -158,6 +158,8 @@ classDiagram
 | `PlanBuilder` | Batch plan construction with slice distribution | `plan.rs` |
 | `SliceScheduler` | Prefill token distribution across threads | `plan.rs` |
 | `ExecutorPool` | Multi-thread executor with SpinBarrier synchronization | `executor/executor.rs` |
+| `SpinBarrier` | Generation-based synchronization barrier for worker alignment | `executor/sync.rs` |
+| `AdaptiveWait` | Adaptive backoff waiting helper | `executor/sync.rs` |
 | `SlotState` | Slot state tracking with LRU pointers, phase, sequence, KV cache | `state/core.rs` |
 | `SlotStateMachine` | State transition logic with validation | `state/machine.rs` |
 | `SequenceSlice` | Minimal computation unit | `state/sequence.rs` |
@@ -262,7 +264,7 @@ src/runtime/
 ├── executor/
 │   ├── mod.rs                # Executor submodule entry
 │   ├── executor.rs           # ExecutorPool implementation
-│   └── sync.rs               # SpinBarrier, AdaptiveWait, BatchTracker
+│   └── sync.rs               # SpinBarrier and AdaptiveWait primitives
 ├── io/
 │   ├── mod.rs                # IO submodule entry
 │   ├── chat_template.rs      # ChatTemplate implementation

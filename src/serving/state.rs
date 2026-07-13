@@ -93,8 +93,6 @@ impl ApiState {
             })
         })?;
 
-        self.shared_state.push_request();
-
         Ok(result)
     }
 
@@ -143,8 +141,6 @@ impl ApiState {
                     .await;
             }
         };
-
-        self.shared_state.push_request();
 
         Ok((write_len, notify))
     }

@@ -57,8 +57,6 @@ pub(super) async fn chat_completions(
         }
     };
 
-    state.shared_state.push_request();
-
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()

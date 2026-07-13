@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::runtime::Runtime;
 
-use crate::runtime::plan::{BatchMode, PlanBuilder};
 use crate::runtime::scheduler::ScheduleTask;
+use crate::runtime::scheduler::{BatchMode, PlanBuilder};
 use crate::runtime::session::SessionHandle;
 use crate::runtime::state::core::SlotState;
 use crate::runtime::state::sequence::{DecodeList, SequenceSlice};

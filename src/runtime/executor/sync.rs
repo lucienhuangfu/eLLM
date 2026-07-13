@@ -1,8 +1,9 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 const SPIN_LIMIT: u32 = 100;
 const YIELD_LIMIT: u32 = 50;
 
+/// Adaptive spin-yield-sleep loop shared by `SpinBarrier` and `AdaptiveWait`.
 fn adaptive_spin_loop<F>(condition: F)
 where
     F: Fn() -> bool,
@@ -29,7 +30,7 @@ where
     }
 }
 
-/// Optimized spin barrier with adaptive backoff for better performance
+/// Spin barrier with adaptive backoff for multi-thread synchronization.
 #[derive(Debug)]
 pub struct SpinBarrier {
     count: AtomicUsize,
@@ -54,71 +55,33 @@ impl SpinBarrier {
         let prev = self.count.fetch_add(1, Ordering::AcqRel);
 
         if prev == self.num_threads - 1 {
-            // Last thread arrives - reset for next generation
             self.count.store(0, Ordering::Release);
             self.generation.fetch_add(1, Ordering::Release);
             true
         } else {
-            // Adaptive spinning with exponential backoff
-            self.adaptive_spin(gen);
+            adaptive_spin_loop(|| self.generation.load(Ordering::Acquire) != gen);
             false
         }
     }
-
-    fn adaptive_spin(&self, expected_gen: u64) {
-        adaptive_spin_loop(|| self.generation.load(Ordering::Acquire) != expected_gen);
-    }
 }
 
-/// Optimized wait condition with adaptive spinning
-pub struct AdaptiveWait {
-    spin_count: u32,
-    yield_count: u32,
-}
+/// Zero-sized adaptive wait wrapper around [`adaptive_spin_loop`].
+/// All state is local to each `wait` call, so the struct carries no fields.
+#[derive(Debug, Default)]
+pub struct AdaptiveWait;
 
 impl AdaptiveWait {
     #[inline]
     pub fn new() -> Self {
-        Self {
-            spin_count: 0,
-            yield_count: 0,
-        }
+        Self
     }
 
     #[inline]
-    pub fn reset(&mut self) {
-        self.spin_count = 0;
-        self.yield_count = 0;
-    }
-
     pub fn wait<F>(&mut self, condition: F)
     where
         F: Fn() -> bool,
     {
-        loop {
-            if condition() {
-                self.reset();
-                return;
-            }
-
-            if self.spin_count < SPIN_LIMIT {
-                std::hint::spin_loop();
-                self.spin_count += 1;
-            } else if self.yield_count < YIELD_LIMIT {
-                std::thread::yield_now();
-                self.yield_count += 1;
-            } else {
-                let sleep_us = 1 << (self.yield_count - YIELD_LIMIT).min(6);
-                std::thread::sleep(std::time::Duration::from_micros(sleep_us));
-                self.yield_count += 1;
-            }
-        }
-    }
-}
-
-impl Default for AdaptiveWait {
-    fn default() -> Self {
-        Self::new()
+        adaptive_spin_loop(condition);
     }
 }
 

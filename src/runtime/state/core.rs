@@ -32,52 +32,39 @@ pub struct SlotState {
 }
 
 impl SlotState {
-    pub fn new_start_state() -> Self {
-        Self {
-            sequence_index: usize::MAX,
-            kv_index: usize::MAX,
-            filling_length: 0,
-            phase: Phase::Start,
-            session_id: None,
-            token_count: 0,
-            created_at: Instant::now(),
-            last_accessed: Instant::now(),
-            notify: Arc::new(Notify::new()),
-            lru_prev: LRU_SENTINEL,
-            lru_next: LRU_SENTINEL,
-        }
-    }
-
-    pub fn new_prefill_state(sequence_index: usize, filling_length: usize) -> Self {
-        Self {
-            sequence_index,
-            kv_index: sequence_index,
-            filling_length,
-            phase: Phase::Prefill,
-            session_id: None,
-            token_count: 0,
-            created_at: Instant::now(),
-            last_accessed: Instant::now(),
-            notify: Arc::new(Notify::new()),
-            lru_prev: LRU_SENTINEL,
-            lru_next: LRU_SENTINEL,
-        }
-    }
-
-    pub fn new_decode_state(sequence_index: usize, kv_index: usize) -> Self {
+    /// Private helper to create a slot with common defaults.
+    fn fresh(phase: Phase, sequence_index: usize, kv_index: usize, filling_length: usize) -> Self {
+        let now = Instant::now();
         Self {
             sequence_index,
             kv_index,
-            filling_length: 0,
-            phase: Phase::Decode,
+            filling_length,
+            phase,
             session_id: None,
             token_count: 0,
-            created_at: Instant::now(),
-            last_accessed: Instant::now(),
+            created_at: now,
+            last_accessed: now,
             notify: Arc::new(Notify::new()),
             lru_prev: LRU_SENTINEL,
             lru_next: LRU_SENTINEL,
         }
+    }
+
+    pub fn new_start_state() -> Self {
+        Self::fresh(Phase::Start, usize::MAX, usize::MAX, 0)
+    }
+
+    pub fn new_prefill_state(sequence_index: usize, filling_length: usize) -> Self {
+        Self::fresh(
+            Phase::Prefill,
+            sequence_index,
+            sequence_index,
+            filling_length,
+        )
+    }
+
+    pub fn new_decode_state(sequence_index: usize, kv_index: usize) -> Self {
+        Self::fresh(Phase::Decode, sequence_index, kv_index, 0)
     }
 
     pub fn is_active(&self) -> bool {
@@ -96,68 +83,44 @@ impl SlotState {
         Arc::clone(&self.notify)
     }
 
+    /// Core transition validator + phase setter. Reuses [`can_transition`] so the
+    /// allowed-from set lives in exactly one place.
+    fn transition(&mut self, target: Phase) -> Result<(), TransitionError> {
+        if self.phase == target {
+            return Err(TransitionError::AlreadyInTargetState);
+        }
+        if !Self::can_transition(self.phase, target) {
+            return Err(TransitionError::InvalidTransition);
+        }
+        self.phase = target;
+        self.notify.notify_one();
+        Ok(())
+    }
+
     pub fn transition_to_prefill(
         &mut self,
         sequence_index: usize,
         filling_length: usize,
     ) -> Result<(), TransitionError> {
-        if self.phase == Phase::Prefill {
-            return Err(TransitionError::AlreadyInTargetState);
-        }
-
-        if !matches!(self.phase, Phase::Start | Phase::Eos | Phase::Timeout) {
-            return Err(TransitionError::InvalidTransition);
-        }
-
+        self.transition(Phase::Prefill)?;
         self.sequence_index = sequence_index;
         self.kv_index = sequence_index;
         self.filling_length = filling_length;
-        self.phase = Phase::Prefill;
-        self.notify.notify_one();
         Ok(())
     }
 
     pub fn transition_to_decode(&mut self) -> Result<(), TransitionError> {
-        if self.phase == Phase::Decode {
-            return Err(TransitionError::AlreadyInTargetState);
-        }
-
-        if self.phase != Phase::Prefill {
-            return Err(TransitionError::InvalidTransition);
-        }
-
-        self.phase = Phase::Decode;
+        self.transition(Phase::Decode)?;
         self.filling_length = 0;
-        self.notify.notify_one();
         Ok(())
     }
 
     pub fn transition_to_eos(&mut self) -> Result<(), TransitionError> {
-        if self.phase == Phase::Eos {
-            return Err(TransitionError::AlreadyInTargetState);
-        }
-
-        if !matches!(self.phase, Phase::Decode | Phase::Prefill) {
-            return Err(TransitionError::InvalidTransition);
-        }
-
-        self.phase = Phase::Eos;
-        self.notify.notify_one();
-        Ok(())
+        self.transition(Phase::Eos)
     }
 
     pub fn transition_to_timeout(&mut self) -> Result<(), TransitionError> {
-        if self.phase == Phase::Timeout {
-            return Err(TransitionError::AlreadyInTargetState);
-        }
-
-        if !matches!(self.phase, Phase::Decode | Phase::Prefill) {
-            return Err(TransitionError::InvalidTransition);
-        }
-
-        self.phase = Phase::Timeout;
-        self.notify.notify_one();
-        Ok(())
+        self.transition(Phase::Timeout)
     }
 
     pub fn reset_to_start(&mut self) {
@@ -193,17 +156,17 @@ impl SlotState {
     }
 
     pub fn can_transition(from: Phase, to: Phase) -> bool {
-        match (from, to) {
-            (Phase::Start, Phase::Prefill) => true,
-            (Phase::Eos, Phase::Prefill) => true,
-            (Phase::Timeout, Phase::Prefill) => true,
-            (Phase::Prefill, Phase::Decode) => true,
-            (Phase::Decode, Phase::Eos) => true,
-            (Phase::Prefill, Phase::Eos) => true,
-            (Phase::Decode, Phase::Timeout) => true,
-            (Phase::Prefill, Phase::Timeout) => true,
-            _ => false,
-        }
+        matches!(
+            (from, to),
+            (Phase::Start, Phase::Prefill)
+                | (Phase::Eos, Phase::Prefill)
+                | (Phase::Timeout, Phase::Prefill)
+                | (Phase::Prefill, Phase::Decode)
+                | (Phase::Decode, Phase::Eos)
+                | (Phase::Prefill, Phase::Eos)
+                | (Phase::Decode, Phase::Timeout)
+                | (Phase::Prefill, Phase::Timeout)
+        )
     }
 }
 

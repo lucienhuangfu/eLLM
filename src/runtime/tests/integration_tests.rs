@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::error::{SlotError, SlotResult};
-use crate::runtime::plan::{BatchMode, BatchPlan, PlanBuilder};
 use crate::runtime::scheduler::ScheduleTask;
+use crate::runtime::scheduler::{BatchMode, BatchPlan, PlanBuilder};
 use crate::runtime::session::{SessionHandle, SessionMode, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::core::{SlotState, TransitionError};
@@ -381,11 +381,22 @@ fn test_shared_state_basic_operations() {
     let batch_list = Arc::new(SharedMut::new(Vec::new()));
     let shared_state = SharedState::new(batch_list.clone());
 
-    assert!(!shared_state.has_work.load(Ordering::SeqCst));
+    assert!(!shared_state.has_work());
+    assert!(matches!(
+        shared_state.current_work(),
+        crate::runtime::state::shared::ExecutorWork::Idle
+    ));
 
-    // 设置 has_work
-    shared_state.has_work.store(true, Ordering::SeqCst);
-    assert!(shared_state.has_work.load(Ordering::SeqCst));
+    let task = ScheduleTask::new(1, 0, Vec::new(), DecodeList::with_capacity(0), 9);
+    shared_state.set_task(task);
+    assert!(shared_state.has_work());
+    assert!(matches!(
+        shared_state.current_work(),
+        crate::runtime::state::shared::ExecutorWork::Scheduled(_)
+    ));
+
+    shared_state.clear_work();
+    assert!(!shared_state.has_work());
 }
 
 /// ========================================

@@ -2,8 +2,8 @@
 
 pub(super) use crate::operators::send_sync_ptr::SharedMut;
 pub(super) use crate::runtime::error::{SlotError, SlotResult};
-pub(super) use crate::runtime::plan::{BatchMode, BatchPlan, PlanBuilder};
 pub(super) use crate::runtime::scheduler::ScheduleTask;
+pub(super) use crate::runtime::scheduler::{BatchMode, BatchPlan, PlanBuilder};
 pub(super) use crate::runtime::session::{SessionHandle, SessionMode, SlotManager};
 pub(super) use crate::runtime::state::batch::BatchSequence;
 pub(super) use crate::runtime::state::core::{SlotState, TransitionError};

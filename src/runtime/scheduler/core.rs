@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use super::plan::BatchPlan;
 use super::strategy::{DefaultSchedulerStrategy, SchedulerStrategy};
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::plan::BatchPlan;
 use crate::runtime::state::core::SlotState;
 use crate::runtime::state::shared::SharedState;
 

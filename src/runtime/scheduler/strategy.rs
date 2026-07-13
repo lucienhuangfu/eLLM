@@ -1,4 +1,4 @@
-use crate::runtime::plan::BatchPlan;
+use super::plan::BatchPlan;
 use crate::runtime::state::core::SlotState;
 
 pub trait SchedulerStrategy: Send + Sync + 'static {
@@ -34,7 +34,7 @@ impl Clone for DefaultSchedulerStrategy {
 impl SchedulerStrategy for DefaultSchedulerStrategy {
     #[inline]
     fn plan_next_round(&self, batch_list: &[SlotState]) -> BatchPlan {
-        let builder = crate::runtime::plan::PlanBuilder::new(
+        let builder = crate::runtime::scheduler::PlanBuilder::new(
             self.max_decode_size,
             self.max_prefill_size,
             self.thread_num,
@@ -46,7 +46,7 @@ impl SchedulerStrategy for DefaultSchedulerStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::plan::BatchMode;
+    use crate::runtime::scheduler::plan::BatchMode;
     use crate::runtime::state::types::Phase;
 
     /// 测试 DefaultSchedulerStrategy 创建
