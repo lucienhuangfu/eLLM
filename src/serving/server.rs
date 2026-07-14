@@ -3,10 +3,9 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::session::SlotManager;
+use crate::runtime::scheduler::Scheduler;
+use crate::runtime::session::{SlotManager, SlotState};
 use crate::runtime::state::batch::BatchSequence;
-use crate::runtime::state::shared::SharedState;
-use crate::runtime::SlotState;
 
 use super::api::chat_completions;
 use super::parser::ParserOptions;
@@ -15,7 +14,7 @@ use super::state::ApiState;
 pub async fn run(
     batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_list: Arc<SharedMut<Vec<SlotState>>>,
-    shared_state: Arc<SharedState>,
+    scheduler: Arc<Scheduler>,
     parser_options: ParserOptions,
     slot_manager: Arc<SlotManager<f16>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -24,7 +23,7 @@ pub async fn run(
     let state = ApiState {
         batch_sequences,
         batch_states: batch_list,
-        shared_state,
+        scheduler,
         parser_options,
         slot_manager,
     };

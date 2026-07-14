@@ -7,13 +7,11 @@ use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, s
 use crate::operators::operator::Operator;
 use crate::runtime::executor::sync::{AdaptiveWait, SpinBarrier};
 use crate::runtime::scheduler::{ScheduleTask, Scheduler};
-use crate::runtime::state::shared::SharedState;
 
 pub struct ExecutorPool<T> {
-    shared_state: Arc<SharedState>,
+    pub scheduler: Arc<Scheduler>,
     operator_queue: Arc<[Operator<T>]>,
-    thread_num: usize,
-    scheduler: Arc<Scheduler>,
+    pub thread_num: usize,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -35,23 +33,15 @@ where
 {
     pub fn new(
         operator_queue: Vec<Operator<T>>,
-        shared_state: Arc<SharedState>,
+        scheduler: Arc<Scheduler>,
         thread_num: usize,
-        chunk_size: usize,
+        _chunk_size: usize,
         _timeout: Duration,
     ) -> Self {
-        let batch_size = shared_state.batch_list.with(|list| list.len());
-        let scheduler = Arc::new(Scheduler::new(
-            batch_size,
-            chunk_size,
-            thread_num,
-            Arc::clone(&shared_state),
-        ));
         Self {
-            shared_state,
+            scheduler,
             operator_queue: operator_queue.into(),
             thread_num: thread_num.max(1),
-            scheduler,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -65,23 +55,21 @@ where
         let barrier = Arc::new(SpinBarrier::new(self.thread_num));
 
         for thread_id in 0..self.thread_num {
-            let shared_state = Arc::clone(&self.shared_state);
+            let scheduler = Arc::clone(&self.scheduler);
             let operator_queue = Arc::clone(&self.operator_queue);
             let barrier = Arc::clone(&barrier);
             let thread_num = self.thread_num;
-            let scheduler = Arc::clone(&self.scheduler);
             let shutdown = Arc::clone(&self.shutdown);
 
             std::thread::Builder::new()
                 .name(format!("executor-worker-{thread_id}"))
                 .spawn(move || {
                     Self::run_worker(
-                        shared_state,
+                        scheduler,
                         operator_queue.as_ref(),
                         &barrier,
                         thread_num,
                         thread_id,
-                        scheduler,
                         shutdown,
                     );
                 })
@@ -89,8 +77,8 @@ where
         }
     }
 
-    pub fn shared_state(&self) -> Arc<SharedState> {
-        Arc::clone(&self.shared_state)
+    pub fn scheduler(&self) -> Arc<Scheduler> {
+        Arc::clone(&self.scheduler)
     }
 
     pub fn shutdown_handle(&self) -> Arc<AtomicBool> {
@@ -98,12 +86,11 @@ where
     }
 
     fn run_worker(
-        shared_state: Arc<SharedState>,
+        scheduler: Arc<Scheduler>,
         operator_queue: &[Operator<T>],
         barrier: &SpinBarrier,
         thread_num: usize,
         thread_id: usize,
-        scheduler: Arc<Scheduler>,
         shutdown: Arc<AtomicBool>,
     ) {
         let mut wait = AdaptiveWait::default();
@@ -111,11 +98,11 @@ where
         while !shutdown.load(Ordering::Acquire) {
             if thread_id == 0 {
                 if !scheduler.schedule_batch() {
-                    wait.wait(|| shutdown.load(Ordering::Acquire) || shared_state.has_work());
+                    wait.wait(|| shutdown.load(Ordering::Acquire) || scheduler.has_work());
                     continue;
                 }
             } else {
-                wait.wait(|| shutdown.load(Ordering::Acquire) || shared_state.has_work());
+                wait.wait(|| shutdown.load(Ordering::Acquire) || scheduler.has_work());
             }
 
             if shutdown.load(Ordering::Acquire) {
@@ -123,9 +110,9 @@ where
             }
 
             barrier.wait();
-            shared_state.task().with(|task| {
+            scheduler.task().with(|task| {
                 Self::execute_operators(
-                    &shared_state,
+                    &scheduler,
                     operator_queue,
                     barrier,
                     thread_num,
@@ -136,7 +123,7 @@ where
             barrier.wait();
 
             if thread_id == 0 {
-                shared_state.task().with_mut(|task| {
+                scheduler.task().with_mut(|task| {
                     task.reset();
                 });
             }
@@ -145,7 +132,7 @@ where
 
     #[inline]
     fn execute_operators(
-        shared_state: &SharedState,
+        scheduler: &Scheduler,
         operator_queue: &[Operator<T>],
         barrier: &SpinBarrier,
         thread_num: usize,
@@ -158,7 +145,7 @@ where
         let decode_list = &task.decode_list;
 
         for operator in operator_queue.iter() {
-            let batch_list_ptr = shared_state.batch_list.get();
+            let batch_list_ptr = scheduler.batch_list().get();
             unsafe {
                 let batch_list = &mut *batch_list_ptr;
                 operator.run(
@@ -178,7 +165,7 @@ where
 
     #[cfg(test)]
     fn execute_batch(
-        shared_state: &SharedState,
+        scheduler: &Scheduler,
         operator_queue: &[Operator<T>],
         barrier: &SpinBarrier,
         thread_num: usize,
@@ -186,7 +173,7 @@ where
         task: &ScheduleTask,
     ) {
         Self::execute_operators(
-            shared_state,
+            scheduler,
             operator_queue,
             barrier,
             thread_num,
@@ -200,6 +187,7 @@ where
 mod tests {
     use super::*;
 
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
@@ -207,15 +195,15 @@ mod tests {
     use crate::operators::fake_echo::FakeEcho;
     use crate::operators::operator::Operator;
     use crate::operators::send_sync_ptr::SharedMut;
+    use crate::runtime::executor::sync::SpinBarrier;
     use crate::runtime::scheduler::{BatchMode, Scheduler};
-    use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
-    use crate::runtime::state::SlotState;
+    use crate::runtime::session::SlotState;
+    use crate::runtime::state::sequence::SequenceSlice;
 
     #[test]
     fn schedule_batch_returns_none_when_no_work_exists() {
         let batch_list = Arc::new(SharedMut::new(Vec::<SlotState>::new()));
-        let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_list)));
-        let scheduler = Scheduler::new(0, 0, 1, shared_state);
+        let scheduler = Arc::new(Scheduler::new(0, 0, 1, batch_list));
 
         let has_work = scheduler.schedule_batch();
 
@@ -229,15 +217,13 @@ mod tests {
             SlotState::new_start_state(),
             SlotState::new_decode_state(2, 2),
         ]));
-        let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_list)));
-        let scheduler = Scheduler::new(32, 1024, 1, shared_state);
+        let scheduler = Arc::new(Scheduler::new(32, 1024, 1, batch_list));
 
         let has_work = scheduler.schedule_batch();
 
         assert!(has_work);
 
-        let shared_state = scheduler.shared_state();
-        shared_state.task().with(|task| {
+        scheduler.task().with(|task| {
             assert_eq!(task.mode, BatchMode::Decode);
             assert_eq!(task.decode_size, 2);
             assert_eq!(task.decode_list.len(), 2);
@@ -263,9 +249,9 @@ mod tests {
             SlotState::new_decode_state(0, 0),
             SlotState::new_decode_state(0, 0),
         ]));
-        let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_list)));
+        let scheduler = Arc::new(Scheduler::new(8, 8, thread_num, Arc::clone(&batch_list)));
 
-        let mut decode_list = DecodeList::with_capacity(2);
+        let mut decode_list = Vec::with_capacity(2);
         decode_list.push(SequenceSlice {
             batch_index: 0,
             sequence_index: 0,
@@ -281,7 +267,7 @@ mod tests {
             last_token_flag: true,
         });
 
-        shared_state.task().with_mut(|task| {
+        scheduler.task().with_mut(|task| {
             task.mode = BatchMode::Decode;
             task.decode_size = 2;
             task.prefill_size = 0;
@@ -293,13 +279,13 @@ mod tests {
         let mut handles = Vec::with_capacity(thread_num);
 
         for thread_id in 0..thread_num {
-            let shared_state = Arc::clone(&shared_state);
+            let scheduler = Arc::clone(&scheduler);
             let operator_queue = operator_queue.clone();
             let barrier = Arc::clone(&barrier);
             handles.push(thread::spawn(move || {
-                shared_state.task().with(|task| {
+                scheduler.task().with(|task| {
                     ExecutorPool::<f32>::execute_batch(
-                        &shared_state,
+                        &scheduler,
                         &operator_queue,
                         &barrier,
                         thread_num,
@@ -317,9 +303,9 @@ mod tests {
         assert_eq!(sequences[1], 11);
         assert_eq!(sequences[sequence_stride + 1], 21);
 
-        shared_state.batch_list.with(|batch_list| {
-            assert_eq!(batch_list[0].phase, crate::runtime::Phase::Decode);
-            assert_eq!(batch_list[1].phase, crate::runtime::Phase::Decode);
+        scheduler.batch_list().with(|batch_list| {
+            assert_eq!(batch_list[0].phase, crate::runtime::session::Phase::Decode);
+            assert_eq!(batch_list[1].phase, crate::runtime::session::Phase::Decode);
         });
     }
 
@@ -336,9 +322,9 @@ mod tests {
         let operator_queue = vec![Operator::<f32>::FakeEcho(fake_echo)];
 
         let batch_list = Arc::new(SharedMut::new(vec![SlotState::new_decode_state(98, 98)]));
-        let shared_state = SharedState::new(Arc::clone(&batch_list));
+        let scheduler = Scheduler::new(8, 8, thread_num, Arc::clone(&batch_list));
 
-        let mut decode_list = DecodeList::with_capacity(1);
+        let mut decode_list = Vec::with_capacity(1);
         decode_list.push(SequenceSlice {
             batch_index: 0,
             sequence_index: 98,
@@ -347,7 +333,7 @@ mod tests {
             last_token_flag: true,
         });
 
-        shared_state.task().with_mut(|task| {
+        scheduler.task().with_mut(|task| {
             task.mode = BatchMode::Decode;
             task.decode_size = 1;
             task.prefill_size = 0;
@@ -356,9 +342,9 @@ mod tests {
         });
 
         let barrier = SpinBarrier::new(thread_num);
-        shared_state.task().with(|task| {
+        scheduler.task().with(|task| {
             ExecutorPool::<f32>::execute_batch(
-                &shared_state,
+                &scheduler,
                 &operator_queue,
                 &barrier,
                 thread_num,
@@ -368,64 +354,64 @@ mod tests {
         });
 
         assert_eq!(sequences[99], eos_id);
-        shared_state.batch_list.with(|batch_list| {
-            assert_eq!(batch_list[0].phase, crate::runtime::Phase::Eos);
+        scheduler.batch_list().with(|batch_list| {
+            assert_eq!(batch_list[0].phase, crate::runtime::session::Phase::Eos);
             assert_eq!(batch_list[0].sequence_index, 100);
             assert_eq!(batch_list[0].filling_length, 0);
         });
     }
 
     #[test]
-    fn shared_state_set_task_sets_work_state_and_clear_work_resets_it() {
+    fn scheduler_work_tracking() {
         let batch_list = Arc::new(SharedMut::new(vec![SlotState::new_start_state()]));
-        let shared_state = SharedState::new(batch_list);
+        let scheduler = Scheduler::new(8, 8, 1, batch_list);
 
-        assert!(!shared_state.has_work());
+        assert!(!scheduler.has_work());
 
-        shared_state.task().with_mut(|task| {
+        scheduler.task().with_mut(|task| {
             task.mode = BatchMode::Decode;
             task.prefill_size = 1;
             task.decode_size = 2;
         });
 
-        assert!(shared_state.has_work());
+        assert!(scheduler.has_work());
 
-        shared_state.task().with(|task| {
+        scheduler.task().with(|task| {
             assert_eq!(task.prefill_size, 1);
             assert_eq!(task.decode_size, 2);
         });
 
-        shared_state.task().with_mut(|task| {
+        scheduler.task().with_mut(|task| {
             task.reset();
         });
 
-        assert!(!shared_state.has_work());
+        assert!(!scheduler.has_work());
     }
 
     #[test]
     fn executor_pool_new_clamps_thread_count_to_at_least_one() {
         let batch_list = Arc::new(SharedMut::new(vec![SlotState::new_start_state()]));
-        let shared_state = Arc::new(SharedState::new(batch_list));
+        let scheduler = Arc::new(Scheduler::new(8, 1, 1, batch_list));
         let executor =
-            ExecutorPool::<f32>::new(Vec::new(), shared_state, 0, 1, Duration::from_millis(1));
+            ExecutorPool::<f32>::new(Vec::new(), scheduler, 0, 1, Duration::from_millis(1));
 
         assert_eq!(executor.thread_num, 1);
     }
 
     #[test]
-    fn shared_state_accessor_returns_same_arc() {
+    fn scheduler_accessor_returns_same_arc() {
         let batch_list = Arc::new(SharedMut::new(vec![SlotState::new_start_state()]));
-        let shared_state = Arc::new(SharedState::new(batch_list));
+        let scheduler = Arc::new(Scheduler::new(8, 1, 1, batch_list));
         let executor = ExecutorPool::<f32>::new(
             Vec::new(),
-            Arc::clone(&shared_state),
+            Arc::clone(&scheduler),
             1,
             1,
             Duration::from_millis(1),
         );
 
-        let returned = executor.shared_state();
-        assert!(Arc::ptr_eq(&shared_state, &returned));
+        let returned = executor.scheduler();
+        assert!(Arc::ptr_eq(&scheduler, &returned));
     }
 
     #[test]
@@ -438,18 +424,22 @@ mod tests {
             SlotState::new_prefill_state(10, 500),
             SlotState::new_prefill_state(20, 500),
         ]));
-        let shared_state = Arc::new(SharedState::new(batch_list));
+        let scheduler = Arc::new(Scheduler::new(8, 2048, 8, batch_list));
 
-        let executor =
-            ExecutorPool::<f32>::new(Vec::new(), shared_state, 8, 2048, Duration::from_millis(1));
+        let executor = ExecutorPool::<f32>::new(
+            Vec::new(),
+            Arc::clone(&scheduler),
+            8,
+            2048,
+            Duration::from_millis(1),
+        );
 
         assert_eq!(executor.thread_num, 8);
 
         let scheduled = executor.scheduler.schedule_batch();
         assert!(scheduled);
 
-        let shared_state = executor.shared_state();
-        shared_state.task().with(|task| {
+        executor.scheduler().task().with(|task| {
             assert_eq!(task.mode, BatchMode::Mixed);
             assert_eq!(task.decode_size, 4);
             assert_eq!(task.prefill_list.len(), 8);
@@ -461,10 +451,10 @@ mod tests {
     #[test]
     fn executor_pool_with_thread_count_supports_large_values() {
         let batch_list = Arc::new(SharedMut::new(vec![SlotState::new_start_state(); 2]));
-        let shared_state = Arc::new(SharedState::new(batch_list));
+        let scheduler = Arc::new(Scheduler::new(8, 64, 2, batch_list));
 
         let executor =
-            ExecutorPool::<f32>::new(Vec::new(), shared_state, 2, 64, Duration::from_millis(1))
+            ExecutorPool::<f32>::new(Vec::new(), scheduler, 2, 64, Duration::from_millis(1))
                 .with_thread_count(16);
 
         assert_eq!(executor.thread_num, 16);
@@ -482,15 +472,10 @@ mod tests {
         let operator_queue = vec![Operator::<f32>::FakeEcho(fake_echo)];
 
         let batch_list = Arc::new(SharedMut::new(vec![SlotState::new_decode_state(0, 0)]));
-        let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_list)));
+        let scheduler = Arc::new(Scheduler::new(8, 64, 2, batch_list));
 
-        let executor = ExecutorPool::<f32>::new(
-            operator_queue,
-            shared_state,
-            2,
-            64,
-            Duration::from_millis(1),
-        );
+        let executor =
+            ExecutorPool::<f32>::new(operator_queue, scheduler, 2, 64, Duration::from_millis(1));
 
         let shutdown = executor.shutdown_handle();
         executor.start();

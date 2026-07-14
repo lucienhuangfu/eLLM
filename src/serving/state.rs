@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::session::{SessionHandle, SlotManager};
+use crate::runtime::scheduler::Scheduler;
+use crate::runtime::session::{Phase, SessionHandle, SlotManager, SlotState};
 use crate::runtime::state::batch::BatchSequence;
-use crate::runtime::state::shared::SharedState;
-use crate::runtime::{Phase, SlotState};
 
 use super::error::{ApiError, ApiResult};
 use super::parser::ParserOptions;
@@ -14,7 +13,7 @@ use super::requests::ChatMessage;
 pub struct ApiState {
     pub batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     pub batch_states: Arc<SharedMut<Vec<SlotState>>>,
-    pub shared_state: Arc<SharedState>,
+    pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
     pub slot_manager: Arc<SlotManager<f16>>,
 }

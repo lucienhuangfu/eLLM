@@ -22,7 +22,7 @@ async fn run_server(
     serving::run(
         resources.batch_sequences,
         resources.batch_states,
-        resources.shared_state,
+        resources.scheduler,
         resources.parser_options,
         resources.slot_manager,
     )

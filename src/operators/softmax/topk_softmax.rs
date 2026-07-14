@@ -9,9 +9,9 @@ use crate::num_traits::Sqrt;
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::TopKSoftmaxTrait;
-use crate::runtime::state::core::SlotState;
+use crate::runtime::session::Phase;
+use crate::runtime::session::SlotState;
 use crate::runtime::state::sequence::SequenceSlice;
-use crate::runtime::Phase;
 use rand::Rng;
 
 #[derive(Clone)]

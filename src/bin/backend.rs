@@ -6,7 +6,7 @@ use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
     BatchSequence, ExecutorPool, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SessionMode,
-    SharedState, SlotManager, SlotState,
+    SlotManager, SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
@@ -165,7 +165,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
     let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
 
-    let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_list_arc)));
+    let batch_scheduler = Arc::new(Scheduler::new(
+        batch_size,
+        chunk_size,
+        thread_num,
+        Arc::clone(&batch_list_arc),
+    ));
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
@@ -176,23 +181,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let executor_pool = ExecutorPool::<f16>::new(
         f16::take_operator_queue(),
-        Arc::clone(&shared_state),
+        Arc::clone(&batch_scheduler),
         thread_num,
         chunk_size,
         Duration::from_millis(10),
     );
-    let batch_scheduler = Scheduler::new(
-        batch_size,
-        chunk_size,
-        thread_num,
-        Arc::clone(&shared_state),
-    );
 
     println!("Starting inference with ExecutorPool...");
 
-    let shared_state = batch_scheduler.shared_state();
     if batch_scheduler.schedule_batch() {
-        shared_state.task().with(|task| {
+        batch_scheduler.task().with(|task| {
             // Execute prefill task
             // executor_pool.execute_task(task);
         });
@@ -213,12 +211,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
-        let decode_size = shared_state.task().with(|task| task.decode_size);
+        let decode_size = batch_scheduler.task().with(|task| task.decode_size);
         if decode_size == 0 {
             break;
         }
 
-        shared_state.task().with(|task| {
+        batch_scheduler.task().with(|task| {
             // executor_pool.execute_task(task);
         });
     }

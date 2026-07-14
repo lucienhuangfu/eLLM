@@ -238,7 +238,7 @@ mod test {
     use crate::operators::expert::expert_routing::ExpertRouting;
     use crate::operators::send_sync_ptr::SharedMut;
     use crate::runtime::state::sequence::SequenceSlice;
-    use crate::runtime::{Phase, Scheduler, SessionMode, SharedState, SlotManager, SlotState};
+    use crate::runtime::{Phase, Scheduler, SessionMode, SlotManager, SlotState};
     use approx::assert_ulps_eq;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -379,19 +379,14 @@ mod test {
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
-        let scheduler = Scheduler::new(
-            SEQUENCE_LENGTH,
-            BATCH_SIZE,
-            THREAD_NUM,
-            Arc::new(SharedState::new(batch_list)),
-        );
+        let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
         scheduler.batch_list().with_mut(|bl| {
             bl.push(prefill_state(0, 3));
             bl.push(prefill_state(0, 4));
         });
 
         scheduler.schedule_batch();
-        let task = scheduler.shared_state().task().with(|t| t.clone());
+        let task = scheduler.task().with(|t| t.clone());
         let prefill_size = task.prefill_size;
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 7);
@@ -644,18 +639,13 @@ mod test {
                 SessionMode::Reusable,
                 600000, // 10 minutes
             ));
-            let scheduler = Scheduler::new(
-                SEQUENCE_LENGTH,
-                BATCH_SIZE,
-                thread_num,
-                Arc::new(SharedState::new(batch_list)),
-            );
+            let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, thread_num, batch_list);
             scheduler.batch_list().with_mut(|bl| {
                 bl.push(prefill_state(0, 3));
                 bl.push(prefill_state(0, 4));
             });
             scheduler.schedule_batch();
-            let task = scheduler.shared_state().task().with(|t| t.clone());
+            let task = scheduler.task().with(|t| t.clone());
             let prefill_size = task.prefill_size;
             let decode_size = task.decode_size;
             let prefill_list = task.prefill_list.clone();
@@ -789,19 +779,14 @@ mod test {
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
-        let scheduler = Scheduler::new(
-            SEQUENCE_LENGTH,
-            BATCH_SIZE,
-            THREAD_NUM,
-            Arc::new(SharedState::new(batch_list)),
-        );
+        let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
         scheduler.batch_list().with_mut(|bl| {
             bl.push(decode_state(3, 4));
             bl.push(decode_state(4, 5));
         });
 
         scheduler.schedule_batch();
-        let task = scheduler.shared_state().task().with(|t| t.clone());
+        let task = scheduler.task().with(|t| t.clone());
         let prefill_size = task.prefill_size;
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 0);
@@ -1037,12 +1022,7 @@ mod test {
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
-        let scheduler = Scheduler::new(
-            SEQUENCE_LENGTH,
-            BATCH_SIZE,
-            THREAD_NUM,
-            Arc::new(SharedState::new(batch_list)),
-        );
+        let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
         scheduler.batch_list().with_mut(|bl| {
             bl.push(prefill_state(0, 3));
         });
@@ -1069,7 +1049,7 @@ mod test {
         let cache_offset = |sequence_index: usize| (sequence_index * BATCH_SIZE) * HEAD_DIM;
 
         scheduler.schedule_batch();
-        let task = scheduler.shared_state().task().with(|t| t.clone());
+        let task = scheduler.task().with(|t| t.clone());
         let prefill_size = task.prefill_size;
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 3);
@@ -1248,7 +1228,7 @@ mod test {
 
         let prefill_cache_snapshot = v_cache.clone();
         scheduler.schedule_batch();
-        let task = scheduler.shared_state().task().with(|t| t.clone());
+        let task = scheduler.task().with(|t| t.clone());
         let decode_prefill_size = task.prefill_size;
         let decode_size = task.decode_size;
         assert_eq!(decode_prefill_size, 0);

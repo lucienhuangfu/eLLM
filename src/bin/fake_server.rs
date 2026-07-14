@@ -5,7 +5,7 @@ use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::{
     build_batch_sequence, build_slot_state, BatchSequence, ExecutorPool, Scheduler, SessionMode,
-    SharedState, SlotManager, SlotState,
+    SlotManager, SlotState,
 };
 use ellm::serving;
 use ellm::serving::parser::{ParserOptions, ParserRule};
@@ -30,27 +30,24 @@ async fn run_server(
     sequences_ptr: *mut usize,
     sequence_length: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_states)));
+    let batch_size = batch_states.with(|list| list.len());
+    let scheduler = Arc::new(Scheduler::new(batch_size, 64, 4, Arc::clone(&batch_states)));
 
     let fake_echo = FakeEcho::new(sequences_ptr, sequence_length, 151643);
     let operator_queue = vec![Operator::<f16>::FakeEcho(fake_echo)];
     let executor_pool = ExecutorPool::new(
         operator_queue,
-        Arc::clone(&shared_state),
+        Arc::clone(&scheduler),
         4,
         64,
         Duration::from_millis(10),
     );
     executor_pool.start();
 
-    let batch_size = batch_states.with(|list| list.len());
-
-    let _ = Arc::new(Scheduler::new(batch_size, 64, 4, Arc::clone(&shared_state)));
-
     serving::run(
         batch_sequences,
         batch_states,
-        shared_state,
+        scheduler,
         parser_options,
         slot_manager,
     )

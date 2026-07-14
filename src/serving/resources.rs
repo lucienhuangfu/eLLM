@@ -3,10 +3,10 @@ use std::sync::Arc;
 use crate::config::ResolvedConfig;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::session::{SessionMode, SlotManager};
+use crate::runtime::scheduler::Scheduler;
+use crate::runtime::session::{SessionMode, SlotManager, SlotState};
 use crate::runtime::state::batch::BatchSequence;
-use crate::runtime::state::shared::SharedState;
-use crate::runtime::{initialize_runtime, RuntimeContext, SlotState};
+use crate::runtime::{initialize_runtime, RuntimeContext};
 
 use super::parser::{ParserOptions, ParserRule};
 
@@ -76,7 +76,7 @@ where
 {
     pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
     pub batch_states: Arc<SharedMut<Vec<SlotState>>>,
-    pub shared_state: Arc<SharedState>,
+    pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
     pub api_threads: usize,
     pub blocking_threads: usize,
@@ -96,7 +96,7 @@ where
         ServingResources {
             batch_sequences: ctx.batch_sequences,
             batch_states: ctx.batch_states,
-            shared_state: ctx.shared_state,
+            scheduler: ctx.scheduler,
             parser_options,
             api_threads,
             blocking_threads,

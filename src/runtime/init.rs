@@ -6,10 +6,9 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::executor::ExecutorPool;
-use crate::runtime::session::{SessionMode, SlotManager};
-use crate::runtime::state::batch::BatchSequence;
-use crate::runtime::state::shared::SharedState;
-use crate::runtime::{build_batch_sequence, build_slot_state, SlotState};
+use crate::runtime::scheduler::Scheduler;
+use crate::runtime::session::{build_slot_state, SessionMode, SlotManager, SlotState};
+use crate::runtime::state::batch::{build_batch_sequence, BatchSequence};
 use crate::tensor::GlobalOperatorQueue;
 use crate::transformer::config::Config;
 use crate::transformer::model::Model;
@@ -42,7 +41,7 @@ where
 {
     pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
     pub batch_states: Arc<SharedMut<Vec<SlotState>>>,
-    pub shared_state: Arc<SharedState>,
+    pub scheduler: Arc<Scheduler>,
     pub slot_manager: Arc<SlotManager<T>>,
     pub thread_config: ThreadingConfig,
     pub _sequences_box: AlignedBox<usize>,
@@ -205,7 +204,12 @@ pub fn initialize_runtime(
     let sequences_ptr = sequences_box.as_mut_ptr();
 
     let batch_states = Arc::new(SharedMut::new(build_slot_state(batch_size)));
-    let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_states)));
+    let scheduler = Arc::new(Scheduler::new(
+        batch_size,
+        chunk_size,
+        thread_config.api_threads,
+        Arc::clone(&batch_states),
+    ));
 
     let position_vec = RotaryEmbedding::new(
         model_config.head_dim,
@@ -240,7 +244,7 @@ pub fn initialize_runtime(
     let operator_queue = f16::take_operator_queue();
     let executor_pool = ExecutorPool::new(
         operator_queue,
-        Arc::clone(&shared_state),
+        Arc::clone(&scheduler),
         thread_config.api_threads,
         chunk_size,
         Duration::from_millis(10),
@@ -250,7 +254,7 @@ pub fn initialize_runtime(
     Ok(RuntimeContext {
         batch_sequences,
         batch_states,
-        shared_state,
+        scheduler,
         slot_manager,
         thread_config,
         _sequences_box: sequences_box,
