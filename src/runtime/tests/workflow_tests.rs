@@ -2,12 +2,26 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::runtime::Runtime;
 
-use crate::runtime::scheduler::ScheduleTask;
-use crate::runtime::scheduler::{BatchMode, PlanBuilder};
+use crate::operators::send_sync_ptr::SharedMut;
+use crate::runtime::scheduler::{BatchMode, ScheduleTask, Scheduler};
 use crate::runtime::session::SessionHandle;
 use crate::runtime::state::core::SlotState;
 use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
+use crate::runtime::state::shared::SharedState;
 use crate::runtime::state::types::Phase;
+
+/// Helper: build a task from a batch list via the Scheduler (replaces direct PlanBuilder usage).
+fn build_task_from_batch(
+    batch_list: Vec<SlotState>,
+    max_decode: usize,
+    max_prefill: usize,
+    threads: usize,
+) -> ScheduleTask {
+    let shared_state = Arc::new(SharedState::new(Arc::new(SharedMut::new(batch_list))));
+    let scheduler = Scheduler::new(max_decode, max_prefill, threads, shared_state.clone());
+    scheduler.schedule_batch();
+    shared_state.task().with(|t| t.clone())
+}
 
 #[test]
 fn test_complete_slot_lifecycle() {
@@ -56,7 +70,6 @@ fn test_complete_slot_lifecycle() {
 
 #[test]
 fn test_scheduler_under_mixed_load() {
-    let builder = PlanBuilder::new(16, 512, 4);
     let mut batch_list = Vec::new();
 
     for i in 0..5 {
@@ -72,8 +85,7 @@ fn test_scheduler_under_mixed_load() {
     batch_list.push(SlotState::new_start_state());
     batch_list.push(SlotState::new_start_state());
 
-    let mut task = ScheduleTask::new(0);
-    builder.build_task(&batch_list, &mut task, 1);
+    let task = build_task_from_batch(batch_list, 16, 512, 4);
 
     assert_eq!(task.mode, BatchMode::Mixed);
     assert_eq!(task.decode_size, 5);
@@ -82,7 +94,6 @@ fn test_scheduler_under_mixed_load() {
 
 #[test]
 fn test_scheduler_with_decode_limit() {
-    let builder = PlanBuilder::new(3, 1024, 4);
     let mut batch_list = Vec::new();
 
     for i in 0..10 {
@@ -91,22 +102,19 @@ fn test_scheduler_with_decode_limit() {
         batch_list.push(state);
     }
 
-    let mut task = ScheduleTask::new(0);
-    builder.build_task(&batch_list, &mut task, 1);
+    let task = build_task_from_batch(batch_list, 3, 1024, 4);
 
     assert_eq!(task.decode_size, 3);
 }
 
 #[test]
 fn test_scheduler_with_prefill_limit() {
-    let builder = PlanBuilder::new(32, 100, 4);
     let batch_list = vec![
         SlotState::new_prefill_state(0, 50),
         SlotState::new_prefill_state(100, 80),
     ];
 
-    let mut task = ScheduleTask::new(0);
-    builder.build_task(&batch_list, &mut task, 1);
+    let task = build_task_from_batch(batch_list, 32, 100, 4);
 
     assert!(task.prefill_size <= 100);
 }
@@ -130,7 +138,7 @@ fn test_schedule_task_creation_and_use() {
         last_token_flag: true,
     });
 
-    let mut task = ScheduleTask::new(1);
+    let mut task = ScheduleTask::new();
     task.prefill_size = 10;
     task.decode_size = 1;
     task.prefill_list = prefill_list;
@@ -138,18 +146,18 @@ fn test_schedule_task_creation_and_use() {
 
     assert_eq!(task.prefill_size, 10);
     assert_eq!(task.decode_size, 1);
-    assert_eq!(task.task_id, 1);
     assert!(!task.prefill_list.is_empty());
 }
 
 #[test]
 fn test_multiple_independent_tasks() {
-    let task1 = ScheduleTask::new(1);
-    let task2 = ScheduleTask::new(2);
-    let task3 = ScheduleTask::new(3);
+    let task1 = ScheduleTask::new();
+    let task2 = ScheduleTask::new();
+    let task3 = ScheduleTask::new();
 
-    assert_ne!(task1.task_id, task2.task_id);
-    assert_ne!(task2.task_id, task3.task_id);
+    // Tasks are independent; just verify they can be created
+    assert_eq!(task1.mode, task2.mode);
+    assert_eq!(task2.mode, task3.mode);
 }
 
 #[tokio::test]
@@ -181,36 +189,35 @@ fn test_concurrent_plan_building() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
 
-    let next_task_id = Arc::new(AtomicU64::new(1));
+    let next_id = Arc::new(AtomicU64::new(1));
     let mut handles = Vec::new();
 
     for _ in 0..4 {
-        let next_task_id = Arc::clone(&next_task_id);
+        let next_id = Arc::clone(&next_id);
         let handle = thread::spawn(move || {
-            let task_id = next_task_id.fetch_add(1, Ordering::Relaxed);
-            let builder = PlanBuilder::new(32, 1024, 4);
+            let _id = next_id.fetch_add(1, Ordering::Relaxed);
             let mut batch_list = Vec::new();
             for i in 0..5 {
                 let mut state = SlotState::new_decode_state(i, i);
                 state.phase = Phase::Decode;
                 batch_list.push(state);
             }
-            let mut task = ScheduleTask::new(0);
-            builder.build_task(&batch_list, &mut task, task_id);
-            task.task_id
+            let task = build_task_from_batch(batch_list, 32, 1024, 4);
+            task.decode_size
         });
         handles.push(handle);
     }
 
-    let mut task_ids = Vec::new();
+    let mut results = Vec::new();
     for handle in handles {
-        let task_id = handle.join().unwrap();
-        task_ids.push(task_id);
+        let result = handle.join().unwrap();
+        results.push(result);
     }
 
-    task_ids.sort();
-    task_ids.dedup();
-    assert_eq!(task_ids.len(), 4);
+    // All threads should have built the same task
+    for &result in &results {
+        assert_eq!(result, 5);
+    }
 }
 
 #[test]
@@ -275,15 +282,13 @@ fn test_concurrent_decode_list_access() {
 
 #[test]
 fn test_plan_to_task_pipeline() {
-    let builder = PlanBuilder::new(32, 1024, 4);
     let batch_list = vec![
         SlotState::new_prefill_state(0, 100),
         SlotState::new_decode_state(1, 1),
         SlotState::new_decode_state(2, 2),
     ];
 
-    let mut task = ScheduleTask::new(0);
-    builder.build_task(&batch_list, &mut task, 1);
+    let task = build_task_from_batch(batch_list, 32, 1024, 4);
 
     assert_eq!(task.mode, BatchMode::Mixed);
     assert_eq!(task.prefill_size, 100);
@@ -292,23 +297,22 @@ fn test_plan_to_task_pipeline() {
 
 #[test]
 fn test_multiple_plan_generations() {
-    let mut task_ids = Vec::new();
+    let mut results = Vec::new();
 
     for round in 0..5 {
-        let builder = PlanBuilder::new(16, 512, 4);
         let mut batch_list = Vec::new();
         for i in 0..round * 2 {
             let mut state = SlotState::new_decode_state(i, i);
             state.phase = Phase::Decode;
             batch_list.push(state);
         }
-        let mut task = ScheduleTask::new(0);
-        builder.build_task(&batch_list, &mut task, round as u64 + 1);
-        task_ids.push(task.task_id);
+        let task = build_task_from_batch(batch_list, 16, 512, 4);
+        results.push(task.decode_size);
     }
 
-    let unique_ids: std::collections::HashSet<u64> = task_ids.iter().cloned().collect();
-    assert_eq!(unique_ids.len(), task_ids.len());
+    // Each round should have different decode sizes
+    let unique: std::collections::HashSet<usize> = results.iter().cloned().collect();
+    assert_eq!(unique.len(), results.len());
 }
 
 #[test]
@@ -434,7 +438,6 @@ fn test_performance_large_decode_list() {
 
 #[test]
 fn test_performance_plan_builder() {
-    let builder = PlanBuilder::new(1024, 65536, 16);
     let mut batch_list = Vec::with_capacity(500);
 
     for i in 0..500 {
@@ -443,10 +446,12 @@ fn test_performance_plan_builder() {
         batch_list.push(state);
     }
 
+    let shared_state = Arc::new(SharedState::new(Arc::new(SharedMut::new(batch_list))));
+    let scheduler = Scheduler::new(1024, 65536, 16, shared_state.clone());
+
     let start = Instant::now();
-    let mut task = ScheduleTask::new(0);
     for _ in 0..100 {
-        builder.build_task(&batch_list, &mut task, 1);
+        scheduler.schedule_batch();
     }
     let duration = start.elapsed();
 

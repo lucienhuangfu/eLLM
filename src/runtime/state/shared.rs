@@ -15,7 +15,7 @@ impl SharedState {
     pub fn new(batch_list: Arc<SharedMut<Vec<SlotState>>>) -> Self {
         Self {
             batch_list,
-            task: Arc::new(SharedMut::new(ScheduleTask::new(0))),
+            task: Arc::new(SharedMut::new(ScheduleTask::new())),
             active_threads: AtomicUsize::new(0),
         }
     }

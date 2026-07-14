@@ -45,13 +45,7 @@ async fn run_server(
 
     let batch_size = batch_states.with(|list| list.len());
 
-    let _ = Arc::new(Scheduler::with_shared_state(
-        batch_size,
-        64,
-        4,
-        Arc::clone(&batch_states),
-        Arc::clone(&shared_state),
-    ));
+    let _ = Arc::new(Scheduler::new(batch_size, 64, 4, Arc::clone(&shared_state)));
 
     serving::run(
         batch_sequences,

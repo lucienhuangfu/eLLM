@@ -4,8 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::error::{SlotError, SlotResult};
-use crate::runtime::scheduler::ScheduleTask;
-use crate::runtime::scheduler::{BatchMode, PlanBuilder};
+use crate::runtime::scheduler::{BatchMode, ScheduleTask, Scheduler};
 use crate::runtime::session::{SessionHandle, SessionMode, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::core::{SlotState, TransitionError};
@@ -13,6 +12,19 @@ use crate::runtime::state::sequence::{DecodeList, DecodeLookupResult, SequenceSl
 use crate::runtime::state::shared::SharedState;
 use crate::runtime::state::types::Phase;
 use crate::runtime::ExecutorPool;
+
+/// Helper: build a task from a batch list via the Scheduler.
+fn build_task_from_batch(
+    batch_list: Vec<SlotState>,
+    max_decode: usize,
+    max_prefill: usize,
+    threads: usize,
+) -> ScheduleTask {
+    let shared_state = Arc::new(SharedState::new(Arc::new(SharedMut::new(batch_list))));
+    let scheduler = Scheduler::new(max_decode, max_prefill, threads, shared_state.clone());
+    scheduler.schedule_batch();
+    shared_state.task().with(|t| t.clone())
+}
 
 #[test]
 fn test_phase_lifecycle_integration() {
@@ -202,7 +214,7 @@ fn test_decode_list_clear_and_reuse() {
 
 #[test]
 fn test_schedule_task_empty_state() {
-    let mut task = ScheduleTask::new(1);
+    let mut task = ScheduleTask::new();
     assert!(task.is_empty());
     assert_eq!(task.sequence_count(), 0);
     assert_eq!(task.mode, BatchMode::Decode);
@@ -210,7 +222,6 @@ fn test_schedule_task_empty_state() {
 
 #[test]
 fn test_plan_builder_decode_only() {
-    let builder = PlanBuilder::new(32, 1024, 4);
     let mut batch_list = Vec::new();
 
     for i in 0..10 {
@@ -219,8 +230,7 @@ fn test_plan_builder_decode_only() {
         batch_list.push(state);
     }
 
-    let mut task = ScheduleTask::new(0);
-    builder.build_task(&batch_list, &mut task, 1);
+    let task = build_task_from_batch(batch_list, 32, 1024, 4);
     assert_eq!(task.mode, BatchMode::Decode);
     assert_eq!(task.decode_size, 10);
     assert_eq!(task.prefill_size, 0);
@@ -229,14 +239,12 @@ fn test_plan_builder_decode_only() {
 
 #[test]
 fn test_plan_builder_prefill_only() {
-    let builder = PlanBuilder::new(32, 1024, 4);
     let batch_list = vec![
         SlotState::new_prefill_state(0, 100),
         SlotState::new_prefill_state(1, 200),
     ];
 
-    let mut task = ScheduleTask::new(0);
-    builder.build_task(&batch_list, &mut task, 1);
+    let task = build_task_from_batch(batch_list, 32, 1024, 4);
     assert_eq!(task.mode, BatchMode::Prefill);
     assert!(task.prefill_size > 0);
     assert_eq!(task.decode_size, 0);
@@ -244,7 +252,6 @@ fn test_plan_builder_prefill_only() {
 
 #[test]
 fn test_plan_builder_mixed_mode() {
-    let builder = PlanBuilder::new(32, 1024, 4);
     let mut batch_list = Vec::new();
 
     let mut decode_state = SlotState::new_decode_state(0, 0);
@@ -253,8 +260,7 @@ fn test_plan_builder_mixed_mode() {
 
     batch_list.push(SlotState::new_prefill_state(10, 50));
 
-    let mut task = ScheduleTask::new(0);
-    builder.build_task(&batch_list, &mut task, 1);
+    let task = build_task_from_batch(batch_list, 32, 1024, 4);
     assert_eq!(task.mode, BatchMode::Mixed);
     assert!(task.decode_size > 0);
     assert!(task.prefill_size > 0);
@@ -262,7 +268,6 @@ fn test_plan_builder_mixed_mode() {
 
 #[test]
 fn test_plan_builder_respects_decode_limit() {
-    let builder = PlanBuilder::new(5, 1024, 4);
     let mut batch_list = Vec::new();
 
     for i in 0..20 {
@@ -271,22 +276,9 @@ fn test_plan_builder_respects_decode_limit() {
         batch_list.push(state);
     }
 
-    let mut task = ScheduleTask::new(0);
-    builder.build_task(&batch_list, &mut task, 1);
+    let task = build_task_from_batch(batch_list, 5, 1024, 4);
     assert_eq!(task.mode, BatchMode::Decode);
     assert_eq!(task.decode_size, 5);
-}
-
-#[test]
-fn test_plan_builder_task_id() {
-    let builder = PlanBuilder::new(32, 1024, 4);
-    let mut task1 = ScheduleTask::new(0);
-    builder.build_task(&[SlotState::new_prefill_state(0, 10)], &mut task1, 1);
-    assert_eq!(task1.task_id, 1);
-
-    let mut task2 = ScheduleTask::new(0);
-    builder.build_task(&[SlotState::new_prefill_state(0, 10)], &mut task2, 2);
-    assert_eq!(task2.task_id, 2);
 }
 
 #[test]
@@ -308,7 +300,7 @@ fn test_schedule_task_lifecycle() {
         last_token_flag: true,
     });
 
-    let mut task = ScheduleTask::new(42);
+    let mut task = ScheduleTask::new();
     task.prefill_size = 10;
     task.decode_size = 1;
     task.prefill_list = prefill_list;
@@ -316,7 +308,6 @@ fn test_schedule_task_lifecycle() {
 
     assert_eq!(task.prefill_size, 10);
     assert_eq!(task.decode_size, 1);
-    assert_eq!(task.task_id, 42);
     assert!(!task.prefill_list.is_empty());
     assert!(!task.decode_list.is_empty());
 }
@@ -331,15 +322,14 @@ fn test_schedule_task_reset_and_reuse() {
         last_token_flag: false,
     }]];
 
-    let mut task = ScheduleTask::new(1);
+    let mut task = ScheduleTask::new();
     task.prefill_size = 5;
     task.prefill_list = prefill_list;
 
-    task.reset(2);
+    task.reset();
 
     assert_eq!(task.prefill_size, 0);
     assert_eq!(task.decode_size, 0);
-    assert_eq!(task.task_id, 2);
     assert!(task.prefill_list[0].is_empty());
 }
 
@@ -352,12 +342,11 @@ fn test_shared_state_basic_operations() {
 
     shared_state.task().with_mut(|task| {
         task.prefill_size = 1;
-        task.task_id = 9;
     });
     assert!(shared_state.has_work());
 
     shared_state.task().with_mut(|task| {
-        task.reset(0);
+        task.reset();
     });
     assert!(!shared_state.has_work());
 }
@@ -530,7 +519,6 @@ fn test_multiple_sequences_decode_list_operations() {
 
 #[test]
 fn test_plan_with_mixed_active_and_inactive_states() {
-    let builder = PlanBuilder::new(32, 1024, 4);
     let batch_list = vec![
         SlotState::new_start_state(),
         SlotState::new_prefill_state(0, 10),
@@ -539,8 +527,7 @@ fn test_plan_with_mixed_active_and_inactive_states() {
         SlotState::new_decode_state(2, 2),
     ];
 
-    let mut task = ScheduleTask::new(0);
-    builder.build_task(&batch_list, &mut task, 1);
+    let task = build_task_from_batch(batch_list, 32, 1024, 4);
 
     assert!(task.decode_size >= 2 || task.prefill_size > 0);
 }
@@ -593,9 +580,7 @@ fn test_duration_time_calculations() {
 
 #[test]
 fn test_empty_batch_list() {
-    let builder = PlanBuilder::new(32, 1024, 4);
-    let mut task = ScheduleTask::new(0);
-    builder.build_task(&[], &mut task, 1);
+    let task = build_task_from_batch(Vec::new(), 32, 1024, 4);
 
     assert!(task.is_empty());
     assert_eq!(task.sequence_count(), 0);

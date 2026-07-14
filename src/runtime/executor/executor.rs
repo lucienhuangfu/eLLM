@@ -6,14 +6,14 @@ use std::time::Duration;
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
 use crate::operators::operator::Operator;
 use crate::runtime::executor::sync::{AdaptiveWait, SpinBarrier};
-use crate::runtime::scheduler::{DefaultSchedulerStrategy, ScheduleTask, SchedulerStrategy};
+use crate::runtime::scheduler::{ScheduleTask, Scheduler};
 use crate::runtime::state::shared::SharedState;
 
 pub struct ExecutorPool<T> {
     shared_state: Arc<SharedState>,
     operator_queue: Arc<[Operator<T>]>,
     thread_num: usize,
-    strategy: Arc<dyn SchedulerStrategy>,
+    scheduler: Arc<Scheduler>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -41,21 +41,19 @@ where
         _timeout: Duration,
     ) -> Self {
         let batch_size = shared_state.batch_list.with(|list| list.len());
-        let strategy = Arc::new(DefaultSchedulerStrategy::new(
-            batch_size, chunk_size, thread_num,
+        let scheduler = Arc::new(Scheduler::new(
+            batch_size,
+            chunk_size,
+            thread_num,
+            Arc::clone(&shared_state),
         ));
         Self {
             shared_state,
             operator_queue: operator_queue.into(),
             thread_num: thread_num.max(1),
-            strategy,
+            scheduler,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
-    }
-
-    pub fn with_strategy(mut self, strategy: Arc<dyn SchedulerStrategy>) -> Self {
-        self.strategy = strategy;
-        self
     }
 
     pub fn with_thread_count(mut self, thread_num: usize) -> Self {
@@ -71,7 +69,7 @@ where
             let operator_queue = Arc::clone(&self.operator_queue);
             let barrier = Arc::clone(&barrier);
             let thread_num = self.thread_num;
-            let strategy = Arc::clone(&self.strategy);
+            let scheduler = Arc::clone(&self.scheduler);
             let shutdown = Arc::clone(&self.shutdown);
 
             std::thread::Builder::new()
@@ -83,7 +81,7 @@ where
                         &barrier,
                         thread_num,
                         thread_id,
-                        strategy,
+                        scheduler,
                         shutdown,
                     );
                 })
@@ -105,14 +103,14 @@ where
         barrier: &SpinBarrier,
         thread_num: usize,
         thread_id: usize,
-        strategy: Arc<dyn SchedulerStrategy>,
+        scheduler: Arc<Scheduler>,
         shutdown: Arc<AtomicBool>,
     ) {
         let mut wait = AdaptiveWait::default();
 
         while !shutdown.load(Ordering::Acquire) {
             if thread_id == 0 {
-                if !Self::try_schedule_next_round(&shared_state, strategy.as_ref()) {
+                if !scheduler.schedule_batch() {
                     wait.wait(|| shutdown.load(Ordering::Acquire) || shared_state.has_work());
                     continue;
                 }
@@ -139,25 +137,10 @@ where
 
             if thread_id == 0 {
                 shared_state.task().with_mut(|task| {
-                    task.reset(0);
+                    task.reset();
                 });
             }
         }
-    }
-
-    #[inline]
-    fn try_schedule_next_round(
-        shared_state: &SharedState,
-        strategy: &dyn SchedulerStrategy,
-    ) -> bool {
-        let has_work = shared_state.batch_list.with(|batch_list| {
-            shared_state.task().with_mut(|task| {
-                strategy.fill_task(batch_list, task);
-            });
-            !shared_state.task().with(|task| task.is_empty())
-        });
-
-        has_work
     }
 
     #[inline]
@@ -224,56 +207,17 @@ mod tests {
     use crate::operators::fake_echo::FakeEcho;
     use crate::operators::operator::Operator;
     use crate::operators::send_sync_ptr::SharedMut;
-    use crate::runtime::scheduler::SchedulerStrategy;
-    use crate::runtime::scheduler::{BatchMode, PlanBuilder};
+    use crate::runtime::scheduler::{BatchMode, Scheduler};
     use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
     use crate::runtime::state::SlotState;
-
-    struct EmptyStrategy;
-
-    impl SchedulerStrategy for EmptyStrategy {
-        fn fill_task(&self, _batch_list: &[SlotState], task: &mut ScheduleTask) {
-            task.reset(0);
-        }
-    }
-
-    struct SingleDecodeStrategy;
-
-    impl SchedulerStrategy for SingleDecodeStrategy {
-        fn fill_task(&self, batch_list: &[SlotState], task: &mut ScheduleTask) {
-            task.reset(7);
-            let mut decode_list = DecodeList::with_capacity(batch_list.len());
-
-            for (batch_index, state) in batch_list.iter().enumerate() {
-                if matches!(state.phase, crate::runtime::Phase::Decode) {
-                    decode_list.push(SequenceSlice {
-                        batch_index,
-                        sequence_index: state.sequence_index,
-                        token_start_index: decode_list.len(),
-                        length: 1,
-                        last_token_flag: true,
-                    });
-                }
-            }
-
-            task.mode = BatchMode::Decode;
-            task.decode_size = decode_list.len();
-            task.decode_list = decode_list;
-        }
-    }
 
     #[test]
     fn schedule_batch_returns_none_when_no_work_exists() {
         let batch_list = Arc::new(SharedMut::new(Vec::<SlotState>::new()));
-        let shared_state = SharedState::new(batch_list);
-        let strategy = EmptyStrategy;
+        let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_list)));
+        let scheduler = Scheduler::new(0, 0, 1, shared_state);
 
-        let has_work = shared_state.batch_list.with(|batch_list| {
-            shared_state.task().with_mut(|task| {
-                strategy.fill_task(batch_list, task);
-            });
-            !shared_state.task().with(|task| task.is_empty())
-        });
+        let has_work = scheduler.schedule_batch();
 
         assert!(!has_work);
     }
@@ -285,18 +229,14 @@ mod tests {
             SlotState::new_start_state(),
             SlotState::new_decode_state(2, 2),
         ]));
-        let shared_state = SharedState::new(batch_list);
-        let strategy = SingleDecodeStrategy;
+        let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_list)));
+        let scheduler = Scheduler::new(32, 1024, 1, shared_state);
 
-        let has_work = shared_state.batch_list.with(|batch_list| {
-            shared_state.task().with_mut(|task| {
-                strategy.fill_task(batch_list, task);
-            });
-            !shared_state.task().with(|task| task.is_empty())
-        });
+        let has_work = scheduler.schedule_batch();
 
         assert!(has_work);
 
+        let shared_state = scheduler.shared_state();
         shared_state.task().with(|task| {
             assert_eq!(task.mode, BatchMode::Decode);
             assert_eq!(task.decode_size, 2);
@@ -347,7 +287,6 @@ mod tests {
             task.prefill_size = 0;
             task.prefill_list.resize_with(thread_num, || Vec::new());
             task.decode_list = decode_list;
-            task.task_id = 99;
         });
 
         let barrier = Arc::new(SpinBarrier::new(thread_num));
@@ -414,7 +353,6 @@ mod tests {
             task.prefill_size = 0;
             task.prefill_list.resize_with(thread_num, || Vec::new());
             task.decode_list = decode_list;
-            task.task_id = 100;
         });
 
         let barrier = SpinBarrier::new(thread_num);
@@ -448,7 +386,6 @@ mod tests {
             task.mode = BatchMode::Decode;
             task.prefill_size = 1;
             task.decode_size = 2;
-            task.task_id = 11;
         });
 
         assert!(shared_state.has_work());
@@ -456,11 +393,10 @@ mod tests {
         shared_state.task().with(|task| {
             assert_eq!(task.prefill_size, 1);
             assert_eq!(task.decode_size, 2);
-            assert_eq!(task.task_id, 11);
         });
 
         shared_state.task().with_mut(|task| {
-            task.reset(0);
+            task.reset();
         });
 
         assert!(!shared_state.has_work());
@@ -493,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_pool_uses_larger_thread_num_and_chunk_size_in_default_strategy() {
+    fn executor_pool_uses_larger_thread_num_and_chunk_size_in_default_scheduler() {
         let batch_list = Arc::new(SharedMut::new(vec![
             SlotState::new_decode_state(0, 0),
             SlotState::new_decode_state(1, 1),
@@ -509,23 +445,17 @@ mod tests {
 
         assert_eq!(executor.thread_num, 8);
 
-        let batch_list_for_plan = vec![
-            SlotState::new_decode_state(0, 0),
-            SlotState::new_decode_state(1, 1),
-            SlotState::new_decode_state(2, 2),
-            SlotState::new_decode_state(3, 3),
-            SlotState::new_prefill_state(10, 500),
-            SlotState::new_prefill_state(20, 500),
-        ];
+        let scheduled = executor.scheduler.schedule_batch();
+        assert!(scheduled);
 
-        let mut task = ScheduleTask::new(0);
-        executor.strategy.fill_task(&batch_list_for_plan, &mut task);
-
-        assert_eq!(task.mode, BatchMode::Mixed);
-        assert_eq!(task.decode_size, 6);
-        assert_eq!(task.prefill_list.len(), 8);
-        assert!(task.prefill_size <= 2048);
-        assert_eq!(task.decode_list.len(), 6);
+        let shared_state = executor.shared_state();
+        shared_state.task().with(|task| {
+            assert_eq!(task.mode, BatchMode::Mixed);
+            assert_eq!(task.decode_size, 4);
+            assert_eq!(task.prefill_list.len(), 8);
+            assert!(task.prefill_size <= 2048);
+            assert_eq!(task.decode_list.len(), 6);
+        });
     }
 
     #[test]
@@ -538,50 +468,6 @@ mod tests {
                 .with_thread_count(16);
 
         assert_eq!(executor.thread_num, 16);
-    }
-
-    struct OnceStrategy {
-        fired: AtomicBool,
-    }
-
-    impl OnceStrategy {
-        fn new() -> Self {
-            Self {
-                fired: AtomicBool::new(false),
-            }
-        }
-    }
-
-    impl SchedulerStrategy for OnceStrategy {
-        fn fill_task(&self, batch_list: &[SlotState], task: &mut ScheduleTask) {
-            if self
-                .fired
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
-            {
-                task.reset(0);
-                return;
-            }
-
-            task.reset(123);
-            let mut decode_list = DecodeList::with_capacity(batch_list.len());
-
-            for (batch_index, state) in batch_list.iter().enumerate() {
-                if matches!(state.phase, crate::runtime::Phase::Decode) {
-                    decode_list.push(SequenceSlice {
-                        batch_index,
-                        sequence_index: state.sequence_index,
-                        token_start_index: decode_list.len(),
-                        length: 1,
-                        last_token_flag: true,
-                    });
-                }
-            }
-
-            task.mode = BatchMode::Decode;
-            task.decode_size = decode_list.len();
-            task.decode_list = decode_list;
-        }
     }
 
     #[tokio::test]
@@ -604,8 +490,7 @@ mod tests {
             2,
             64,
             Duration::from_millis(1),
-        )
-        .with_strategy(Arc::new(OnceStrategy::new()));
+        );
 
         let shutdown = executor.shutdown_handle();
         executor.start();

@@ -14,23 +14,21 @@ pub struct ScheduleTask {
     pub decode_size: usize,
     pub prefill_list: Vec<Vec<SequenceSlice>>,
     pub decode_list: DecodeList,
-    pub task_id: u64,
 }
 
 impl ScheduleTask {
-    pub fn new(task_id: u64) -> Self {
+    pub fn new() -> Self {
         Self {
             mode: BatchMode::Decode,
             prefill_size: 0,
             decode_size: 0,
             prefill_list: Vec::new(),
             decode_list: DecodeList::with_capacity(0),
-            task_id,
         }
     }
 
     #[inline]
-    pub fn reset(&mut self, task_id: u64) {
+    pub fn reset(&mut self) {
         self.mode = BatchMode::Decode;
         self.prefill_size = 0;
         self.decode_size = 0;
@@ -38,7 +36,6 @@ impl ScheduleTask {
             list.clear();
         }
         self.decode_list.clear();
-        self.task_id = task_id;
     }
 
     #[inline]
@@ -68,30 +65,28 @@ mod tests {
 
     #[test]
     fn test_schedule_task_new() {
-        let task = ScheduleTask::new(1);
+        let task = ScheduleTask::new();
 
         assert_eq!(task.mode, BatchMode::Decode);
         assert_eq!(task.prefill_size, 0);
         assert_eq!(task.decode_size, 0);
-        assert_eq!(task.task_id, 1);
         assert!(task.is_empty());
     }
 
     #[test]
     fn test_schedule_task_reset() {
-        let mut task = ScheduleTask::new(1);
+        let mut task = ScheduleTask::new();
         task.mode = BatchMode::Mixed;
         task.prefill_size = 10;
         task.decode_size = 5;
         task.prefill_list = vec![vec![SequenceSlice::default(); 5]];
         task.decode_list.push(SequenceSlice::default());
 
-        task.reset(2);
+        task.reset();
 
         assert_eq!(task.mode, BatchMode::Decode);
         assert_eq!(task.prefill_size, 0);
         assert_eq!(task.decode_size, 0);
-        assert_eq!(task.task_id, 2);
         assert!(task.prefill_list[0].is_empty());
         assert!(task.decode_list.is_empty());
         assert!(task.is_empty());
@@ -99,7 +94,7 @@ mod tests {
 
     #[test]
     fn test_schedule_task_resize_prefill_list() {
-        let mut task = ScheduleTask::new(1);
+        let mut task = ScheduleTask::new();
         task.resize_prefill_list(4);
 
         assert_eq!(task.prefill_list.len(), 4);
@@ -107,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_schedule_task_sequence_count_decode() {
-        let mut task = ScheduleTask::new(1);
+        let mut task = ScheduleTask::new();
         task.mode = BatchMode::Decode;
         task.decode_size = 5;
 
@@ -116,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_schedule_task_sequence_count_prefill() {
-        let mut task = ScheduleTask::new(1);
+        let mut task = ScheduleTask::new();
         task.mode = BatchMode::Prefill;
         task.prefill_size = 10;
 
@@ -125,7 +120,7 @@ mod tests {
 
     #[test]
     fn test_schedule_task_sequence_count_mixed() {
-        let mut task = ScheduleTask::new(1);
+        let mut task = ScheduleTask::new();
         task.mode = BatchMode::Mixed;
         task.prefill_size = 10;
         task.decode_size = 3;
@@ -135,18 +130,18 @@ mod tests {
 
     #[test]
     fn test_schedule_task_is_empty() {
-        let empty_task = ScheduleTask::new(0);
+        let empty_task = ScheduleTask::new();
         assert!(empty_task.is_empty());
 
-        let mut decode_task = ScheduleTask::new(1);
+        let mut decode_task = ScheduleTask::new();
         decode_task.decode_size = 5;
         assert!(!decode_task.is_empty());
 
-        let mut prefill_task = ScheduleTask::new(2);
+        let mut prefill_task = ScheduleTask::new();
         prefill_task.prefill_size = 10;
         assert!(!prefill_task.is_empty());
 
-        let mut mixed_task = ScheduleTask::new(3);
+        let mut mixed_task = ScheduleTask::new();
         mixed_task.prefill_size = 10;
         mixed_task.decode_size = 5;
         assert!(!mixed_task.is_empty());
@@ -154,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_schedule_task_decode_list_access() {
-        let mut task = ScheduleTask::new(1);
+        let mut task = ScheduleTask::new();
         task.decode_list.push(SequenceSlice {
             batch_index: 0,
             sequence_index: 10,
@@ -178,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_schedule_task_prefill_list_access() {
-        let mut task = ScheduleTask::new(1);
+        let mut task = ScheduleTask::new();
         task.resize_prefill_list(1);
         task.prefill_list[0].push(SequenceSlice {
             batch_index: 0,
@@ -198,14 +193,5 @@ mod tests {
         assert_eq!(task.prefill_list[0].len(), 2);
         assert_eq!(task.prefill_list[0][0].length, 5);
         assert_eq!(task.prefill_list[0][1].length, 5);
-    }
-
-    #[test]
-    fn test_schedule_task_boundary_values() {
-        let task0 = ScheduleTask::new(0);
-        assert_eq!(task0.task_id, 0);
-
-        let task_max = ScheduleTask::new(u64::MAX);
-        assert_eq!(task_max.task_id, u64::MAX);
     }
 }

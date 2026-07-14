@@ -185,7 +185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch_size,
         chunk_size,
         thread_num,
-        Arc::clone(&batch_list_arc),
+        Arc::clone(&shared_state),
     );
 
     println!("Starting inference with ExecutorPool...");

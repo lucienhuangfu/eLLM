@@ -238,7 +238,7 @@ mod test {
     use crate::operators::expert::expert_routing::ExpertRouting;
     use crate::operators::send_sync_ptr::SharedMut;
     use crate::runtime::state::sequence::SequenceSlice;
-    use crate::runtime::{Phase, Scheduler, SessionMode, SlotManager, SlotState};
+    use crate::runtime::{Phase, Scheduler, SessionMode, SharedState, SlotManager, SlotState};
     use approx::assert_ulps_eq;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -379,10 +379,15 @@ mod test {
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
-        let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
-        scheduler.batch_list().with_mut(|batch_list| {
-            batch_list.push(prefill_state(0, 3));
-            batch_list.push(prefill_state(0, 4));
+        let scheduler = Scheduler::new(
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            THREAD_NUM,
+            Arc::new(SharedState::new(batch_list)),
+        );
+        scheduler.batch_list().with_mut(|bl| {
+            bl.push(prefill_state(0, 3));
+            bl.push(prefill_state(0, 4));
         });
 
         scheduler.schedule_batch();
@@ -639,10 +644,15 @@ mod test {
                 SessionMode::Reusable,
                 600000, // 10 minutes
             ));
-            let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, thread_num, batch_list);
-            scheduler.batch_list().with_mut(|batch_list| {
-                batch_list.push(prefill_state(0, 3));
-                batch_list.push(prefill_state(0, 4));
+            let scheduler = Scheduler::new(
+                SEQUENCE_LENGTH,
+                BATCH_SIZE,
+                thread_num,
+                Arc::new(SharedState::new(batch_list)),
+            );
+            scheduler.batch_list().with_mut(|bl| {
+                bl.push(prefill_state(0, 3));
+                bl.push(prefill_state(0, 4));
             });
             scheduler.schedule_batch();
             let task = scheduler.shared_state().task().with(|t| t.clone());
@@ -779,10 +789,15 @@ mod test {
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
-        let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
-        scheduler.batch_list().with_mut(|batch_list| {
-            batch_list.push(decode_state(3, 4));
-            batch_list.push(decode_state(4, 5));
+        let scheduler = Scheduler::new(
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            THREAD_NUM,
+            Arc::new(SharedState::new(batch_list)),
+        );
+        scheduler.batch_list().with_mut(|bl| {
+            bl.push(decode_state(3, 4));
+            bl.push(decode_state(4, 5));
         });
 
         scheduler.schedule_batch();
@@ -1022,9 +1037,14 @@ mod test {
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
-        let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
-        scheduler.batch_list().with_mut(|batch_list| {
-            batch_list.push(prefill_state(0, 3));
+        let scheduler = Scheduler::new(
+            SEQUENCE_LENGTH,
+            BATCH_SIZE,
+            THREAD_NUM,
+            Arc::new(SharedState::new(batch_list)),
+        );
+        scheduler.batch_list().with_mut(|bl| {
+            bl.push(prefill_state(0, 3));
         });
 
         let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];

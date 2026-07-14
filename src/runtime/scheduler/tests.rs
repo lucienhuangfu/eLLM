@@ -1,7 +1,14 @@
 use super::*;
 use crate::runtime::state::core::SlotState;
+use crate::runtime::state::shared::SharedState;
 use crate::runtime::state::types::Phase;
 use std::sync::Arc;
+
+use crate::operators::send_sync_ptr::SharedMut;
+
+fn make_shared_state() -> Arc<SharedState> {
+    Arc::new(SharedState::new(Arc::new(SharedMut::new(Vec::new()))))
+}
 
 /// 模拟真实情况：输入 batch sequence，进行 prefill，然后连续 decode，最后结束
 #[test]
@@ -10,20 +17,19 @@ fn test_realistic_batch_sequence_workflow() {
     const MAX_PREFILL_SIZE: usize = 512;
     const THREAD_NUM: usize = 4;
 
-    let batch_list = Arc::new(crate::operators::send_sync_ptr::SharedMut::new(Vec::new()));
+    let shared_state = make_shared_state();
     let scheduler = Scheduler::new(
         MAX_DECODE_SIZE,
         MAX_PREFILL_SIZE,
         THREAD_NUM,
-        Arc::clone(&batch_list),
+        Arc::clone(&shared_state),
     );
-    let shared_state = scheduler.shared_state();
 
     let total_sequences = 5;
     let prefill_token_counts = [64, 128, 32, 96, 48];
     let max_decode_steps = 20;
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         for i in 0..total_sequences {
             batch_list.push(SlotState::new_prefill_state(
                 i * 200,
@@ -42,7 +48,7 @@ fn test_realistic_batch_sequence_workflow() {
     });
     tasks.push(shared_state.task().with(|t| t.clone()));
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         for i in 0..total_sequences {
             let phase_change = batch_list[i].advance_sequence(prefill_token_counts[i]);
             assert_eq!(phase_change, Some(Phase::Decode));
@@ -61,7 +67,7 @@ fn test_realistic_batch_sequence_workflow() {
         tasks.push(shared_state.task().with(|t| t.clone()));
     }
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         for i in 0..total_sequences {
             let result = batch_list[i].transition_to_eos();
             assert!(result.is_ok(), "Sequence {} 转换到 EOS 失败", i);
@@ -75,11 +81,7 @@ fn test_realistic_batch_sequence_workflow() {
     );
 
     assert_eq!(tasks.len(), 1 + max_decode_steps);
-    let mut prev_task_id = 0;
     for (idx, task) in tasks.iter().enumerate() {
-        assert!(task.task_id > prev_task_id, "任务 ID 应该递增");
-        prev_task_id = task.task_id;
-
         if idx == 0 {
             assert_eq!(
                 task.prefill_size,
@@ -96,11 +98,10 @@ fn test_realistic_batch_sequence_workflow() {
 /// 模拟更复杂的真实场景：混合 prefill 和 decode
 #[test]
 fn test_mixed_prefill_decode_workflow() {
-    let batch_list = Arc::new(crate::operators::send_sync_ptr::SharedMut::new(Vec::new()));
-    let scheduler = Scheduler::new(8, 256, 2, Arc::clone(&batch_list));
-    let shared_state = scheduler.shared_state();
+    let shared_state = make_shared_state();
+    let scheduler = Scheduler::new(8, 256, 2, Arc::clone(&shared_state));
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         for i in 0..3 {
             let mut state = SlotState::new_decode_state(i, i);
             state.phase = Phase::Decode;
@@ -121,7 +122,7 @@ fn test_mixed_prefill_decode_workflow() {
     assert_eq!(task.decode_size, 3);
     assert!(task.prefill_size > 0);
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         for i in 0..3 {
             let _ = batch_list[i].advance_sequence(1);
         }
@@ -133,7 +134,9 @@ fn test_mixed_prefill_decode_workflow() {
         }
     });
 
-    let active_count = batch_list.with(|bl| bl.iter().filter(|s| s.phase == Phase::Decode).count());
+    let active_count = shared_state
+        .batch_list
+        .with(|bl| bl.iter().filter(|s| s.phase == Phase::Decode).count());
     assert_eq!(active_count, 5);
 
     assert!(scheduler.schedule_batch());
@@ -146,11 +149,10 @@ fn test_mixed_prefill_decode_workflow() {
 /// 模拟真实场景：新请求到达时的调度
 #[test]
 fn test_new_requests_during_decode() {
-    let batch_list = Arc::new(crate::operators::send_sync_ptr::SharedMut::new(Vec::new()));
-    let scheduler = Scheduler::new(8, 512, 4, Arc::clone(&batch_list));
-    let shared_state = scheduler.shared_state();
+    let shared_state = make_shared_state();
+    let scheduler = Scheduler::new(8, 512, 4, Arc::clone(&shared_state));
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         for i in 0..4 {
             let mut state = SlotState::new_decode_state(i, i);
             state.phase = Phase::Decode;
@@ -165,7 +167,7 @@ fn test_new_requests_during_decode() {
             assert_eq!(task.decode_size, 4);
         });
 
-        batch_list.with_mut(|batch_list| {
+        shared_state.batch_list.with_mut(|batch_list| {
             for i in 0..batch_list.len() {
                 if batch_list[i].phase == Phase::Decode {
                     let _ = batch_list[i].advance_sequence(1);
@@ -174,7 +176,7 @@ fn test_new_requests_during_decode() {
         });
     }
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         batch_list.push(SlotState::new_prefill_state(100, 64));
         batch_list.push(SlotState::new_prefill_state(200, 32));
     });
@@ -186,7 +188,7 @@ fn test_new_requests_during_decode() {
         assert!(task.prefill_size > 0);
     });
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         for i in 0..batch_list.len() {
             if batch_list[i].phase == Phase::Decode {
                 let _ = batch_list[i].advance_sequence(1);
@@ -207,11 +209,10 @@ fn test_new_requests_during_decode() {
 /// 模拟真实场景：部分序列提前结束
 #[test]
 fn test_partial_sequence_completion() {
-    let batch_list = Arc::new(crate::operators::send_sync_ptr::SharedMut::new(Vec::new()));
-    let scheduler = Scheduler::new(8, 512, 4, Arc::clone(&batch_list));
-    let shared_state = scheduler.shared_state();
+    let shared_state = make_shared_state();
+    let scheduler = Scheduler::new(8, 512, 4, Arc::clone(&shared_state));
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         for i in 0..5 {
             let mut state = SlotState::new_decode_state(i, i);
             state.phase = Phase::Decode;
@@ -222,8 +223,9 @@ fn test_partial_sequence_completion() {
     for step in 0..10 {
         let has_work = scheduler.schedule_batch();
 
-        let active_count =
-            batch_list.with(|bl| bl.iter().filter(|s| s.phase == Phase::Decode).count());
+        let active_count = shared_state
+            .batch_list
+            .with(|bl| bl.iter().filter(|s| s.phase == Phase::Decode).count());
 
         if active_count > 0 {
             assert!(has_work);
@@ -236,19 +238,19 @@ fn test_partial_sequence_completion() {
         }
 
         if step == 2 {
-            batch_list.with_mut(|batch_list| {
+            shared_state.batch_list.with_mut(|batch_list| {
                 let _ = batch_list[0].transition_to_eos();
             });
         }
 
         if step == 4 {
-            batch_list.with_mut(|batch_list| {
+            shared_state.batch_list.with_mut(|batch_list| {
                 let _ = batch_list[2].transition_to_eos();
                 let _ = batch_list[3].transition_to_eos();
             });
         }
 
-        batch_list.with_mut(|batch_list| {
+        shared_state.batch_list.with_mut(|batch_list| {
             for i in 0..batch_list.len() {
                 if batch_list[i].phase == Phase::Decode {
                     let _ = batch_list[i].advance_sequence(1);
@@ -257,7 +259,9 @@ fn test_partial_sequence_completion() {
         });
     }
 
-    let active_count = batch_list.with(|bl| bl.iter().filter(|s| s.phase == Phase::Decode).count());
+    let active_count = shared_state
+        .batch_list
+        .with(|bl| bl.iter().filter(|s| s.phase == Phase::Decode).count());
     assert_eq!(active_count, 2);
 }
 
@@ -268,18 +272,17 @@ fn test_chunked_prefill_workflow() {
     const MAX_PREFILL_SIZE: usize = 100;
     const THREAD_NUM: usize = 2;
 
-    let batch_list = Arc::new(crate::operators::send_sync_ptr::SharedMut::new(Vec::new()));
+    let shared_state = make_shared_state();
     let scheduler = Scheduler::new(
         MAX_DECODE_SIZE,
         MAX_PREFILL_SIZE,
         THREAD_NUM,
-        Arc::clone(&batch_list),
+        Arc::clone(&shared_state),
     );
-    let shared_state = scheduler.shared_state();
 
     let total_prefill_tokens = 250;
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         batch_list.push(SlotState::new_prefill_state(0, total_prefill_tokens));
     });
 
@@ -303,7 +306,7 @@ fn test_chunked_prefill_workflow() {
         total_prefilled += prefill_size;
         prefill_rounds += 1;
 
-        batch_list.with_mut(|batch_list| {
+        shared_state.batch_list.with_mut(|batch_list| {
             let phase_change = batch_list[0].advance_sequence(prefill_size);
 
             if batch_list[0].filling_length == 0 {
@@ -313,7 +316,10 @@ fn test_chunked_prefill_workflow() {
             }
         });
 
-        if batch_list.with(|bl| bl[0].phase == Phase::Decode) {
+        if shared_state
+            .batch_list
+            .with(|bl| bl[0].phase == Phase::Decode)
+        {
             break;
         }
     }
@@ -332,11 +338,10 @@ fn test_chunked_prefill_workflow() {
 /// 模拟真实场景：槽位重用（EOS 后重置并开始新请求）
 #[test]
 fn test_slot_reuse_workflow() {
-    let batch_list = Arc::new(crate::operators::send_sync_ptr::SharedMut::new(Vec::new()));
-    let scheduler = Scheduler::new(4, 256, 2, Arc::clone(&batch_list));
-    let shared_state = scheduler.shared_state();
+    let shared_state = make_shared_state();
+    let scheduler = Scheduler::new(4, 256, 2, Arc::clone(&shared_state));
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         batch_list.push(SlotState::new_decode_state(0, 0));
     });
 
@@ -346,20 +351,23 @@ fn test_slot_reuse_workflow() {
         assert_eq!(task.decode_size, 1);
     });
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         let _ = batch_list[0].transition_to_eos();
     });
 
     assert!(!scheduler.schedule_batch());
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         batch_list[0].reset_to_start();
         let _ = batch_list[0].transition_to_prefill(100, 50);
     });
 
-    assert_eq!(batch_list.with(|bl| bl[0].phase), Phase::Prefill);
-    assert_eq!(batch_list.with(|bl| bl[0].sequence_index), 100);
-    assert_eq!(batch_list.with(|bl| bl[0].filling_length), 50);
+    assert_eq!(
+        shared_state.batch_list.with(|bl| bl[0].phase),
+        Phase::Prefill
+    );
+    assert_eq!(shared_state.batch_list.with(|bl| bl[0].sequence_index), 100);
+    assert_eq!(shared_state.batch_list.with(|bl| bl[0].filling_length), 50);
 
     assert!(scheduler.schedule_batch());
     shared_state.task().with(|task| {
@@ -371,11 +379,10 @@ fn test_slot_reuse_workflow() {
 /// 测试预填充列表内容的正确性
 #[test]
 fn test_prefill_list_content_validation() {
-    let batch_list = Arc::new(crate::operators::send_sync_ptr::SharedMut::new(Vec::new()));
-    let scheduler = Scheduler::new(8, 200, 2, Arc::clone(&batch_list));
-    let shared_state = scheduler.shared_state();
+    let shared_state = make_shared_state();
+    let scheduler = Scheduler::new(8, 200, 2, Arc::clone(&shared_state));
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         batch_list.push(SlotState::new_prefill_state(0, 60));
         batch_list.push(SlotState::new_prefill_state(100, 80));
     });
@@ -420,11 +427,10 @@ fn test_prefill_list_content_validation() {
 /// 测试解码列表内容的正确性
 #[test]
 fn test_decode_list_content_validation() {
-    let batch_list = Arc::new(crate::operators::send_sync_ptr::SharedMut::new(Vec::new()));
-    let scheduler = Scheduler::new(8, 256, 2, Arc::clone(&batch_list));
-    let shared_state = scheduler.shared_state();
+    let shared_state = make_shared_state();
+    let scheduler = Scheduler::new(8, 256, 2, Arc::clone(&shared_state));
 
-    batch_list.with_mut(|batch_list| {
+    shared_state.batch_list.with_mut(|batch_list| {
         for i in 0..3 {
             batch_list.push(SlotState::new_decode_state(i * 10, i * 10));
         }

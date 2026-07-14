@@ -20,7 +20,7 @@ pub use init::{
     GenerationParameters, RuntimeContext, ThreadingConfig,
 };
 pub use io::{load_tiktoken, ChatTemplate, SafeTensorsLoader};
-pub use scheduler::{BatchMode, PlanBuilder, ScheduleTask, Scheduler};
+pub use scheduler::{BatchMode, ScheduleTask, Scheduler};
 pub use session::{SessionHandle, SessionMode, SlotManager};
 pub use state::{
     build_batch_sequence, build_slot_state, BatchSequence, DecodeList, DecodeLookupResult, Phase,

@@ -266,7 +266,7 @@ fn main() {
         sequence_length,
         batch_size,
         thread_num,
-        Arc::clone(&batch_list_arc),
+        Arc::clone(&shared_state),
     );
 
     let shared_state = batch_scheduler.shared_state();
