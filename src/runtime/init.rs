@@ -6,7 +6,6 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::executor::ExecutorPool;
-use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{SessionMode, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::state::shared::SharedState;
@@ -16,94 +15,44 @@ use crate::transformer::config::Config;
 use crate::transformer::model::Model;
 use crate::transformer::rope::RotaryEmbedding;
 
-use super::parser::{ParserOptions, ParserRule};
-
+/// Sampling parameters resolved from `GenerationConfig`.
 #[derive(Debug, Clone)]
-pub struct ServingConfig {
-    pub model_dir: String,
-    pub batch_size: usize,
-    pub sequence_length: usize,
-    pub chunk_size: usize,
-    pub reasoning_parser_enabled: bool,
-    pub tool_call_parser_enabled: bool,
-    pub api_server_count: usize,
-    pub session_mode: SessionMode,
-    pub slot_reuse_timeout_ms: usize,
+pub struct GenerationParameters {
+    pub top_k: usize,
+    pub top_k_simd: usize,
+    pub top_p: f16,
+    pub min_p: f16,
+    pub do_sample: bool,
+    pub eos_token_id_list: Vec<usize>,
 }
 
-impl ServingConfig {
-    pub fn from_resolved_config(config: &ResolvedConfig) -> Self {
-        let reasoning_parser_enabled = config
-            .serve
-            .as_ref()
-            .map(|s| s.reasoning_parser_enabled)
-            .unwrap_or(true);
-        let tool_call_parser_enabled = config
-            .serve
-            .as_ref()
-            .map(|s| s.tool_call_parser_enabled)
-            .unwrap_or(true);
-
-        Self {
-            model_dir: config.model.raw_config.model.clone(),
-            batch_size: config.scheduler.max_num_seqs,
-            sequence_length: config.model.raw_config.max_model_len.unwrap_or(128),
-            chunk_size: config.scheduler.max_num_batched_tokens,
-            reasoning_parser_enabled,
-            tool_call_parser_enabled,
-            api_server_count: config
-                .serve
-                .as_ref()
-                .map(|s| s.api_server_count)
-                .unwrap_or(2),
-            session_mode: if config.scheduler.dialogue_cache_enabled {
-                SessionMode::Reusable
-            } else {
-                SessionMode::NonReusable
-            },
-            slot_reuse_timeout_ms: config
-                .serve
-                .as_ref()
-                .map(|s| s.slot_reuse_timeout_ms)
-                .unwrap_or(30000),
-        }
-    }
-}
-
+/// Thread-pool layout: how many threads go to API vs. blocking work.
 #[derive(Debug, Clone)]
-struct GenerationParameters {
-    top_k: usize,
-    top_k_simd: usize,
-    top_p: f16,
-    min_p: f16,
-    do_sample: bool,
-    eos_token_id_list: Vec<usize>,
+pub struct ThreadingConfig {
+    pub api_threads: usize,
+    pub blocking_threads: usize,
+    pub total_threads: usize,
 }
 
-#[derive(Debug, Clone)]
-struct ThreadingConfig {
-    api_threads: usize,
-    blocking_threads: usize,
-    total_threads: usize,
-}
-
-pub struct ServingResources<T>
+/// All runtime handles needed to run inference, assembled in one place.
+/// The serving layer wraps this with HTTP-specific config.
+pub struct RuntimeContext<T>
 where
     T: Copy + crate::num_traits::FromNumber,
 {
     pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
     pub batch_states: Arc<SharedMut<Vec<SlotState>>>,
     pub shared_state: Arc<SharedState>,
-    pub parser_options: ParserOptions,
-    pub api_threads: usize,
-    pub blocking_threads: usize,
+    pub slot_manager: Arc<SlotManager<T>>,
+    pub thread_config: ThreadingConfig,
     pub _sequences_box: AlignedBox<usize>,
     pub session_mode: SessionMode,
     pub slot_reuse_timeout_ms: usize,
-    pub slot_manager: Arc<SlotManager<T>>,
 }
 
-fn extract_generation_params(
+/// Resolve sampling parameters from an optional `GenerationConfig` and
+/// the model's own `Config`.
+pub fn extract_generation_params(
     config: &Config,
     generation_config: &Option<GenerationConfig>,
 ) -> GenerationParameters {
@@ -123,6 +72,7 @@ fn extract_generation_params(
         .unwrap_or(1.0) as f16;
 
     let min_p: f16 = 0.0;
+
     let do_sample = generation_config
         .as_ref()
         .and_then(|cfg| cfg.do_sample)
@@ -143,7 +93,9 @@ fn extract_generation_params(
     }
 }
 
-fn determine_thread_config(
+/// Detect physical cores and split threads between API handling and
+/// blocking/compute work.
+pub fn determine_thread_config(
     generation_config: &Option<GenerationConfig>,
     api_server_count: usize,
 ) -> ThreadingConfig {
@@ -170,6 +122,7 @@ fn determine_thread_config(
             .count();
         physical_count.max(1).min(requested_thread_num)
     };
+
     let total_threads = physical_cores;
     let api_threads = api_server_count;
     let blocking_threads = (total_threads - api_threads).max(1);
@@ -186,7 +139,8 @@ fn determine_thread_config(
     }
 }
 
-fn initialize_model(
+/// Construct a `Model<f16>` with sampling from pre-resolved parameters.
+pub fn initialize_model(
     config: &Config,
     gen_params: &GenerationParameters,
     position_vec: Vec<f16>,
@@ -209,25 +163,34 @@ fn initialize_model(
     )
 }
 
-pub fn initialize_serving_resources(
+/// Bootstrap the full inference runtime from a `ResolvedConfig`.
+///
+/// This loads weights, builds the operator graph, warms the model up with
+/// a single forward pass, and starts the executor thread pool.  The
+/// returned [`RuntimeContext`] owns all shared state handles.
+pub fn initialize_runtime(
     resolved_config: &ResolvedConfig,
-) -> Result<ServingResources<f16>, Box<dyn std::error::Error>> {
-    let config = ServingConfig::from_resolved_config(resolved_config);
-    println!("Loading config from: {}", config.model_dir);
+    api_server_count: usize,
+    batch_size: usize,
+    sequence_length: usize,
+    chunk_size: usize,
+    session_mode: SessionMode,
+    slot_reuse_timeout_ms: usize,
+) -> Result<RuntimeContext<f16>, Box<dyn std::error::Error>> {
+    let model_dir = &resolved_config.model.raw_config.model;
+    println!("Loading config from: {}", model_dir);
 
-    let model_config = Config::load_from_file(format!("{}/config.json", config.model_dir))
+    let model_config = Config::load_from_file(format!("{}/config.json", model_dir))
         .map_err(|e| format!("failed to load config: {}", e))?;
+
     let generation_config =
-        GenerationConfig::load_from_file(format!("{}/generation_config.json", config.model_dir))
-            .ok();
+        GenerationConfig::load_from_file(format!("{}/generation_config.json", model_dir)).ok();
 
     if let Some(gen_cfg) = &generation_config {
         println!("Loaded generation config: {:?}", gen_cfg);
     }
 
-    let model_dir = config.model_dir.clone();
-
-    let params = crate::runtime::SafeTensorsLoader::new(&model_dir)
+    let params = crate::runtime::SafeTensorsLoader::new(model_dir)
         .and_then(|loader| loader.load_all_weights_f16())
         .map_err(|e| format!("failed to load model parameters: {}", e))?;
 
@@ -235,18 +198,13 @@ pub fn initialize_serving_resources(
     f16::init_global_strict(params);
 
     let gen_params = extract_generation_params(&model_config, &generation_config);
-    let thread_config = determine_thread_config(&generation_config, config.api_server_count);
-    let parser_options = ParserOptions {
-        rule: ParserRule::for_model_family(&model_config.family),
-        reasoning_parser: config.reasoning_parser_enabled,
-        tool_call_parser: config.tool_call_parser_enabled,
-    };
+    let thread_config = determine_thread_config(&generation_config, api_server_count);
 
-    let (sequences_box, batch_sequences): (AlignedBox<usize>, Arc<SharedMut<BatchSequence<f16>>>) =
-        build_batch_sequence(&model_dir, config.batch_size, config.sequence_length)?;
+    let (sequences_box, batch_sequences) =
+        build_batch_sequence(model_dir, batch_size, sequence_length)?;
     let sequences_ptr = sequences_box.as_mut_ptr();
 
-    let batch_states = Arc::new(SharedMut::new(build_slot_state(config.batch_size)));
+    let batch_states = Arc::new(SharedMut::new(build_slot_state(batch_size)));
     let shared_state = Arc::new(SharedState::new(Arc::clone(&batch_states)));
 
     let position_vec = RotaryEmbedding::new(
@@ -257,13 +215,14 @@ pub fn initialize_serving_resources(
         model_config.rope_scaling.clone(),
     )
     .forward::<f16>();
-    let mut model: Model<f16> = initialize_model(
+
+    let mut model = initialize_model(
         &model_config,
         &gen_params,
         position_vec,
-        config.chunk_size,
-        config.batch_size,
-        config.sequence_length,
+        chunk_size,
+        batch_size,
+        sequence_length,
     );
     model.set_thread_num(thread_config.api_threads);
 
@@ -272,10 +231,10 @@ pub fn initialize_serving_resources(
     let _ = model.forward(sequences_ptr, batch_temperature_ptr);
 
     let slot_manager = Arc::new(SlotManager::new(
-        config.batch_size,
+        batch_size,
         batch_sequences.clone(),
-        config.session_mode,
-        config.slot_reuse_timeout_ms as u64,
+        session_mode,
+        slot_reuse_timeout_ms as u64,
     ));
 
     let operator_queue = f16::take_operator_queue();
@@ -283,21 +242,19 @@ pub fn initialize_serving_resources(
         operator_queue,
         Arc::clone(&shared_state),
         thread_config.api_threads,
-        config.chunk_size,
+        chunk_size,
         Duration::from_millis(10),
     );
     executor_pool.start();
 
-    Ok(ServingResources {
+    Ok(RuntimeContext {
         batch_sequences,
         batch_states,
         shared_state,
-        parser_options,
-        api_threads: thread_config.api_threads,
-        blocking_threads: thread_config.blocking_threads,
-        _sequences_box: sequences_box,
-        session_mode: config.session_mode,
-        slot_reuse_timeout_ms: config.slot_reuse_timeout_ms,
         slot_manager,
+        thread_config,
+        _sequences_box: sequences_box,
+        session_mode,
+        slot_reuse_timeout_ms,
     })
 }

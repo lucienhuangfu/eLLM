@@ -1,9 +1,7 @@
-//! Runtime 模块测试模块
-
 pub(super) use crate::operators::send_sync_ptr::SharedMut;
 pub(super) use crate::runtime::error::{SlotError, SlotResult};
 pub(super) use crate::runtime::scheduler::ScheduleTask;
-pub(super) use crate::runtime::scheduler::{BatchMode, BatchPlan, PlanBuilder};
+pub(super) use crate::runtime::scheduler::{BatchMode, PlanBuilder};
 pub(super) use crate::runtime::session::{SessionHandle, SessionMode, SlotManager};
 pub(super) use crate::runtime::state::batch::BatchSequence;
 pub(super) use crate::runtime::state::core::{SlotState, TransitionError};
@@ -18,7 +16,6 @@ mod integration_tests;
 #[cfg(test)]
 mod workflow_tests;
 
-/// 保留原有的 runtime reexports 构造测试
 #[test]
 fn runtime_reexports_are_constructible() {
     let prefill_state = SlotState::new_prefill_state(8, 4);

@@ -385,18 +385,19 @@ mod test {
             batch_list.push(prefill_state(0, 4));
         });
 
-        let plan = scheduler.schedule_batch().unwrap();
-        let prefill_size = plan.prefill_size;
-        let decode_size = plan.decode_size;
+        scheduler.schedule_batch();
+        let task = scheduler.shared_state().task().with(|t| t.clone());
+        let prefill_size = task.prefill_size;
+        let decode_size = task.decode_size;
         assert_eq!(prefill_size, 7);
         assert_eq!(decode_size, 2);
-        assert_eq!(plan.decode_list[0].token_start_index, 0);
-        assert_eq!(plan.decode_list[0].length, 3);
-        assert_eq!(plan.decode_list[1].token_start_index, 3);
-        assert_eq!(plan.decode_list[1].length, 4);
+        assert_eq!(task.decode_list[0].token_start_index, 0);
+        assert_eq!(task.decode_list[0].length, 3);
+        assert_eq!(task.decode_list[1].token_start_index, 3);
+        assert_eq!(task.decode_list[1].length, 4);
 
-        let prefill_list = plan.prefill_list.clone();
-        let decode_list = plan.decode_list.clone();
+        let prefill_list = task.prefill_list.clone();
+        let decode_list = task.decode_list.clone();
 
         let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
         fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
@@ -643,11 +644,12 @@ mod test {
                 batch_list.push(prefill_state(0, 3));
                 batch_list.push(prefill_state(0, 4));
             });
-            let plan = scheduler.schedule_batch().unwrap();
-            let prefill_size = plan.prefill_size;
-            let decode_size = plan.decode_size;
-            let prefill_list = plan.prefill_list.clone();
-            let decode_list = plan.decode_list.clone();
+            scheduler.schedule_batch();
+            let task = scheduler.shared_state().task().with(|t| t.clone());
+            let prefill_size = task.prefill_size;
+            let decode_size = task.decode_size;
+            let prefill_list = task.prefill_list.clone();
+            let decode_list = task.decode_list.clone();
 
             let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
             fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
@@ -783,19 +785,20 @@ mod test {
             batch_list.push(decode_state(4, 5));
         });
 
-        let plan = scheduler.schedule_batch().unwrap();
-        let prefill_size = plan.prefill_size;
-        let decode_size = plan.decode_size;
+        scheduler.schedule_batch();
+        let task = scheduler.shared_state().task().with(|t| t.clone());
+        let prefill_size = task.prefill_size;
+        let decode_size = task.decode_size;
         assert_eq!(prefill_size, 0);
         assert_eq!(decode_size, 2);
-        assert!(plan.prefill_list.iter().all(Vec::is_empty));
-        assert_eq!(plan.decode_list[0].sequence_index, 3);
-        assert_eq!(plan.decode_list[0].token_start_index, 0);
-        assert_eq!(plan.decode_list[1].sequence_index, 4);
-        assert_eq!(plan.decode_list[1].token_start_index, 1);
+        assert!(task.prefill_list.iter().all(Vec::is_empty));
+        assert_eq!(task.decode_list[0].sequence_index, 3);
+        assert_eq!(task.decode_list[0].token_start_index, 0);
+        assert_eq!(task.decode_list[1].sequence_index, 4);
+        assert_eq!(task.decode_list[1].token_start_index, 1);
 
-        let prefill_list = plan.prefill_list.clone();
-        let decode_list = plan.decode_list.clone();
+        let prefill_list = task.prefill_list.clone();
+        let decode_list = task.decode_list.clone();
 
         let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
         fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
@@ -1045,17 +1048,18 @@ mod test {
         let mut v_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
         let cache_offset = |sequence_index: usize| (sequence_index * BATCH_SIZE) * HEAD_DIM;
 
-        let plan = scheduler.schedule_batch().unwrap();
-        let prefill_size = plan.prefill_size;
-        let decode_size = plan.decode_size;
+        scheduler.schedule_batch();
+        let task = scheduler.shared_state().task().with(|t| t.clone());
+        let prefill_size = task.prefill_size;
+        let decode_size = task.decode_size;
         assert_eq!(prefill_size, 3);
         assert_eq!(decode_size, 1);
-        assert_eq!(plan.decode_list[0].sequence_index, 0);
-        assert_eq!(plan.decode_list[0].length, 3);
-        assert!(plan.decode_list[0].last_token_flag);
+        assert_eq!(task.decode_list[0].sequence_index, 0);
+        assert_eq!(task.decode_list[0].length, 3);
+        assert!(task.decode_list[0].last_token_flag);
 
-        let prefill_list = plan.prefill_list.clone();
-        let decode_list = plan.decode_list.clone();
+        let prefill_list = task.prefill_list.clone();
+        let decode_list = task.decode_list.clone();
         let norm_weight = vec![1.0f32; HIDDEN_SIZE];
         let mut hidden = vec![0.0f32; prefill_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; prefill_size * HIDDEN_SIZE];
@@ -1223,17 +1227,18 @@ mod test {
         assert_eq!(v_cache[cache_offset(3)], 0.0);
 
         let prefill_cache_snapshot = v_cache.clone();
-        let plan = scheduler.schedule_batch().unwrap();
-        let decode_prefill_size = plan.prefill_size;
-        let decode_size = plan.decode_size;
+        scheduler.schedule_batch();
+        let task = scheduler.shared_state().task().with(|t| t.clone());
+        let decode_prefill_size = task.prefill_size;
+        let decode_size = task.decode_size;
         assert_eq!(decode_prefill_size, 0);
         assert_eq!(decode_size, 1);
-        assert!(plan.prefill_list.iter().all(Vec::is_empty));
-        assert_eq!(plan.decode_list[0].sequence_index, 3);
-        assert_eq!(plan.decode_list[0].length, 1);
+        assert!(task.prefill_list.iter().all(Vec::is_empty));
+        assert_eq!(task.decode_list[0].sequence_index, 3);
+        assert_eq!(task.decode_list[0].length, 1);
 
-        let prefill_list = plan.prefill_list.clone();
-        let decode_list = plan.decode_list.clone();
+        let prefill_list = task.prefill_list.clone();
+        let decode_list = task.decode_list.clone();
         let norm_weight = vec![1.0f32; HIDDEN_SIZE];
         let mut hidden = vec![0.0f32; decode_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; decode_size * HIDDEN_SIZE];

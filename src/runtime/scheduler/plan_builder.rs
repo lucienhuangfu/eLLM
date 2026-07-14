@@ -1,15 +1,19 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use super::plan::{BatchMode, BatchPlan, PrefillCandidate};
+use super::task::{BatchMode, ScheduleTask};
 use crate::runtime::state::core::SlotState;
 use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
 use crate::runtime::state::types::Phase;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PrefillCandidate {
+    pub batch_index: usize,
+    pub sequence_index: usize,
+    pub remaining: usize,
+}
 
 pub struct PlanBuilder {
     max_decode_size: usize,
     max_prefill_size: usize,
     thread_num: usize,
-    next_task_id: AtomicU64,
 }
 
 impl PlanBuilder {
@@ -19,12 +23,11 @@ impl PlanBuilder {
             max_decode_size,
             max_prefill_size,
             thread_num,
-            next_task_id: AtomicU64::new(1),
         }
     }
 
-    pub fn build_plan(&self, batch_list: &[SlotState]) -> BatchPlan {
-        let mut plan = BatchPlan::new(self.next_task_id.fetch_add(1, Ordering::Relaxed));
+    pub fn build_task(&self, batch_list: &[SlotState], task: &mut ScheduleTask, task_id: u64) {
+        task.reset(task_id);
 
         let mut decode_candidates = Vec::with_capacity(self.max_decode_size.min(batch_list.len()));
         let mut prefill_candidates = Vec::new();
@@ -50,29 +53,27 @@ impl PlanBuilder {
             }
         }
 
-        plan.mode = match (has_prefill, has_decode) {
+        task.mode = match (has_prefill, has_decode) {
             (true, true) => BatchMode::Mixed,
             (true, false) => BatchMode::Prefill,
             (false, true) => BatchMode::Decode,
-            (false, false) => return plan,
+            (false, false) => return,
         };
 
         if has_decode {
-            self.build_decode(&mut plan, &decode_candidates);
+            self.build_decode(task, &decode_candidates);
         }
 
         if has_prefill {
-            self.build_prefill(&mut plan, &prefill_candidates);
+            self.build_prefill(task, &prefill_candidates);
         }
-
-        plan
     }
 
-    fn build_decode(&self, plan: &mut BatchPlan, candidates: &[(usize, usize)]) {
-        plan.decode_list.clear();
+    fn build_decode(&self, task: &mut ScheduleTask, candidates: &[(usize, usize)]) {
+        task.decode_list.clear();
 
         for (idx, &(batch_index, sequence_index)) in candidates.iter().enumerate() {
-            plan.decode_list.push(SequenceSlice {
+            task.decode_list.push(SequenceSlice {
                 batch_index,
                 sequence_index,
                 token_start_index: idx,
@@ -81,10 +82,10 @@ impl PlanBuilder {
             });
         }
 
-        plan.decode_size = candidates.len();
+        task.decode_size = candidates.len();
     }
 
-    fn build_prefill(&self, plan: &mut BatchPlan, candidates: &[PrefillCandidate]) {
+    fn build_prefill(&self, task: &mut ScheduleTask, candidates: &[PrefillCandidate]) {
         let total_tokens: usize = candidates.iter().map(|c| c.remaining).sum();
         let total_tokens = total_tokens.min(self.max_prefill_size);
 
@@ -92,11 +93,10 @@ impl PlanBuilder {
             return;
         }
 
-        plan.prefill_list
-            .resize_with(self.thread_num, || Vec::new());
+        task.resize_prefill_list(self.thread_num);
 
         let avg_tokens_per_thread = total_tokens / self.thread_num;
-        for list in plan.prefill_list.iter_mut() {
+        for list in task.prefill_list.iter_mut() {
             list.reserve(avg_tokens_per_thread.saturating_add(1));
         }
 
@@ -110,7 +110,7 @@ impl PlanBuilder {
 
             let attention_length = candidate.remaining.min(scheduler.remaining_tokens());
             if attention_length > 0 {
-                plan.decode_list.push(SequenceSlice {
+                task.decode_list.push(SequenceSlice {
                     batch_index: candidate.batch_index,
                     sequence_index: candidate.sequence_index,
                     token_start_index: prefill_count,
@@ -123,13 +123,12 @@ impl PlanBuilder {
                 candidate.batch_index,
                 candidate.sequence_index,
                 candidate.remaining,
-                &mut plan.prefill_list,
+                &mut task.prefill_list,
                 &mut prefill_count,
             );
         }
 
-        plan.prefill_size = prefill_count;
-        plan.decode_size = plan.decode_list.len();
+        task.prefill_size = prefill_count;
     }
 }
 
@@ -215,37 +214,34 @@ impl SliceScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::state::core::SlotState;
     use crate::runtime::state::types::Phase;
 
-    /// 测试 PlanBuilder::new
     #[test]
     fn test_plan_builder_new() {
         let builder = PlanBuilder::new(32, 1024, 4);
-        // 验证 builder 创建成功（内部字段为私有）
-        let plan = builder.build_plan(&[]);
-        assert!(plan.is_empty());
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&[], &mut task, 0);
+        assert!(task.is_empty());
     }
 
-    /// 测试 PlanBuilder::build_plan 空批次列表
     #[test]
     fn test_plan_builder_empty_batch() {
         let builder = PlanBuilder::new(32, 1024, 4);
-        let plan = builder.build_plan(&[]);
-        assert!(plan.is_empty());
-        assert_eq!(plan.mode, BatchMode::Decode); // 默认模式
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&[], &mut task, 0);
+        assert!(task.is_empty());
+        assert_eq!(task.mode, BatchMode::Decode);
     }
 
-    /// 测试 PlanBuilder::build_plan 仅包含 Start 状态
     #[test]
     fn test_plan_builder_only_start_states() {
         let builder = PlanBuilder::new(32, 1024, 4);
         let batch_list = vec![SlotState::new_start_state(), SlotState::new_start_state()];
-        let plan = builder.build_plan(&batch_list);
-        assert!(plan.is_empty());
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 0);
+        assert!(task.is_empty());
     }
 
-    /// 测试 PlanBuilder::build_plan 仅 Decode 状态
     #[test]
     fn test_plan_builder_decode_only() {
         let builder = PlanBuilder::new(32, 1024, 4);
@@ -257,17 +253,19 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan = builder.build_plan(&batch_list);
-        assert_eq!(plan.mode, BatchMode::Decode);
-        assert_eq!(plan.decode_size, 5);
-        assert_eq!(plan.prefill_size, 0);
-        assert_eq!(plan.sequence_count(), 5);
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert_eq!(task.mode, BatchMode::Decode);
+        assert_eq!(task.decode_size, 5);
+        assert_eq!(task.prefill_size, 0);
+        assert_eq!(task.sequence_count(), 5);
+        assert_eq!(task.task_id, 1);
     }
 
-    /// 测试 PlanBuilder::build_plan Decode 状态超出限制
     #[test]
     fn test_plan_builder_decode_exceeds_limit() {
-        let builder = PlanBuilder::new(3, 1024, 4); // max_decode_size = 3
+        let builder = PlanBuilder::new(3, 1024, 4);
 
         let mut batch_list = Vec::new();
         for i in 0..10 {
@@ -276,12 +274,13 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan = builder.build_plan(&batch_list);
-        assert_eq!(plan.mode, BatchMode::Decode);
-        assert_eq!(plan.decode_size, 3); // 应该被限制为 max_decode_size
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert_eq!(task.mode, BatchMode::Decode);
+        assert_eq!(task.decode_size, 3);
     }
 
-    /// 测试 PlanBuilder::build_plan 仅 Prefill 状态
     #[test]
     fn test_plan_builder_prefill_only() {
         let builder = PlanBuilder::new(32, 1024, 4);
@@ -292,115 +291,98 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan = builder.build_plan(&batch_list);
-        assert_eq!(plan.mode, BatchMode::Prefill);
-        assert!(plan.prefill_size > 0);
-        assert_eq!(plan.decode_size, 0);
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert_eq!(task.mode, BatchMode::Prefill);
+        assert!(task.prefill_size > 0);
+        assert_eq!(task.decode_size, 0);
     }
 
-    /// 测试 PlanBuilder::build_plan Mixed 模式
     #[test]
     fn test_plan_builder_mixed_mode() {
         let builder = PlanBuilder::new(32, 1024, 4);
 
         let mut batch_list = Vec::new();
-        // 添加 Decode 状态
         for i in 0..2 {
             let mut state = SlotState::new_decode_state(i, i);
             state.phase = Phase::Decode;
             batch_list.push(state);
         }
-        // 添加 Prefill 状态
         for i in 0..2 {
             let state = SlotState::new_prefill_state(i * 10 + 100, 50);
             batch_list.push(state);
         }
 
-        let plan = builder.build_plan(&batch_list);
-        assert_eq!(plan.mode, BatchMode::Mixed);
-        assert_eq!(plan.decode_size, 2);
-        assert!(plan.prefill_size > 0);
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert_eq!(task.mode, BatchMode::Mixed);
+        assert_eq!(task.decode_size, 2);
+        assert!(task.prefill_size > 0);
     }
 
-    /// 测试 PlanBuilder::build_plan 混合状态包含 Start/Eos
     #[test]
     fn test_plan_builder_mixed_with_inactive_states() {
         let builder = PlanBuilder::new(32, 1024, 4);
 
         let mut batch_list = vec![SlotState::new_start_state(), SlotState::new_start_state()];
 
-        // 添加 Decode 状态
         let mut decode_state = SlotState::new_decode_state(0, 0);
         decode_state.phase = Phase::Decode;
         batch_list.push(decode_state);
 
-        // 添加 Eos 状态（应该被忽略）
         let mut eos_state = SlotState::new_start_state();
         eos_state.phase = Phase::Eos;
         batch_list.push(eos_state);
 
-        let plan = builder.build_plan(&batch_list);
-        assert_eq!(plan.mode, BatchMode::Decode);
-        assert_eq!(plan.decode_size, 1);
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert_eq!(task.mode, BatchMode::Decode);
+        assert_eq!(task.decode_size, 1);
     }
 
-    /// 测试 PlanBuilder task_id 递增
     #[test]
-    fn test_plan_builder_task_id_increment() {
+    fn test_plan_builder_task_id() {
         let builder = PlanBuilder::new(32, 1024, 4);
-
-        let plan1 = builder.build_plan(&[]);
-        let plan2 = builder.build_plan(&[]);
-        let plan3 = builder.build_plan(&[]);
-
-        assert!(plan2.task_id > plan1.task_id);
-        assert!(plan3.task_id > plan2.task_id);
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&[], &mut task, 42);
+        assert_eq!(task.task_id, 42);
     }
 
-    /// 测试 PlanBuilder 多线程预填充分配
     #[test]
     fn test_plan_builder_prefill_multi_thread() {
-        let builder = PlanBuilder::new(32, 100, 4); // 4 threads, max 100 prefill tokens
+        let builder = PlanBuilder::new(32, 100, 4);
 
         let batch_list = vec![
             SlotState::new_prefill_state(0, 50),
             SlotState::new_prefill_state(50, 30),
         ];
 
-        let plan = builder.build_plan(&batch_list);
-        assert_eq!(plan.mode, BatchMode::Prefill);
-        assert!(plan.prefill_size <= 100);
-        assert_eq!(plan.prefill_list.len(), 4); // 4 threads
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert_eq!(task.mode, BatchMode::Prefill);
+        assert!(task.prefill_size <= 100);
+        assert_eq!(task.prefill_list.len(), 4);
     }
 
-    /// 测试 PlanBuilder 预填充超出限制
     #[test]
     fn test_plan_builder_prefill_exceeds_limit() {
-        let builder = PlanBuilder::new(32, 50, 4); // max_prefill_size = 50
+        let builder = PlanBuilder::new(32, 50, 4);
 
         let batch_list = vec![
             SlotState::new_prefill_state(0, 100),
             SlotState::new_prefill_state(100, 100),
         ];
 
-        let plan = builder.build_plan(&batch_list);
-        assert!(plan.prefill_size <= 50);
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert!(task.prefill_size <= 50);
     }
 
-    /// 测试 SliceScheduler 创建和配额分配
-    #[test]
-    fn test_slice_scheduler_quotas() {
-        // 通过 PlanBuilder 间接测试 SliceScheduler
-        let builder = PlanBuilder::new(32, 100, 4); // 4 threads, 100 tokens
-
-        let batch_list = vec![SlotState::new_prefill_state(0, 100)];
-
-        let plan = builder.build_plan(&batch_list);
-        // 验证总预填充量不超过限制
-        assert!(plan.prefill_size <= 100);
-    }
-
-    /// 测试 PlanBuilder decode_list 内容正确性
     #[test]
     fn test_plan_builder_decode_list_content() {
         let builder = PlanBuilder::new(32, 1024, 4);
@@ -412,56 +394,58 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan = builder.build_plan(&batch_list);
-        assert_eq!(plan.decode_list.len(), 3);
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
 
-        for (idx, slice) in plan.decode_list.as_slice().iter().enumerate() {
+        assert_eq!(task.decode_list.len(), 3);
+
+        for (idx, slice) in task.decode_list.as_slice().iter().enumerate() {
             assert_eq!(slice.token_start_index, idx);
             assert_eq!(slice.length, 1);
             assert!(slice.last_token_flag);
         }
     }
 
-    /// 测试 PlanBuilder 线程数为 1 的边界情况
     #[test]
     fn test_plan_builder_single_thread() {
         let builder = PlanBuilder::new(32, 100, 1);
 
         let batch_list = vec![SlotState::new_prefill_state(0, 50)];
 
-        let plan = builder.build_plan(&batch_list);
-        assert_eq!(plan.prefill_list.len(), 1);
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert_eq!(task.prefill_list.len(), 1);
     }
 
-    /// 测试 PlanBuilder 空预填充候选
     #[test]
     fn test_plan_builder_empty_prefill_candidates() {
         let builder = PlanBuilder::new(32, 100, 4);
 
-        // 只有 Decode 状态，没有 Prefill
         let mut batch_list = Vec::new();
         let mut state = SlotState::new_decode_state(0, 0);
         state.phase = Phase::Decode;
         batch_list.push(state);
 
-        let plan = builder.build_plan(&batch_list);
-        assert_eq!(plan.mode, BatchMode::Decode);
-        assert_eq!(plan.prefill_size, 0);
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert_eq!(task.mode, BatchMode::Decode);
+        assert_eq!(task.prefill_size, 0);
     }
 
-    /// 测试 PlanBuilder 预填充 filling_length 为 0
     #[test]
     fn test_plan_builder_prefill_zero_filling_length() {
         let builder = PlanBuilder::new(32, 100, 4);
 
         let batch_list = vec![SlotState::new_prefill_state(0, 0)];
 
-        let plan = builder.build_plan(&batch_list);
-        // filling_length 为 0 时应该被跳过
-        assert_eq!(plan.prefill_size, 0);
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert_eq!(task.prefill_size, 0);
     }
 
-    /// 测试 PlanBuilder 多次调用独立性
     #[test]
     fn test_plan_builder_multiple_calls_independent() {
         let builder = PlanBuilder::new(32, 1024, 4);
@@ -469,17 +453,19 @@ mod tests {
         let batch_list1 = vec![SlotState::new_prefill_state(0, 100)];
         let batch_list2 = vec![SlotState::new_decode_state(0, 0)];
 
-        let plan1 = builder.build_plan(&batch_list1);
-        let plan2 = builder.build_plan(&batch_list2);
+        let mut task1 = ScheduleTask::new(0);
+        builder.build_task(&batch_list1, &mut task1, 1);
 
-        assert_eq!(plan1.mode, BatchMode::Prefill);
-        assert_eq!(plan2.mode, BatchMode::Decode);
+        let mut task2 = ScheduleTask::new(0);
+        builder.build_task(&batch_list2, &mut task2, 2);
+
+        assert_eq!(task1.mode, BatchMode::Prefill);
+        assert_eq!(task2.mode, BatchMode::Decode);
     }
 
-    /// 测试 PlanBuilder 大量 Decode 候选
     #[test]
     fn test_plan_builder_many_decode_candidates() {
-        let builder = PlanBuilder::new(10, 1024, 4); // max_decode_size = 10
+        let builder = PlanBuilder::new(10, 1024, 4);
 
         let mut batch_list = Vec::new();
         for i in 0..100 {
@@ -488,21 +474,45 @@ mod tests {
             batch_list.push(state);
         }
 
-        let plan = builder.build_plan(&batch_list);
-        assert_eq!(plan.decode_size, 10); // 应该被限制
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert_eq!(task.decode_size, 10);
     }
 
-    /// 测试 PlanBuilder 大量 Prefill 候选
     #[test]
     fn test_plan_builder_many_prefill_candidates() {
-        let builder = PlanBuilder::new(32, 200, 4); // max_prefill_size = 200
+        let builder = PlanBuilder::new(32, 200, 4);
 
         let mut batch_list = Vec::new();
         for i in 0..10 {
             batch_list.push(SlotState::new_prefill_state(i * 100, 50));
         }
 
-        let plan = builder.build_plan(&batch_list);
-        assert!(plan.prefill_size <= 200);
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list, &mut task, 1);
+
+        assert!(task.prefill_size <= 200);
+    }
+
+    #[test]
+    fn test_plan_builder_task_reuse() {
+        let builder = PlanBuilder::new(32, 1024, 4);
+
+        let batch_list1 = vec![SlotState::new_decode_state(0, 0)];
+        let batch_list2 = vec![SlotState::new_prefill_state(0, 50)];
+
+        let mut task = ScheduleTask::new(0);
+        builder.build_task(&batch_list1, &mut task, 1);
+
+        assert_eq!(task.mode, BatchMode::Decode);
+        assert_eq!(task.decode_size, 1);
+
+        builder.build_task(&batch_list2, &mut task, 2);
+
+        assert_eq!(task.mode, BatchMode::Prefill);
+        assert!(task.prefill_size > 0);
+        assert_eq!(task.decode_size, 0);
+        assert_eq!(task.task_id, 2);
     }
 }

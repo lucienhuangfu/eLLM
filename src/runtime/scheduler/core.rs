@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use super::plan::BatchPlan;
 use super::strategy::{DefaultSchedulerStrategy, SchedulerStrategy};
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::state::core::SlotState;
@@ -21,8 +20,6 @@ impl Scheduler {
         batch_list: Arc<SharedMut<Vec<SlotState>>>,
     ) -> Self {
         Self::build(
-            batch_size,
-            chunk_size,
             thread_num,
             batch_list,
             None,
@@ -33,15 +30,11 @@ impl Scheduler {
     }
 
     pub fn with_strategy(
-        batch_size: usize,
-        chunk_size: usize,
         thread_num: usize,
         batch_list: Arc<SharedMut<Vec<SlotState>>>,
         strategy: Box<dyn SchedulerStrategy>,
     ) -> Self {
-        Self::build(
-            batch_size, chunk_size, thread_num, batch_list, None, strategy,
-        )
+        Self::build(thread_num, batch_list, None, strategy)
     }
 
     pub fn with_shared_state(
@@ -52,8 +45,6 @@ impl Scheduler {
         shared_state: Arc<SharedState>,
     ) -> Self {
         Self::build(
-            batch_size,
-            chunk_size,
             thread_num,
             batch_list,
             Some(shared_state),
@@ -64,8 +55,6 @@ impl Scheduler {
     }
 
     fn build(
-        _batch_size: usize,
-        _chunk_size: usize,
         thread_num: usize,
         batch_list: Arc<SharedMut<Vec<SlotState>>>,
         shared_state: Option<Arc<SharedState>>,
@@ -101,14 +90,12 @@ impl Scheduler {
     }
 
     #[inline]
-    pub fn schedule_batch(&self) -> Option<BatchPlan> {
-        self.batch_list.with(|batch_list| {
-            let plan = self.strategy.plan_next_round(batch_list);
-            if plan.is_empty() {
-                None
-            } else {
-                Some(plan)
-            }
+    pub fn schedule_batch(&self) -> bool {
+        self.shared_state.batch_list.with(|batch_list| {
+            self.shared_state.task().with_mut(|task| {
+                self.strategy.fill_task(batch_list, task);
+            });
+            !self.shared_state.task().with(|task| task.is_empty())
         })
     }
 }
@@ -127,24 +114,28 @@ mod tests {
     }
 
     #[test]
-    fn schedule_batch_returns_none_for_empty_batch() {
+    fn schedule_batch_returns_false_for_empty_batch() {
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let scheduler = Scheduler::new(16, 4, 3, batch_list);
 
-        assert!(scheduler.schedule_batch().is_none());
+        assert!(!scheduler.schedule_batch());
     }
 
     #[test]
-    fn schedule_batch_returns_plan_for_decode() {
+    fn schedule_batch_fills_task_for_decode() {
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let scheduler = Scheduler::new(16, 4, 3, batch_list);
         scheduler.batch_list.with_mut(|batch_list| {
             batch_list.push(decode_state(100, 128));
         });
 
-        let plan = scheduler.schedule_batch().unwrap();
-        assert_eq!(plan.prefill_size, 0);
-        assert_eq!(plan.decode_size, 1);
+        assert!(scheduler.schedule_batch());
+
+        let shared_state = scheduler.shared_state();
+        shared_state.task().with(|task| {
+            assert_eq!(task.prefill_size, 0);
+            assert_eq!(task.decode_size, 1);
+        });
     }
 
     #[test]
@@ -164,7 +155,7 @@ mod tests {
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
 
         let strategy = Box::new(DefaultSchedulerStrategy::new(4, 32, 2));
-        let scheduler = Scheduler::with_strategy(4, 32, 2, batch_list, strategy);
+        let scheduler = Scheduler::with_strategy(2, batch_list, strategy);
 
         assert_eq!(scheduler.thread_num(), 2);
     }

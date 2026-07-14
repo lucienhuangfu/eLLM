@@ -196,21 +196,17 @@ fn main() {
         Arc::clone(&batch_list_arc),
     );
 
-    let plan = batch_scheduler.schedule_batch().unwrap();
-    let task = ScheduleTask::new(
-        plan.prefill_size,
-        plan.decode_size,
-        plan.prefill_list,
-        plan.decode_list,
-        plan.task_id,
-    );
+    let shared_state = batch_scheduler.shared_state();
+    if batch_scheduler.schedule_batch() {
+        shared_state.task().with(|task| {
+            // Execute prefill task
+            // executor_pool.execute_task(task);
+        });
+    }
 
     println!("Starting inference with ExecutorPool...");
     let start = std::time::Instant::now();
     let max_output_tokens_u = max_output_tokens;
-
-    // Execute prefill task
-    // executor_pool.execute_task(&task);
 
     // Decode loop
     let mut generated_count = 0usize;
@@ -225,22 +221,18 @@ fn main() {
             break;
         }
 
-        let plan = match batch_scheduler.schedule_batch() {
-            Some(p) => p,
-            None => break,
-        };
-        if plan.decode_size == 0 {
+        if !batch_scheduler.schedule_batch() {
             break;
         }
-        let decode_task = ScheduleTask::new(
-            plan.prefill_size,
-            plan.decode_size,
-            plan.prefill_list,
-            plan.decode_list,
-            plan.task_id,
-        );
 
-        // executor_pool.execute_task(&decode_task);
+        let decode_size = shared_state.task().with(|task| task.decode_size);
+        if decode_size == 0 {
+            break;
+        }
+
+        shared_state.task().with(|task| {
+            // executor_pool.execute_task(task);
+        });
     }
 
     let elapsed = start.elapsed();

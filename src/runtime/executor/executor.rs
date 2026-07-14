@@ -124,22 +124,23 @@ where
                 break;
             }
 
-            let task = shared_state
-                .current_task()
-                .expect("executor work became unavailable before execution");
             barrier.wait();
-            Self::execute_operators(
-                &shared_state,
-                operator_queue,
-                barrier,
-                thread_num,
-                thread_id,
-                &task,
-            );
+            shared_state.task().with(|task| {
+                Self::execute_operators(
+                    &shared_state,
+                    operator_queue,
+                    barrier,
+                    thread_num,
+                    thread_id,
+                    task,
+                );
+            });
             barrier.wait();
 
             if thread_id == 0 {
-                shared_state.clear_work();
+                shared_state.task().with_mut(|task| {
+                    task.reset(0);
+                });
             }
         }
     }
@@ -149,21 +150,14 @@ where
         shared_state: &SharedState,
         strategy: &dyn SchedulerStrategy,
     ) -> bool {
-        let plan = shared_state
-            .batch_list
-            .with(|batch_list| strategy.plan_next_round(batch_list));
-        if plan.is_empty() {
-            return false;
-        }
+        let has_work = shared_state.batch_list.with(|batch_list| {
+            shared_state.task().with_mut(|task| {
+                strategy.fill_task(batch_list, task);
+            });
+            !shared_state.task().with(|task| task.is_empty())
+        });
 
-        shared_state.set_task(ScheduleTask::new(
-            plan.prefill_size,
-            plan.decode_size,
-            plan.prefill_list,
-            plan.decode_list,
-            plan.task_id,
-        ));
-        true
+        has_work
     }
 
     #[inline]
@@ -217,23 +211,6 @@ where
             task,
         );
     }
-
-    #[cfg(test)]
-    fn schedule_batch(
-        strategy: &dyn SchedulerStrategy,
-        batch_list: &Arc<
-            crate::operators::send_sync_ptr::SharedMut<Vec<crate::runtime::state::core::SlotState>>,
-        >,
-    ) -> Option<crate::runtime::scheduler::BatchPlan> {
-        batch_list.with(|batch_list| {
-            let plan = strategy.plan_next_round(batch_list);
-            if plan.is_empty() {
-                None
-            } else {
-                Some(plan)
-            }
-        })
-    }
 }
 
 #[cfg(test)]
@@ -248,23 +225,23 @@ mod tests {
     use crate::operators::operator::Operator;
     use crate::operators::send_sync_ptr::SharedMut;
     use crate::runtime::scheduler::SchedulerStrategy;
-    use crate::runtime::scheduler::{BatchMode, BatchPlan};
+    use crate::runtime::scheduler::{BatchMode, PlanBuilder};
     use crate::runtime::state::sequence::{DecodeList, SequenceSlice};
     use crate::runtime::state::SlotState;
 
     struct EmptyStrategy;
 
     impl SchedulerStrategy for EmptyStrategy {
-        fn plan_next_round(&self, _batch_list: &[SlotState]) -> BatchPlan {
-            BatchPlan::new(0)
+        fn fill_task(&self, _batch_list: &[SlotState], task: &mut ScheduleTask) {
+            task.reset(0);
         }
     }
 
     struct SingleDecodeStrategy;
 
     impl SchedulerStrategy for SingleDecodeStrategy {
-        fn plan_next_round(&self, batch_list: &[SlotState]) -> BatchPlan {
-            let mut plan = BatchPlan::new(7);
+        fn fill_task(&self, batch_list: &[SlotState], task: &mut ScheduleTask) {
+            task.reset(7);
             let mut decode_list = DecodeList::with_capacity(batch_list.len());
 
             for (batch_index, state) in batch_list.iter().enumerate() {
@@ -279,10 +256,9 @@ mod tests {
                 }
             }
 
-            plan.mode = BatchMode::Decode;
-            plan.decode_size = decode_list.len();
-            plan.decode_list = decode_list;
-            plan
+            task.mode = BatchMode::Decode;
+            task.decode_size = decode_list.len();
+            task.decode_list = decode_list;
         }
     }
 
@@ -292,9 +268,14 @@ mod tests {
         let shared_state = SharedState::new(batch_list);
         let strategy = EmptyStrategy;
 
-        let plan = ExecutorPool::<f32>::schedule_batch(&strategy, &shared_state.batch_list);
+        let has_work = shared_state.batch_list.with(|batch_list| {
+            shared_state.task().with_mut(|task| {
+                strategy.fill_task(batch_list, task);
+            });
+            !shared_state.task().with(|task| task.is_empty())
+        });
 
-        assert!(plan.is_none());
+        assert!(!has_work);
     }
 
     #[test]
@@ -307,14 +288,22 @@ mod tests {
         let shared_state = SharedState::new(batch_list);
         let strategy = SingleDecodeStrategy;
 
-        let plan = ExecutorPool::<f32>::schedule_batch(&strategy, &shared_state.batch_list)
-            .expect("expected a non-empty plan");
+        let has_work = shared_state.batch_list.with(|batch_list| {
+            shared_state.task().with_mut(|task| {
+                strategy.fill_task(batch_list, task);
+            });
+            !shared_state.task().with(|task| task.is_empty())
+        });
 
-        assert_eq!(plan.mode, BatchMode::Decode);
-        assert_eq!(plan.decode_size, 2);
-        assert_eq!(plan.decode_list.len(), 2);
-        assert_eq!(plan.decode_list[0].batch_index, 0);
-        assert_eq!(plan.decode_list[1].batch_index, 2);
+        assert!(has_work);
+
+        shared_state.task().with(|task| {
+            assert_eq!(task.mode, BatchMode::Decode);
+            assert_eq!(task.decode_size, 2);
+            assert_eq!(task.decode_list.len(), 2);
+            assert_eq!(task.decode_list[0].batch_index, 0);
+            assert_eq!(task.decode_list[1].batch_index, 2);
+        });
     }
 
     #[test]
@@ -352,8 +341,14 @@ mod tests {
             last_token_flag: true,
         });
 
-        let task = ScheduleTask::new(0, 2, vec![Vec::new(); thread_num], decode_list, 99);
-        shared_state.set_task(task);
+        shared_state.task().with_mut(|task| {
+            task.mode = BatchMode::Decode;
+            task.decode_size = 2;
+            task.prefill_size = 0;
+            task.prefill_list.resize_with(thread_num, || Vec::new());
+            task.decode_list = decode_list;
+            task.task_id = 99;
+        });
 
         let barrier = Arc::new(SpinBarrier::new(thread_num));
         let mut handles = Vec::with_capacity(thread_num);
@@ -363,16 +358,16 @@ mod tests {
             let operator_queue = operator_queue.clone();
             let barrier = Arc::clone(&barrier);
             handles.push(thread::spawn(move || {
-                ExecutorPool::<f32>::execute_batch(
-                    &shared_state,
-                    &operator_queue,
-                    &barrier,
-                    thread_num,
-                    thread_id,
-                    &shared_state
-                        .current_task()
-                        .expect("expected scheduled task"),
-                );
+                shared_state.task().with(|task| {
+                    ExecutorPool::<f32>::execute_batch(
+                        &shared_state,
+                        &operator_queue,
+                        &barrier,
+                        thread_num,
+                        thread_id,
+                        task,
+                    );
+                });
             }));
         }
 
@@ -413,20 +408,26 @@ mod tests {
             last_token_flag: true,
         });
 
-        let task = ScheduleTask::new(0, 1, vec![Vec::new(); thread_num], decode_list, 100);
-        shared_state.set_task(task);
+        shared_state.task().with_mut(|task| {
+            task.mode = BatchMode::Decode;
+            task.decode_size = 1;
+            task.prefill_size = 0;
+            task.prefill_list.resize_with(thread_num, || Vec::new());
+            task.decode_list = decode_list;
+            task.task_id = 100;
+        });
 
         let barrier = SpinBarrier::new(thread_num);
-        ExecutorPool::<f32>::execute_batch(
-            &shared_state,
-            &operator_queue,
-            &barrier,
-            thread_num,
-            0,
-            &shared_state
-                .current_task()
-                .expect("expected scheduled task"),
-        );
+        shared_state.task().with(|task| {
+            ExecutorPool::<f32>::execute_batch(
+                &shared_state,
+                &operator_queue,
+                &barrier,
+                thread_num,
+                0,
+                task,
+            );
+        });
 
         assert_eq!(sequences[99], eos_id);
         shared_state.batch_list.with(|batch_list| {
@@ -442,32 +443,27 @@ mod tests {
         let shared_state = SharedState::new(batch_list);
 
         assert!(!shared_state.has_work());
-        assert!(matches!(
-            shared_state.current_work(),
-            crate::runtime::state::shared::ExecutorWork::Idle
-        ));
 
-        let task = ScheduleTask::new(1, 2, Vec::new(), DecodeList::with_capacity(0), 11);
-        shared_state.set_task(task);
+        shared_state.task().with_mut(|task| {
+            task.mode = BatchMode::Decode;
+            task.prefill_size = 1;
+            task.decode_size = 2;
+            task.task_id = 11;
+        });
+
         assert!(shared_state.has_work());
-        assert!(matches!(
-            shared_state.current_work(),
-            crate::runtime::state::shared::ExecutorWork::Scheduled(_)
-        ));
 
-        let task_ref = shared_state
-            .current_task()
-            .expect("expected scheduled task");
-        assert_eq!(task_ref.prefill_size, 1);
-        assert_eq!(task_ref.decode_size, 2);
-        assert_eq!(task_ref.task_id, 11);
+        shared_state.task().with(|task| {
+            assert_eq!(task.prefill_size, 1);
+            assert_eq!(task.decode_size, 2);
+            assert_eq!(task.task_id, 11);
+        });
 
-        shared_state.clear_work();
+        shared_state.task().with_mut(|task| {
+            task.reset(0);
+        });
+
         assert!(!shared_state.has_work());
-        assert!(matches!(
-            shared_state.current_work(),
-            crate::runtime::state::shared::ExecutorWork::Idle
-        ));
     }
 
     #[test]
@@ -513,20 +509,23 @@ mod tests {
 
         assert_eq!(executor.thread_num, 8);
 
-        let plan = executor.strategy.plan_next_round(&[
+        let batch_list_for_plan = vec![
             SlotState::new_decode_state(0, 0),
             SlotState::new_decode_state(1, 1),
             SlotState::new_decode_state(2, 2),
             SlotState::new_decode_state(3, 3),
             SlotState::new_prefill_state(10, 500),
             SlotState::new_prefill_state(20, 500),
-        ]);
+        ];
 
-        assert_eq!(plan.mode, BatchMode::Mixed);
-        assert_eq!(plan.decode_size, 6);
-        assert_eq!(plan.prefill_list.len(), 8);
-        assert!(plan.prefill_size <= 2048);
-        assert_eq!(plan.decode_list.len(), 6);
+        let mut task = ScheduleTask::new(0);
+        executor.strategy.fill_task(&batch_list_for_plan, &mut task);
+
+        assert_eq!(task.mode, BatchMode::Mixed);
+        assert_eq!(task.decode_size, 6);
+        assert_eq!(task.prefill_list.len(), 8);
+        assert!(task.prefill_size <= 2048);
+        assert_eq!(task.decode_list.len(), 6);
     }
 
     #[test]
@@ -554,16 +553,17 @@ mod tests {
     }
 
     impl SchedulerStrategy for OnceStrategy {
-        fn plan_next_round(&self, batch_list: &[SlotState]) -> BatchPlan {
+        fn fill_task(&self, batch_list: &[SlotState], task: &mut ScheduleTask) {
             if self
                 .fired
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
             {
-                return BatchPlan::new(0);
+                task.reset(0);
+                return;
             }
 
-            let mut plan = BatchPlan::new(123);
+            task.reset(123);
             let mut decode_list = DecodeList::with_capacity(batch_list.len());
 
             for (batch_index, state) in batch_list.iter().enumerate() {
@@ -578,10 +578,9 @@ mod tests {
                 }
             }
 
-            plan.mode = BatchMode::Decode;
-            plan.decode_size = decode_list.len();
-            plan.decode_list = decode_list;
-            plan
+            task.mode = BatchMode::Decode;
+            task.decode_size = decode_list.len();
+            task.decode_list = decode_list;
         }
     }
 
