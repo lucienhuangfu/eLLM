@@ -4,7 +4,7 @@ use crate::config::ResolvedConfig;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::Scheduler;
-use crate::runtime::session::{SessionMode, SlotManager, SlotState};
+use crate::runtime::session::{SessionMode, SlotManager};
 use crate::runtime::state::batch::BatchSequence;
 use crate::runtime::{initialize_runtime, RuntimeContext};
 
@@ -75,7 +75,6 @@ where
     T: Copy + crate::num_traits::FromNumber,
 {
     pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
-    pub batch_states: Arc<SharedMut<Vec<SlotState>>>,
     pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
     pub api_threads: usize,
@@ -95,7 +94,6 @@ where
         let blocking_threads = ctx.thread_config.blocking_threads;
         ServingResources {
             batch_sequences: ctx.batch_sequences,
-            batch_states: ctx.batch_states,
             scheduler: ctx.scheduler,
             parser_options,
             api_threads,

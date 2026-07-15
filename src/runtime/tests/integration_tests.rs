@@ -54,7 +54,7 @@ fn test_scheduler_mixed_batch() {
     let scheduler = Scheduler::new(32, 1024, 4, Arc::new(SharedMut::new(batch_list)));
     scheduler.schedule_batch();
 
-    scheduler.task().with(|task| {
+    scheduler.with_task(|task| {
         assert_eq!(task.mode, BatchMode::Mixed);
         assert!(task.decode_size > 0);
         assert!(task.prefill_size > 0);
@@ -75,7 +75,7 @@ fn test_scheduler_respects_decode_limit() {
     let scheduler = Scheduler::new(5, 1024, 4, Arc::new(SharedMut::new(batch_list)));
     scheduler.schedule_batch();
 
-    scheduler.task().with(|task| {
+    scheduler.with_task(|task| {
         assert_eq!(task.decode_size, 5);
     });
 }
@@ -88,12 +88,12 @@ fn test_scheduler_work_tracking() {
 
     assert!(!scheduler.has_work());
 
-    scheduler.task().with_mut(|task| {
+    scheduler.with_task_mut(|task| {
         task.prefill_size = 1;
     });
     assert!(scheduler.has_work());
 
-    scheduler.task().with_mut(|task| {
+    scheduler.with_task_mut(|task| {
         task.reset();
     });
     assert!(!scheduler.has_work());

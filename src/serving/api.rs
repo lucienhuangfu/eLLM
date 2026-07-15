@@ -78,9 +78,7 @@ pub(super) async fn chat_completions(
         }
 
         let generated_text = state.decode_generated_text(slot_index);
-        let token_count = state
-            .batch_states
-            .with(|batch_list| batch_list[slot_index].sequence_index);
+        let token_count = state.get_sequence_index(slot_index);
         state.release_session(&session_id, token_count).await;
 
         #[cfg(debug_assertions)]
@@ -215,9 +213,7 @@ fn build_stream_response(
             }
         }
 
-        let token_count = state.batch_states.with(|batch_list| {
-            batch_list[slot_index].sequence_index
-        });
+        let token_count = state.get_sequence_index(slot_index);
         state.release_session(&session_id, token_count).await;
     };
 

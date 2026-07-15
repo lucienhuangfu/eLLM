@@ -33,7 +33,7 @@ impl ScheduleTask {
             prefill_list.push(Vec::with_capacity(max_batch_size));
         }
         Self {
-            mode: BatchMode::Prefill,
+            mode: BatchMode::Decode,
             prefill_size: 0,
             decode_size: 0,
             prefill_list,
@@ -86,7 +86,7 @@ pub struct Scheduler {
     /// which is guaranteed to be called sequentially.
     prefill_slots: UnsafeCell<Vec<PrefillSlot>>,
     batch_list: Arc<SharedMut<Vec<SlotState>>>,
-    task: Arc<SharedMut<ScheduleTask>>,
+    task: SharedMut<ScheduleTask>,
     pub active_threads: AtomicUsize,
 }
 
@@ -109,10 +109,7 @@ impl Scheduler {
             thread_num,
             prefill_slots: UnsafeCell::new(Vec::with_capacity(max_decode_size)),
             batch_list,
-            task: Arc::new(SharedMut::new(ScheduleTask::new(
-                thread_num,
-                max_decode_size,
-            ))),
+            task: SharedMut::new(ScheduleTask::new(thread_num, max_decode_size)),
             active_threads: AtomicUsize::new(0),
         }
     }
@@ -132,8 +129,13 @@ impl Scheduler {
     }
 
     #[inline]
-    pub fn task(&self) -> Arc<SharedMut<ScheduleTask>> {
-        Arc::clone(&self.task)
+    pub fn with_task<R>(&self, f: impl FnOnce(&ScheduleTask) -> R) -> R {
+        self.task.with(f)
+    }
+
+    #[inline]
+    pub fn with_task_mut<R>(&self, f: impl FnOnce(&mut ScheduleTask) -> R) -> R {
+        self.task.with_mut(f)
     }
 
     #[inline]
@@ -336,7 +338,7 @@ mod tests {
 
         assert!(scheduler.schedule_batch());
 
-        scheduler.task().with(|task| {
+        scheduler.with_task(|task| {
             assert_eq!(task.prefill_size, 0);
             assert_eq!(task.decode_size, 1);
         });
@@ -425,12 +427,12 @@ mod tests {
         let mut tasks = Vec::new();
 
         assert!(scheduler.schedule_batch());
-        scheduler.task().with(|task| {
+        scheduler.with_task(|task| {
             assert_eq!(task.mode, BatchMode::Prefill);
             assert!(task.prefill_size > 0);
             assert_eq!(task.decode_size, 0);
         });
-        tasks.push(scheduler.task().with(|t| t.clone()));
+        tasks.push(scheduler.with_task(|t| t.clone()));
 
         batch_list.with_mut(|batch_list| {
             for i in 0..total_sequences {
@@ -445,12 +447,12 @@ mod tests {
                 "step {}: should have work",
                 step
             );
-            scheduler.task().with(|task| {
+            scheduler.with_task(|task| {
                 assert_eq!(task.mode, BatchMode::Decode);
                 assert_eq!(task.decode_size, total_sequences);
                 assert_eq!(task.prefill_size, 0);
             });
-            tasks.push(scheduler.task().with(|t| t.clone()));
+            tasks.push(scheduler.with_task(|t| t.clone()));
         }
 
         batch_list.with_mut(|batch_list| {
@@ -481,7 +483,7 @@ mod tests {
         });
 
         assert!(scheduler.schedule_batch());
-        scheduler.task().with(|task| {
+        scheduler.with_task(|task| {
             assert_eq!(task.mode, BatchMode::Mixed);
             assert_eq!(task.decode_size, 3);
             assert!(task.prefill_size > 0);
@@ -510,11 +512,11 @@ mod tests {
                 break;
             }
 
-            scheduler.task().with(|task| {
+            scheduler.with_task(|task| {
                 assert_eq!(task.mode, BatchMode::Prefill);
             });
 
-            let prefill_size = scheduler.task().with(|t| t.prefill_size);
+            let prefill_size = scheduler.with_task(|t| t.prefill_size);
             total_prefilled += prefill_size;
             prefill_rounds += 1;
 
@@ -543,7 +545,7 @@ mod tests {
         });
 
         assert!(scheduler.schedule_batch());
-        let task = scheduler.task().with(|t| t.clone());
+        let task = scheduler.with_task(|t| t.clone());
         assert_eq!(task.prefill_size, 140);
         assert_eq!(task.prefill_list.len(), 2);
 
@@ -583,7 +585,7 @@ mod tests {
         });
 
         assert!(scheduler.schedule_batch());
-        let task = scheduler.task().with(|t| t.clone());
+        let task = scheduler.with_task(|t| t.clone());
 
         assert_eq!(task.decode_list.len(), 3);
         for (idx, slice) in task.decode_list.iter().enumerate() {
@@ -619,7 +621,7 @@ mod tests {
         });
 
         assert!(scheduler.schedule_batch());
-        let task_p1 = scheduler.task().with(|t| t.clone());
+        let task_p1 = scheduler.with_task(|t| t.clone());
 
         assert_eq!(task_p1.mode, BatchMode::Prefill);
         assert_eq!(task_p1.decode_size, 0);
@@ -667,7 +669,7 @@ mod tests {
         });
 
         assert!(scheduler.schedule_batch());
-        let task_p2 = scheduler.task().with(|t| t.clone());
+        let task_p2 = scheduler.with_task(|t| t.clone());
 
         assert_eq!(task_p2.mode, BatchMode::Mixed);
         assert_eq!(task_p2.decode_size, 2); // A & B decoding
@@ -725,7 +727,7 @@ mod tests {
 
         // ── Phase 3: Pure decode (all 4 in decode) ─────────
         assert!(scheduler.schedule_batch());
-        let task_p3 = scheduler.task().with(|t| t.clone());
+        let task_p3 = scheduler.with_task(|t| t.clone());
 
         assert_eq!(task_p3.mode, BatchMode::Decode);
         assert_eq!(task_p3.decode_size, 4);
@@ -751,7 +753,7 @@ mod tests {
                 }
             });
             assert!(scheduler.schedule_batch());
-            scheduler.task().with(|task| {
+            scheduler.with_task(|task| {
                 assert_eq!(task.mode, BatchMode::Decode);
                 assert_eq!(task.decode_size, 4);
             });
@@ -764,7 +766,7 @@ mod tests {
         });
 
         assert!(scheduler.schedule_batch());
-        scheduler.task().with(|task| {
+        scheduler.with_task(|task| {
             assert_eq!(task.mode, BatchMode::Decode);
             assert_eq!(task.decode_size, 2); // only C & D remain
         });
@@ -792,7 +794,7 @@ mod tests {
         });
 
         assert!(scheduler.schedule_batch());
-        let task = scheduler.task().with(|t| t.clone());
+        let task = scheduler.with_task(|t| t.clone());
         assert_eq!(task.mode, BatchMode::Mixed);
         assert_eq!(task.prefill_size, 50);
         assert_eq!(task.decode_size, 3);
@@ -838,7 +840,7 @@ mod tests {
         });
 
         assert!(scheduler.schedule_batch());
-        let task = scheduler.task().with(|t| t.clone());
+        let task = scheduler.with_task(|t| t.clone());
         assert_eq!(task.mode, BatchMode::Mixed);
         assert_eq!(task.prefill_size, MAX_PREFILL_SIZE); // chunked
         assert_eq!(task.decode_size, 2);
@@ -879,7 +881,7 @@ mod tests {
         });
 
         assert!(scheduler.schedule_batch());
-        let task = scheduler.task().with(|t| t.clone());
+        let task = scheduler.with_task(|t| t.clone());
 
         let dl = &task.decode_list;
         // Prefill: batch_index=2, token_start=0, length=40

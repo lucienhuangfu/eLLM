@@ -12,7 +12,6 @@ use super::requests::ChatMessage;
 #[derive(Clone)]
 pub struct ApiState {
     pub batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
-    pub batch_states: Arc<SharedMut<Vec<SlotState>>>,
     pub scheduler: Arc<Scheduler>,
     pub parser_options: ParserOptions,
     pub slot_manager: Arc<SlotManager<f16>>,
@@ -29,8 +28,8 @@ impl ApiState {
 
     /// 准备 slot 用于写入
     fn prepare_slot_for_write(&self, slot_index: usize) -> ApiResult<()> {
-        self.batch_states.with(|batch_list| {
-            let record = &batch_list[slot_index];
+        self.slot_manager.with_slots(|slots| {
+            let record = &slots[slot_index];
             if !record.is_available() {
                 Err(ApiError::SlotUnavailable(
                     "slot is not in Start or Eos phase".to_string(),
@@ -71,12 +70,12 @@ impl ApiState {
         temperature: Option<f32>,
     ) -> ApiResult<(usize, Arc<tokio::sync::Notify>)> {
         self.prepare_slot_for_write(slot_index)?;
-        self.slot_manager.remove_from_available(slot_index).await;
+        self.slot_manager.detach_from_lru(slot_index);
 
         let message_pairs = Self::messages_to_pairs(messages);
         let temperature = temperature.unwrap_or(1.0);
 
-        let result = self.batch_states.with_mut(|batch_list| {
+        let result = self.slot_manager.with_slots_mut(|batch_list| {
             self.batch_sequences.with_mut(|batch_sequences| {
                 batch_sequences
                     .write_prompts(slot_index, &message_pairs, temperature)
@@ -115,10 +114,10 @@ impl ApiState {
         let (write_len, notify) = match result {
             Some((prefix_len, delta_tokens)) => {
                 self.prepare_slot_for_write(slot_index)?;
-                self.slot_manager.remove_from_available(slot_index).await;
+                self.slot_manager.detach_from_lru(slot_index);
                 let temperature = temperature.unwrap_or(1.0);
 
-                self.batch_states.with_mut(|batch_list| {
+                self.slot_manager.with_slots_mut(|batch_list| {
                     self.batch_sequences.with_mut(|batch_sequences| {
                         batch_sequences
                             .write_tokens(slot_index, &delta_tokens, temperature)
@@ -145,17 +144,13 @@ impl ApiState {
     }
 
     pub fn is_eos(&self, slot_index: usize) -> bool {
-        self.batch_states.with(|batch_list| {
-            let record = &batch_list[slot_index];
-            matches!(record.phase, Phase::Eos)
-        })
+        self.slot_manager
+            .with_slots(|slots| matches!(slots[slot_index].phase, Phase::Eos))
     }
 
     pub fn get_token_index_and_phase(&self, slot_index: usize) -> (usize, Phase) {
-        self.batch_states.with(|batch_list| {
-            let record = &batch_list[slot_index];
-            (record.sequence_index, record.phase)
-        })
+        self.slot_manager
+            .with_slots(|slots| (slots[slot_index].sequence_index, slots[slot_index].phase))
     }
 
     pub fn decode_single_token(&self, slot_index: usize, token_index: usize) -> String {
@@ -167,10 +162,15 @@ impl ApiState {
     }
 
     pub fn decode_generated_text(&self, slot_index: usize) -> String {
-        self.batch_states.with(|batch_list| {
+        self.slot_manager.with_slots(|batch_list| {
             let record = &batch_list[slot_index];
             self.batch_sequences
                 .with(|batch_sequences| batch_sequences.decode_generated_text(slot_index, record))
         })
+    }
+
+    pub fn get_sequence_index(&self, slot_index: usize) -> usize {
+        self.slot_manager
+            .with_slots(|slots| slots[slot_index].sequence_index)
     }
 }

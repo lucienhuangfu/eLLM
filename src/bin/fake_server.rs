@@ -4,8 +4,8 @@ use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::{
-    build_batch_sequence, build_slot_state, BatchSequence, ExecutorPool, Scheduler, SessionMode,
-    SlotManager, SlotState,
+    build_batch_sequence, BatchSequence, ExecutorPool, Scheduler, SessionMode, SlotManager,
+    SlotState,
 };
 use ellm::serving;
 use ellm::serving::parser::{ParserOptions, ParserRule};
@@ -44,14 +44,7 @@ async fn run_server(
     );
     executor_pool.start();
 
-    serving::run(
-        batch_sequences,
-        batch_states,
-        scheduler,
-        parser_options,
-        slot_manager,
-    )
-    .await?;
+    serving::run(batch_sequences, scheduler, parser_options, slot_manager).await?;
 
     Ok(())
 }
@@ -67,11 +60,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         build_batch_sequence(model_dir, batch_size, sequence_length)?;
     let sequences_ptr = sequences_box.as_mut_ptr();
 
-    let batch_states = Arc::new(SharedMut::new(build_slot_state(batch_size)));
+    let batch_states = Arc::new(SharedMut::new(
+        (0..batch_size)
+            .map(|_| SlotState::new_start_state())
+            .collect::<Vec<_>>(),
+    ));
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
         batch_sequences.clone(),
+        Arc::clone(&batch_states),
         SessionMode::NonReusable,
         600000,
     ));

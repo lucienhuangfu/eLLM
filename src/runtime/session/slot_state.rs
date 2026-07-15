@@ -1,8 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::Notify;
-
-const LRU_SENTINEL: usize = usize::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -20,40 +17,24 @@ pub enum TransitionError {
     AlreadyInTargetState,
 }
 
-#[derive(Clone)]
+/// Slot 执行状态 —— 纯执行层面的数据（phase / sequence / kv 索引等）。
+/// Session 生命周期（LRU、session_id、token_count）由 `SlotManager` 统一管理。
 pub struct SlotState {
     pub sequence_index: usize,
     pub kv_index: usize,
     pub filling_length: usize,
     pub phase: Phase,
-
-    pub session_id: Option<String>,
-    pub token_count: usize,
-
-    pub created_at: Instant,
-    pub last_accessed: Instant,
-
     pub(crate) notify: Arc<Notify>,
-
-    pub(crate) lru_prev: usize,
-    pub(crate) lru_next: usize,
 }
 
 impl SlotState {
     fn fresh(phase: Phase, sequence_index: usize, kv_index: usize, filling_length: usize) -> Self {
-        let now = Instant::now();
         Self {
             sequence_index,
             kv_index,
             filling_length,
             phase,
-            session_id: None,
-            token_count: 0,
-            created_at: now,
-            last_accessed: now,
             notify: Arc::new(Notify::new()),
-            lru_prev: LRU_SENTINEL,
-            lru_next: LRU_SENTINEL,
         }
     }
 
@@ -80,10 +61,6 @@ impl SlotState {
 
     pub fn is_available(&self) -> bool {
         matches!(self.phase, Phase::Start | Phase::Eos)
-    }
-
-    pub fn touch(&mut self) {
-        self.last_accessed = Instant::now();
     }
 
     pub fn notify(&self) -> Arc<Notify> {
@@ -133,8 +110,6 @@ impl SlotState {
         self.kv_index = usize::MAX;
         self.filling_length = 0;
         self.phase = Phase::Start;
-        self.session_id = None;
-        self.token_count = 0;
     }
 
     pub fn advance_sequence(&mut self, steps: usize) -> Option<Phase> {
@@ -181,18 +156,9 @@ impl Default for SlotState {
     }
 }
 
-// ── Build helpers ──────────────────────────────────────────
-
-pub fn build_slot_state(batch_size: usize) -> Vec<SlotState> {
-    (0..batch_size)
-        .map(|_| SlotState::new_start_state())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn test_phase_repr_and_ordering() {
@@ -261,23 +227,12 @@ mod tests {
     }
 
     #[test]
-    fn test_touch_updates_timestamp() {
-        let mut state = SlotState::new_decode_state(0, 0);
-        let original = state.last_accessed;
-        std::thread::sleep(Duration::from_millis(1));
-        state.touch();
-        assert!(state.last_accessed > original);
-    }
-
-    #[test]
     fn test_reset_to_start() {
         let mut state = SlotState::new_decode_state(5, 5);
-        state.session_id = Some("s1".into());
-        state.token_count = 10;
+        state.sequence_index = 42;
         state.reset_to_start();
         assert_eq!(state.phase, Phase::Start);
         assert_eq!(state.sequence_index, usize::MAX);
-        assert!(state.session_id.is_none());
-        assert_eq!(state.token_count, 0);
+        assert_eq!(state.filling_length, 0);
     }
 }

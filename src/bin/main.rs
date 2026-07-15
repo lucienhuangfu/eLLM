@@ -21,7 +21,6 @@ async fn run_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     serving::run(
         resources.batch_sequences,
-        resources.batch_states,
         resources.scheduler,
         resources.parser_options,
         resources.slot_manager,

@@ -12,9 +12,7 @@ pub use executor::ExecutorPool;
 pub use init::{initialize_runtime, GenerationParameters, RuntimeContext, ThreadingConfig};
 pub use io::{load_tiktoken, ChatTemplate, SafeTensorsLoader};
 pub use scheduler::{BatchMode, ScheduleTask, Scheduler};
-pub use session::{
-    build_slot_state, Phase, SessionHandle, SessionMode, SlotManager, SlotState, TransitionError,
-};
+pub use session::{Phase, SessionHandle, SessionMode, SlotManager, SlotState, TransitionError};
 pub use state::batch::{build_batch_sequence, BatchSequence};
 pub use state::sequence::{DecodeLookupResult, SequenceSlice};
 

@@ -376,6 +376,7 @@ mod test {
         let slot_manager = Arc::new(SlotManager::new(
             BATCH_SIZE,
             batch_sequences,
+            Arc::clone(&batch_list),
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
@@ -386,7 +387,7 @@ mod test {
         });
 
         scheduler.schedule_batch();
-        let task = scheduler.task().with(|t| t.clone());
+        let task = scheduler.with_task(|t| t.clone());
         let prefill_size = task.prefill_size;
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 7);
@@ -636,6 +637,7 @@ mod test {
             let slot_manager = Arc::new(SlotManager::new(
                 BATCH_SIZE,
                 batch_sequences,
+                Arc::clone(&batch_list),
                 SessionMode::Reusable,
                 600000, // 10 minutes
             ));
@@ -645,7 +647,7 @@ mod test {
                 bl.push(prefill_state(0, 4));
             });
             scheduler.schedule_batch();
-            let task = scheduler.task().with(|t| t.clone());
+            let task = scheduler.with_task(|t| t.clone());
             let prefill_size = task.prefill_size;
             let decode_size = task.decode_size;
             let prefill_list = task.prefill_list.clone();
@@ -776,6 +778,7 @@ mod test {
         let slot_manager = Arc::new(SlotManager::new(
             BATCH_SIZE,
             batch_sequences,
+            Arc::clone(&batch_list),
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
@@ -786,7 +789,7 @@ mod test {
         });
 
         scheduler.schedule_batch();
-        let task = scheduler.task().with(|t| t.clone());
+        let task = scheduler.with_task(|t| t.clone());
         let prefill_size = task.prefill_size;
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 0);
@@ -1019,6 +1022,7 @@ mod test {
         let slot_manager = Arc::new(SlotManager::new(
             BATCH_SIZE,
             batch_sequences,
+            Arc::clone(&batch_list),
             SessionMode::Reusable,
             600000, // 10 minutes
         ));
@@ -1049,7 +1053,7 @@ mod test {
         let cache_offset = |sequence_index: usize| (sequence_index * BATCH_SIZE) * HEAD_DIM;
 
         scheduler.schedule_batch();
-        let task = scheduler.task().with(|t| t.clone());
+        let task = scheduler.with_task(|t| t.clone());
         let prefill_size = task.prefill_size;
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 3);
@@ -1228,7 +1232,7 @@ mod test {
 
         let prefill_cache_snapshot = v_cache.clone();
         scheduler.schedule_batch();
-        let task = scheduler.task().with(|t| t.clone());
+        let task = scheduler.with_task(|t| t.clone());
         let decode_prefill_size = task.prefill_size;
         let decode_size = task.decode_size;
         assert_eq!(decode_prefill_size, 0);

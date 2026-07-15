@@ -183,6 +183,7 @@ fn main() {
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
         Arc::clone(&batch_seq_arc),
+        Arc::clone(&batch_list_arc),
         SessionMode::Reusable,
         600000, // 10 minutes
     ));
@@ -196,7 +197,7 @@ fn main() {
     );
 
     if batch_scheduler.schedule_batch() {
-        batch_scheduler.task().with(|task| {
+        batch_scheduler.with_task(|task| {
             // Execute prefill task
             // executor_pool.execute_task(task);
         });
@@ -223,12 +224,12 @@ fn main() {
             break;
         }
 
-        let decode_size = batch_scheduler.task().with(|task| task.decode_size);
+        let decode_size = batch_scheduler.with_task(|task| task.decode_size);
         if decode_size == 0 {
             break;
         }
 
-        batch_scheduler.task().with(|task| {
+        batch_scheduler.with_task(|task| {
             // executor_pool.execute_task(task);
         });
     }

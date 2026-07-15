@@ -110,7 +110,7 @@ where
             }
 
             barrier.wait();
-            scheduler.task().with(|task| {
+            scheduler.with_task(|task| {
                 Self::execute_operators(
                     &scheduler,
                     operator_queue,
@@ -123,7 +123,7 @@ where
             barrier.wait();
 
             if thread_id == 0 {
-                scheduler.task().with_mut(|task| {
+                scheduler.with_task_mut(|task| {
                     task.reset();
                 });
             }
@@ -223,7 +223,7 @@ mod tests {
 
         assert!(has_work);
 
-        scheduler.task().with(|task| {
+        scheduler.with_task(|task| {
             assert_eq!(task.mode, BatchMode::Decode);
             assert_eq!(task.decode_size, 2);
             assert_eq!(task.decode_list.len(), 2);
@@ -267,7 +267,7 @@ mod tests {
             last_token_flag: true,
         });
 
-        scheduler.task().with_mut(|task| {
+        scheduler.with_task_mut(|task| {
             task.mode = BatchMode::Decode;
             task.decode_size = 2;
             task.prefill_size = 0;
@@ -283,7 +283,7 @@ mod tests {
             let operator_queue = operator_queue.clone();
             let barrier = Arc::clone(&barrier);
             handles.push(thread::spawn(move || {
-                scheduler.task().with(|task| {
+                scheduler.with_task(|task| {
                     ExecutorPool::<f32>::execute_batch(
                         &scheduler,
                         &operator_queue,
@@ -333,7 +333,7 @@ mod tests {
             last_token_flag: true,
         });
 
-        scheduler.task().with_mut(|task| {
+        scheduler.with_task_mut(|task| {
             task.mode = BatchMode::Decode;
             task.decode_size = 1;
             task.prefill_size = 0;
@@ -342,7 +342,7 @@ mod tests {
         });
 
         let barrier = SpinBarrier::new(thread_num);
-        scheduler.task().with(|task| {
+        scheduler.with_task(|task| {
             ExecutorPool::<f32>::execute_batch(
                 &scheduler,
                 &operator_queue,
@@ -368,7 +368,7 @@ mod tests {
 
         assert!(!scheduler.has_work());
 
-        scheduler.task().with_mut(|task| {
+        scheduler.with_task_mut(|task| {
             task.mode = BatchMode::Decode;
             task.prefill_size = 1;
             task.decode_size = 2;
@@ -376,12 +376,12 @@ mod tests {
 
         assert!(scheduler.has_work());
 
-        scheduler.task().with(|task| {
+        scheduler.with_task(|task| {
             assert_eq!(task.prefill_size, 1);
             assert_eq!(task.decode_size, 2);
         });
 
-        scheduler.task().with_mut(|task| {
+        scheduler.with_task_mut(|task| {
             task.reset();
         });
 
@@ -439,7 +439,7 @@ mod tests {
         let scheduled = executor.scheduler.schedule_batch();
         assert!(scheduled);
 
-        executor.scheduler().task().with(|task| {
+        executor.scheduler.with_task(|task| {
             assert_eq!(task.mode, BatchMode::Mixed);
             assert_eq!(task.decode_size, 4);
             assert_eq!(task.prefill_list.len(), 8);
@@ -450,7 +450,9 @@ mod tests {
 
     #[test]
     fn executor_pool_with_thread_count_supports_large_values() {
-        let batch_list = Arc::new(SharedMut::new(vec![SlotState::new_start_state(); 2]));
+        let batch_list = Arc::new(SharedMut::new(
+            (0..2).map(|_| SlotState::new_start_state()).collect(),
+        ));
         let scheduler = Arc::new(Scheduler::new(8, 64, 2, batch_list));
 
         let executor =

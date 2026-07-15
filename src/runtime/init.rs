@@ -7,7 +7,7 @@ use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::executor::ExecutorPool;
 use crate::runtime::scheduler::Scheduler;
-use crate::runtime::session::{build_slot_state, SessionMode, SlotManager, SlotState};
+use crate::runtime::session::{SessionMode, SlotManager};
 use crate::runtime::state::batch::{build_batch_sequence, BatchSequence};
 use crate::tensor::GlobalOperatorQueue;
 use crate::transformer::config::Config;
@@ -40,7 +40,6 @@ where
     T: Copy + crate::num_traits::FromNumber,
 {
     pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
-    pub batch_states: Arc<SharedMut<Vec<SlotState>>>,
     pub scheduler: Arc<Scheduler>,
     pub slot_manager: Arc<SlotManager<T>>,
     pub thread_config: ThreadingConfig,
@@ -203,7 +202,11 @@ pub fn initialize_runtime(
         build_batch_sequence(model_dir, batch_size, sequence_length)?;
     let sequences_ptr = sequences_box.as_mut_ptr();
 
-    let batch_states = Arc::new(SharedMut::new(build_slot_state(batch_size)));
+    let batch_states = Arc::new(SharedMut::new(
+        (0..batch_size)
+            .map(|_| crate::runtime::session::SlotState::new_start_state())
+            .collect::<Vec<_>>(),
+    ));
     let scheduler = Arc::new(Scheduler::new(
         batch_size,
         chunk_size,
@@ -237,6 +240,7 @@ pub fn initialize_runtime(
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
         batch_sequences.clone(),
+        batch_states,
         session_mode,
         slot_reuse_timeout_ms as u64,
     ));
@@ -253,7 +257,6 @@ pub fn initialize_runtime(
 
     Ok(RuntimeContext {
         batch_sequences,
-        batch_states,
         scheduler,
         slot_manager,
         thread_config,

@@ -58,7 +58,7 @@ fn test_new_requests_during_decode() {
     // Schedule a few decode rounds
     for _ in 0..3 {
         assert!(scheduler.schedule_batch());
-        scheduler.task().with(|task| {
+        scheduler.with_task(|task| {
             assert_eq!(task.mode, BatchMode::Decode);
             assert_eq!(task.decode_size, 4);
         });
@@ -78,7 +78,7 @@ fn test_new_requests_during_decode() {
     });
 
     assert!(scheduler.schedule_batch());
-    scheduler.task().with(|task| {
+    scheduler.with_task(|task| {
         assert_eq!(task.mode, BatchMode::Mixed);
         assert_eq!(task.decode_size, 4);
         assert!(task.prefill_size > 0);
@@ -96,7 +96,7 @@ fn test_slot_reuse_workflow() {
     });
 
     assert!(scheduler.schedule_batch());
-    scheduler.task().with(|task| {
+    scheduler.with_task(|task| {
         assert_eq!(task.decode_size, 1);
     });
 
@@ -113,7 +113,7 @@ fn test_slot_reuse_workflow() {
     });
 
     assert!(scheduler.schedule_batch());
-    scheduler.task().with(|task| {
+    scheduler.with_task(|task| {
         assert_eq!(task.mode, BatchMode::Prefill);
         assert!(task.prefill_size > 0);
     });
@@ -142,7 +142,7 @@ fn test_partial_sequence_completion() {
         }
 
         assert!(scheduler.schedule_batch());
-        scheduler.task().with(|task| {
+        scheduler.with_task(|task| {
             assert_eq!(task.decode_size, active);
         });
 
