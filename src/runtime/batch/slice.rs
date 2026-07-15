@@ -14,12 +14,10 @@ pub struct DecodeLookupResult {
     pub slice_index: usize,
 }
 
-/// Sum of all slice lengths.
 pub fn total_token_count(slices: &[SequenceSlice]) -> usize {
     slices.iter().map(|s| s.length).sum()
 }
 
-/// Binary-search for the slice that contains `global_index`.
 pub fn lookup_global_index(
     slices: &[SequenceSlice],
     global_index: usize,
@@ -38,7 +36,6 @@ pub fn lookup_global_index(
     })
 }
 
-/// Walk every token in `[global_begin, global_end)` and invoke `visit(global_index, batch_index, sequence_index)`.
 pub fn walk_global_range(
     slices: &[SequenceSlice],
     global_begin: usize,

@@ -1,12 +1,12 @@
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::num_traits::{exp::Exp, neg_infinity::NegInfinity, sigmoid::Sigmoid, sqrt::Sqrt};
 use crate::operators::operator::Operator;
-use crate::runtime::executor::sync::{AdaptiveWait, SpinBarrier};
 use crate::runtime::scheduler::{ScheduleTask, Scheduler};
+
+use super::sync::{AdaptiveWait, SpinBarrier};
 
 pub struct ExecutorPool<T> {
     pub scheduler: Arc<Scheduler>,
@@ -186,19 +186,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::sync::atomic::Ordering;
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::Duration;
-
     use crate::operators::fake_echo::FakeEcho;
     use crate::operators::operator::Operator;
     use crate::operators::send_sync_ptr::SharedMut;
-    use crate::runtime::executor::sync::SpinBarrier;
-    use crate::runtime::scheduler::{BatchMode, Scheduler};
+    use crate::runtime::batch::SequenceSlice;
+    use crate::runtime::scheduler::BatchMode;
     use crate::runtime::session::SlotState;
-    use crate::runtime::state::sequence::SequenceSlice;
 
     #[test]
     fn schedule_batch_returns_none_when_no_work_exists() {
@@ -282,7 +275,7 @@ mod tests {
             let scheduler = Arc::clone(&scheduler);
             let operator_queue = operator_queue.clone();
             let barrier = Arc::clone(&barrier);
-            handles.push(thread::spawn(move || {
+            handles.push(std::thread::spawn(move || {
                 scheduler.with_task(|task| {
                     ExecutorPool::<f32>::execute_batch(
                         &scheduler,
@@ -369,16 +362,13 @@ mod tests {
         assert!(!scheduler.has_work());
 
         scheduler.with_task_mut(|task| {
-            task.mode = BatchMode::Decode;
             task.prefill_size = 1;
-            task.decode_size = 2;
         });
-
         assert!(scheduler.has_work());
 
         scheduler.with_task(|task| {
             assert_eq!(task.prefill_size, 1);
-            assert_eq!(task.decode_size, 2);
+            assert_eq!(task.decode_size, 0);
         });
 
         scheduler.with_task_mut(|task| {

@@ -1,5 +1,5 @@
-use ellm::runtime::io::ChatTemplate;
-use ellm::runtime::io::load_tiktoken;
+use ellm::runtime::loader::ChatTemplate;
+use ellm::runtime::loader::load_tiktoken;
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

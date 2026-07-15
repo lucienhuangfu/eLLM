@@ -1,10 +1,10 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
 
 const SPIN_LIMIT: u32 = 100;
 const YIELD_LIMIT: u32 = 50;
 
-/// Adaptive spin-yield-sleep loop shared by `SpinBarrier` and `AdaptiveWait`.
-fn adaptive_spin_loop<F>(condition: F)
+pub fn adaptive_spin_loop<F>(condition: F)
 where
     F: Fn() -> bool,
 {
@@ -24,13 +24,12 @@ where
             yield_count += 1;
         } else {
             let sleep_us = 1 << (yield_count - YIELD_LIMIT).min(6);
-            std::thread::sleep(std::time::Duration::from_micros(sleep_us));
+            std::thread::sleep(Duration::from_micros(sleep_us));
             yield_count += 1;
         }
     }
 }
 
-/// Spin barrier with adaptive backoff for multi-thread synchronization.
 #[derive(Debug)]
 pub struct SpinBarrier {
     count: AtomicUsize,
@@ -65,8 +64,6 @@ impl SpinBarrier {
     }
 }
 
-/// Zero-sized adaptive wait wrapper around [`adaptive_spin_loop`].
-/// All state is local to each `wait` call, so the struct carries no fields.
 #[derive(Debug, Default)]
 pub struct AdaptiveWait;
 
@@ -164,12 +161,11 @@ mod tests {
 
     #[test]
     fn test_adaptive_wait() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         let flag = Arc::new(AtomicBool::new(false));
         let flag_clone = flag.clone();
 
         let handle = thread::spawn(move || {
-            thread::sleep(std::time::Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(10));
             flag_clone.store(true, Ordering::Release);
         });
 

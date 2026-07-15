@@ -3,119 +3,98 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
+
 use tokio::sync::Mutex as TokioMutex;
 
-use super::slot_state::SlotState;
-use super::types::{SessionHandle, SessionMode, SlotError};
+use crate::num_traits::FromNumber;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::state::batch::BatchSequence;
+use crate::runtime::batch::BatchSequence;
 
-const LRU_SENTINEL: usize = usize::MAX;
+use super::slot::SlotState;
 
-/// Session 元数据（由 SlotManager 统一管理，不再嵌入 SlotState）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SessionMode {
+    Reusable,
+    NonReusable,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionHandle {
+    pub session_id: String,
+    pub slot_index: usize,
+    pub is_reused: bool,
+}
+
+impl SessionHandle {
+    pub fn new(session_id: String, slot_index: usize) -> Self {
+        Self {
+            session_id,
+            slot_index,
+            is_reused: false,
+        }
+    }
+
+    pub fn reused(session_id: String, slot_index: usize) -> Self {
+        Self {
+            session_id,
+            slot_index,
+            is_reused: true,
+        }
+    }
+}
+
 struct SessionMeta {
     token_count: usize,
 }
 
-/// SlotManager — 统一管理 slot 的执行状态、LRU 调度和 session 生命周期。
-///
-/// 拥有 `SharedMut<Vec<SlotState>>` 作为唯一的 slot 状态数据源，
-/// Scheduler 和 serving 层通过 `batch_list()` / `with_slots()` 共享访问。
-pub struct SlotManager<T: Copy + crate::num_traits::FromNumber> {
-    /// 唯一的 slot 状态存储 —— Scheduler / serving 共享
+struct LruList {
+    slots: Vec<usize>,
+}
+
+impl LruList {
+    fn new(n: usize) -> Self {
+        Self {
+            slots: (0..n).collect(),
+        }
+    }
+
+    fn touch(&mut self, idx: usize) {
+        if let Some(pos) = self.slots.iter().position(|&x| x == idx) {
+            self.slots.remove(pos);
+        }
+        self.slots.insert(0, idx);
+    }
+
+    fn evict_tail(&mut self) -> usize {
+        self.slots.pop().expect("LRU list is empty")
+    }
+
+    fn insert_head(&mut self, idx: usize) {
+        if let Some(pos) = self.slots.iter().position(|&x| x == idx) {
+            self.slots.remove(pos);
+        }
+        self.slots.insert(0, idx);
+    }
+
+    fn detach(&mut self, idx: usize) {
+        if let Some(pos) = self.slots.iter().position(|&x| x == idx) {
+            self.slots.remove(pos);
+        }
+    }
+}
+
+pub struct SlotManager<T: Copy + FromNumber> {
     batch_states: Arc<SharedMut<Vec<SlotState>>>,
-    /// batch_sequences 用于 tokenizer / delta 计算
     batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
-    /// LRU 双向链表（独立数组，StdMutex 保护）
-    lru: StdMutex<LruLists>,
-    /// session_id → slot_index 活跃映射
+    lru: StdMutex<LruList>,
     session_map: TokioMutex<HashMap<String, usize>>,
-    /// session_id → (slot_index, cancel_flag) 延迟回收池
     reserved_slots: Arc<TokioMutex<HashMap<String, (usize, Arc<AtomicBool>)>>>,
-    /// 每个 slot 的 session 元数据
     meta: StdMutex<Vec<SessionMeta>>,
     mode: SessionMode,
     reuse_timeout: Duration,
 }
 
-/// LRU 双向链表数组
-struct LruLists {
-    prev: Vec<usize>,
-    next: Vec<usize>,
-}
-
-impl LruLists {
-    fn new(n: usize) -> Self {
-        let (mut prev, mut next) = (vec![LRU_SENTINEL; n], vec![LRU_SENTINEL; n]);
-        if n > 1 {
-            prev[0] = n - 1;
-            next[0] = 1;
-            for i in 1..n - 1 {
-                prev[i] = i - 1;
-                next[i] = i + 1;
-            }
-            prev[n - 1] = n - 2;
-        }
-        Self { prev, next }
-    }
-
-    fn touch(&mut self, idx: usize) {
-        let p = self.prev[idx];
-        let n = self.next[idx];
-        if p != LRU_SENTINEL {
-            self.next[p] = n;
-        }
-        if n != LRU_SENTINEL {
-            self.prev[n] = p;
-        }
-        let head_prev = self.prev[0];
-        self.prev[idx] = LRU_SENTINEL;
-        self.next[idx] = head_prev;
-        if head_prev != LRU_SENTINEL {
-            self.next[head_prev] = idx;
-        }
-        self.prev[0] = idx;
-    }
-
-    fn insert_head(&mut self, idx: usize) {
-        let head_prev = self.prev[0];
-        self.prev[idx] = LRU_SENTINEL;
-        self.next[idx] = head_prev;
-        if head_prev != LRU_SENTINEL {
-            self.next[head_prev] = idx;
-        }
-        self.prev[0] = idx;
-    }
-
-    fn evict_tail(&mut self) -> usize {
-        let mut tail = 0;
-        while self.next[tail] != LRU_SENTINEL {
-            tail = self.next[tail];
-        }
-        let p = self.prev[tail];
-        if p != LRU_SENTINEL {
-            self.next[p] = LRU_SENTINEL;
-        }
-        self.prev[tail] = LRU_SENTINEL;
-        self.next[tail] = LRU_SENTINEL;
-        tail
-    }
-
-    fn detach(&mut self, idx: usize) {
-        let p = self.prev[idx];
-        let n = self.next[idx];
-        if p != LRU_SENTINEL {
-            self.next[p] = n;
-        }
-        if n != LRU_SENTINEL {
-            self.prev[n] = p;
-        }
-        self.prev[idx] = LRU_SENTINEL;
-        self.next[idx] = LRU_SENTINEL;
-    }
-}
-
-impl<T: Copy + crate::num_traits::FromNumber> SlotManager<T> {
+impl<T: Copy + FromNumber> SlotManager<T> {
     pub fn new(
         num_slots: usize,
         batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
@@ -130,7 +109,7 @@ impl<T: Copy + crate::num_traits::FromNumber> SlotManager<T> {
         Self {
             batch_states,
             batch_sequences,
-            lru: StdMutex::new(LruLists::new(num_slots)),
+            lru: StdMutex::new(LruList::new(num_slots)),
             session_map: TokioMutex::new(HashMap::new()),
             reserved_slots: Arc::new(TokioMutex::new(HashMap::new())),
             meta: StdMutex::new(meta),
@@ -139,39 +118,29 @@ impl<T: Copy + crate::num_traits::FromNumber> SlotManager<T> {
         }
     }
 
-    // ── 公共访问接口 ─────────────────────────────────────────
-
-    /// 获取 batch_states 的 Arc 克隆（供 Scheduler 等外部使用）
     pub fn batch_list(&self) -> Arc<SharedMut<Vec<SlotState>>> {
         Arc::clone(&self.batch_states)
     }
 
-    /// 只读访问 slot 状态
     pub fn with_slots<R>(&self, f: impl FnOnce(&[SlotState]) -> R) -> R {
         self.batch_states.with(|v| f(v.as_slice()))
     }
 
-    /// 可变访问 slot 状态
     pub fn with_slots_mut<R>(&self, f: impl FnOnce(&mut [SlotState]) -> R) -> R {
         self.batch_states.with_mut(|v| f(v.as_mut_slice()))
     }
 
-    /// 将 slot 从 LRU 中摘除（开始写入 prompt 时调用）
     pub fn detach_from_lru(&self, idx: usize) {
         self.lru.lock().unwrap().detach(idx);
     }
 
-    // ── Session 生命周期 ─────────────────────────────────────
-
-    pub async fn acquire_session(&self, session_id: &str) -> Result<SessionHandle, SlotError> {
+    pub async fn acquire_session(&self, session_id: &str) -> Result<SessionHandle, super::slot::SlotError> {
         let mut map = self.session_map.lock().await;
 
-        // 1) 活跃会话映射中查找
         if let Some(&slot_index) = map.get(session_id) {
             return Ok(SessionHandle::reused(session_id.to_string(), slot_index));
         }
 
-        // 2) 保留池中查找 — 取消计时器并复用
         let reserved = {
             let mut r = self.reserved_slots.lock().await;
             r.remove(session_id)
@@ -183,10 +152,8 @@ impl<T: Copy + crate::num_traits::FromNumber> SlotManager<T> {
             return Ok(SessionHandle::reused(session_id.to_string(), slot_index));
         }
 
-        // 3) 从 LRU 尾部取最久未使用的 slot
         let slot_index = self.lru.lock().unwrap().evict_tail();
 
-        // 清理可能残留的旧 session 映射
         if let Some(old_id) = map
             .iter()
             .find(|(_, &idx)| idx == slot_index)
@@ -196,7 +163,6 @@ impl<T: Copy + crate::num_traits::FromNumber> SlotManager<T> {
         }
         map.insert(session_id.to_string(), slot_index);
 
-        // 重置 slot 执行状态
         self.batch_states.with_mut(|slots| {
             slots[slot_index] = SlotState::new_start_state();
         });
@@ -221,7 +187,6 @@ impl<T: Copy + crate::num_traits::FromNumber> SlotManager<T> {
             return;
         }
 
-        // Reusable: 启动延迟回收定时器
         let session_id_owned = session_id.to_string();
         map.remove(session_id);
 
@@ -236,7 +201,7 @@ impl<T: Copy + crate::num_traits::FromNumber> SlotManager<T> {
 
         let reserved_slots = Arc::clone(&self.reserved_slots);
         let batch_states = Arc::clone(&self.batch_states);
-        let lru = &self.lru as *const StdMutex<LruLists> as usize;
+        let lru_ptr = &self.lru as *const StdMutex<LruList> as usize;
         let timeout = self.reuse_timeout;
 
         tokio::spawn(async move {
@@ -245,13 +210,12 @@ impl<T: Copy + crate::num_traits::FromNumber> SlotManager<T> {
                 return;
             }
 
-            // SAFETY: SlotManager 由 Arc 持有，spawn 期间不会被释放
             let mut reserved = reserved_slots.lock().await;
             if let Some((idx, _)) = reserved.remove(&session_id_owned) {
                 batch_states.with_mut(|slots| {
                     slots[idx].reset_to_start();
                 });
-                let lru = unsafe { &*(lru as *const StdMutex<LruLists>) };
+                let lru = unsafe { &*(lru_ptr as *const StdMutex<LruList>) };
                 lru.lock().unwrap().insert_head(idx);
             }
         });
@@ -290,8 +254,8 @@ impl<T: Copy + crate::num_traits::FromNumber> SlotManager<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::state::batch::BatchSequence;
-    use std::time::Duration;
+    use crate::runtime::batch::BatchSequence;
+    use crate::runtime::session::slot::Phase;
 
     fn model_dir() -> String {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -307,6 +271,39 @@ mod tests {
                 std::ptr::null_mut(),
                 batch_size,
                 1024,
+                &format!("{}/tokenizer.json", dir),
+                &format!("{}/tokenizer_config.json", dir),
+                &format!("{}/chat_template.jinja", dir),
+            )
+            .unwrap(),
+        ));
+        let batch_states = Arc::new(SharedMut::new(
+            (0..batch_size)
+                .map(|_| SlotState::new_start_state())
+                .collect::<Vec<_>>(),
+        ));
+        Arc::new(SlotManager::new(
+            batch_size,
+            batch_sequences,
+            batch_states,
+            SessionMode::Reusable,
+            timeout_ms,
+        ))
+    }
+
+    fn create_test_manager_with_buffer(
+        batch_size: usize,
+        timeout_ms: u64,
+        buffer: &mut Vec<usize>,
+    ) -> Arc<SlotManager<f16>> {
+        let dir = model_dir();
+        let seq_len = 1024;
+        buffer.resize(batch_size * seq_len, 0);
+        let batch_sequences = Arc::new(SharedMut::new(
+            BatchSequence::<f16>::new(
+                buffer.as_mut_ptr(),
+                batch_size,
+                seq_len,
                 &format!("{}/tokenizer.json", dir),
                 &format!("{}/tokenizer_config.json", dir),
                 &format!("{}/chat_template.jinja", dir),
@@ -403,6 +400,125 @@ mod tests {
 
         let h = manager.acquire_session("s1").await.unwrap();
         let phase = manager.with_slots(|slots| slots[h.slot_index].phase);
-        assert_eq!(phase, crate::runtime::session::Phase::Start);
+        assert_eq!(phase, Phase::Start);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_delta_full_prefix_match() {
+        let mut buffer = Vec::new();
+        let manager = create_test_manager_with_buffer(4, 5000, &mut buffer);
+
+        let session_id = "prefix_test";
+        let handle = manager.acquire_session(session_id).await.unwrap();
+        let slot_idx = handle.slot_index;
+
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        manager.batch_sequences.with_mut(|bs| {
+            bs.write_tokens(slot_idx, &tokens, 1.0).unwrap();
+        });
+
+        manager.release_session(session_id, tokens.len()).await;
+
+        let handle2 = manager.acquire_session(session_id).await.unwrap();
+        assert!(handle2.is_reused);
+
+        let new_tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 11, 12, 13];
+        let delta = manager.calculate_delta(session_id, &new_tokens).await;
+        assert!(delta.is_some());
+        let (prefix_len, delta_tokens) = delta.unwrap();
+        assert_eq!(prefix_len, 5);
+        assert_eq!(delta_tokens, vec![11, 12, 13]);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_delta_no_prefix_match() {
+        let mut buffer = Vec::new();
+        let manager = create_test_manager_with_buffer(4, 5000, &mut buffer);
+
+        let session_id = "no_prefix_test";
+        let handle = manager.acquire_session(session_id).await.unwrap();
+        let slot_idx = handle.slot_index;
+
+        let tokens: Vec<u32> = vec![100, 200, 300];
+        manager.batch_sequences.with_mut(|bs| {
+            bs.write_tokens(slot_idx, &tokens, 1.0).unwrap();
+        });
+
+        manager.release_session(session_id, tokens.len()).await;
+        manager.acquire_session(session_id).await.unwrap();
+
+        let new_tokens: Vec<u32> = vec![999, 888];
+        let delta = manager.calculate_delta(session_id, &new_tokens).await;
+        assert!(delta.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_calculate_delta_new_tokens_shorter() {
+        let mut buffer = Vec::new();
+        let manager = create_test_manager_with_buffer(4, 5000, &mut buffer);
+
+        let session_id = "shorter_test";
+        let handle = manager.acquire_session(session_id).await.unwrap();
+        let slot_idx = handle.slot_index;
+
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        manager.batch_sequences.with_mut(|bs| {
+            bs.write_tokens(slot_idx, &tokens, 1.0).unwrap();
+        });
+
+        manager.release_session(session_id, tokens.len()).await;
+        manager.acquire_session(session_id).await.unwrap();
+
+        let new_tokens: Vec<u32> = vec![1, 2, 3];
+        let delta = manager.calculate_delta(session_id, &new_tokens).await;
+        assert!(delta.is_some());
+        let (prefix_len, delta_tokens) = delta.unwrap();
+        assert_eq!(prefix_len, 3);
+        assert!(delta_tokens.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_calculate_delta_exact_match() {
+        let mut buffer = Vec::new();
+        let manager = create_test_manager_with_buffer(4, 5000, &mut buffer);
+
+        let session_id = "exact_test";
+        let handle = manager.acquire_session(session_id).await.unwrap();
+        let slot_idx = handle.slot_index;
+
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
+        manager.batch_sequences.with_mut(|bs| {
+            bs.write_tokens(slot_idx, &tokens, 1.0).unwrap();
+        });
+
+        manager.release_session(session_id, tokens.len()).await;
+        manager.acquire_session(session_id).await.unwrap();
+
+        let delta = manager.calculate_delta(session_id, &tokens).await;
+        assert!(delta.is_some());
+        let (prefix_len, delta_tokens) = delta.unwrap();
+        assert_eq!(prefix_len, 5);
+        assert!(delta_tokens.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_calculate_delta_zero_token_count() {
+        let manager = create_test_manager(4, 1000);
+
+        let h = manager.acquire_session("zero_token").await.unwrap();
+        manager.release_session("zero_token", 0).await;
+
+        let h2 = manager.acquire_session("zero_token").await.unwrap();
+        assert!(h2.is_reused);
+
+        let delta = manager.calculate_delta("zero_token", &[1, 2, 3]).await;
+        assert!(delta.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_calculate_delta_session_not_found() {
+        let manager = create_test_manager(4, 1000);
+        let delta = manager.calculate_delta("nonexistent", &[1, 2, 3]).await;
+        assert!(delta.is_none());
     }
 }

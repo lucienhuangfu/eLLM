@@ -40,7 +40,7 @@
 //! The operator reads from and writes into this buffer using unsafe pointer arithmetic.
 
 use crate::operators::assign::assign;
-use crate::runtime::state::sequence::SequenceSlice;
+use crate::runtime::batch::SequenceSlice;
 use crate::runtime::{Phase, SlotState};
 
 /// A lightweight "echo" operator that repeats the last token of each sequence
@@ -193,7 +193,7 @@ impl FakeEcho {
 #[cfg(test)]
 mod tests {
     use super::FakeEcho;
-    use crate::runtime::state::sequence::SequenceSlice;
+    use crate::runtime::batch::SequenceSlice;
     use crate::runtime::{Phase, SlotState};
     use std::sync::Arc;
 

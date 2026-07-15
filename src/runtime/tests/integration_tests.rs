@@ -10,32 +10,20 @@ fn test_phase_lifecycle_integration() {
     let mut state = SlotState::new_start_state();
     assert_eq!(state.phase, Phase::Start);
 
-    state.transition_to_prefill(0, 10).unwrap();
+    state = SlotState::new_prefill_state(0, 10);
     assert_eq!(state.phase, Phase::Prefill);
     assert_eq!(state.filling_length, 10);
 
-    let phase_changed = state.advance_sequence(10);
-    assert_eq!(phase_changed, Some(Phase::Decode));
+    state.sequence_index += 10;
+    state.filling_length = 0;
+    state.phase = Phase::Decode;
     assert_eq!(state.phase, Phase::Decode);
 
-    state.transition_to_eos().unwrap();
+    state.phase = Phase::Eos;
     assert_eq!(state.phase, Phase::Eos);
 
-    state.transition_to_prefill(5, 20).unwrap();
+    state = SlotState::new_prefill_state(5, 20);
     assert_eq!(state.phase, Phase::Prefill);
-}
-
-/// Timeout recovery path
-#[test]
-fn test_phase_timeout_recovery() {
-    let mut state = SlotState::new_prefill_state(0, 100);
-    state.transition_to_timeout().unwrap();
-    assert_eq!(state.phase, Phase::Timeout);
-
-    state.transition_to_prefill(10, 50).unwrap();
-    assert_eq!(state.phase, Phase::Prefill);
-    assert_eq!(state.sequence_index, 10);
-    assert_eq!(state.filling_length, 50);
 }
 
 /// Scheduler builds correct task from mixed batch

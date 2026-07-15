@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{Phase, SessionHandle, SlotManager, SlotState};
-use crate::runtime::state::batch::BatchSequence;
+use crate::runtime::batch::BatchSequence;
 
 use super::error::{ApiError, ApiResult};
 use super::parser::ParserOptions;

@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::SlotManager;
-use crate::runtime::state::batch::BatchSequence;
+use crate::runtime::batch::BatchSequence;
 
 use super::api::chat_completions;
 use super::parser::ParserOptions;

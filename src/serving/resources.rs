@@ -5,7 +5,7 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{SessionMode, SlotManager};
-use crate::runtime::state::batch::BatchSequence;
+use crate::runtime::batch::BatchSequence;
 use crate::runtime::{initialize_runtime, RuntimeContext};
 
 use super::parser::{ParserOptions, ParserRule};

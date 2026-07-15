@@ -1,7 +1,9 @@
-use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::HashMap as StdHashMap;
 use std::fs;
 use std::sync::OnceLock;
+
+use anyhow::Result;
+use serde::Deserialize;
 use tiktoken_rs::CoreBPE;
 
 #[derive(Debug, Deserialize)]
@@ -39,12 +41,12 @@ struct TokenizerSplitPattern {
 
 #[derive(Debug, Deserialize)]
 struct TokenizerModel {
-    vocab: HashMap<String, u32>,
+    vocab: StdHashMap<String, u32>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TokenizerConfigJson {
-    added_tokens_decoder: Option<HashMap<String, TokenizerToken>>,
+    added_tokens_decoder: Option<StdHashMap<String, TokenizerToken>>,
     additional_special_tokens: Option<Vec<String>>,
     eos_token: Option<TokenField>,
     pad_token: Option<TokenField>,
@@ -57,7 +59,7 @@ enum TokenField {
     Object { content: String },
 }
 
-fn build_bytelevel_decoder() -> HashMap<char, u8> {
+fn build_bytelevel_decoder() -> StdHashMap<char, u8> {
     let mut bs: Vec<u32> = (33u32..=126u32).collect();
     bs.extend(161u32..=172u32);
     bs.extend(174u32..=255u32);
@@ -83,7 +85,7 @@ fn build_bytelevel_decoder() -> HashMap<char, u8> {
         .collect()
 }
 
-fn decode_bytelevel_token(token: &str, decoder: &HashMap<char, u8>) -> Result<Vec<u8>, String> {
+fn decode_bytelevel_token(token: &str, decoder: &StdHashMap<char, u8>) -> Result<Vec<u8>, String> {
     token
         .chars()
         .map(|ch| {
@@ -143,12 +145,12 @@ pub fn load_tiktoken(
         })?;
 
     let bytelevel_decoder = {
-        static BYTELEVEL_DECODER: OnceLock<HashMap<char, u8>> = OnceLock::new();
+        static BYTELEVEL_DECODER: OnceLock<StdHashMap<char, u8>> = OnceLock::new();
         BYTELEVEL_DECODER.get_or_init(build_bytelevel_decoder)
     };
 
     let encoder = parsed.model.vocab.iter().try_fold(
-        HashMap::with_capacity(parsed.model.vocab.len()),
+        StdHashMap::with_capacity(parsed.model.vocab.len()),
         |mut acc, (token, id)| {
             let bytes = decode_bytelevel_token(token.as_str(), bytelevel_decoder)?;
             acc.insert(bytes, *id);
@@ -158,8 +160,8 @@ pub fn load_tiktoken(
     let encoder = encoder.into_iter().collect();
 
     let added_tokens = parsed.added_tokens.unwrap_or_default();
-    let mut special_tokens_encoder: HashMap<String, u32> =
-        HashMap::with_capacity(added_tokens.len());
+    let mut special_tokens_encoder: StdHashMap<String, u32> =
+        StdHashMap::with_capacity(added_tokens.len());
     for token in added_tokens {
         if token.special {
             let id = token.id.ok_or_else(|| {
@@ -173,7 +175,7 @@ pub fn load_tiktoken(
     }
 
     let added_tokens_decoder = tokenizer_config.added_tokens_decoder.unwrap_or_default();
-    let mut special_token_ids_by_content = HashMap::with_capacity(added_tokens_decoder.len());
+    let mut special_token_ids_by_content = StdHashMap::with_capacity(added_tokens_decoder.len());
     for (token_id, token) in added_tokens_decoder {
         if !token.special {
             continue;
@@ -241,11 +243,11 @@ pub fn load_tiktoken(
 
 #[cfg(test)]
 mod tests {
-    use super::load_tiktoken;
+    use super::*;
 
     const QWEN3_TOKENIZER_JSON_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
     const QWEN3_TOKENIZER_CONFIG_JSON_PATH: &str =
-        "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer_config.json";
+        "./models/Qwen3-Coder-30B-Instruct/tokenizer_config.json";
 
     #[test]
     fn test_load_qwen3_tokenizer_json() {

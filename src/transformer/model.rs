@@ -261,7 +261,7 @@ mod test {
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::mem_mgr::allocator::AlignedBox;
-    use crate::runtime::state::sequence::SequenceSlice;
+    use crate::runtime::batch::SequenceSlice;
     use crate::runtime::{Phase, SlotState};
     use std::collections::HashMap;
 

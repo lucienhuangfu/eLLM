@@ -6,38 +6,8 @@ use tiktoken_rs::CoreBPE;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::num_traits::FromNumber;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::io::{load_tiktoken, ChatTemplate};
+use crate::runtime::loader::{load_tiktoken, ChatTemplate};
 use crate::runtime::session::SlotState;
-
-// ── Build helpers ──────────────────────────────────────────
-
-pub fn build_batch_sequence(
-    model_dir: &str,
-    batch_size: usize,
-    sequence_length: usize,
-) -> Result<(AlignedBox<usize>, Arc<SharedMut<BatchSequence<f16>>>), Box<dyn std::error::Error>> {
-    let tokenizer_path = format!("{}/tokenizer.json", model_dir);
-    let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);
-    let chat_template_path = format!("{}/chat_template.jinja", model_dir);
-
-    let sequences_capacity = sequence_length * batch_size;
-    let sequences_box = AlignedBox::allocate_init(sequences_capacity, 0);
-    let sequences_ptr = sequences_box.as_mut_ptr();
-
-    let batch_sequences = BatchSequence::<f16>::new(
-        sequences_ptr,
-        batch_size,
-        sequence_length,
-        &tokenizer_path,
-        &tokenizer_config_path,
-        &chat_template_path,
-    )
-    .map_err(|e| format!("failed to create batch sequence: {}", e))?;
-
-    Ok((sequences_box, Arc::new(SharedMut::new(batch_sequences))))
-}
-
-// ── BatchSequence ──────────────────────────────────────────
 
 pub struct BatchSequence<T> {
     pub sequences: *mut usize,
@@ -218,9 +188,35 @@ where
 unsafe impl<T> Send for BatchSequence<T> where T: Send + Copy + FromNumber {}
 unsafe impl<T> Sync for BatchSequence<T> where T: Sync + Copy + FromNumber {}
 
+pub fn build_batch_sequence(
+    model_dir: &str,
+    batch_size: usize,
+    sequence_length: usize,
+) -> Result<(AlignedBox<usize>, Arc<SharedMut<BatchSequence<f16>>>), Box<dyn std::error::Error>> {
+    let tokenizer_path = format!("{}/tokenizer.json", model_dir);
+    let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);
+    let chat_template_path = format!("{}/chat_template.jinja", model_dir);
+
+    let sequences_capacity = sequence_length * batch_size;
+    let sequences_box = AlignedBox::allocate_init(sequences_capacity, 0);
+    let sequences_ptr = sequences_box.as_mut_ptr();
+
+    let batch_sequences = BatchSequence::<f16>::new(
+        sequences_ptr,
+        batch_size,
+        sequence_length,
+        &tokenizer_path,
+        &tokenizer_config_path,
+        &chat_template_path,
+    )
+    .map_err(|e| format!("failed to create batch sequence: {}", e))?;
+
+    Ok((sequences_box, Arc::new(SharedMut::new(batch_sequences))))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::BatchSequence;
+    use super::*;
 
     const QWEN3_TEMPLATE_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
     const QWEN3_TOKENIZER_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";

@@ -1,7 +1,7 @@
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, FromNumber, Sigmoid, Sqrt};
 use crate::operators::fake_echo::FakeEcho;
-use crate::runtime::state::sequence::SequenceSlice;
+use crate::runtime::batch::SequenceSlice;
 use crate::runtime::SlotState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
@@ -237,7 +237,7 @@ mod test {
     use crate::kernel::common::matmul_params::MatMulParams;
     use crate::operators::expert::expert_routing::ExpertRouting;
     use crate::operators::send_sync_ptr::SharedMut;
-    use crate::runtime::state::sequence::SequenceSlice;
+    use crate::runtime::batch::SequenceSlice;
     use crate::runtime::{Phase, Scheduler, SessionMode, SlotManager, SlotState};
     use approx::assert_ulps_eq;
     use std::sync::atomic::Ordering;
@@ -363,7 +363,7 @@ mod test {
 
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let batch_sequences = Arc::new(SharedMut::new(
-            crate::runtime::state::batch::BatchSequence::<f16>::new(
+            crate::runtime::batch::BatchSequence::<f16>::new(
                 std::ptr::null_mut(),
                 BATCH_SIZE,
                 SEQUENCE_LENGTH,
@@ -624,7 +624,7 @@ mod test {
             let sequences = vec![1usize, 2, 3, 0, 0, 0, 4, 5, 6, 7, 0, 0];
             let batch_list = Arc::new(SharedMut::new(Vec::new()));
             let batch_sequences = Arc::new(SharedMut::new(
-                crate::runtime::state::batch::BatchSequence::<f16>::new(
+                crate::runtime::batch::BatchSequence::<f16>::new(
                     std::ptr::null_mut(),
                     BATCH_SIZE,
                     SEQUENCE_LENGTH,
@@ -765,7 +765,7 @@ mod test {
 
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let batch_sequences = Arc::new(SharedMut::new(
-            crate::runtime::state::batch::BatchSequence::<f16>::new(
+            crate::runtime::batch::BatchSequence::<f16>::new(
                 std::ptr::null_mut(),
                 BATCH_SIZE,
                 SEQUENCE_LENGTH,
@@ -1009,7 +1009,7 @@ mod test {
         let mut sequences = vec![10usize, 11, 12, 0, 0, 0];
         let batch_list = Arc::new(SharedMut::new(Vec::new()));
         let batch_sequences = Arc::new(SharedMut::new(
-            crate::runtime::state::batch::BatchSequence::<f16>::new(
+            crate::runtime::batch::BatchSequence::<f16>::new(
                 std::ptr::null_mut(),
                 BATCH_SIZE,
                 SEQUENCE_LENGTH,

@@ -4,35 +4,43 @@ use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::{BatchMode, Scheduler};
 use crate::runtime::session::{Phase, SlotState};
 
+fn advance_slot(slot: &mut SlotState, steps: usize) {
+    slot.sequence_index += steps;
+    if slot.phase == Phase::Prefill {
+        slot.filling_length = slot.filling_length.saturating_sub(steps);
+        if slot.filling_length == 0 {
+            slot.phase = Phase::Decode;
+        }
+    }
+}
+
 /// Complete slot lifecycle: Start -> Prefill -> partial Decode -> Eos -> reset -> new Prefill
 #[test]
 fn test_complete_slot_lifecycle() {
     let mut state = SlotState::new_start_state();
-    assert!(!state.is_active());
 
-    state.transition_to_prefill(100, 50).unwrap();
-    assert!(state.is_active());
+    state = SlotState::new_prefill_state(100, 50);
     assert_eq!(state.sequence_index, 100);
     assert_eq!(state.filling_length, 50);
 
     // Partial prefill
-    state.advance_sequence(30);
+    advance_slot(&mut state, 30);
     assert_eq!(state.phase, Phase::Prefill);
     assert_eq!(state.filling_length, 20);
 
     // Complete prefill
-    state.advance_sequence(20);
+    advance_slot(&mut state, 20);
     assert_eq!(state.phase, Phase::Decode);
     assert_eq!(state.sequence_index, 150);
 
     // Decode steps
     for _ in 0..10 {
-        state.advance_sequence(1);
+        advance_slot(&mut state, 1);
     }
     assert_eq!(state.sequence_index, 160);
 
     // End and reset
-    state.transition_to_eos().unwrap();
+    state.phase = Phase::Eos;
     assert!(state.is_available());
 
     state.reset_to_start();
@@ -65,7 +73,7 @@ fn test_new_requests_during_decode() {
         batch_list.with_mut(|batch_list| {
             for s in batch_list.iter_mut() {
                 if s.phase == Phase::Decode {
-                    s.advance_sequence(1);
+                    advance_slot(s, 1);
                 }
             }
         });
@@ -102,14 +110,14 @@ fn test_slot_reuse_workflow() {
 
     // End sequence
     batch_list.with_mut(|batch_list| {
-        batch_list[0].transition_to_eos().unwrap();
+        batch_list[0].phase = Phase::Eos;
     });
     assert!(!scheduler.schedule_batch());
 
     // Reuse slot
     batch_list.with_mut(|batch_list| {
         batch_list[0].reset_to_start();
-        batch_list[0].transition_to_prefill(100, 50).unwrap();
+        batch_list[0] = SlotState::new_prefill_state(100, 50);
     });
 
     assert!(scheduler.schedule_batch());
@@ -148,20 +156,20 @@ fn test_partial_sequence_completion() {
 
         if step == 2 {
             batch_list.with_mut(|bl| {
-                bl[0].transition_to_eos().unwrap();
+                bl[0].phase = Phase::Eos;
             });
         }
         if step == 4 {
             batch_list.with_mut(|bl| {
-                bl[2].transition_to_eos().unwrap();
-                bl[3].transition_to_eos().unwrap();
+                bl[2].phase = Phase::Eos;
+                bl[3].phase = Phase::Eos;
             });
         }
 
         batch_list.with_mut(|batch_list| {
             for s in batch_list.iter_mut() {
                 if s.phase == Phase::Decode {
-                    s.advance_sequence(1);
+                    advance_slot(s, 1);
                 }
             }
         });

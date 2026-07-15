@@ -5,36 +5,18 @@ use crate::config::{GenerationConfig, ResolvedConfig};
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::executor::ExecutorPool;
+use crate::runtime::batch::{build_batch_sequence, BatchSequence};
+use super::config::{extract_generation_params, determine_thread_config, GenerationParameters, ThreadingConfig};
+use super::executor::ExecutorPool;
 use crate::runtime::scheduler::Scheduler;
-use crate::runtime::session::{SessionMode, SlotManager};
-use crate::runtime::state::batch::{build_batch_sequence, BatchSequence};
+use crate::runtime::session::{SessionMode, SlotManager, SlotState};
 use crate::tensor::GlobalOperatorQueue;
 use crate::transformer::config::Config;
 use crate::transformer::model::Model;
 use crate::transformer::rope::RotaryEmbedding;
 
-/// Sampling parameters resolved from `GenerationConfig`.
-#[derive(Debug, Clone)]
-pub struct GenerationParameters {
-    pub top_k: usize,
-    pub top_k_simd: usize,
-    pub top_p: f16,
-    pub min_p: f16,
-    pub do_sample: bool,
-    pub eos_token_id_list: Vec<usize>,
-}
+use crate::runtime::loader::SafeTensorsLoader;
 
-/// Thread-pool layout: how many threads go to API vs. blocking work.
-#[derive(Debug, Clone)]
-pub struct ThreadingConfig {
-    pub api_threads: usize,
-    pub blocking_threads: usize,
-    pub total_threads: usize,
-}
-
-/// All runtime handles needed to run inference, assembled in one place.
-/// The serving layer wraps this with HTTP-specific config.
 pub struct RuntimeContext<T>
 where
     T: Copy + crate::num_traits::FromNumber,
@@ -48,96 +30,6 @@ where
     pub slot_reuse_timeout_ms: usize,
 }
 
-/// Resolve sampling parameters from an optional `GenerationConfig` and
-/// the model's own `Config`.
-pub fn extract_generation_params(
-    config: &Config,
-    generation_config: &Option<GenerationConfig>,
-) -> GenerationParameters {
-    let top_k = generation_config
-        .as_ref()
-        .and_then(|cfg| cfg.top_k)
-        .unwrap_or(8);
-
-    let top_k_simd = generation_config.as_ref().map_or_else(
-        || GenerationConfig::resolved_top_k_simd_static::<f16>(top_k),
-        |cfg| cfg.resolved_top_k_simd::<f16>(top_k),
-    );
-
-    let top_p = generation_config
-        .as_ref()
-        .and_then(|cfg| cfg.top_p)
-        .unwrap_or(1.0) as f16;
-
-    let min_p: f16 = 0.0;
-
-    let do_sample = generation_config
-        .as_ref()
-        .and_then(|cfg| cfg.do_sample)
-        .unwrap_or(false);
-
-    let eos_token_id_list = generation_config
-        .as_ref()
-        .and_then(|cfg| cfg.eos_token_id_list.clone())
-        .unwrap_or_else(|| config.eos_token_ids.clone());
-
-    GenerationParameters {
-        top_k,
-        top_k_simd,
-        top_p,
-        min_p,
-        do_sample,
-        eos_token_id_list,
-    }
-}
-
-/// Detect physical cores and split threads between API handling and
-/// blocking/compute work.
-pub fn determine_thread_config(
-    generation_config: &Option<GenerationConfig>,
-    api_server_count: usize,
-) -> ThreadingConfig {
-    let requested_thread_num = generation_config
-        .as_ref()
-        .map_or_else(
-            || {
-                std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(1)
-            },
-            |cfg| cfg.thread_num(),
-        )
-        .max(1);
-
-    let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    let physical_cores = if core_ids.is_empty() {
-        requested_thread_num
-    } else {
-        let physical_count = core_ids
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| i % 2 == 0)
-            .count();
-        physical_count.max(1).min(requested_thread_num)
-    };
-
-    let total_threads = physical_cores;
-    let api_threads = api_server_count;
-    let blocking_threads = (total_threads - api_threads).max(1);
-
-    println!(
-        "Total threads: {}, blocking threads: {}, api threads: {}",
-        total_threads, blocking_threads, api_threads
-    );
-
-    ThreadingConfig {
-        api_threads,
-        blocking_threads,
-        total_threads,
-    }
-}
-
-/// Construct a `Model<f16>` with sampling from pre-resolved parameters.
 pub fn initialize_model(
     config: &Config,
     gen_params: &GenerationParameters,
@@ -161,11 +53,6 @@ pub fn initialize_model(
     )
 }
 
-/// Bootstrap the full inference runtime from a `ResolvedConfig`.
-///
-/// This loads weights, builds the operator graph, warms the model up with
-/// a single forward pass, and starts the executor thread pool.  The
-/// returned [`RuntimeContext`] owns all shared state handles.
 pub fn initialize_runtime(
     resolved_config: &ResolvedConfig,
     api_server_count: usize,
@@ -188,7 +75,7 @@ pub fn initialize_runtime(
         println!("Loaded generation config: {:?}", gen_cfg);
     }
 
-    let params = crate::runtime::SafeTensorsLoader::new(model_dir)
+    let params = SafeTensorsLoader::new(model_dir)
         .and_then(|loader| loader.load_all_weights_f16())
         .map_err(|e| format!("failed to load model parameters: {}", e))?;
 
@@ -204,7 +91,7 @@ pub fn initialize_runtime(
 
     let batch_states = Arc::new(SharedMut::new(
         (0..batch_size)
-            .map(|_| crate::runtime::session::SlotState::new_start_state())
+            .map(|_| SlotState::new_start_state())
             .collect::<Vec<_>>(),
     ));
     let scheduler = Arc::new(Scheduler::new(

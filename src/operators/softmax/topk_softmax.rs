@@ -11,7 +11,7 @@ use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::TopKSoftmaxTrait;
 use crate::runtime::session::Phase;
 use crate::runtime::session::SlotState;
-use crate::runtime::state::sequence::SequenceSlice;
+use crate::runtime::batch::SequenceSlice;
 use rand::Rng;
 
 #[derive(Clone)]
@@ -521,7 +521,7 @@ impl TopKSoftmaxTrait<f32> for TopKSoftmax<f32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::runtime::state::sequence::SequenceSlice;
+    use crate::runtime::batch::SequenceSlice;
     use crate::runtime::{Phase, SlotState};
     use approx::assert_ulps_eq;
 

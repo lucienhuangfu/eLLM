@@ -3,74 +3,11 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use crate::operators::send_sync_ptr::SharedMut;
+use crate::runtime::batch::SequenceSlice;
 use crate::runtime::session::{Phase, SlotState};
-use crate::runtime::state::sequence::SequenceSlice;
 
-// ── BatchMode ──────────────────────────────────────────────
+use super::task::{BatchMode, ScheduleTask};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BatchMode {
-    Decode,
-    Prefill,
-    Mixed,
-}
-
-// ── ScheduleTask ───────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub struct ScheduleTask {
-    pub mode: BatchMode,
-    pub prefill_size: usize,
-    pub decode_size: usize,
-    pub prefill_list: Vec<Vec<SequenceSlice>>,
-    pub decode_list: Vec<SequenceSlice>,
-}
-
-impl ScheduleTask {
-    pub fn new(thread_num: usize, max_batch_size: usize) -> Self {
-        let mut prefill_list = Vec::with_capacity(thread_num);
-        for _ in 0..thread_num {
-            prefill_list.push(Vec::with_capacity(max_batch_size));
-        }
-        Self {
-            mode: BatchMode::Decode,
-            prefill_size: 0,
-            decode_size: 0,
-            prefill_list,
-            decode_list: Vec::with_capacity(max_batch_size),
-        }
-    }
-
-    #[inline]
-    pub fn reset(&mut self) {
-        self.mode = BatchMode::Decode;
-        self.prefill_size = 0;
-        self.decode_size = 0;
-        for list in self.prefill_list.iter_mut() {
-            list.clear();
-        }
-        self.decode_list.clear();
-    }
-
-    #[inline]
-    pub fn sequence_count(&self) -> usize {
-        self.decode_size
-            + (if self.mode == BatchMode::Prefill || self.mode == BatchMode::Mixed {
-                1
-            } else {
-                0
-            })
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.prefill_size == 0 && self.decode_size == 0
-    }
-}
-
-// ── Scheduler ──────────────────────────────────────────────
-
-/// Lightweight prefill metadata kept during scheduling.
 #[derive(Debug, Clone, Copy)]
 struct PrefillSlot {
     batch_index: usize,
@@ -82,16 +19,12 @@ pub struct Scheduler {
     max_decode_size: usize,
     max_prefill_size: usize,
     thread_num: usize,
-    /// Mutable scheduling scratch space, accessed only inside `schedule_batch`
-    /// which is guaranteed to be called sequentially.
     prefill_slots: UnsafeCell<Vec<PrefillSlot>>,
     batch_list: Arc<SharedMut<Vec<SlotState>>>,
     task: SharedMut<ScheduleTask>,
     pub active_threads: AtomicUsize,
 }
 
-// SAFETY: prefill_slots is only accessed through &self in schedule_batch
-// which is guaranteed to be called sequentially by the runtime.
 unsafe impl Send for Scheduler {}
 unsafe impl Sync for Scheduler {}
 
@@ -143,12 +76,8 @@ impl Scheduler {
         self.task.with(|task| !task.is_empty())
     }
 
-    /// Schedule a batch of slots, building the task for the executor.
-    ///
-    /// Returns `true` if work was scheduled, `false` otherwise.
     #[inline]
     pub fn schedule_batch(&self) -> bool {
-        // SAFETY: schedule_batch is called sequentially by the runtime.
         let prefill_slots = unsafe { &mut *self.prefill_slots.get() };
 
         self.batch_list.with(|batch_list| {
@@ -177,7 +106,6 @@ impl Scheduler {
         task.reset();
         prefill_slots.clear();
 
-        // Phase 1: Collect
         let mut decode_count = 0usize;
 
         for (batch_index, slot) in batch_list.iter().enumerate() {
@@ -208,12 +136,10 @@ impl Scheduler {
 
         task.decode_size = decode_count;
 
-        // Phase 2: Build prefill
         if has_prefill {
             Self::build_prefill(task, prefill_slots, max_prefill_size, thread_num);
         }
 
-        // Phase 3: Build decode
         if has_decode {
             Self::build_decode(task, batch_list, decode_count);
         }
@@ -311,14 +237,27 @@ impl Scheduler {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn make_batch_list(slots: Vec<SlotState>) -> Arc<SharedMut<Vec<SlotState>>> {
         Arc::new(SharedMut::new(slots))
+    }
+
+    fn advance_slot(slot: &mut SlotState, steps: usize) -> Option<Phase> {
+        if slot.phase == Phase::Eos {
+            return None;
+        }
+        slot.sequence_index += steps;
+        if slot.phase == Phase::Prefill {
+            slot.filling_length = slot.filling_length.saturating_sub(steps);
+            if slot.filling_length == 0 {
+                slot.phase = Phase::Decode;
+                return Some(Phase::Decode);
+            }
+        }
+        None
     }
 
     #[test]
@@ -356,47 +295,6 @@ mod tests {
         assert_eq!(scheduler.thread_num(), 5);
     }
 
-    #[test]
-    fn test_schedule_task_lifecycle() {
-        let mut task = ScheduleTask::new(2, 8);
-        assert!(task.is_empty());
-        assert_eq!(task.sequence_count(), 0);
-
-        task.mode = BatchMode::Mixed;
-        task.prefill_size = 10;
-        task.decode_size = 5;
-        task.prefill_list[0].push(SequenceSlice::default());
-        task.decode_list.push(SequenceSlice::default());
-
-        assert!(!task.is_empty());
-        assert_eq!(task.sequence_count(), 6);
-
-        task.reset();
-        assert!(task.is_empty());
-        assert!(task.prefill_list[0].is_empty());
-        assert!(task.decode_list.is_empty());
-    }
-
-    #[test]
-    fn test_schedule_task_sequence_count() {
-        let mut task = ScheduleTask::new(1, 8);
-
-        task.mode = BatchMode::Decode;
-        task.decode_size = 5;
-        assert_eq!(task.sequence_count(), 5);
-
-        task.mode = BatchMode::Prefill;
-        task.prefill_size = 10;
-        task.decode_size = 0;
-        assert_eq!(task.sequence_count(), 1);
-
-        task.mode = BatchMode::Mixed;
-        task.prefill_size = 10;
-        task.decode_size = 3;
-        assert_eq!(task.sequence_count(), 4);
-    }
-
-    /// End-to-end: prefill -> decode -> eos workflow
     #[test]
     fn test_realistic_batch_sequence_workflow() {
         const MAX_DECODE_SIZE: usize = 8;
@@ -436,7 +334,7 @@ mod tests {
 
         batch_list.with_mut(|batch_list| {
             for i in 0..total_sequences {
-                let phase_change = batch_list[i].advance_sequence(prefill_token_counts[i]);
+                let phase_change = advance_slot(&mut batch_list[i], prefill_token_counts[i]);
                 assert_eq!(phase_change, Some(Phase::Decode));
             }
         });
@@ -457,7 +355,7 @@ mod tests {
 
         batch_list.with_mut(|batch_list| {
             for i in 0..total_sequences {
-                batch_list[i].transition_to_eos().unwrap();
+                batch_list[i].phase = Phase::Eos;
             }
         });
 
@@ -465,7 +363,6 @@ mod tests {
         assert_eq!(tasks.len(), 1 + max_decode_steps);
     }
 
-    /// Mixed prefill + decode scheduling
     #[test]
     fn test_mixed_prefill_decode_workflow() {
         let batch_list = make_batch_list(Vec::new());
@@ -490,7 +387,6 @@ mod tests {
         });
     }
 
-    /// Chunked prefill (filling_length > max_prefill_size)
     #[test]
     fn test_chunked_prefill_workflow() {
         const MAX_PREFILL_SIZE: usize = 100;
@@ -521,7 +417,7 @@ mod tests {
             prefill_rounds += 1;
 
             batch_list.with_mut(|batch_list| {
-                batch_list[0].advance_sequence(prefill_size);
+                advance_slot(&mut batch_list[0], prefill_size);
             });
 
             if batch_list.with(|bl| bl[0].phase == Phase::Decode) {
@@ -533,7 +429,6 @@ mod tests {
         assert_eq!(prefill_rounds, 3);
     }
 
-    /// Prefill list content validation
     #[test]
     fn test_prefill_list_content_validation() {
         let batch_list = make_batch_list(Vec::new());
@@ -572,7 +467,6 @@ mod tests {
         assert_eq!(token_count, 140);
     }
 
-    /// Decode list content validation
     #[test]
     fn test_decode_list_content_validation() {
         let batch_list = make_batch_list(Vec::new());
@@ -596,8 +490,6 @@ mod tests {
         }
     }
 
-    // ── Realistic 3-phase scenario tests ────────────────────
-
     #[test]
     fn test_realistic_prefill_mixed_decode_full_scenario() {
         const MAX_DECODE_SIZE: usize = 16;
@@ -612,7 +504,6 @@ mod tests {
             Arc::clone(&batch_list),
         );
 
-        // ── Phase 1: Pure prefill ──────────────────────────
         let prefill_len_a = 64usize;
         let prefill_len_b = 48usize;
         batch_list.with_mut(|batch_list| {
@@ -627,23 +518,19 @@ mod tests {
         assert_eq!(task_p1.decode_size, 0);
         assert_eq!(task_p1.prefill_size, prefill_len_a + prefill_len_b);
 
-        // decode_list should only have prefill entries
         let dl_p1 = &task_p1.decode_list;
-        assert_eq!(dl_p1.len(), 2); // 2 prefill sequences
-                                    // First entry: request A
+        assert_eq!(dl_p1.len(), 2);
         assert_eq!(dl_p1[0].batch_index, 0);
         assert_eq!(dl_p1[0].sequence_index, 0);
         assert_eq!(dl_p1[0].token_start_index, 0);
         assert_eq!(dl_p1[0].length, prefill_len_a);
-        assert!(dl_p1[0].last_token_flag); // completed in one shot
-                                           // Second entry: request B
+        assert!(dl_p1[0].last_token_flag);
         assert_eq!(dl_p1[1].batch_index, 1);
         assert_eq!(dl_p1[1].sequence_index, 200);
         assert_eq!(dl_p1[1].token_start_index, prefill_len_a);
         assert_eq!(dl_p1[1].length, prefill_len_b);
         assert!(dl_p1[1].last_token_flag);
 
-        // Verify prefill_list tokens are correct total
         let prefill_token_sum: usize = task_p1
             .prefill_list
             .iter()
@@ -652,15 +539,13 @@ mod tests {
             .sum();
         assert_eq!(prefill_token_sum, prefill_len_a + prefill_len_b);
 
-        // Advance both prefill slots to decode
         batch_list.with_mut(|batch_list| {
-            let phase_a = batch_list[0].advance_sequence(prefill_len_a);
+            let phase_a = advance_slot(&mut batch_list[0], prefill_len_a);
             assert_eq!(phase_a, Some(Phase::Decode));
-            let phase_b = batch_list[1].advance_sequence(prefill_len_b);
+            let phase_b = advance_slot(&mut batch_list[1], prefill_len_b);
             assert_eq!(phase_b, Some(Phase::Decode));
         });
 
-        // ── Phase 2: Mixed (2 decode + 2 new prefill) ──────
         let prefill_len_c = 32usize;
         let prefill_len_d = 80usize;
         batch_list.with_mut(|batch_list| {
@@ -672,42 +557,33 @@ mod tests {
         let task_p2 = scheduler.with_task(|t| t.clone());
 
         assert_eq!(task_p2.mode, BatchMode::Mixed);
-        assert_eq!(task_p2.decode_size, 2); // A & B decoding
+        assert_eq!(task_p2.decode_size, 2);
         assert_eq!(task_p2.prefill_size, prefill_len_c + prefill_len_d);
 
-        // ── Key validation: decode_list ordering ──
-        // Prefill entries come first, decode entries come after
         let dl_p2 = &task_p2.decode_list;
-        assert_eq!(dl_p2.len(), 4); // 2 prefill + 2 decode
+        assert_eq!(dl_p2.len(), 4);
 
-        // Prefill entries (indices 0, 1)
-        // Request C
         assert_eq!(dl_p2[0].batch_index, 2);
         assert_eq!(dl_p2[0].sequence_index, 400);
         assert_eq!(dl_p2[0].token_start_index, 0);
         assert_eq!(dl_p2[0].length, prefill_len_c);
         assert!(dl_p2[0].last_token_flag);
-        // Request D
         assert_eq!(dl_p2[1].batch_index, 3);
         assert_eq!(dl_p2[1].sequence_index, 600);
         assert_eq!(dl_p2[1].token_start_index, prefill_len_c);
         assert_eq!(dl_p2[1].length, prefill_len_d);
         assert!(dl_p2[1].last_token_flag);
 
-        // Decode entries (indices 2, 3) — token_start_index offset by prefill_size
         let expected_decode_offset = prefill_len_c + prefill_len_d;
-        // Request A (slot 0)
         assert_eq!(dl_p2[2].batch_index, 0);
         assert_eq!(dl_p2[2].token_start_index, expected_decode_offset);
         assert_eq!(dl_p2[2].length, 1);
         assert!(dl_p2[2].last_token_flag);
-        // Request B (slot 1)
         assert_eq!(dl_p2[3].batch_index, 1);
         assert_eq!(dl_p2[3].token_start_index, expected_decode_offset + 1);
         assert_eq!(dl_p2[3].length, 1);
         assert!(dl_p2[3].last_token_flag);
 
-        // Verify all token_start_index are unique and monotonically increasing
         for i in 1..dl_p2.len() {
             assert!(
                 dl_p2[i].token_start_index > dl_p2[i - 1].token_start_index,
@@ -715,17 +591,15 @@ mod tests {
             );
         }
 
-        // Advance C & D to decode, advance A & B by 1 decode step
         batch_list.with_mut(|batch_list| {
-            batch_list[0].advance_sequence(1); // A: decode step
-            batch_list[1].advance_sequence(1); // B: decode step
-            let phase_c = batch_list[2].advance_sequence(prefill_len_c);
+            advance_slot(&mut batch_list[0], 1);
+            advance_slot(&mut batch_list[1], 1);
+            let phase_c = advance_slot(&mut batch_list[2], prefill_len_c);
             assert_eq!(phase_c, Some(Phase::Decode));
-            let phase_d = batch_list[3].advance_sequence(prefill_len_d);
+            let phase_d = advance_slot(&mut batch_list[3], prefill_len_d);
             assert_eq!(phase_d, Some(Phase::Decode));
         });
 
-        // ── Phase 3: Pure decode (all 4 in decode) ─────────
         assert!(scheduler.schedule_batch());
         let task_p3 = scheduler.with_task(|t| t.clone());
 
@@ -733,7 +607,6 @@ mod tests {
         assert_eq!(task_p3.decode_size, 4);
         assert_eq!(task_p3.prefill_size, 0);
 
-        // All entries in decode_list are decode entries
         let dl_p3 = &task_p3.decode_list;
         assert_eq!(dl_p3.len(), 4);
         for (idx, slice) in dl_p3.iter().enumerate() {
@@ -743,12 +616,11 @@ mod tests {
             assert_eq!(slice.batch_index, idx);
         }
 
-        // Run a few more decode steps
         for _ in 0..5 {
             batch_list.with_mut(|batch_list| {
                 for s in batch_list.iter_mut() {
                     if s.phase == Phase::Decode {
-                        s.advance_sequence(1);
+                        advance_slot(s, 1);
                     }
                 }
             });
@@ -759,25 +631,22 @@ mod tests {
             });
         }
 
-        // ── Gradual completion: A & B finish (EOS) ─────────
         batch_list.with_mut(|batch_list| {
-            batch_list[0].transition_to_eos().unwrap(); // A done
-            batch_list[1].transition_to_eos().unwrap(); // B done
+            batch_list[0].phase = Phase::Eos;
+            batch_list[1].phase = Phase::Eos;
         });
 
         assert!(scheduler.schedule_batch());
         scheduler.with_task(|task| {
             assert_eq!(task.mode, BatchMode::Decode);
-            assert_eq!(task.decode_size, 2); // only C & D remain
+            assert_eq!(task.decode_size, 2);
         });
 
-        // C & D finish
         batch_list.with_mut(|batch_list| {
-            batch_list[2].transition_to_eos().unwrap();
-            batch_list[3].transition_to_eos().unwrap();
+            batch_list[2].phase = Phase::Eos;
+            batch_list[3].phase = Phase::Eos;
         });
 
-        // No more work
         assert!(!scheduler.schedule_batch());
     }
 
@@ -800,15 +669,12 @@ mod tests {
         assert_eq!(task.decode_size, 3);
 
         let dl = &task.decode_list;
-        // Total entries: 1 prefill + 3 decode = 4
         assert_eq!(dl.len(), 4);
 
-        // Prefill entry at front
         assert_eq!(dl[0].batch_index, 3);
         assert_eq!(dl[0].token_start_index, 0);
         assert_eq!(dl[0].length, 50);
 
-        // Decode entries after prefill, starting at token_start_index = 50
         assert_eq!(dl[1].batch_index, 0);
         assert_eq!(dl[1].token_start_index, 50);
         assert_eq!(dl[1].length, 1);
@@ -821,7 +687,6 @@ mod tests {
         assert_eq!(dl[3].token_start_index, 52);
         assert_eq!(dl[3].length, 1);
 
-        // Total token count in decode_list
         let total: usize = dl.iter().map(|s| s.length).sum();
         assert_eq!(total, 50 + 3);
     }
@@ -842,20 +707,17 @@ mod tests {
         assert!(scheduler.schedule_batch());
         let task = scheduler.with_task(|t| t.clone());
         assert_eq!(task.mode, BatchMode::Mixed);
-        assert_eq!(task.prefill_size, MAX_PREFILL_SIZE); // chunked
+        assert_eq!(task.prefill_size, MAX_PREFILL_SIZE);
         assert_eq!(task.decode_size, 2);
 
         let dl = &task.decode_list;
-        // 1 prefill entry + 2 decode entries
         assert_eq!(dl.len(), 3);
 
-        // Prefill entry first
         assert_eq!(dl[0].batch_index, 2);
         assert_eq!(dl[0].token_start_index, 0);
         assert_eq!(dl[0].length, MAX_PREFILL_SIZE);
-        assert!(!dl[0].last_token_flag); // not the last chunk
+        assert!(!dl[0].last_token_flag);
 
-        // Decode entries after, offset by prefill_size
         assert_eq!(dl[1].batch_index, 0);
         assert_eq!(dl[1].token_start_index, MAX_PREFILL_SIZE);
         assert_eq!(dl[1].length, 1);
@@ -867,8 +729,6 @@ mod tests {
         assert!(dl[2].last_token_flag);
     }
 
-    /// Tests that lookup_global_index works correctly on decode_list
-    /// built in mixed mode (prefill + decode entries)
     #[test]
     fn test_mixed_decode_list_lookup() {
         let batch_list = make_batch_list(Vec::new());
@@ -884,29 +744,23 @@ mod tests {
         let task = scheduler.with_task(|t| t.clone());
 
         let dl = &task.decode_list;
-        // Prefill: batch_index=2, token_start=0, length=40
-        // Decode 0: batch_index=0, token_start=40, length=1
-        // Decode 1: batch_index=1, token_start=41, length=1
 
-        // Lookup within prefill range
-        let r0 = crate::runtime::state::sequence::lookup_global_index(dl, 0).unwrap();
+        let r0 = crate::runtime::batch::lookup_global_index(dl, 0).unwrap();
         assert_eq!(r0.batch_index, 2);
         assert_eq!(r0.sequence_index, 300);
 
-        let r39 = crate::runtime::state::sequence::lookup_global_index(dl, 39).unwrap();
+        let r39 = crate::runtime::batch::lookup_global_index(dl, 39).unwrap();
         assert_eq!(r39.batch_index, 2);
         assert_eq!(r39.sequence_index, 339);
 
-        // Lookup at decode boundary
-        let r40 = crate::runtime::state::sequence::lookup_global_index(dl, 40).unwrap();
+        let r40 = crate::runtime::batch::lookup_global_index(dl, 40).unwrap();
         assert_eq!(r40.batch_index, 0);
         assert_eq!(r40.sequence_index, 0);
 
-        let r41 = crate::runtime::state::sequence::lookup_global_index(dl, 41).unwrap();
+        let r41 = crate::runtime::batch::lookup_global_index(dl, 41).unwrap();
         assert_eq!(r41.batch_index, 1);
         assert_eq!(r41.sequence_index, 100);
 
-        // Out of range
-        assert!(crate::runtime::state::sequence::lookup_global_index(dl, 42).is_none());
+        assert!(crate::runtime::batch::lookup_global_index(dl, 42).is_none());
     }
 }
