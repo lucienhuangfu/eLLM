@@ -18,6 +18,28 @@ The focus here is on scheduling structure, tensor organization, and parallel spl
 > The generic fallback path still uses scalar block attention, while the `f16` specialization on AVX512-FP16 CPUs uses the `f16_512` attention kernels.
 > For long prefill with GQA ratio 8, the `f16` path can use a fused `1 KV head -> 8 Q heads` kernel inside the sequence-split traversal.
 
+## Experimental blocked BRGEMM backend
+
+Set `ELLM_ATTENTION_BACKEND=brgemm` to use the experimental `f16` attention
+backend. It does **not** call SGLang. eLLM owns tensor addressing, VNNI packing,
+causal masking, online softmax, and static scheduling; only LibTorch's low-level
+half BRGEMM microkernel is loaded dynamically. Q/K/V, softmax probabilities,
+and output remain `f16`; QK scores and the P×V accumulator are `f32`. Each GQA
+KV head is pre-packed once into the BRGEMM VNNI layouts and shared by its eight
+Q heads, then reused across all column blocks instead of repacking each block
+for QK and P×V.
+
+The reference source is available through the local
+[`third_party/sglang`](../../../third_party/sglang) link, primarily
+[`flash_attn.h`](../../../third_party/sglang/sgl-kernel/csrc/cpu/flash_attn.h)
+and [`extend.cpp`](../../../third_party/sglang/sgl-kernel/csrc/cpu/extend.cpp).
+The row/column block sizes follow SGLang's CPU extend-attention choices. The
+default remains eLLM's native kernel, including its fused GQA8 path. The BRGEMM
+backend requires AMX-FP16 and `libtorch_cpu.so`; otherwise it falls back to
+native attention. Do not set `ONEDNN_MAX_CPU_ISA=AVX512_CORE_BF16` or
+`DNNL_MAX_CPU_ISA=AVX512_CORE_BF16`, because those settings disable the required
+AMX-FP16 microkernel. `ELLM_LIBTORCH_CPU_PATH` can override the library path.
+
 ---
 
 # 2. Parameter Definitions

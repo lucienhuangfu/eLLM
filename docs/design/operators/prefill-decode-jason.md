@@ -2,6 +2,144 @@
 
 本文记录 Qwen3-Coder-30B-A3B 在 CPU AVX512-FP16 路径上的 prefill / decode 优化过程、已验证结论、当前热点和后续方向。目标是避免后续重复走已经证明收益不足的路径，并把优化判断和测试数据沉淀下来。
 
+---
+
+## 当前采用方案：SGLang 思路的 FP16 BRGEMM Attention
+
+> 本节描述当前代码实际保留的方案，优先级高于后面的历史实验记录。后文同时包含
+> 已回退方案，不能把“曾经尝试过”理解成“当前仍在使用”。
+
+### 当前目标与边界
+
+当前仅为 Attention 增加可选的长 prefill 后端：
+
+```bash
+ELLM_ATTENTION_BACKEND=brgemm
+```
+
+- 不设置该变量时，仍使用 eLLM 原生 Attention/GQA8。
+- 多行 FP16 prefill 使用 BRGEMM；单行 tail/decode 使用 eLLM 原生 kernel。
+- 不修改 MoE、MatMul、routing 等其他算子的执行路径。
+- 不直接调用或链接 SGLang。`third_party/sglang` 只是指向本机源码的参考链接。
+- 底层矩阵乘使用 LibTorch `CPUBlas::brgemm` 的 FP16/AMX-FP16 microkernel。
+  tensor 生命周期、地址计算、packing、softmax、causal mask 和调度仍由 eLLM 管理。
+
+当前数据类型：
+
+| 数据 | 类型 | 原因 |
+| --- | --- | --- |
+| Q/K/V | FP16 | 保留当前模型和 KV cache 数据类型，避免额外全量转换 |
+| packed K/V | FP16 VNNI layout | 直接供 FP16 BRGEMM 使用 |
+| QK score | FP32 | 保留 softmax 前的累加精度 |
+| softmax probability | FP16 | 直接作为 P×V 的 BRGEMM 输入 |
+| running max/denominator | FP32 | 保证分块 online softmax 稳定性 |
+| P×V accumulator | FP32 | 避免跨 column block 的累加误差 |
+| 最终 output | FP16 | 与后续算子接口保持一致 |
+
+### 当前执行流程
+
+长 prefill 的每个 Q head 按以下流程运行：
+
+```text
+K/V FP16 原布局
+  -> 按 KV head 完整预打包为 BRGEMM VNNI layout
+  -> 同一 GQA 组的 8 个 Q heads 共享 packed K/V
+  -> Q × packed K，FP32 score
+  -> causal mask + 分块 online softmax
+  -> FP16 probability × packed V，FP32 accumulator
+  -> denominator 归一化并写回 FP16 output
+```
+
+Qwen3-Coder-30B-A3B 是 `32 Q heads / 4 KV heads / GQA ratio 8`。当前采用
+head-split：最多暴露 32 个 Q-head task，保留每个 task 的大 M BRGEMM 和连续 row
+访问。没有采用 `4 KV heads × row parts` 的 grouped/hybrid 方案，因为该方案虽然能
+构造 48 个 task，但实测破坏 AMX 吞吐和缓存局部性，TTFT 退化到 53.701s。
+
+### 完整 K/V 预打包与 GQA8 共享
+
+当前不是每个 column block 临时 pack，也不是 8 个 Q heads 各自重复 pack：
+
+1. 每个 Attention operator 持有共享 packed-KV cache。
+2. 每个 KV head 的第一个 Q-head 线程创建完整 packed K/V。
+3. 同一 KV head 下其余 7 个 Q-head 线程通过 `OnceLock` 等待并共享只读结果。
+4. 4 个不同 KV heads 可以并行完成 packing。
+5. cache key 包含 K/V 地址、stride、有效长度、head size 和内容指纹。
+6. 每个 operator 最多保留 8 个 cache entry，避免请求形状变化导致无界增长。
+
+代价是 10k 测试 RSS 相比每线程临时缓存增加约 824 MiB；收益是同一 KV head 的
+重复 packing 从最多 8 次降为 1 次。
+
+### 分块和 decode 策略
+
+当前 BRGEMM block：
+
+| sequence length | row step M | column step N |
+| --- | ---: | ---: |
+| `<= 256` | 32 | 64 |
+| `257..=1024` | 128 | 256 |
+| `1025..=4096` | 256 | 768 |
+| `> 4096` | 512 | 768 |
+
+BRGEMM 只处理 `row_count > 1`。当 `row_count == 1` 时切回原生 Attention，并强制
+`col_step=32`，原因是原生 regular kernel 的 score 临时块为 32；不能沿用长
+prefill 的 768，否则会越界。decode 保持按 32 个 Q heads 并行，不强制退化成只有
+4 个 KV-head tasks 的 GQA8 group fusion。
+
+### 哪些部分参考了 SGLang
+
+参考源码：
+
+- [`extend.cpp`](../../../third_party/sglang/sgl-kernel/csrc/cpu/extend.cpp)
+- [`flash_attn.h`](../../../third_party/sglang/sgl-kernel/csrc/cpu/flash_attn.h)
+- [`vec_pack.h`](../../../third_party/sglang/sgl-kernel/csrc/cpu/vec_pack.h)
+- [`vec.h`](../../../third_party/sglang/sgl-kernel/csrc/cpu/vec.h)
+
+| 部分 | 与 SGLang 的关系 |
+| --- | --- |
+| 长度分档和 M/N block 选择 | 采用 SGLang CPU extend-attention 的分块思路和主要取值 |
+| K/V VNNI layout | 采用 SGLang `vec_pack.h` 使用的 BRGEMM 输入布局概念 |
+| FP16 BRGEMM + FP32 accumulator | 采用其 CPU Attention 的核心矩阵计算思路 |
+| 快速 FP32 exp | 多项式结构和常量参考 `vec.h` 的 `_mm512_fexp_u20_ps` |
+| LibTorch low-level BRGEMM | 使用与该 CPU 路径同类的 `at::native::cpublas::brgemm` primitive |
+
+以下部分不是从 SGLang 直接拿来调用，而是 eLLM 自己实现或保留的现有结构：
+
+- Rust 侧的 BRGEMM 动态加载、错误检查和原生 fallback。
+- Q/K/V pointer、batch/head/sequence stride 计算和静态图接入。
+- causal 可见长度、跨 column block 的 online softmax 状态与最终写回。
+- head-split、三角 row traversal、tail 处理以及 decode `col_step=32`。
+- 完整 span prepack、GQA8 `OnceLock` 共享 cache、cache key 和容量限制。
+- eLLM 原生 GQA8 decode/prefill kernel；默认路径没有被替换。
+
+因此准确描述是：**参考 SGLang 的 CPU Attention 数据布局、分块和 BRGEMM
+思路，在 eLLM 内重新实现一个可选后端**，而不是“把 SGLang Attention 直接接进来”。
+
+### 当前效果和已知限制
+
+10k、batch=1、48 线程、16 output 的当前最佳结果：
+
+| 配置 | TTFT | Attention run+barrier |
+| --- | ---: | ---: |
+| eLLM 原生 Attention | 45.193s | 约 17.81s |
+| BRGEMM + 完整 prepack | 39.400s | 14.198s |
+| BRGEMM + GQA8 共享 prepack | **38.309s** | **13.434s** |
+| 用户提供的 SGLang | 37.600s | 未提供 |
+
+当前还没有稳定达到 37s。剩余 Attention barrier 约 1.55s，但不能通过强制
+grouped/hybrid 简单消除。32 个 Q heads 天然少于 48 个逻辑线程，而进一步拆 row
+会减小 BRGEMM 的 M、增加 packed KV 读流量。下一步如果继续处理 barrier，应尝试
+`Q head × row tile` 二维任务，并保证每个 task 仍有足够大的 M；不能再次采用每个
+task 串行处理 8 个 Q heads 的失败结构。
+
+---
+
+## 以下为历史实验记录
+
+> 下面早期章节中的“不使用 AMX”等目标只代表当时阶段；当前可选 BRGEMM 后端
+> 已使用 AMX-FP16，应以文档顶部“当前采用方案”为准。
+
+---
+
 ## 1. 测试背景
 
 当前主要测试环境和约束：
@@ -784,3 +922,146 @@ softmax 累计线程时间下降约 45.8%。value 因权重读取布局变化上
 1. QK 仍是最大块，可以继续看 K 侧预取/布局、减少 f32 reduce 开销，以及是否能一次处理更多 key row。
 2. softmax head-major 后 value 有轻微回涨，可继续看 value block 内权重读取和寄存器调度。
 3. decode 侧仍需要 KV-length split + partial softmax merge，因为 head split 无法铺满 48 线程。
+
+## 11. SGLang 思路的 BRGEMM Attention 对照实验（2026-07-16）
+
+### 11.1 新的对照口径
+
+用户补充的同机 CPU SGLang TTFT 为：
+
+| input tokens | SGLang TTFT |
+| --- | ---: |
+| 4000 | 14.97s |
+| 8000 | 29.70s |
+| 10000 | 37.60s |
+
+本轮重点使用 10008 token、batch=1、16 output、48 线程对照。SGLang 数据只有在
+prompt 模板、batch 和线程配置一致时才是严格的逐项对比；这里主要用于判断 10k
+attention 路径是否已经接近其数量级。
+
+### 11.2 实现边界
+
+新增实验后端通过 `ELLM_ATTENTION_BACKEND=brgemm` 开启。它不是直接调用
+SGLang：tensor 寻址、causal mask、online softmax、VNNI packing 和调度仍由 eLLM
+实现，只动态使用 LibTorch 的底层 FP16 BRGEMM microkernel。参考源码通过
+[`third_party/sglang`](../../../third_party/sglang) 查看。
+
+数据类型保持为：
+
+- Q/K/V、softmax probability 和最终 output：FP16。
+- QK score、online softmax denominator 和 P×V accumulator：FP32。
+- 单行 decode 继续走 eLLM 原生 kernel；多行 prefill 才走 BRGEMM。
+
+长度相关 block 采用 SGLang CPU extend-attention 的思路：长上下文使用
+`row_step=512`、`col_step=768`。默认后端不变，未设置环境变量时仍走 eLLM 原生
+Attention/GQA8。
+
+### 11.3 完整 K/V prepack（✅ 保留）
+
+BRGEMM 初版按 column block 重复 pack K/V。第一次优化改为把完整 K、V span
+转换为 BRGEMM VNNI layout，然后在全部 column block 中复用。
+
+10k 结果：
+
+| 配置 | TTFT | Attention run | Attention barrier | run+barrier |
+| --- | ---: | ---: | ---: | ---: |
+| BRGEMM 初版 | 40.909s | 13.5625s | 2.1743s | 15.7368s |
+| 完整 K/V prepack | 39.400s | 6.4131s | 7.7852s | 14.1983s |
+
+`run` 与 `barrier` 会因为 leader 线程工作位置变化而互相转移，因此判断时以
+`run+barrier` 和 TTFT 为主。完整 prepack 的 attention wall time 下降约 9.8%，
+TTFT 下降约 1.51s，保留。
+
+### 11.4 GQA8 共享 KV prepack（✅ 保留）
+
+完整 prepack 后仍有一个明显重复：head-split 下 8 个 Q heads 分布在不同线程，
+但它们对应同一个 KV head，原先每个线程都会独立 pack 同一份 K/V。
+
+新实现为每个 Attention operator 增加共享 cache：
+
+- 同一 KV head 的第一个线程负责 pack。
+- 其余 7 个 Q-head 线程等待同一个 `OnceLock`，随后共享只读 packed K/V。
+- 4 个不同 KV heads 仍可并行 pack。
+- cache key 包含 K/V 地址、stride、长度、head size 和内容指纹；每个 operator
+  最多保留 8 个 entry，避免无界增长。
+
+10k 结果：
+
+| 配置 | TTFT | Attention run | Attention barrier | run+barrier | RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 每 Q head 独立完整 prepack | 39.400s | 6.4131s | 7.7852s | 14.1983s | 174949372 KiB |
+| GQA8 共享 prepack | **38.309s** | 11.8797s | 1.5539s | **13.4336s** | 175792968 KiB |
+
+TTFT 再下降 1.091s，Attention wall time 再下降约 5.4%。RSS 增加约 824 MiB，
+符合每层保留 4 个 KV head packed K/V 的预期。当前距离用户给出的 SGLang 10k
+37.6s 约 0.71s。
+
+### 11.5 强制 grouped/hybrid BRGEMM（❌ 已回退）
+
+尝试把长 prefill 强制改为 `4 KV heads × 12 row parts = 48 tasks`，希望占满全部
+逻辑线程。实测：
+
+```text
+TTFT: 53.701s
+Attention run: 26.4525s
+Attention barrier: 2.3322s
+```
+
+每个 task 内串行处理 8 个 Q heads，破坏了 AMX 大 M block 的吞吐和缓存局部性；
+减少 idle thread 并不等于减少 wall time。已经恢复 head-split，不应再默认强制
+grouped/hybrid。
+
+### 11.6 AVX512 寄存器转置 packing（❌ 已回退）
+
+参考 SGLang `vec_pack.h`，独立实现过：
+
+- K：16×16 个 32-bit（每个包含两个 FP16）寄存器转置。
+- V：2×32 FP16 寄存器交织。
+- 非 32 倍数 tail 继续走标量。
+
+正确性测试通过，但 10k 实测没有收益：
+
+| 配置 | TTFT | Attention run+barrier |
+| --- | ---: | ---: |
+| 共享标量 pack | **38.309s** | **13.4336s** |
+| 共享 AVX512 pack | 39.111s | 13.5070s |
+
+原因是共享后每个 KV head 只 pack 一次，packing 已不再是足够大的热点；寄存器转置、
+shuffle 和 masked store 的固定成本抵消了收益。该方案已回退，不应因为“用了
+AVX512”就默认认为更快。
+
+### 11.7 FP32 accumulator 向量化写回（❌ 已回退）
+
+尝试把最终 128 元素的 `FP32 accumulator × reciprocal(denom) -> FP16 output`
+从逐元素写回改为每次 16 个元素的 AVX512 转换。正确性测试通过，但 10k 结果为：
+
+```text
+TTFT: 39.836s
+Attention run: 11.5675s
+Attention barrier: 2.1544s
+Attention run+barrier: 13.7219s
+```
+
+没有优于共享标量 prepack 的 38.309s / 13.4336s，说明该循环不是主要瓶颈，
+或者编译器已有足够好的自动向量化。已回退。
+
+### 11.8 decode 边界修复（✅ 保留）
+
+BRGEMM 的长 prefill block 为 768 columns，但原生 regular decode kernel 的临时
+score block 是 32。取消强制 decode GQA8 后，直接沿用 768 会发生越界。
+
+现在对 `row_count == 1` 的 BRGEMM fallback 固定使用 `col_step=32`：
+
+- prefill 多行仍使用 512×768 BRGEMM。
+- decode 单行恢复 32 Q-head 并行，不再为了 GQA8 只暴露 4 个 KV tasks。
+- 10k / 16 output 完整运行通过，无 panic。
+
+### 11.9 当前结论与下一步
+
+从原生 eLLM 45.193s 到共享 prepack 38.309s，10k TTFT 累计下降约 15.2%；距离
+37.6s 已小于 1s。下一步不应继续扩大 packed cache 或强拆 grouped task，优先级为：
+
+1. 给 BRGEMM kernel 增加 QK、softmax、P×V、pack 四段内部 profile，确认剩余
+   0.7s 是否仍在 attention，而不是 MoE 抖动。
+2. 小范围 A/B `M=384/512/640` 与 `N=512/768/1024`，不要凭经验一次改大。
+3. 4k、8k 分别跑同口径结果，避免只根据 10k 外推 block 最优点。

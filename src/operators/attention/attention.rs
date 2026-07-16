@@ -1,4 +1,5 @@
 use std::ops::{Add, Div, Mul, Sub};
+use std::sync::{Arc, Once};
 
 use crate::num_traits::NegInfinity;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
@@ -7,6 +8,8 @@ use crate::runtime::scheduling::SequenceSlice;
 
 use super::scratch::{AttentionScratch, AttentionScratchSlice};
 use super::utils::{split_sequence_by_triangle, RowVisitPlan};
+
+static BRGEMM_FALLBACK_WARNING: Once = Once::new();
 
 /// Core Attention computation structure
 /// Handles Q, K, V pointers and manages the attention computation
@@ -36,6 +39,9 @@ pub struct Attention<T> {
     pub(super) profile_split: bool,
     pub(super) force_head_split: bool,
     pub(super) decode_gqa8: bool,
+    pub(super) brgemm_backend: bool,
+    pub(super) brgemm_shared_cache:
+        Arc<crate::kernel::x86_64::f16_512::brgemm_attention::SharedCache>,
     pub(super) thread_num: usize,
     scratch: AttentionScratch<T>,
 }
@@ -75,7 +81,8 @@ where
         thread_num: usize,
     ) -> Self {
         let thread_num = thread_num.max(1);
-        let row_step = row_step.max(1);
+        let mut row_step = row_step.max(1);
+        let mut col_step = col_step.max(1);
         let hybrid_split = std::env::var("ELLM_ATTENTION_HYBRID_SPLIT")
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -92,6 +99,29 @@ where
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
+        let requested_brgemm = std::env::var("ELLM_ATTENTION_BACKEND")
+            .ok()
+            .map(|value| value.eq_ignore_ascii_case("brgemm"))
+            .unwrap_or(false);
+        let brgemm_backend = requested_brgemm
+            && std::mem::size_of::<T>() == std::mem::size_of::<f16>()
+            && cfg!(all(target_arch = "x86_64", target_feature = "avx512fp16"))
+            && crate::kernel::x86_64::f16_512::brgemm_attention::available();
+        if requested_brgemm && !brgemm_backend {
+            BRGEMM_FALLBACK_WARNING.call_once(|| {
+                eprintln!(
+                    "ELLM_ATTENTION_BACKEND=brgemm requires f16, AMX-FP16, and libtorch_cpu; using native attention"
+                );
+            });
+        }
+        if brgemm_backend {
+            (row_step, col_step) = match sequence_length {
+                0..=256 => (32, 64),
+                257..=1024 => (128, 256),
+                1025..=4096 => (256, 768),
+                _ => (512, 768),
+            };
+        }
 
         Self {
             q_ptr: ConstPtr { ptr: q_ptr },
@@ -118,6 +148,10 @@ where
             profile_split,
             force_head_split,
             decode_gqa8,
+            brgemm_backend,
+            brgemm_shared_cache: Arc::new(
+                crate::kernel::x86_64::f16_512::brgemm_attention::SharedCache::default(),
+            ),
             thread_num,
             scratch: AttentionScratch::new(thread_num, row_step, col_step),
         }
@@ -193,7 +227,6 @@ where
         row_end: usize,
     ) {
         let row_step = self.row_step;
-        let col_step = self.col_step.max(1);
 
         for row_chunk in (row_begin..row_end).step_by(row_step) {
             let row_chunk_end = row_chunk + row_step;
@@ -203,6 +236,11 @@ where
             }
 
             let row_count = visible_row_end - row_chunk;
+            let col_step = if self.brgemm_backend && row_count == 1 {
+                32
+            } else {
+                self.col_step.max(1)
+            };
             let mut scratch = self.thread_buffers(thread_id, row_count, col_step);
             scratch.clear();
 
@@ -265,7 +303,11 @@ where
         }
 
         let row_count = visible_row_end - row_begin;
-        let col_step = self.col_step.max(1);
+        let col_step = if self.brgemm_backend && row_count == 1 {
+            32
+        } else {
+            self.col_step.max(1)
+        };
         let mut scratch = self.thread_buffers(thread_id, row_count, col_step);
         scratch.clear();
 

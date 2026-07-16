@@ -1,6 +1,7 @@
 pub mod activation;
 pub mod add;
 pub mod bitonic_sort;
+pub mod brgemm_attention;
 pub mod complex_mul;
 pub mod dot_product;
 pub mod experts_topk_softmax_norm;

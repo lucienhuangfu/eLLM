@@ -113,26 +113,48 @@ impl AttentionTrait<f16> for Attention<f16> {
     ) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
-            kernel::x86_64::f16_512::flash_attention::block_flash_attention(
-                q_ptr,
-                output_ptr,
-                row_begin,
-                row_end,
-                col_begin,
-                col_end,
-                total_col_end,
-                k_ptr,
-                v_ptr,
-                k_seq_stride,
-                v_seq_stride,
-                q_seq_stride,
-                self.head_size,
-                self.inverse_sqrt_head,
-                sequence_index,
-                running_max,
-                running_denom,
-                scores,
-            );
+            if self.brgemm_backend && row_end - row_begin > 1 {
+                let handled = kernel::x86_64::f16_512::brgemm_attention::block_attention(
+                    &self.brgemm_shared_cache,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    output_ptr,
+                    row_begin,
+                    row_end,
+                    col_begin,
+                    col_end,
+                    total_col_end,
+                    sequence_index,
+                    q_seq_stride,
+                    k_seq_stride,
+                    v_seq_stride,
+                    self.head_size,
+                    self.inverse_sqrt_head as f32,
+                );
+                debug_assert!(handled);
+            } else {
+                kernel::x86_64::f16_512::flash_attention::block_flash_attention(
+                    q_ptr,
+                    output_ptr,
+                    row_begin,
+                    row_end,
+                    col_begin,
+                    col_end,
+                    total_col_end,
+                    k_ptr,
+                    v_ptr,
+                    k_seq_stride,
+                    v_seq_stride,
+                    q_seq_stride,
+                    self.head_size,
+                    self.inverse_sqrt_head,
+                    sequence_index,
+                    running_max,
+                    running_denom,
+                    scores,
+                );
+            }
         }
 
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
@@ -172,6 +194,9 @@ impl AttentionTrait<f16> for Attention<f16> {
         v_seq_stride: usize,
         q_seq_stride: usize,
     ) -> bool {
+        if self.brgemm_backend && row_end - row_begin > 1 {
+            return false;
+        }
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         unsafe {
             kernel::x86_64::f16_512::flash_attention::block_flash_attention_gqa8(
