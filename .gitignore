@@ -6,6 +6,7 @@ Cargo.lock
 models/
 scripts/
 third_party/transformers/
+third_party/sglang
 
 # Local experiment outputs
 experiment/
