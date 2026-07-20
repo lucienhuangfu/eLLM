@@ -392,13 +392,13 @@ mod test {
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 7);
         assert_eq!(decode_size, 2);
-        assert_eq!(task.decode_list[0].token_start_index, 0);
-        assert_eq!(task.decode_list[0].length, 3);
-        assert_eq!(task.decode_list[1].token_start_index, 3);
-        assert_eq!(task.decode_list[1].length, 4);
+        assert_eq!(task.slices[0].token_start_index, 0);
+        assert_eq!(task.slices[0].length, 3);
+        assert_eq!(task.slices[1].token_start_index, 3);
+        assert_eq!(task.slices[1].length, 4);
 
-        let prefill_list = task.prefill_list.clone();
-        let decode_list = task.decode_list.clone();
+        let prefill_list = task.prefilling_chunked_slices.clone();
+        let decode_list = task.slices.clone();
 
         let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
         fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
@@ -650,8 +650,8 @@ mod test {
             let task = scheduler.with_task(|t| t.clone());
             let prefill_size = task.prefill_size;
             let decode_size = task.decode_size;
-            let prefill_list = task.prefill_list.clone();
-            let decode_list = task.decode_list.clone();
+            let prefill_list = task.prefilling_chunked_slices.clone();
+            let decode_list = task.slices.clone();
 
             let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
             fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
@@ -794,14 +794,14 @@ mod test {
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 0);
         assert_eq!(decode_size, 2);
-        assert!(task.prefill_list.iter().all(Vec::is_empty));
-        assert_eq!(task.decode_list[0].sequence_index, 3);
-        assert_eq!(task.decode_list[0].token_start_index, 0);
-        assert_eq!(task.decode_list[1].sequence_index, 4);
-        assert_eq!(task.decode_list[1].token_start_index, 1);
+        assert!(task.prefilling_chunked_slices.iter().all(Vec::is_empty));
+        assert_eq!(task.slices[0].sequence_index, 3);
+        assert_eq!(task.slices[0].token_start_index, 0);
+        assert_eq!(task.slices[1].sequence_index, 4);
+        assert_eq!(task.slices[1].token_start_index, 1);
 
-        let prefill_list = task.prefill_list.clone();
-        let decode_list = task.decode_list.clone();
+        let prefill_list = task.prefilling_chunked_slices.clone();
+        let decode_list = task.slices.clone();
 
         let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
         fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
@@ -1058,12 +1058,12 @@ mod test {
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 3);
         assert_eq!(decode_size, 1);
-        assert_eq!(task.decode_list[0].sequence_index, 0);
-        assert_eq!(task.decode_list[0].length, 3);
-        assert!(task.decode_list[0].last_token_flag);
+        assert_eq!(task.slices[0].sequence_index, 0);
+        assert_eq!(task.slices[0].length, 3);
+        assert!(task.slices[0].last_token_flag);
 
-        let prefill_list = task.prefill_list.clone();
-        let decode_list = task.decode_list.clone();
+        let prefill_list = task.prefilling_chunked_slices.clone();
+        let decode_list = task.slices.clone();
         let norm_weight = vec![1.0f32; HIDDEN_SIZE];
         let mut hidden = vec![0.0f32; prefill_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; prefill_size * HIDDEN_SIZE];
@@ -1237,12 +1237,12 @@ mod test {
         let decode_size = task.decode_size;
         assert_eq!(decode_prefill_size, 0);
         assert_eq!(decode_size, 1);
-        assert!(task.prefill_list.iter().all(Vec::is_empty));
-        assert_eq!(task.decode_list[0].sequence_index, 3);
-        assert_eq!(task.decode_list[0].length, 1);
+        assert!(task.prefilling_chunked_slices.iter().all(Vec::is_empty));
+        assert_eq!(task.slices[0].sequence_index, 3);
+        assert_eq!(task.slices[0].length, 1);
 
-        let prefill_list = task.prefill_list.clone();
-        let decode_list = task.decode_list.clone();
+        let prefill_list = task.prefilling_chunked_slices.clone();
+        let decode_list = task.slices.clone();
         let norm_weight = vec![1.0f32; HIDDEN_SIZE];
         let mut hidden = vec![0.0f32; decode_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; decode_size * HIDDEN_SIZE];

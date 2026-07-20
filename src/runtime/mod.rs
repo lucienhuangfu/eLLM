@@ -11,7 +11,7 @@ pub use batch::{build_batch_sequence, BatchSequence, DecodeLookupResult, Sequenc
 pub use context::{initialize_runtime, GenerationParameters, RuntimeContext, ThreadingConfig};
 pub use context::executor::ExecutorPool;
 pub use loader::{load_tiktoken, ChatTemplate, SafeTensorsLoader};
-pub use scheduler::{BatchMode, ScheduleTask, Scheduler};
+pub use scheduler::{ScheduleTask, Scheduler};
 pub use session::{Phase, SessionHandle, SessionMode, SlotManager, SlotState};
 
 pub use crate::config::generation_config::GenerationConfig;

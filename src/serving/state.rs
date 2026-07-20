@@ -57,7 +57,7 @@ impl ApiState {
         &self,
         session_id: &str,
         new_tokens: &[u32],
-    ) -> Option<(usize, Vec<u32>)> {
+    ) -> Option<usize> {
         self.slot_manager
             .calculate_delta(session_id, new_tokens)
             .await
@@ -112,15 +112,16 @@ impl ApiState {
         let result = self.get_cached_prefix(session_id, &new_tokens).await;
 
         let (write_len, notify) = match result {
-            Some((prefix_len, delta_tokens)) => {
+            Some(prefix_len) => {
                 self.prepare_slot_for_write(slot_index)?;
                 self.slot_manager.detach_from_lru(slot_index);
                 let temperature = temperature.unwrap_or(1.0);
+                let remaining_tokens = &new_tokens[prefix_len..];
 
                 self.slot_manager.with_slots_mut(|batch_list| {
                     self.batch_sequences.with_mut(|batch_sequences| {
                         batch_sequences
-                            .write_tokens(slot_index, &delta_tokens, temperature)
+                            .write_tokens_at(slot_index, prefix_len, remaining_tokens, temperature)
                             .map(|write_len| {
                                 let record = &mut batch_list[slot_index];
                                 record.sequence_index = prefix_len;

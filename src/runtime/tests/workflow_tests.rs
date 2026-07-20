@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::scheduler::{BatchMode, Scheduler};
+use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{Phase, SlotState};
 
 fn advance_slot(slot: &mut SlotState, steps: usize) {
@@ -67,7 +67,6 @@ fn test_new_requests_during_decode() {
     for _ in 0..3 {
         assert!(scheduler.schedule_batch());
         scheduler.with_task(|task| {
-            assert_eq!(task.mode, BatchMode::Decode);
             assert_eq!(task.decode_size, 4);
         });
         batch_list.with_mut(|batch_list| {
@@ -87,7 +86,6 @@ fn test_new_requests_during_decode() {
 
     assert!(scheduler.schedule_batch());
     scheduler.with_task(|task| {
-        assert_eq!(task.mode, BatchMode::Mixed);
         assert_eq!(task.decode_size, 4);
         assert!(task.prefill_size > 0);
     });
@@ -122,7 +120,6 @@ fn test_slot_reuse_workflow() {
 
     assert!(scheduler.schedule_batch());
     scheduler.with_task(|task| {
-        assert_eq!(task.mode, BatchMode::Prefill);
         assert!(task.prefill_size > 0);
     });
 }

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::batch::BatchSequence;
-use crate::runtime::scheduler::{BatchMode, Scheduler};
+use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{Phase, SessionMode, SessionHandle, SlotManager, SlotState};
 
 fn model_dir() -> String {
@@ -202,7 +202,6 @@ async fn test_multiple_users_concurrent_sessions() {
 
     assert!(scheduler.schedule_batch());
     scheduler.with_task(|task| {
-        assert_eq!(task.mode, BatchMode::Prefill);
         assert!(task.prefill_size > 0);
     });
 
@@ -634,7 +633,6 @@ fn test_scheduler_with_slot_state_transitions() {
     });
     assert!(scheduler.schedule_batch());
     scheduler.with_task(|task| {
-        assert_eq!(task.mode, BatchMode::Prefill);
         assert_eq!(task.decode_size, 0);
         assert!(task.prefill_size > 0);
     });
@@ -646,7 +644,6 @@ fn test_scheduler_with_slot_state_transitions() {
     });
     assert!(scheduler.schedule_batch());
     scheduler.with_task(|task| {
-        assert_eq!(task.mode, BatchMode::Mixed);
         assert_eq!(task.decode_size, 2);
         assert!(task.prefill_size > 0);
     });
@@ -656,7 +653,6 @@ fn test_scheduler_with_slot_state_transitions() {
     });
     assert!(scheduler.schedule_batch());
     scheduler.with_task(|task| {
-        assert_eq!(task.mode, BatchMode::Decode);
         assert_eq!(task.decode_size, 3);
         assert_eq!(task.prefill_size, 0);
     });

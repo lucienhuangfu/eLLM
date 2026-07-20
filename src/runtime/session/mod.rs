@@ -1,5 +1,6 @@
-pub mod slot;
+pub mod types;
+pub mod lru;
 pub mod manager;
 
-pub use slot::{Phase, SlotError, SlotResult, SlotState};
-pub use manager::{SessionHandle, SessionMode, SlotManager};
+pub use types::{Phase, SessionHandle, SessionMode, SlotError, SlotResult, SlotState};
+pub use manager::SlotManager;

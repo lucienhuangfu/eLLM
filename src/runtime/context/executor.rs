@@ -141,8 +141,8 @@ where
     ) {
         let prefill_size = task.prefill_size;
         let decode_size = task.decode_size;
-        let prefill_list = &task.prefill_list;
-        let decode_list = &task.decode_list;
+        let prefill_list = &task.prefilling_chunked_slices;
+        let decode_list = &task.slices;
 
         for operator in operator_queue.iter() {
             let batch_list_ptr = scheduler.batch_list().get();
@@ -190,7 +190,6 @@ mod tests {
     use crate::operators::operator::Operator;
     use crate::operators::send_sync_ptr::SharedMut;
     use crate::runtime::batch::SequenceSlice;
-    use crate::runtime::scheduler::BatchMode;
     use crate::runtime::session::SlotState;
 
     #[test]
@@ -217,11 +216,10 @@ mod tests {
         assert!(has_work);
 
         scheduler.with_task(|task| {
-            assert_eq!(task.mode, BatchMode::Decode);
             assert_eq!(task.decode_size, 2);
-            assert_eq!(task.decode_list.len(), 2);
-            assert_eq!(task.decode_list[0].batch_index, 0);
-            assert_eq!(task.decode_list[1].batch_index, 2);
+            assert_eq!(task.slices.len(), 2);
+            assert_eq!(task.slices[0].batch_index, 0);
+            assert_eq!(task.slices[1].batch_index, 2);
         });
     }
 
@@ -261,11 +259,10 @@ mod tests {
         });
 
         scheduler.with_task_mut(|task| {
-            task.mode = BatchMode::Decode;
             task.decode_size = 2;
             task.prefill_size = 0;
-            task.prefill_list.resize_with(thread_num, || Vec::new());
-            task.decode_list = decode_list;
+            task.prefilling_chunked_slices.resize_with(thread_num, || Vec::new());
+            task.slices = decode_list;
         });
 
         let barrier = Arc::new(SpinBarrier::new(thread_num));
@@ -327,11 +324,10 @@ mod tests {
         });
 
         scheduler.with_task_mut(|task| {
-            task.mode = BatchMode::Decode;
             task.decode_size = 1;
             task.prefill_size = 0;
-            task.prefill_list.resize_with(thread_num, || Vec::new());
-            task.decode_list = decode_list;
+            task.prefilling_chunked_slices.resize_with(thread_num, || Vec::new());
+            task.slices = decode_list;
         });
 
         let barrier = SpinBarrier::new(thread_num);
@@ -430,11 +426,10 @@ mod tests {
         assert!(scheduled);
 
         executor.scheduler.with_task(|task| {
-            assert_eq!(task.mode, BatchMode::Mixed);
             assert_eq!(task.decode_size, 4);
-            assert_eq!(task.prefill_list.len(), 8);
+            assert_eq!(task.prefilling_chunked_slices.len(), 8);
             assert!(task.prefill_size <= 2048);
-            assert_eq!(task.decode_list.len(), 6);
+            assert_eq!(task.slices.len(), 6);
         });
     }
 

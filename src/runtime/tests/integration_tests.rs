@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::scheduler::{BatchMode, Scheduler};
+use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{Phase, SlotState};
 
 /// End-to-end phase lifecycle: Start -> Prefill -> Decode -> Eos -> Prefill again
@@ -43,7 +43,6 @@ fn test_scheduler_mixed_batch() {
     scheduler.schedule_batch();
 
     scheduler.with_task(|task| {
-        assert_eq!(task.mode, BatchMode::Mixed);
         assert!(task.decode_size > 0);
         assert!(task.prefill_size > 0);
     });

@@ -10,86 +10,24 @@ use crate::num_traits::FromNumber;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::batch::BatchSequence;
 
-use super::slot::SlotState;
+use super::lru::LruList;
+use super::types::{SessionHandle, SessionMode, SlotResult, SlotState};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SessionMode {
-    Reusable,
-    NonReusable,
+// ── ReservedSlot ───────────────────────────────────────────
+
+struct ReservedSlot {
+    slot_index: usize,
+    cancel_flag: Arc<AtomicBool>,
 }
 
-#[derive(Debug, Clone)]
-pub struct SessionHandle {
-    pub session_id: String,
-    pub slot_index: usize,
-    pub is_reused: bool,
-}
-
-impl SessionHandle {
-    pub fn new(session_id: String, slot_index: usize) -> Self {
-        Self {
-            session_id,
-            slot_index,
-            is_reused: false,
-        }
-    }
-
-    pub fn reused(session_id: String, slot_index: usize) -> Self {
-        Self {
-            session_id,
-            slot_index,
-            is_reused: true,
-        }
-    }
-}
-
-struct SessionMeta {
-    token_count: usize,
-}
-
-struct LruList {
-    slots: Vec<usize>,
-}
-
-impl LruList {
-    fn new(n: usize) -> Self {
-        Self {
-            slots: (0..n).collect(),
-        }
-    }
-
-    fn touch(&mut self, idx: usize) {
-        if let Some(pos) = self.slots.iter().position(|&x| x == idx) {
-            self.slots.remove(pos);
-        }
-        self.slots.insert(0, idx);
-    }
-
-    fn evict_tail(&mut self) -> usize {
-        self.slots.pop().expect("LRU list is empty")
-    }
-
-    fn insert_head(&mut self, idx: usize) {
-        if let Some(pos) = self.slots.iter().position(|&x| x == idx) {
-            self.slots.remove(pos);
-        }
-        self.slots.insert(0, idx);
-    }
-
-    fn detach(&mut self, idx: usize) {
-        if let Some(pos) = self.slots.iter().position(|&x| x == idx) {
-            self.slots.remove(pos);
-        }
-    }
-}
+// ── SlotManager ────────────────────────────────────────────
 
 pub struct SlotManager<T: Copy + FromNumber> {
     batch_states: Arc<SharedMut<Vec<SlotState>>>,
     batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
-    lru: StdMutex<LruList>,
+    lru: Arc<StdMutex<LruList>>,
     session_map: TokioMutex<HashMap<String, usize>>,
-    reserved_slots: Arc<TokioMutex<HashMap<String, (usize, Arc<AtomicBool>)>>>,
-    meta: StdMutex<Vec<SessionMeta>>,
+    reserved_slots: Arc<TokioMutex<HashMap<String, ReservedSlot>>>,
     mode: SessionMode,
     reuse_timeout: Duration,
 }
@@ -102,17 +40,12 @@ impl<T: Copy + FromNumber> SlotManager<T> {
         mode: SessionMode,
         reuse_timeout_ms: u64,
     ) -> Self {
-        let meta = (0..num_slots)
-            .map(|_| SessionMeta { token_count: 0 })
-            .collect();
-
         Self {
             batch_states,
             batch_sequences,
-            lru: StdMutex::new(LruList::new(num_slots)),
+            lru: Arc::new(StdMutex::new(LruList::new(num_slots))),
             session_map: TokioMutex::new(HashMap::new()),
             reserved_slots: Arc::new(TokioMutex::new(HashMap::new())),
-            meta: StdMutex::new(meta),
             mode,
             reuse_timeout: Duration::from_millis(reuse_timeout_ms),
         }
@@ -131,28 +64,25 @@ impl<T: Copy + FromNumber> SlotManager<T> {
     }
 
     pub fn detach_from_lru(&self, idx: usize) {
-        self.lru.lock().unwrap().detach(idx);
+        self.lru.lock().unwrap().remove(idx);
     }
 
-    pub async fn acquire_session(&self, session_id: &str) -> Result<SessionHandle, super::slot::SlotError> {
+    pub async fn acquire_session(&self, session_id: &str) -> SlotResult<SessionHandle> {
         let mut map = self.session_map.lock().await;
 
         if let Some(&slot_index) = map.get(session_id) {
             return Ok(SessionHandle::reused(session_id.to_string(), slot_index));
         }
 
-        let reserved = {
-            let mut r = self.reserved_slots.lock().await;
-            r.remove(session_id)
-        };
+        let reserved = self.reserved_slots.lock().await.remove(session_id);
 
-        if let Some((slot_index, cancel_flag)) = reserved {
-            cancel_flag.store(true, Ordering::Release);
-            map.insert(session_id.to_string(), slot_index);
-            return Ok(SessionHandle::reused(session_id.to_string(), slot_index));
+        if let Some(r) = reserved {
+            r.cancel_flag.store(true, Ordering::Release);
+            map.insert(session_id.to_string(), r.slot_index);
+            return Ok(SessionHandle::reused(session_id.to_string(), r.slot_index));
         }
 
-        let slot_index = self.lru.lock().unwrap().evict_tail();
+        let slot_index = self.lru.lock().unwrap().pop_back();
 
         if let Some(old_id) = map
             .iter()
@@ -176,14 +106,16 @@ impl<T: Copy + FromNumber> SlotManager<T> {
             return;
         };
 
-        self.meta.lock().unwrap()[slot_index].token_count = token_count;
+        self.batch_states.with_mut(|slots| {
+            slots[slot_index].token_count = token_count;
+        });
 
         if self.mode == SessionMode::NonReusable {
             self.batch_states.with_mut(|slots| {
                 slots[slot_index].reset_to_start();
             });
             map.remove(session_id);
-            self.lru.lock().unwrap().insert_head(slot_index);
+            self.lru.lock().unwrap().push_front(slot_index);
             return;
         }
 
@@ -191,17 +123,17 @@ impl<T: Copy + FromNumber> SlotManager<T> {
         map.remove(session_id);
 
         let cancel_flag = Arc::new(AtomicBool::new(false));
-        {
-            let mut reserved = self.reserved_slots.lock().await;
-            reserved.insert(
-                session_id_owned.clone(),
-                (slot_index, Arc::clone(&cancel_flag)),
-            );
-        }
+        self.reserved_slots.lock().await.insert(
+            session_id_owned.clone(),
+            ReservedSlot {
+                slot_index,
+                cancel_flag: Arc::clone(&cancel_flag),
+            },
+        );
 
-        let reserved_slots = Arc::clone(&self.reserved_slots);
+        let reserved_slots = self.reserved_slots.clone();
         let batch_states = Arc::clone(&self.batch_states);
-        let lru_ptr = &self.lru as *const StdMutex<LruList> as usize;
+        let lru = Arc::clone(&self.lru);
         let timeout = self.reuse_timeout;
 
         tokio::spawn(async move {
@@ -211,12 +143,11 @@ impl<T: Copy + FromNumber> SlotManager<T> {
             }
 
             let mut reserved = reserved_slots.lock().await;
-            if let Some((idx, _)) = reserved.remove(&session_id_owned) {
+            if let Some(r) = reserved.remove(&session_id_owned) {
                 batch_states.with_mut(|slots| {
-                    slots[idx].reset_to_start();
+                    slots[r.slot_index].reset_to_start();
                 });
-                let lru = unsafe { &*(lru_ptr as *const StdMutex<LruList>) };
-                lru.lock().unwrap().insert_head(idx);
+                lru.lock().unwrap().push_front(r.slot_index);
             }
         });
     }
@@ -225,10 +156,10 @@ impl<T: Copy + FromNumber> SlotManager<T> {
         &self,
         session_id: &str,
         new_tokens: &[u32],
-    ) -> Option<(usize, Vec<u32>)> {
+    ) -> Option<usize> {
         let map = self.session_map.lock().await;
         let &slot_index = map.get(session_id)?;
-        let cached_count = self.meta.lock().unwrap()[slot_index].token_count;
+        let cached_count = self.with_slots(|slots| slots[slot_index].token_count);
         if cached_count == 0 {
             return None;
         }
@@ -244,18 +175,20 @@ impl<T: Copy + FromNumber> SlotManager<T> {
             .count();
 
         if prefix_len > 0 {
-            Some((prefix_len, new_tokens[prefix_len..].to_vec()))
+            Some(prefix_len)
         } else {
             None
         }
     }
 }
 
+// ── Tests ──────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::runtime::batch::BatchSequence;
-    use crate::runtime::session::slot::Phase;
+    use crate::runtime::session::types::Phase;
 
     fn model_dir() -> String {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -423,11 +356,9 @@ mod tests {
         assert!(handle2.is_reused);
 
         let new_tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 11, 12, 13];
-        let delta = manager.calculate_delta(session_id, &new_tokens).await;
-        assert!(delta.is_some());
-        let (prefix_len, delta_tokens) = delta.unwrap();
-        assert_eq!(prefix_len, 5);
-        assert_eq!(delta_tokens, vec![11, 12, 13]);
+        let prefix_len = manager.calculate_delta(session_id, &new_tokens).await;
+        assert!(prefix_len.is_some());
+        assert_eq!(prefix_len.unwrap(), 5);
     }
 
     #[tokio::test]
@@ -470,11 +401,9 @@ mod tests {
         manager.acquire_session(session_id).await.unwrap();
 
         let new_tokens: Vec<u32> = vec![1, 2, 3];
-        let delta = manager.calculate_delta(session_id, &new_tokens).await;
-        assert!(delta.is_some());
-        let (prefix_len, delta_tokens) = delta.unwrap();
-        assert_eq!(prefix_len, 3);
-        assert!(delta_tokens.is_empty());
+        let prefix_len = manager.calculate_delta(session_id, &new_tokens).await;
+        assert!(prefix_len.is_some());
+        assert_eq!(prefix_len.unwrap(), 3);
     }
 
     #[tokio::test]
@@ -494,18 +423,16 @@ mod tests {
         manager.release_session(session_id, tokens.len()).await;
         manager.acquire_session(session_id).await.unwrap();
 
-        let delta = manager.calculate_delta(session_id, &tokens).await;
-        assert!(delta.is_some());
-        let (prefix_len, delta_tokens) = delta.unwrap();
-        assert_eq!(prefix_len, 5);
-        assert!(delta_tokens.is_empty());
+        let prefix_len = manager.calculate_delta(session_id, &tokens).await;
+        assert!(prefix_len.is_some());
+        assert_eq!(prefix_len.unwrap(), 5);
     }
 
     #[tokio::test]
     async fn test_calculate_delta_zero_token_count() {
         let manager = create_test_manager(4, 1000);
 
-        let h = manager.acquire_session("zero_token").await.unwrap();
+        manager.acquire_session("zero_token").await.unwrap();
         manager.release_session("zero_token", 0).await;
 
         let h2 = manager.acquire_session("zero_token").await.unwrap();

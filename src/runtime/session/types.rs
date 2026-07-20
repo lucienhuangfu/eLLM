@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use tokio::sync::Notify;
 
+// ── Phase ──────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Phase {
@@ -12,11 +14,14 @@ pub enum Phase {
     Eos,
 }
 
+// ── SlotState ──────────────────────────────────────────────
+
 pub struct SlotState {
     pub sequence_index: usize,
     pub kv_index: usize,
     pub filling_length: usize,
     pub phase: Phase,
+    pub token_count: usize,
     pub(crate) notify: Arc<Notify>,
 }
 
@@ -27,6 +32,7 @@ impl SlotState {
             kv_index,
             filling_length,
             phase,
+            token_count: 0,
             notify: Arc::new(Notify::new()),
         }
     }
@@ -61,6 +67,7 @@ impl SlotState {
         self.kv_index = usize::MAX;
         self.filling_length = 0;
         self.phase = Phase::Start;
+        self.token_count = 0;
     }
 }
 
@@ -69,6 +76,8 @@ impl Default for SlotState {
         Self::new_start_state()
     }
 }
+
+// ── SlotError ──────────────────────────────────────────────
 
 #[derive(Debug)]
 pub enum SlotError {
@@ -90,6 +99,41 @@ impl fmt::Display for SlotError {
 impl std::error::Error for SlotError {}
 
 pub type SlotResult<T> = Result<T, SlotError>;
+
+// ── SessionMode ────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SessionMode {
+    Reusable,
+    NonReusable,
+}
+
+// ── SessionHandle ──────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct SessionHandle {
+    pub session_id: String,
+    pub slot_index: usize,
+    pub is_reused: bool,
+}
+
+impl SessionHandle {
+    pub fn new(session_id: String, slot_index: usize) -> Self {
+        Self {
+            session_id,
+            slot_index,
+            is_reused: false,
+        }
+    }
+
+    pub fn reused(session_id: String, slot_index: usize) -> Self {
+        Self {
+            session_id,
+            slot_index,
+            is_reused: true,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -127,10 +171,12 @@ mod tests {
     fn test_reset_to_start() {
         let mut state = SlotState::new_decode_state(5, 5);
         state.sequence_index = 42;
+        state.token_count = 100;
         state.reset_to_start();
         assert_eq!(state.phase, Phase::Start);
         assert_eq!(state.sequence_index, usize::MAX);
         assert_eq!(state.filling_length, 0);
+        assert_eq!(state.token_count, 0);
     }
 
     #[test]
@@ -166,5 +212,18 @@ mod tests {
             inner().map(|_| 42)
         }
         assert!(matches!(outer(), Err(SlotError::SlotNotFound)));
+    }
+
+    #[test]
+    fn test_session_handle_constructors() {
+        let h1 = SessionHandle::new("test".to_string(), 5);
+        assert_eq!(h1.session_id, "test");
+        assert_eq!(h1.slot_index, 5);
+        assert!(!h1.is_reused);
+
+        let h2 = SessionHandle::reused("test".to_string(), 5);
+        assert_eq!(h2.session_id, "test");
+        assert_eq!(h2.slot_index, 5);
+        assert!(h2.is_reused);
     }
 }

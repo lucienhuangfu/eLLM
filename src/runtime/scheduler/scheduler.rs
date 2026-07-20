@@ -1,12 +1,11 @@
 use std::cell::UnsafeCell;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::batch::SequenceSlice;
 use crate::runtime::session::{Phase, SlotState};
 
-use super::task::{BatchMode, ScheduleTask};
+use super::task::ScheduleTask;
 
 #[derive(Debug, Clone, Copy)]
 struct PrefillSlot {
@@ -22,7 +21,6 @@ pub struct Scheduler {
     prefill_slots: UnsafeCell<Vec<PrefillSlot>>,
     batch_list: Arc<SharedMut<Vec<SlotState>>>,
     task: SharedMut<ScheduleTask>,
-    pub active_threads: AtomicUsize,
 }
 
 unsafe impl Send for Scheduler {}
@@ -43,7 +41,6 @@ impl Scheduler {
             prefill_slots: UnsafeCell::new(Vec::with_capacity(max_decode_size)),
             batch_list,
             task: SharedMut::new(ScheduleTask::new(thread_num, max_decode_size)),
-            active_threads: AtomicUsize::new(0),
         }
     }
 
@@ -127,12 +124,9 @@ impl Scheduler {
         let has_prefill = !prefill_slots.is_empty();
         let has_decode = decode_count > 0;
 
-        task.mode = match (has_prefill, has_decode) {
-            (true, true) => BatchMode::Mixed,
-            (true, false) => BatchMode::Prefill,
-            (false, true) => BatchMode::Decode,
-            (false, false) => return,
-        };
+        if !has_prefill && !has_decode {
+            return;
+        }
 
         task.decode_size = decode_count;
 
@@ -143,6 +137,8 @@ impl Scheduler {
         if has_decode {
             Self::build_decode(task, batch_list, decode_count);
         }
+
+        task.total_token_num = task.prefill_size + task.decode_size;
     }
 
     fn build_prefill(
@@ -173,16 +169,16 @@ impl Scheduler {
 
             let mut cursor = slot.sequence_index;
             let mut remaining = slot.filling_length;
-            let attention_len = remaining.min(total_tokens - scheduled);
+            let prefill_len = remaining.min(total_tokens - scheduled);
 
-            task.decode_list.push(SequenceSlice {
+            task.slices.push(SequenceSlice {
                 batch_index: slot.batch_index,
                 sequence_index: slot.sequence_index,
                 token_start_index: prefill_count,
-                length: attention_len,
-                last_token_flag: attention_len == slot.filling_length,
+                length: prefill_len,
+                last_token_flag: prefill_len == slot.filling_length,
             });
-            prefill_count += attention_len;
+            prefill_count += prefill_len;
 
             while remaining > 0 && scheduled < total_tokens {
                 while thread_idx < thread_num && thread_remaining == 0 {
@@ -198,7 +194,7 @@ impl Scheduler {
                 let chunk = thread_remaining
                     .min(remaining)
                     .min(total_tokens - scheduled);
-                task.prefill_list[thread_idx].push(SequenceSlice {
+                task.prefilling_chunked_slices[thread_idx].push(SequenceSlice {
                     batch_index: slot.batch_index,
                     sequence_index: cursor,
                     token_start_index: scheduled,
@@ -224,7 +220,7 @@ impl Scheduler {
                 break;
             }
             if slot.phase == Phase::Decode {
-                task.decode_list.push(SequenceSlice {
+                task.slices.push(SequenceSlice {
                     batch_index,
                     sequence_index: slot.sequence_index,
                     token_start_index: token_offset + count,
@@ -326,7 +322,6 @@ mod tests {
 
         assert!(scheduler.schedule_batch());
         scheduler.with_task(|task| {
-            assert_eq!(task.mode, BatchMode::Prefill);
             assert!(task.prefill_size > 0);
             assert_eq!(task.decode_size, 0);
         });
@@ -346,7 +341,6 @@ mod tests {
                 step
             );
             scheduler.with_task(|task| {
-                assert_eq!(task.mode, BatchMode::Decode);
                 assert_eq!(task.decode_size, total_sequences);
                 assert_eq!(task.prefill_size, 0);
             });
@@ -381,7 +375,6 @@ mod tests {
 
         assert!(scheduler.schedule_batch());
         scheduler.with_task(|task| {
-            assert_eq!(task.mode, BatchMode::Mixed);
             assert_eq!(task.decode_size, 3);
             assert!(task.prefill_size > 0);
         });
@@ -408,10 +401,6 @@ mod tests {
                 break;
             }
 
-            scheduler.with_task(|task| {
-                assert_eq!(task.mode, BatchMode::Prefill);
-            });
-
             let prefill_size = scheduler.with_task(|t| t.prefill_size);
             total_prefilled += prefill_size;
             prefill_rounds += 1;
@@ -430,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prefill_list_content_validation() {
+    fn test_prefilling_chunked_slices_content_validation() {
         let batch_list = make_batch_list(Vec::new());
         let scheduler = Scheduler::new(8, 200, 2, Arc::clone(&batch_list));
 
@@ -442,10 +431,10 @@ mod tests {
         assert!(scheduler.schedule_batch());
         let task = scheduler.with_task(|t| t.clone());
         assert_eq!(task.prefill_size, 140);
-        assert_eq!(task.prefill_list.len(), 2);
+        assert_eq!(task.prefilling_chunked_slices.len(), 2);
 
         let total_tokens: usize = task
-            .prefill_list
+            .prefilling_chunked_slices
             .iter()
             .flat_map(|v| v.iter())
             .map(|s| s.length)
@@ -453,7 +442,7 @@ mod tests {
         assert_eq!(total_tokens, 140);
 
         let mut token_count = 0;
-        for thread_slices in &task.prefill_list {
+        for thread_slices in &task.prefilling_chunked_slices {
             for slice in thread_slices {
                 assert_eq!(slice.token_start_index, token_count);
                 if token_count < 60 {
@@ -468,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_list_content_validation() {
+    fn test_slices_content_validation() {
         let batch_list = make_batch_list(Vec::new());
         let scheduler = Scheduler::new(8, 256, 2, Arc::clone(&batch_list));
 
@@ -481,8 +470,8 @@ mod tests {
         assert!(scheduler.schedule_batch());
         let task = scheduler.with_task(|t| t.clone());
 
-        assert_eq!(task.decode_list.len(), 3);
-        for (idx, slice) in task.decode_list.iter().enumerate() {
+        assert_eq!(task.slices.len(), 3);
+        for (idx, slice) in task.slices.iter().enumerate() {
             assert_eq!(slice.token_start_index, idx);
             assert_eq!(slice.length, 1);
             assert!(slice.last_token_flag);
@@ -514,11 +503,10 @@ mod tests {
         assert!(scheduler.schedule_batch());
         let task_p1 = scheduler.with_task(|t| t.clone());
 
-        assert_eq!(task_p1.mode, BatchMode::Prefill);
         assert_eq!(task_p1.decode_size, 0);
         assert_eq!(task_p1.prefill_size, prefill_len_a + prefill_len_b);
 
-        let dl_p1 = &task_p1.decode_list;
+        let dl_p1 = &task_p1.slices;
         assert_eq!(dl_p1.len(), 2);
         assert_eq!(dl_p1[0].batch_index, 0);
         assert_eq!(dl_p1[0].sequence_index, 0);
@@ -532,7 +520,7 @@ mod tests {
         assert!(dl_p1[1].last_token_flag);
 
         let prefill_token_sum: usize = task_p1
-            .prefill_list
+            .prefilling_chunked_slices
             .iter()
             .flat_map(|v| v.iter())
             .map(|s| s.length)
@@ -556,11 +544,10 @@ mod tests {
         assert!(scheduler.schedule_batch());
         let task_p2 = scheduler.with_task(|t| t.clone());
 
-        assert_eq!(task_p2.mode, BatchMode::Mixed);
         assert_eq!(task_p2.decode_size, 2);
         assert_eq!(task_p2.prefill_size, prefill_len_c + prefill_len_d);
 
-        let dl_p2 = &task_p2.decode_list;
+        let dl_p2 = &task_p2.slices;
         assert_eq!(dl_p2.len(), 4);
 
         assert_eq!(dl_p2[0].batch_index, 2);
@@ -587,7 +574,7 @@ mod tests {
         for i in 1..dl_p2.len() {
             assert!(
                 dl_p2[i].token_start_index > dl_p2[i - 1].token_start_index,
-                "decode_list token_start_index should be strictly increasing"
+                "slices token_start_index should be strictly increasing"
             );
         }
 
@@ -603,11 +590,10 @@ mod tests {
         assert!(scheduler.schedule_batch());
         let task_p3 = scheduler.with_task(|t| t.clone());
 
-        assert_eq!(task_p3.mode, BatchMode::Decode);
         assert_eq!(task_p3.decode_size, 4);
         assert_eq!(task_p3.prefill_size, 0);
 
-        let dl_p3 = &task_p3.decode_list;
+        let dl_p3 = &task_p3.slices;
         assert_eq!(dl_p3.len(), 4);
         for (idx, slice) in dl_p3.iter().enumerate() {
             assert_eq!(slice.token_start_index, idx);
@@ -626,7 +612,6 @@ mod tests {
             });
             assert!(scheduler.schedule_batch());
             scheduler.with_task(|task| {
-                assert_eq!(task.mode, BatchMode::Decode);
                 assert_eq!(task.decode_size, 4);
             });
         }
@@ -638,7 +623,6 @@ mod tests {
 
         assert!(scheduler.schedule_batch());
         scheduler.with_task(|task| {
-            assert_eq!(task.mode, BatchMode::Decode);
             assert_eq!(task.decode_size, 2);
         });
 
@@ -651,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mixed_mode_decode_list_token_layout() {
+    fn test_mixed_mode_slices_token_layout() {
         let batch_list = make_batch_list(Vec::new());
         let scheduler = Scheduler::new(16, 1024, 2, Arc::clone(&batch_list));
 
@@ -664,11 +648,10 @@ mod tests {
 
         assert!(scheduler.schedule_batch());
         let task = scheduler.with_task(|t| t.clone());
-        assert_eq!(task.mode, BatchMode::Mixed);
         assert_eq!(task.prefill_size, 50);
         assert_eq!(task.decode_size, 3);
 
-        let dl = &task.decode_list;
+        let dl = &task.slices;
         assert_eq!(dl.len(), 4);
 
         assert_eq!(dl[0].batch_index, 3);
@@ -706,11 +689,10 @@ mod tests {
 
         assert!(scheduler.schedule_batch());
         let task = scheduler.with_task(|t| t.clone());
-        assert_eq!(task.mode, BatchMode::Mixed);
         assert_eq!(task.prefill_size, MAX_PREFILL_SIZE);
         assert_eq!(task.decode_size, 2);
 
-        let dl = &task.decode_list;
+        let dl = &task.slices;
         assert_eq!(dl.len(), 3);
 
         assert_eq!(dl[0].batch_index, 2);
@@ -730,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mixed_decode_list_lookup() {
+    fn test_mixed_slices_lookup() {
         let batch_list = make_batch_list(Vec::new());
         let scheduler = Scheduler::new(16, 1024, 2, Arc::clone(&batch_list));
 
@@ -743,7 +725,7 @@ mod tests {
         assert!(scheduler.schedule_batch());
         let task = scheduler.with_task(|t| t.clone());
 
-        let dl = &task.decode_list;
+        let dl = &task.slices;
 
         let r0 = crate::runtime::batch::lookup_global_index(dl, 0).unwrap();
         assert_eq!(r0.batch_index, 2);

@@ -169,9 +169,20 @@ where
         tokens: &[u32],
         temperature: f32,
     ) -> Result<usize, String> {
-        let write_len = tokens.len().min(self.col_size);
+        self.write_tokens_at(slot_index, 0, tokens, temperature)
+    }
 
-        let offset = slot_index * self.col_size;
+    pub fn write_tokens_at(
+        &mut self,
+        slot_index: usize,
+        start_pos: usize,
+        tokens: &[u32],
+        temperature: f32,
+    ) -> Result<usize, String> {
+        let max_write = self.col_size.saturating_sub(start_pos);
+        let write_len = tokens.len().min(max_write);
+
+        let offset = slot_index * self.col_size + start_pos;
 
         for (i, id) in tokens[..write_len].iter().enumerate() {
             unsafe {
