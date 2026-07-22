@@ -189,7 +189,7 @@ mod tests {
     use crate::operators::fake_echo::FakeEcho;
     use crate::operators::operator::Operator;
     use crate::operators::send_sync_ptr::SharedMut;
-    use crate::runtime::batch::SequenceSlice;
+    use crate::runtime::scheduler::SequenceSlice;
     use crate::runtime::session::SlotState;
 
     #[test]

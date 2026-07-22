@@ -55,7 +55,10 @@ impl SlotState {
     }
 
     pub fn is_available(&self) -> bool {
-        matches!(self.phase, Phase::Start | Phase::Eos)
+        match self.phase {
+            Phase::Start | Phase::Eos => true,
+            _ => false,
+        }
     }
 
     pub fn notify(&self) -> Arc<Notify> {

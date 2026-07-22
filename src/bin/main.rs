@@ -2,28 +2,30 @@
 
 use clap::Parser;
 use ellm::config::{Cli, Config};
+use ellm::runtime::RuntimeContext;
 use ellm::serving;
 use ellm::serving::initialize_serving_resources;
+use ellm::serving::parser::ParserOptions;
 
 fn create_runtime(
-    resources: &serving::ServingResources<f16>,
+    ctx: &RuntimeContext<f16>,
 ) -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error>> {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(resources.api_threads)
-        .max_blocking_threads(resources.blocking_threads)
+        .worker_threads(ctx.thread_config.api_threads)
+        .max_blocking_threads(ctx.thread_config.blocking_threads)
         .enable_all()
         .build()
         .map_err(Into::into)
 }
 
 async fn run_server(
-    resources: serving::ServingResources<f16>,
+    ctx: RuntimeContext<f16>,
+    parser_options: ParserOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     serving::run(
-        resources.batch_sequences,
-        resources.scheduler,
-        resources.parser_options,
-        resources.slot_manager,
+        ctx.scheduler,
+        parser_options,
+        ctx.slot_manager,
     )
     .await?;
 
@@ -37,11 +39,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_cli(cli)?;
     let resolved_config = config.resolve()?;
 
-    let resources = initialize_serving_resources(&resolved_config)?;
+    let (ctx, parser_options) = initialize_serving_resources(&resolved_config)?;
 
-    let rt = create_runtime(&resources)?;
+    let rt = create_runtime(&ctx)?;
 
-    rt.block_on(async move { run_server(resources).await })?;
+    rt.block_on(async move { run_server(ctx, parser_options).await })?;
 
     Ok(())
 }

@@ -78,3 +78,40 @@ impl From<crate::runtime::session::SlotError> for ApiError {
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn error_display_messages() {
+        assert_eq!(
+            format!("{}", ApiError::TokenizationError("oops".into())),
+            "Tokenization failed: oops"
+        );
+        assert_eq!(
+            format!("{}", ApiError::SlotUnavailable("busy".into())),
+            "Slot unavailable: busy"
+        );
+        assert_eq!(
+            format!("{}", ApiError::InternalError("fail".into())),
+            "Internal error: fail"
+        );
+    }
+
+    #[test]
+    fn tokenization_error_status_500() {
+        let err = ApiError::TokenizationError("bad token".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn slot_error_from_conversion() {
+        let slot_err = crate::runtime::session::SlotError::SlotNotFound;
+        let api_err: ApiError = slot_err.into();
+        let resp = api_err.into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}

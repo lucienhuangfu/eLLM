@@ -4,7 +4,7 @@ use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::{
-    build_batch_sequence, BatchSequence, ExecutorPool, Scheduler, SessionMode, SlotManager,
+    build_batch_sequence, ExecutorPool, Scheduler, SessionMode, SlotManager,
     SlotState,
 };
 use ellm::serving;
@@ -23,7 +23,6 @@ fn create_runtime() -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error
 }
 
 async fn run_server(
-    batch_sequences: Arc<SharedMut<BatchSequence<f16>>>,
     batch_states: Arc<SharedMut<Vec<SlotState>>>,
     parser_options: ParserOptions,
     slot_manager: Arc<SlotManager<f16>>,
@@ -44,7 +43,7 @@ async fn run_server(
     );
     executor_pool.start();
 
-    serving::run(batch_sequences, scheduler, parser_options, slot_manager).await?;
+    serving::run(scheduler, parser_options, slot_manager).await?;
 
     Ok(())
 }
@@ -80,7 +79,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     rt.block_on(async move {
         run_server(
-            batch_sequences,
             batch_states,
             parser_options,
             slot_manager,

@@ -63,6 +63,12 @@ impl ParserOptions {
     }
 }
 
+impl Default for ParserOptions {
+    fn default() -> Self {
+        Self::new(ParserRule::qwen())
+    }
+}
+
 impl ParserRule {
     pub const fn new(
         tool_start: &'static str,

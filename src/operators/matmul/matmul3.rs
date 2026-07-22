@@ -11,7 +11,7 @@ use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 
 use crate::operators::assign::{assign, KqvPath};
 use crate::operators::traits::MatMulkqvTrait;
-use crate::runtime::batch::SequenceSlice;
+use crate::runtime::SequenceSlice;
 
 // Generic scalar helpers used by fallback paths.
 // fallback 路径使用的通用标量 helper。

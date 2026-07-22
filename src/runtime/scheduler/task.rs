@@ -1,4 +1,4 @@
-use crate::runtime::batch::SequenceSlice;
+use super::sequence::SequenceSlice;
 
 #[derive(Debug, Clone)]
 pub struct ScheduleTask {

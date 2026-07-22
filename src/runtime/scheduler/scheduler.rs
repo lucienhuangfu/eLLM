@@ -2,7 +2,7 @@ use std::cell::UnsafeCell;
 use std::sync::Arc;
 
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::batch::SequenceSlice;
+use super::sequence::SequenceSlice;
 use crate::runtime::session::{Phase, SlotState};
 
 use super::task::ScheduleTask;
@@ -727,22 +727,22 @@ mod tests {
 
         let dl = &task.slices;
 
-        let r0 = crate::runtime::batch::lookup_global_index(dl, 0).unwrap();
+        let r0 = crate::runtime::scheduler::slice_lookup::lookup_global_index(dl, 0).unwrap();
         assert_eq!(r0.batch_index, 2);
         assert_eq!(r0.sequence_index, 300);
 
-        let r39 = crate::runtime::batch::lookup_global_index(dl, 39).unwrap();
+        let r39 = crate::runtime::scheduler::slice_lookup::lookup_global_index(dl, 39).unwrap();
         assert_eq!(r39.batch_index, 2);
         assert_eq!(r39.sequence_index, 339);
 
-        let r40 = crate::runtime::batch::lookup_global_index(dl, 40).unwrap();
+        let r40 = crate::runtime::scheduler::slice_lookup::lookup_global_index(dl, 40).unwrap();
         assert_eq!(r40.batch_index, 0);
         assert_eq!(r40.sequence_index, 0);
 
-        let r41 = crate::runtime::batch::lookup_global_index(dl, 41).unwrap();
+        let r41 = crate::runtime::scheduler::slice_lookup::lookup_global_index(dl, 41).unwrap();
         assert_eq!(r41.batch_index, 1);
         assert_eq!(r41.sequence_index, 100);
 
-        assert!(crate::runtime::batch::lookup_global_index(dl, 42).is_none());
+        assert!(crate::runtime::scheduler::slice_lookup::lookup_global_index(dl, 42).is_none());
     }
 }

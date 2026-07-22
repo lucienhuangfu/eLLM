@@ -87,6 +87,7 @@ rand = "0.8.5"
 criterion = { version = "0.5.1", features = ["html_reports"] }
 approx = "0.5.1"
 tempfile = "3.8.1"
+tower = { version = "0.5", features = ["util"] }
 
 [features]
 default = []
