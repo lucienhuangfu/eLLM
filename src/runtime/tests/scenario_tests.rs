@@ -25,10 +25,8 @@ async fn test_multi_round_chat_with_kv_cache_reuse() {
         let slot_idx = handle.slot_index;
 
         if round > 1 {
-            assert!(handle.is_reused, "round {} should reuse slot", round);
             assert_eq!(slot_idx, current_slot);
         } else {
-            assert!(!handle.is_reused);
             current_slot = slot_idx;
         }
 
@@ -125,7 +123,6 @@ async fn test_concurrent_multi_user_chat_simulation() {
 
     for user in &users {
         let h = manager.acquire_session(user).await;
-        assert!(h.is_reused);
         Arc::clone(&manager).release_session(user, 100).await;
     }
 }
@@ -148,7 +145,6 @@ async fn test_incremental_prefill_with_prefix_match() {
         .await;
 
     let handle2 = manager.acquire_session(session_id).await;
-    assert!(handle2.is_reused);
     assert_eq!(handle2.slot_index, slot_idx);
 
     let round2_tokens: Vec<u32> = (1..=15).chain(100..110).collect();
@@ -182,20 +178,16 @@ async fn test_mixed_reusable_and_non_reusable_sessions() {
         create_test_manager_with_mode(batch_size, 5000, SessionMode::NonReusable);
 
     let h1 = reusable_manager.acquire_session("user_r").await;
-    assert!(!h1.is_reused);
     Arc::clone(&reusable_manager)
         .release_session("user_r", 10)
         .await;
-    let h2 = reusable_manager.acquire_session("user_r").await;
-    assert!(h2.is_reused);
+    let _h2 = reusable_manager.acquire_session("user_r").await;
 
     let h3 = non_reusable_manager.acquire_session("user_nr").await;
-    assert!(!h3.is_reused);
     Arc::clone(&non_reusable_manager)
         .release_session("user_nr", 10)
         .await;
-    let h4 = non_reusable_manager.acquire_session("user_nr").await;
-    assert!(!h4.is_reused);
+    let _h4 = non_reusable_manager.acquire_session("user_nr").await;
 }
 
 #[tokio::test]
@@ -214,12 +206,9 @@ async fn test_session_eviction_when_all_slots_full() {
 
     let h3 = manager.acquire_session("user_3").await;
     let h4 = manager.acquire_session("user_4").await;
-    assert!(!h3.is_reused);
-    assert!(!h4.is_reused);
     assert_ne!(h3.slot_index, h4.slot_index);
 
-    let h1_again = manager.acquire_session("user_1").await;
-    assert!(!h1_again.is_reused);
+    let _h1_again = manager.acquire_session("user_1").await;
 }
 
 #[tokio::test]

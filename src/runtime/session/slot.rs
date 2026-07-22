@@ -78,15 +78,13 @@ pub enum SessionMode {
 pub struct SessionHandle {
     pub session_id: String,
     pub slot_index: usize,
-    pub is_reused: bool,
 }
 
 impl SessionHandle {
-    pub fn new(session_id: String, slot_index: usize, is_reused: bool) -> Self {
+    pub fn new(session_id: String, slot_index: usize) -> Self {
         Self {
             session_id,
             slot_index,
-            is_reused,
         }
     }
 }

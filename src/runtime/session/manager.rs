@@ -49,7 +49,7 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
         let mut map = self.session_map.lock().await;
 
         if let Some(&slot_index) = map.get(session_id) {
-            return SessionHandle::new(session_id.to_string(), slot_index, true);
+            return SessionHandle::new(session_id.to_string(), slot_index);
         }
 
         // 尝试回收 reserved slot
@@ -57,7 +57,7 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
         {
             cancel_flag.store(true, Ordering::Release);
             map.insert(session_id.to_string(), slot_index);
-            return SessionHandle::new(session_id.to_string(), slot_index, true);
+            return SessionHandle::new(session_id.to_string(), slot_index);
         }
 
         // 从 LRU 尾部淘汰
@@ -78,7 +78,7 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
             slots[slot_index] = SlotState::idle();
         });
 
-        SessionHandle::new(session_id.to_string(), slot_index, false)
+        SessionHandle::new(session_id.to_string(), slot_index)
     }
 
     pub async fn release_session(self: Arc<Self>, session_id: &str, token_count: usize) {
@@ -140,7 +140,6 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
         session_id: &str,
         messages: &[ChatMessage],
         temperature: Option<f32>,
-        is_reused: bool,
     ) -> ApiResult<(usize, Arc<Notify>)> {
         let message_pairs: Vec<(&str, &str)> = messages
             .iter()
@@ -152,7 +151,7 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
             .with(|seq| seq.tokenize_messages(&message_pairs))
             .map_err(ApiError::TokenizationError)?;
 
-        let prefix_len = if is_reused {
+        let prefix_len = if self.mode == SessionMode::Reusable {
             self.prefix_match_len(session_id, &new_tokens)
                 .await
                 .unwrap_or(0)

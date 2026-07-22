@@ -43,7 +43,6 @@ async fn chat_completions(
             &session_id,
             &request.messages,
             request.temperature,
-            handle.is_reused,
         )
         .await
     {

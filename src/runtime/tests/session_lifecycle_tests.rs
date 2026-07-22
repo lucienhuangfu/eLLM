@@ -11,7 +11,6 @@ async fn test_acquire_release_reuse_reusable() {
     let (manager, _buffer) = create_test_manager(4, 5000);
 
     let h1 = manager.acquire_session("user_a").await;
-    assert!(!h1.is_reused);
     let slot1 = h1.slot_index;
 
     let token_count = manager
@@ -22,7 +21,6 @@ async fn test_acquire_release_reuse_reusable() {
         .await;
 
     let h2 = manager.acquire_session("user_a").await;
-    assert!(h2.is_reused);
     assert_eq!(h2.slot_index, slot1);
 }
 
@@ -31,13 +29,11 @@ async fn test_acquire_release_non_reusable() {
     let (manager, _buffer) = create_test_manager_with_mode(4, 5000, SessionMode::NonReusable);
 
     let h1 = manager.acquire_session("user_a").await;
-    assert!(!h1.is_reused);
     let slot1 = h1.slot_index;
 
     Arc::clone(&manager).release_session("user_a", 10).await;
 
-    let h2 = manager.acquire_session("user_a").await;
-    assert!(!h2.is_reused);
+    let _h2 = manager.acquire_session("user_a").await;
 }
 
 #[tokio::test]
@@ -51,7 +47,6 @@ async fn test_non_reusable_releases_immediately() {
     Arc::clone(&manager).release_session("s1", 10).await;
 
     let h3 = manager.acquire_session("s3").await;
-    assert!(!h3.is_reused);
     assert_eq!(h3.slot_index, h1.slot_index);
 }
 
@@ -69,12 +64,9 @@ async fn test_slot_reclaimed_after_timeout() {
 
     let h2 = manager.acquire_session("other_user").await;
     let h3 = manager.acquire_session("another_user").await;
-    assert!(!h2.is_reused);
-    assert!(!h3.is_reused);
     assert_ne!(h2.slot_index, h3.slot_index);
 
-    let h4 = manager.acquire_session("timeout_user").await;
-    assert!(!h4.is_reused);
+    let _h4 = manager.acquire_session("timeout_user").await;
 }
 
 #[tokio::test]
@@ -90,7 +82,6 @@ async fn test_slot_not_reclaimed_before_timeout() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let h2 = manager.acquire_session("quick_reuse").await;
-    assert!(h2.is_reused);
     assert_eq!(h2.slot_index, slot1);
 }
 
@@ -110,7 +101,6 @@ async fn test_resumed_session_cancels_timeout() {
         .await;
 
     let h2 = manager.acquire_session("cancel_test").await;
-    assert!(h2.is_reused);
     assert_eq!(h2.slot_index, slot1);
 
     manager.batch_states.with_mut(|slots| {
@@ -139,8 +129,6 @@ async fn test_acquire_same_active_session_returns_reused() {
     let h2 = manager.acquire_session("same_session").await;
 
     assert_eq!(h1.slot_index, h2.slot_index);
-    assert!(!h1.is_reused);
-    assert!(h2.is_reused);
 }
 
 #[tokio::test]
@@ -152,7 +140,6 @@ async fn test_multiple_users_concurrent_acquire() {
 
     for uid in &user_ids {
         let h = manager.acquire_session(uid).await;
-        assert!(!h.is_reused);
         handles.push(h);
     }
 
@@ -174,24 +161,16 @@ async fn test_user_arrives_and_departs_dynamically() {
     Arc::clone(&manager).release_session("alice", 50).await;
 
     let h3 = manager.acquire_session("charlie").await;
-    assert!(!h3.is_reused);
 
     let h_alice2 = manager.acquire_session("alice").await;
-    assert!(h_alice2.is_reused);
     assert_eq!(h_alice2.slot_index, h1.slot_index);
 }
 
 #[tokio::test]
 async fn test_session_handle_constructors() {
-    let h1 = SessionHandle::new("test".to_string(), 5, false);
+    let h1 = SessionHandle::new("test".to_string(), 5);
     assert_eq!(h1.session_id, "test");
     assert_eq!(h1.slot_index, 5);
-    assert!(!h1.is_reused);
-
-    let h2 = SessionHandle::new("test".to_string(), 5, true);
-    assert_eq!(h2.session_id, "test");
-    assert_eq!(h2.slot_index, 5);
-    assert!(h2.is_reused);
 }
 
 #[tokio::test]
@@ -236,7 +215,6 @@ async fn test_full_session_lifecycle_with_scheduler() {
     let session_id = "full_lifecycle";
 
     let handle = manager.acquire_session(session_id).await;
-    assert!(!handle.is_reused);
     let slot_idx = handle.slot_index;
 
     let phase = manager.batch_states.with(|slots| slots[slot_idx].phase);
@@ -252,7 +230,6 @@ async fn test_full_session_lifecycle_with_scheduler() {
         .await;
 
     let handle2 = manager.acquire_session(session_id).await;
-    assert!(handle2.is_reused);
     assert_eq!(handle2.slot_index, slot_idx);
 
     run_prefill_and_decode(&manager, &scheduler, slot_idx, 32, 5);
