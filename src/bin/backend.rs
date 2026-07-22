@@ -180,7 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         600000, // 10 minutes
     ));
 
-    let executor_pool = ExecutorPool::<f16>::new(
+    let worker_pool = ExecutorPool::<f16>::new(
         f16::take_operator_queue(),
         Arc::clone(&batch_scheduler),
         thread_num,
@@ -193,7 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if batch_scheduler.schedule_batch() {
         batch_scheduler.with_task(|task| {
             // Execute prefill task
-            // executor_pool.execute_task(task);
+            // worker_pool.execute_task(task);
         });
     }
 
@@ -218,7 +218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         batch_scheduler.with_task(|task| {
-            // executor_pool.execute_task(task);
+            // worker_pool.execute_task(task);
         });
     }
 

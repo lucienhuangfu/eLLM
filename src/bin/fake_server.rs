@@ -4,12 +4,9 @@ use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::{
-    build_batch_sequence, ExecutorPool, Scheduler, SessionMode, SlotManager,
-    SlotState,
+    build_batch_sequence, ExecutorPool, Scheduler, SessionMode, SlotManager, SlotState,
 };
 use ellm::serving;
-use ellm::serving::parser::{ParserOptions, ParserRule};
-use ellm::transformer::config::ModelFamily;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,7 +21,6 @@ fn create_runtime() -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error
 
 async fn run_server(
     batch_states: Arc<SharedMut<Vec<SlotState>>>,
-    parser_options: ParserOptions,
     slot_manager: Arc<SlotManager<f16>>,
     sequences_ptr: *mut usize,
     sequence_length: usize,
@@ -34,16 +30,16 @@ async fn run_server(
 
     let fake_echo = FakeEcho::new(sequences_ptr, sequence_length, 151643);
     let operator_queue = vec![Operator::<f16>::FakeEcho(fake_echo)];
-    let executor_pool = ExecutorPool::new(
+    let worker_pool = ExecutorPool::new(
         operator_queue,
         Arc::clone(&scheduler),
         4,
         64,
         Duration::from_millis(10),
     );
-    executor_pool.start();
+    worker_pool.start();
 
-    serving::run(scheduler, parser_options, slot_manager).await?;
+    serving::run(scheduler, slot_manager).await?;
 
     Ok(())
 }
@@ -73,19 +69,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         600000,
     ));
 
-    let parser_options = ParserOptions::new(ParserRule::for_model_family(&ModelFamily::MiniMaxM2));
-
     let rt = create_runtime()?;
 
     rt.block_on(async move {
-        run_server(
-            batch_states,
-            parser_options,
-            slot_manager,
-            sequences_ptr,
-            sequence_length,
-        )
-        .await
+        run_server(batch_states, slot_manager, sequences_ptr, sequence_length).await
     })?;
 
     Ok(())

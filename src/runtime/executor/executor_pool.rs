@@ -62,7 +62,7 @@ where
             let shutdown = Arc::clone(&self.shutdown);
 
             std::thread::Builder::new()
-                .name(format!("executor-worker-{thread_id}"))
+                .name(format!("worker-{thread_id}"))
                 .spawn(move || {
                     Self::run_worker(
                         scheduler,
@@ -73,7 +73,7 @@ where
                         shutdown,
                     );
                 })
-                .expect("failed to spawn executor worker thread");
+                .expect("failed to spawn worker thread");
         }
     }
 
@@ -261,7 +261,8 @@ mod tests {
         scheduler.with_task_mut(|task| {
             task.decode_size = 2;
             task.prefill_size = 0;
-            task.prefilling_chunked_slices.resize_with(thread_num, || Vec::new());
+            task.prefilling_chunked_slices
+                .resize_with(thread_num, || Vec::new());
             task.slices = decode_list;
         });
 
@@ -326,7 +327,8 @@ mod tests {
         scheduler.with_task_mut(|task| {
             task.decode_size = 1;
             task.prefill_size = 0;
-            task.prefilling_chunked_slices.resize_with(thread_num, || Vec::new());
+            task.prefilling_chunked_slices
+                .resize_with(thread_num, || Vec::new());
             task.slices = decode_list;
         });
 
@@ -375,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_pool_new_clamps_thread_count_to_at_least_one() {
+    fn worker_pool_new_clamps_thread_count_to_at_least_one() {
         let batch_list = Arc::new(SharedMut::new(vec![SlotState::new_start_state()]));
         let scheduler = Arc::new(Scheduler::new(8, 1, 1, batch_list));
         let executor =
@@ -401,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_pool_uses_larger_thread_num_and_chunk_size_in_default_scheduler() {
+    fn worker_pool_uses_larger_thread_num_and_chunk_size_in_default_scheduler() {
         let batch_list = Arc::new(SharedMut::new(vec![
             SlotState::new_decode_state(0, 0),
             SlotState::new_decode_state(1, 1),
@@ -434,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_pool_with_thread_count_supports_large_values() {
+    fn worker_pool_with_thread_count_supports_large_values() {
         let batch_list = Arc::new(SharedMut::new(
             (0..2).map(|_| SlotState::new_start_state()).collect(),
         ));
@@ -448,7 +450,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn executor_pool_start_runs_end_to_end_once_and_can_shutdown() {
+    async fn worker_pool_start_runs_end_to_end_once_and_can_shutdown() {
         let sequence_stride = 32usize;
         let eos_id = 1000usize;
 

@@ -11,19 +11,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
-use crate::runtime::scheduler::Scheduler;
-use crate::runtime::session::SlotManager;
-use crate::runtime::Backend;
 use super::parser::{IncrementalStreamingParser, ParserOptions, StreamingParser};
 use super::types::{
-    ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
-    StreamChoice, StreamDelta, StreamResponse, StreamToolCall, StreamToolFunction,
+    ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, StreamChoice,
+    StreamDelta, StreamResponse, StreamToolCall, StreamToolFunction,
 };
+use crate::runtime::scheduler::Scheduler;
+use crate::runtime::session::{Phase, SlotManager};
+use crate::serving::ApiError;
 
 // ── Route handlers ──────────────────────────────────────────
 
 async fn chat_completions(
-    State(state): State<Backend>,
+    State(slot_manager): State<Arc<SlotManager<f16>>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
     let request_id = request
@@ -34,15 +34,15 @@ async fn chat_completions(
 
     let session_id = request.session_id.unwrap_or_else(|| request_id.clone());
 
-    let handle = match state.acquire_session(&session_id).await {
+    let handle = match slot_manager.acquire_session(&session_id).await {
         Ok(h) => h,
-        Err(e) => return e.into_response(),
+        Err(e) => return ApiError::from(e).into_response(),
     };
 
     let slot_index = handle.slot_index;
 
-    let (write_len, notifier) = match if handle.is_reused {
-        state
+    let (_write_len, notifier) = match if handle.is_reused {
+        slot_manager
             .write_prompts_with_incremental_prefill(
                 slot_index,
                 &session_id,
@@ -51,13 +51,11 @@ async fn chat_completions(
             )
             .await
     } else {
-        state
-            .write_prompts_and_prepare(slot_index, &request.messages, request.temperature)
-            .await
+        slot_manager.write_prompts_and_prepare(slot_index, &request.messages, request.temperature)
     } {
         Ok(result) => result,
         Err(e) => {
-            state.release_session(&session_id, 0).await;
+            slot_manager.release_session(&session_id, 0).await;
             return e.into_response();
         }
     };
@@ -69,7 +67,7 @@ async fn chat_completions(
 
     if is_stream {
         build_stream_response(
-            state,
+            slot_manager,
             slot_index,
             &session_id,
             notifier,
@@ -78,13 +76,13 @@ async fn chat_completions(
             created,
         )
     } else {
-        while !state.is_eos(slot_index) {
+        while !slot_manager.is_eos(slot_index) {
             notifier.notified().await;
         }
 
-        let generated_text = state.decode_generated_text(slot_index);
-        let token_count = state.get_sequence_index(slot_index);
-        state.release_session(&session_id, token_count).await;
+        let generated_text = slot_manager.decode_generated_text(slot_index);
+        let token_count = slot_manager.get_sequence_index(slot_index);
+        slot_manager.release_session(&session_id, token_count).await;
 
         #[cfg(debug_assertions)]
         println!("同步推理完成: id={}", request_id);
@@ -108,7 +106,7 @@ async fn chat_completions(
 }
 
 fn build_stream_response(
-    state: Backend,
+    slot_manager: Arc<SlotManager<f16>>,
     slot_index: usize,
     session_id: &str,
     notifier: Arc<Notify>,
@@ -117,7 +115,7 @@ fn build_stream_response(
     created: u64,
 ) -> axum::response::Response {
     let session_id = session_id.to_string();
-    let mut parser = IncrementalStreamingParser::with_options(state.parser_options);
+    let mut parser = IncrementalStreamingParser::with_options(ParserOptions::default());
     let mut role_sent = false;
     let mut tool_call_index = 0u32;
 
@@ -125,9 +123,9 @@ fn build_stream_response(
         loop {
             notifier.notified().await;
 
-            let (token_index, phase) = state.get_token_index_and_phase(slot_index);
-            let text = state.decode_single_token(slot_index, token_index);
-            let is_eos = matches!(phase, crate::runtime::Phase::Eos);
+            let (token_index, phase) = slot_manager.get_token_index_and_phase(slot_index);
+            let text = slot_manager.decode_single_token(slot_index, token_index);
+            let is_eos = matches!(phase, Phase::Eos);
 
             let mut events = parser.feed(&text);
             if is_eos {
@@ -218,14 +216,14 @@ fn build_stream_response(
             }
         }
 
-        let token_count = state.get_sequence_index(slot_index);
-        state.release_session(&session_id, token_count).await;
+        let token_count = slot_manager.get_sequence_index(slot_index);
+        slot_manager.release_session(&session_id, token_count).await;
     };
 
     Sse::new(stream_body).into_response()
 }
 
-pub(crate) fn build_router(state: Backend) -> Router {
+pub(crate) fn build_router(state: Arc<SlotManager<f16>>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions))
         .route(
@@ -243,14 +241,11 @@ pub(crate) fn build_router(state: Backend) -> Router {
 
 pub async fn run(
     scheduler: Arc<Scheduler>,
-    parser_options: ParserOptions,
     slot_manager: Arc<SlotManager<f16>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("启动事件驱动的 OpenAI 兼容服务器...");
 
-    let state = Backend::new(scheduler, slot_manager, parser_options);
-
-    let app = build_router(state);
+    let app = build_router(slot_manager);
 
     let listener = TcpListener::bind("0.0.0.0:8000").await?;
 

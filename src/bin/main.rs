@@ -5,7 +5,6 @@ use ellm::config::{Cli, Config};
 use ellm::runtime::RuntimeContext;
 use ellm::serving;
 use ellm::serving::initialize_serving_resources;
-use ellm::serving::parser::ParserOptions;
 
 fn create_runtime(
     ctx: &RuntimeContext<f16>,
@@ -18,16 +17,8 @@ fn create_runtime(
         .map_err(Into::into)
 }
 
-async fn run_server(
-    ctx: RuntimeContext<f16>,
-    parser_options: ParserOptions,
-) -> Result<(), Box<dyn std::error::Error>> {
-    serving::run(
-        ctx.scheduler,
-        parser_options,
-        ctx.slot_manager,
-    )
-    .await?;
+async fn run_server(ctx: RuntimeContext<f16>) -> Result<(), Box<dyn std::error::Error>> {
+    serving::run(ctx.scheduler, ctx.slot_manager).await?;
 
     Ok(())
 }
@@ -39,11 +30,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_cli(cli)?;
     let resolved_config = config.resolve()?;
 
-    let (ctx, parser_options) = initialize_serving_resources(&resolved_config)?;
+    let ctx = initialize_serving_resources(&resolved_config)?;
 
     let rt = create_runtime(&ctx)?;
 
-    rt.block_on(async move { run_server(ctx, parser_options).await })?;
+    rt.block_on(async move { run_server(ctx).await })?;
 
     Ok(())
 }

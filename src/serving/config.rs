@@ -1,7 +1,5 @@
 use crate::config::ResolvedConfig;
 use crate::runtime::session::SessionMode;
-use crate::serving::parser::{ParserOptions, ParserRule};
-use crate::transformer::config::Config as ModelConfig;
 
 #[derive(Debug, Clone)]
 pub struct ServingConfig {
@@ -51,14 +49,6 @@ impl ServingConfig {
                 .as_ref()
                 .map(|s| s.slot_reuse_timeout_ms)
                 .unwrap_or(30000),
-        }
-    }
-
-    pub fn build_parser_options(&self, model_config: &ModelConfig) -> ParserOptions {
-        ParserOptions {
-            rule: ParserRule::for_model_family(&model_config.family),
-            reasoning_parser: self.reasoning_parser_enabled,
-            tool_call_parser: self.tool_call_parser_enabled,
         }
     }
 }

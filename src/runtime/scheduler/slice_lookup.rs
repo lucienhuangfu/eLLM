@@ -1,4 +1,4 @@
-use super::sequence::SequenceSlice;
+use super::task::SequenceSlice;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLookupResult {
@@ -73,7 +73,7 @@ pub fn walk_global_range(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::sequence::SequenceSlice;
+    use super::super::task::SequenceSlice;
 
     fn sample_slices() -> Vec<SequenceSlice> {
         vec![

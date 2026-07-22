@@ -1,14 +1,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::config::{
+    determine_thread_config, extract_generation_params, GenerationParameters, ThreadingConfig,
+};
+use super::executor::executor_pool::ExecutorPool;
 use crate::config::{GenerationConfig, ResolvedConfig};
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::session::{build_batch_sequence, BatchSequence};
-use super::config::{extract_generation_params, determine_thread_config, GenerationParameters, ThreadingConfig};
-use super::context::executor::ExecutorPool;
 use crate::runtime::scheduler::Scheduler;
+use crate::runtime::session::{build_batch_sequence, BatchSequence};
 use crate::runtime::session::{SessionMode, SlotManager, SlotState};
 use crate::tensor::GlobalOperatorQueue;
 use crate::transformer::config::Config;
@@ -133,14 +135,14 @@ pub fn initialize_runtime(
     ));
 
     let operator_queue = f16::take_operator_queue();
-    let executor_pool = ExecutorPool::new(
+    let worker_pool = ExecutorPool::new(
         operator_queue,
         Arc::clone(&scheduler),
         thread_config.api_threads,
         chunk_size,
         Duration::from_millis(10),
     );
-    executor_pool.start();
+    worker_pool.start();
 
     Ok(RuntimeContext {
         batch_sequences,

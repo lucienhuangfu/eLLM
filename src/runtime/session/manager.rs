@@ -4,14 +4,15 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::{Mutex as TokioMutex, Notify};
 
+use super::batch_sequence::BatchSequence;
 use crate::num_traits::FromNumber;
 use crate::operators::send_sync_ptr::SharedMut;
-use super::batch_sequence::BatchSequence;
+use crate::serving::{ApiError, ApiResult, ChatMessage};
 
 use super::lru::LruList;
-use super::types::{SessionHandle, SessionMode, SlotResult, SlotState};
+use super::types::{Phase, SessionHandle, SessionMode, SlotResult, SlotState};
 
 // ── ReservedSlot ───────────────────────────────────────────
 
@@ -81,9 +82,8 @@ impl<T: Copy + FromNumber> SlotManager<T> {
         f: impl FnOnce(&mut SlotState, &mut BatchSequence<T>) -> R,
     ) -> R {
         self.batch_states.with_mut(|slots| {
-            self.batch_sequences.with_mut(|seq| {
-                f(&mut slots[slot_index], seq)
-            })
+            self.batch_sequences
+                .with_mut(|seq| f(&mut slots[slot_index], seq))
         })
     }
 
@@ -219,6 +219,108 @@ impl<T: Copy + FromNumber> SlotManager<T> {
             None
         }
     }
+
+    // ── Serving helpers ─────────────────────────────────────
+
+    fn messages_to_pairs(messages: &[ChatMessage]) -> Vec<(&str, &str)> {
+        messages
+            .iter()
+            .map(|msg| (msg.role.as_str(), msg.content.as_str()))
+            .collect()
+    }
+
+    pub fn prepare_slot_for_write(&self, slot_index: usize) -> ApiResult<()> {
+        self.with_slots(|slots| {
+            let record = &slots[slot_index];
+            if !record.is_available() {
+                Err(ApiError::SlotUnavailable(
+                    "slot is not in Start or Eos phase".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    pub fn write_prompts_and_prepare(
+        &self,
+        slot_index: usize,
+        messages: &[ChatMessage],
+        temperature: Option<f32>,
+    ) -> ApiResult<(usize, Arc<Notify>)> {
+        self.prepare_slot_for_write(slot_index)?;
+        self.detach_from_lru(slot_index);
+
+        let message_pairs = Self::messages_to_pairs(messages);
+        let temperature = temperature.unwrap_or(1.0);
+
+        let result = self.with_slot_and_sequence_mut(slot_index, |record, seq| {
+            seq.write_prompts(slot_index, &message_pairs, temperature)
+                .map(|write_len| {
+                    record.sequence_index = 0;
+                    record.kv_index = 0;
+                    record.filling_length = write_len;
+                    record.phase = Phase::Prefill;
+                    (write_len, record.notify.clone())
+                })
+                .map_err(|e| ApiError::TokenizationError(e))
+        })?;
+
+        Ok(result)
+    }
+
+    pub async fn write_prompts_with_incremental_prefill(
+        &self,
+        slot_index: usize,
+        session_id: &str,
+        messages: &[ChatMessage],
+        temperature: Option<f32>,
+    ) -> ApiResult<(usize, Arc<Notify>)> {
+        let message_pairs = Self::messages_to_pairs(messages);
+
+        let new_tokens: Vec<u32> =
+            self.with_sequence(|seq| seq.tokenize_messages(&message_pairs).unwrap_or_default());
+
+        let result = self.get_prefix_match_len(session_id, &new_tokens).await;
+
+        let (write_len, notify) = match result {
+            Some(prefix_len) => {
+                self.prepare_slot_for_write(slot_index)?;
+                self.detach_from_lru(slot_index);
+                let temperature = temperature.unwrap_or(1.0);
+                let remaining_tokens = &new_tokens[prefix_len..];
+
+                self.with_slot_and_sequence_mut(slot_index, |record, seq| {
+                    seq.write_tokens_at(slot_index, prefix_len, remaining_tokens, temperature)
+                        .map(|write_len| {
+                            record.sequence_index = prefix_len;
+                            record.kv_index = slot_index;
+                            record.filling_length = write_len;
+                            record.phase = Phase::Prefill;
+                            (write_len, record.notify.clone())
+                        })
+                        .map_err(|e| ApiError::TokenizationError(e))
+                })?
+            }
+            None => {
+                return self.write_prompts_and_prepare(slot_index, messages, temperature);
+            }
+        };
+
+        Ok((write_len, notify))
+    }
+
+    pub fn is_eos(&self, slot_index: usize) -> bool {
+        self.with_slots(|slots| matches!(slots[slot_index].phase, Phase::Eos))
+    }
+
+    pub fn get_token_index_and_phase(&self, slot_index: usize) -> (usize, Phase) {
+        self.with_slots(|slots| (slots[slot_index].sequence_index, slots[slot_index].phase))
+    }
+
+    pub fn get_sequence_index(&self, slot_index: usize) -> usize {
+        self.with_slots(|slots| slots[slot_index].sequence_index)
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────
@@ -226,9 +328,9 @@ impl<T: Copy + FromNumber> SlotManager<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::num_traits::FromNumber;
     use crate::runtime::session::batch_sequence::BatchSequence;
     use crate::runtime::session::types::Phase;
-    use crate::num_traits::FromNumber;
 
     fn create_test_manager_with_buffer(
         batch_size: usize,
@@ -263,7 +365,9 @@ mod tests {
     async fn test_get_prefix_match_len_session_not_found() {
         let mut buffer = Vec::new();
         let manager = create_test_manager_with_buffer(4, 1000, &mut buffer);
-        let delta = manager.get_prefix_match_len("nonexistent", &[1, 2, 3]).await;
+        let delta = manager
+            .get_prefix_match_len("nonexistent", &[1, 2, 3])
+            .await;
         assert!(delta.is_none());
     }
 }

@@ -261,7 +261,7 @@ fn main() {
         600000, // 10 minutes
     ));
 
-    let executor_pool = ExecutorPool::new(
+    let worker_pool = ExecutorPool::new(
         f16::take_operator_queue(),
         Arc::clone(&batch_scheduler),
         thread_num,
@@ -272,7 +272,7 @@ fn main() {
     if batch_scheduler.schedule_batch() {
         batch_scheduler.with_task(|task| {
             // Execute prefill task
-            // executor_pool.execute_task(task);
+            // worker_pool.execute_task(task);
         });
     }
 
@@ -311,7 +311,7 @@ fn main() {
         }
 
         batch_scheduler.with_task(|task| {
-            // executor_pool.execute_task(task);
+            // worker_pool.execute_task(task);
         });
     }
 

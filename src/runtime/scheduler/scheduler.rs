@@ -2,10 +2,8 @@ use std::cell::UnsafeCell;
 use std::sync::Arc;
 
 use crate::operators::send_sync_ptr::SharedMut;
-use super::sequence::SequenceSlice;
+use super::task::{SequenceSlice, ScheduleTask};
 use crate::runtime::session::{Phase, SlotState};
-
-use super::task::ScheduleTask;
 
 #[derive(Debug, Clone, Copy)]
 struct PrefillSlot {
