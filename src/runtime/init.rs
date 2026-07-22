@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::config::{
     determine_thread_config, extract_generation_params, GenerationParameters, ThreadingConfig,
@@ -30,29 +29,6 @@ where
     pub _sequences_box: AlignedBox<usize>,
     pub session_mode: SessionMode,
     pub slot_reuse_timeout_ms: usize,
-}
-
-pub fn initialize_model(
-    config: &Config,
-    gen_params: &GenerationParameters,
-    position_vec: Vec<f16>,
-    chunk_size: usize,
-    batch_size: usize,
-    sequence_length: usize,
-) -> Model<f16> {
-    Model::<f16>::with_sampling(
-        config,
-        position_vec,
-        chunk_size,
-        sequence_length,
-        batch_size,
-        gen_params.top_k,
-        gen_params.top_k_simd,
-        gen_params.top_p,
-        gen_params.min_p,
-        gen_params.do_sample,
-        gen_params.eos_token_id_list.clone(),
-    )
 }
 
 pub fn initialize_runtime(
@@ -93,7 +69,7 @@ pub fn initialize_runtime(
 
     let batch_states = Arc::new(SharedMut::new(
         (0..batch_size)
-            .map(|_| SlotState::new_start_state())
+            .map(|_| SlotState::idle())
             .collect::<Vec<_>>(),
     ));
     let scheduler = Arc::new(Scheduler::new(
@@ -112,13 +88,18 @@ pub fn initialize_runtime(
     )
     .forward::<f16>();
 
-    let mut model = initialize_model(
+    let mut model = Model::<f16>::with_sampling(
         &model_config,
-        &gen_params,
         position_vec,
         chunk_size,
-        batch_size,
         sequence_length,
+        batch_size,
+        gen_params.top_k,
+        gen_params.top_k_simd,
+        gen_params.top_p,
+        gen_params.min_p,
+        gen_params.do_sample,
+        gen_params.eos_token_id_list.clone(),
     );
     model.set_thread_num(thread_config.api_threads);
 
@@ -139,8 +120,6 @@ pub fn initialize_runtime(
         operator_queue,
         Arc::clone(&scheduler),
         thread_config.api_threads,
-        chunk_size,
-        Duration::from_millis(10),
     );
     worker_pool.start();
 

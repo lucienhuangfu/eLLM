@@ -242,10 +242,21 @@ mod test {
     use approx::assert_ulps_eq;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
-    use tokio::sync::Notify;
     // use crate::ptensor::tensor_utils::{get_aligned_strides, get_broadcast_shape, get_strides};
     // use std::sync::{Arc, Barrier};
     // use std::thread;
+
+    fn prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+        let mut s = SlotState::idle();
+        s.start_prefill(sequence_index, filling_length);
+        s
+    }
+
+    fn decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+        let mut s = SlotState::idle();
+        s.start_decode(sequence_index, kv_index);
+        s
+    }
 
     fn empty_routing<T: Copy + Default>(
         num_experts: usize,
@@ -300,14 +311,6 @@ mod test {
             }
         }
         None
-    }
-
-    fn prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
-        SlotState::new_prefill_state(sequence_index, filling_length)
-    }
-
-    fn decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
-        SlotState::new_decode_state(sequence_index, kv_index)
     }
 
     fn run_prefill_operator_all_threads(
@@ -1506,9 +1509,7 @@ mod test {
         let eos_id = 0usize;
         let mut batch_temperature = vec![1.0f32; batch_size];
 
-        let batch_records: Vec<SlotState> = (0..batch_size)
-            .map(|_| SlotState::new_decode_state(0, 0))
-            .collect();
+        let batch_records: Vec<SlotState> = (0..batch_size).map(|_| decode_state(0, 0)).collect();
         let mut batch_list = batch_records;
 
         let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;

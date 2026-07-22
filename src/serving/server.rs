@@ -18,7 +18,6 @@ use super::types::{
 };
 use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{Phase, SlotManager};
-use crate::serving::ApiError;
 
 // ── Route handlers ──────────────────────────────────────────
 
@@ -34,28 +33,25 @@ async fn chat_completions(
 
     let session_id = request.session_id.unwrap_or_else(|| request_id.clone());
 
-    let handle = match slot_manager.acquire_session(&session_id).await {
-        Ok(h) => h,
-        Err(e) => return ApiError::from(e).into_response(),
-    };
+    let handle = slot_manager.acquire_session(&session_id).await;
 
     let slot_index = handle.slot_index;
 
-    let (_write_len, notifier) = match if handle.is_reused {
-        slot_manager
-            .write_prompts_with_incremental_prefill(
-                slot_index,
-                &session_id,
-                &request.messages,
-                request.temperature,
-            )
-            .await
-    } else {
-        slot_manager.write_prompts_and_prepare(slot_index, &request.messages, request.temperature)
-    } {
+    let (_write_len, notifier) = match slot_manager
+        .write_prompts(
+            slot_index,
+            &session_id,
+            &request.messages,
+            request.temperature,
+            handle.is_reused,
+        )
+        .await
+    {
         Ok(result) => result,
         Err(e) => {
-            slot_manager.release_session(&session_id, 0).await;
+            Arc::clone(&slot_manager)
+                .release_session(&session_id, 0)
+                .await;
             return e.into_response();
         }
     };
@@ -82,10 +78,9 @@ async fn chat_completions(
 
         let generated_text = slot_manager.decode_generated_text(slot_index);
         let token_count = slot_manager.get_sequence_index(slot_index);
-        slot_manager.release_session(&session_id, token_count).await;
-
-        #[cfg(debug_assertions)]
-        println!("同步推理完成: id={}", request_id);
+        Arc::clone(&slot_manager)
+            .release_session(&session_id, token_count)
+            .await;
 
         Json(ChatCompletionResponse {
             id: request_id,
@@ -217,7 +212,7 @@ fn build_stream_response(
         }
 
         let token_count = slot_manager.get_sequence_index(slot_index);
-        slot_manager.release_session(&session_id, token_count).await;
+        Arc::clone(&slot_manager).release_session(&session_id, token_count).await;
     };
 
     Sse::new(stream_body).into_response()

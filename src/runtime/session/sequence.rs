@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use rustc_hash::FxHashMap;
 use tiktoken_rs::CoreBPE;
 
 use crate::mem_mgr::allocator::AlignedBox;
@@ -16,34 +15,6 @@ pub struct BatchSequence<T> {
     pub col_size: usize,
     pub tokenizer: Arc<CoreBPE>,
     pub chat_template: Arc<ChatTemplate>,
-}
-
-impl<T> Default for BatchSequence<T>
-where
-    T: Copy + FromNumber,
-{
-    fn default() -> Self {
-        Self {
-            sequences: std::ptr::null_mut(),
-            batch_temperature: Vec::new(),
-            row_size: 0,
-            col_size: 0,
-            tokenizer: Arc::new(load_tiktoken("gpt2", "gpt2").unwrap_or_else(|_| {
-                let mut vocab: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
-                let mut merges: FxHashMap<String, u32> = FxHashMap::default();
-                for i in 0..100 {
-                    vocab.insert(format!("token_{}", i).into_bytes(), i as u32);
-                }
-                CoreBPE::new(vocab, merges, "bpe").unwrap()
-            })),
-            chat_template: Arc::new(
-                ChatTemplate::from_template_source(
-                    "{{ system }}\n{{ user }}\n{{ assistant }}".to_string(),
-                )
-                .unwrap(),
-            ),
-        }
-    }
 }
 
 impl<T> BatchSequence<T>
@@ -163,15 +134,6 @@ where
         Ok(tokens)
     }
 
-    pub fn write_tokens(
-        &mut self,
-        slot_index: usize,
-        tokens: &[u32],
-        temperature: f32,
-    ) -> Result<usize, String> {
-        self.write_tokens_at(slot_index, 0, tokens, temperature)
-    }
-
     pub fn write_tokens_at(
         &mut self,
         slot_index: usize,
@@ -223,98 +185,4 @@ pub fn build_batch_sequence(
     .map_err(|e| format!("failed to create batch sequence: {}", e))?;
 
     Ok((sequences_box, Arc::new(SharedMut::new(batch_sequences))))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const QWEN3_TEMPLATE_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
-    const QWEN3_TOKENIZER_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
-    const QWEN3_TOKENIZER_CONFIG_PATH: &str =
-        "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer_config.json";
-
-    #[test]
-    fn test_write_prompts_with_qwen3_assets() {
-        let mut storage = vec![0usize; 256];
-        let mut batch = match BatchSequence::<f32>::new(
-            storage.as_mut_ptr(),
-            1,
-            storage.len(),
-            QWEN3_TOKENIZER_PATH,
-            QWEN3_TOKENIZER_CONFIG_PATH,
-            QWEN3_TEMPLATE_PATH,
-        ) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!(
-                    "Skip: qwen3 assets are not loadable in this environment: {}",
-                    e
-                );
-                return;
-            }
-        };
-
-        let messages = vec![
-            ("system", "You are a helpful assistant."),
-            ("user", "请简要解释 Rust 的所有权。"),
-        ];
-
-        let prompt = batch
-            .chat_template
-            .apply_chat_template(&messages, true)
-            .expect("render failed");
-        let expected_ids = batch.tokenizer.encode_with_special_tokens(prompt.as_str());
-
-        let written = batch
-            .write_prompts(0, &messages, 0.7)
-            .expect("write failed");
-        assert!(written > 0);
-        assert_eq!(written, expected_ids.len().min(storage.len()));
-        assert_eq!(batch.batch_temperature[0], 0.7);
-        assert_eq!(
-            &storage[..written],
-            &expected_ids[..written]
-                .iter()
-                .map(|v| *v as usize)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_write_prompts_respects_col_size_limit() {
-        let mut storage = vec![0usize; 8];
-        let mut batch = match BatchSequence::<f32>::new(
-            storage.as_mut_ptr(),
-            1,
-            storage.len(),
-            QWEN3_TOKENIZER_PATH,
-            QWEN3_TOKENIZER_CONFIG_PATH,
-            QWEN3_TEMPLATE_PATH,
-        ) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!(
-                    "Skip: qwen3 assets are not loadable in this environment: {}",
-                    e
-                );
-                return;
-            }
-        };
-
-        let messages = vec![
-            ("system", "You are a helpful assistant."),
-            (
-                "user",
-                "请给出一个尽量详细且较长的回答，包含多个步骤和注意事项。",
-            ),
-        ];
-
-        let written = batch
-            .write_prompts(0, &messages, 0.25)
-            .expect("write failed");
-        assert_eq!(written, storage.len());
-        assert_eq!(batch.batch_temperature[0], 0.25);
-        assert!(storage.iter().any(|id| *id != 0));
-    }
 }

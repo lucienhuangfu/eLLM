@@ -197,6 +197,7 @@ impl<
 
                 record.sequence_index = write_sequence_index;
                 record.kv_index = record.kv_index.saturating_add(1);
+                record.token_count += 1;
 
                 if self.eos_ids.contains(&predict_token) {
                     record.phase = Phase::Eos;
@@ -525,6 +526,18 @@ mod test {
     use crate::runtime::{Phase, SlotState};
     use approx::assert_ulps_eq;
 
+    fn decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+        let mut s = SlotState::idle();
+        s.start_decode(sequence_index, kv_index);
+        s
+    }
+
+    fn prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+        let mut s = SlotState::idle();
+        s.start_prefill(sequence_index, filling_length);
+        s
+    }
+
     #[test]
     fn test_topk_softmax_f32() {
         let sequence_length = 2;
@@ -541,7 +554,7 @@ mod test {
         let mut user_records_vec = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
-            user_records_vec.push(SlotState::new_decode_state(1, 1));
+            user_records_vec.push(decode_state(1, 1));
             for j in 0..total_candidates_per_item {
                 input_values.push(5.0 - (j as f32 * 0.1) - (i as f32));
                 input_indices.push(i * 1000 + j);
@@ -643,7 +656,7 @@ mod test {
 
         let input_indices = (10usize..18).collect::<Vec<_>>();
         let input_values = vec![8.0f32, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
-        let mut batch_list = vec![SlotState::new_decode_state(1, 1)];
+        let mut batch_list = vec![decode_state(1, 1)];
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
@@ -693,7 +706,7 @@ mod test {
 
         let input_indices = vec![10usize, 11, 12, 13];
         let input_values = vec![1.0f32, 0.5, 0.25, 0.125];
-        let mut batch_list = vec![SlotState::new_prefill_state(3, 0)];
+        let mut batch_list = vec![prefill_state(3, 0)];
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
@@ -745,7 +758,7 @@ mod test {
 
         let input_indices = vec![10usize, 11];
         let input_values = vec![1.0f32, 0.5];
-        let mut batch_list = vec![SlotState::new_decode_state(3, 7)];
+        let mut batch_list = vec![decode_state(3, 7)];
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
@@ -802,7 +815,7 @@ mod test {
             input_indices[index] = 10usize + index;
             input_values[index] = 5.0f32 - index as f32 * 0.1;
         }
-        let mut batch_list = vec![SlotState::new_prefill_state(0, 3)];
+        let mut batch_list = vec![prefill_state(0, 3)];
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
@@ -850,7 +863,7 @@ mod test {
 
         let input_indices = vec![10usize, 11, 12, 13];
         let input_values = vec![1.0f32, 0.5, 0.25, 0.125];
-        let mut batch_list = vec![SlotState::new_prefill_state(2, 4)];
+        let mut batch_list = vec![prefill_state(2, 4)];
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
@@ -913,7 +926,7 @@ mod test {
         let mut user_records_vec = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
-            user_records_vec.push(SlotState::new_decode_state(1, 1));
+            user_records_vec.push(decode_state(1, 1));
             for j in 0..total_candidates_per_item {
                 let val = 5.0 - (j as f32 * 0.1) - (i as f32);
                 input_values.push(val as f16);

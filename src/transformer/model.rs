@@ -264,10 +264,19 @@ mod test {
     use crate::runtime::SequenceSlice;
     use crate::runtime::{Phase, SlotState};
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
 
     fn build_batch_list(batch_size: usize) -> Vec<SlotState> {
         (0..batch_size)
-            .map(|i| SlotState::new_decode_state(i, i))
+            .map(|i| SlotState {
+                sequence_index: i,
+                kv_index: i,
+                filling_length: 0,
+                phase: Phase::Decode,
+                token_count: 0,
+                notify: Arc::new(Notify::new()),
+            })
             .collect()
     }
 

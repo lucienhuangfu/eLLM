@@ -5,8 +5,6 @@ use std::fmt;
 /// Serving 模块的统一错误类型
 #[derive(Debug)]
 pub enum ApiError {
-    /// Slot 相关错误
-    SlotError(crate::runtime::session::SlotError),
     /// Tokenization 失败
     TokenizationError(String),
     /// Slot 不可用
@@ -18,7 +16,6 @@ pub enum ApiError {
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ApiError::SlotError(e) => write!(f, "Slot error: {}", e),
             ApiError::TokenizationError(msg) => write!(f, "Tokenization failed: {}", msg),
             ApiError::SlotUnavailable(msg) => write!(f, "Slot unavailable: {}", msg),
             ApiError::InternalError(msg) => write!(f, "Internal error: {}", msg),
@@ -31,19 +28,6 @@ impl std::error::Error for ApiError {}
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            ApiError::SlotError(e) => match e {
-                crate::runtime::session::SlotError::AllocatorUnavailable => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Slot allocator unavailable".to_string(),
-                ),
-                crate::runtime::session::SlotError::SlotQueueEmpty => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "No available slots".to_string(),
-                ),
-                crate::runtime::session::SlotError::SlotNotFound => {
-                    (StatusCode::NOT_FOUND, "Slot not found".to_string())
-                }
-            },
             ApiError::TokenizationError(msg) => {
                 eprintln!("Tokenization error: {}", msg);
                 (
@@ -68,12 +52,6 @@ impl IntoResponse for ApiError {
         };
 
         (status, message).into_response()
-    }
-}
-
-impl From<crate::runtime::session::SlotError> for ApiError {
-    fn from(err: crate::runtime::session::SlotError) -> Self {
-        ApiError::SlotError(err)
     }
 }
 
@@ -105,13 +83,5 @@ mod tests {
         let err = ApiError::TokenizationError("bad token".into());
         let resp = err.into_response();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[test]
-    fn slot_error_from_conversion() {
-        let slot_err = crate::runtime::session::SlotError::SlotNotFound;
-        let api_err: ApiError = slot_err.into();
-        let resp = api_err.into_response();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

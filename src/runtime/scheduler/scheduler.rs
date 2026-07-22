@@ -1,8 +1,8 @@
 use std::cell::UnsafeCell;
 use std::sync::Arc;
 
+use super::task::{ScheduleTask, SequenceSlice};
 use crate::operators::send_sync_ptr::SharedMut;
-use super::task::{SequenceSlice, ScheduleTask};
 use crate::runtime::session::{Phase, SlotState};
 
 #[derive(Debug, Clone, Copy)]
@@ -40,15 +40,6 @@ impl Scheduler {
             batch_list,
             task: SharedMut::new(ScheduleTask::new(thread_num, max_decode_size)),
         }
-    }
-
-    #[inline]
-    pub fn thread_num(&self) -> usize {
-        self.thread_num
-    }
-
-    pub fn set_thread_num(&mut self, thread_num: usize) {
-        self.thread_num = thread_num.max(1);
     }
 
     #[inline]
@@ -235,6 +226,18 @@ impl Scheduler {
 mod tests {
     use super::*;
 
+    fn prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+        let mut s = SlotState::idle();
+        s.start_prefill(sequence_index, filling_length);
+        s
+    }
+
+    fn decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+        let mut s = SlotState::idle();
+        s.start_decode(sequence_index, kv_index);
+        s
+    }
+
     fn make_batch_list(slots: Vec<SlotState>) -> Arc<SharedMut<Vec<SlotState>>> {
         Arc::new(SharedMut::new(slots))
     }
@@ -250,6 +253,8 @@ mod tests {
                 slot.phase = Phase::Decode;
                 return Some(Phase::Decode);
             }
+        } else {
+            slot.token_count += steps;
         }
         None
     }
@@ -266,7 +271,7 @@ mod tests {
         let batch_list = make_batch_list(Vec::new());
         let scheduler = Scheduler::new(16, 4, 3, Arc::clone(&batch_list));
         batch_list.with_mut(|batch_list| {
-            batch_list.push(SlotState::new_decode_state(100, 128));
+            batch_list.push(decode_state(100, 128));
         });
 
         assert!(scheduler.schedule_batch());
@@ -275,18 +280,6 @@ mod tests {
             assert_eq!(task.prefill_size, 0);
             assert_eq!(task.decode_size, 1);
         });
-    }
-
-    #[test]
-    fn set_thread_num_updates_thread_count() {
-        let batch_list = make_batch_list(Vec::new());
-        let mut scheduler = Scheduler::new(16, 4, 6, batch_list);
-
-        scheduler.set_thread_num(3);
-        assert_eq!(scheduler.thread_num(), 3);
-
-        scheduler.set_thread_num(5);
-        assert_eq!(scheduler.thread_num(), 5);
     }
 
     #[test]
@@ -309,10 +302,7 @@ mod tests {
 
         batch_list.with_mut(|batch_list| {
             for i in 0..total_sequences {
-                batch_list.push(SlotState::new_prefill_state(
-                    i * 200,
-                    prefill_token_counts[i],
-                ));
+                batch_list.push(prefill_state(i * 200, prefill_token_counts[i]));
             }
         });
 
@@ -362,12 +352,12 @@ mod tests {
 
         batch_list.with_mut(|batch_list| {
             for i in 0..3 {
-                let mut state = SlotState::new_decode_state(i, i);
+                let mut state = decode_state(i, i);
                 state.phase = Phase::Decode;
                 batch_list.push(state);
             }
             for i in 0..2 {
-                batch_list.push(SlotState::new_prefill_state(100 + i * 50, 50));
+                batch_list.push(prefill_state(100 + i * 50, 50));
             }
         });
 
@@ -387,7 +377,7 @@ mod tests {
 
         let total_prefill_tokens = 250;
         batch_list.with_mut(|batch_list| {
-            batch_list.push(SlotState::new_prefill_state(0, total_prefill_tokens));
+            batch_list.push(prefill_state(0, total_prefill_tokens));
         });
 
         let mut prefill_rounds = 0;
@@ -422,8 +412,8 @@ mod tests {
         let scheduler = Scheduler::new(8, 200, 2, Arc::clone(&batch_list));
 
         batch_list.with_mut(|batch_list| {
-            batch_list.push(SlotState::new_prefill_state(0, 60));
-            batch_list.push(SlotState::new_prefill_state(100, 80));
+            batch_list.push(prefill_state(0, 60));
+            batch_list.push(prefill_state(100, 80));
         });
 
         assert!(scheduler.schedule_batch());
@@ -461,7 +451,7 @@ mod tests {
 
         batch_list.with_mut(|batch_list| {
             for i in 0..3 {
-                batch_list.push(SlotState::new_decode_state(i * 10, i * 10));
+                batch_list.push(decode_state(i * 10, i * 10));
             }
         });
 
@@ -494,8 +484,8 @@ mod tests {
         let prefill_len_a = 64usize;
         let prefill_len_b = 48usize;
         batch_list.with_mut(|batch_list| {
-            batch_list.push(SlotState::new_prefill_state(0, prefill_len_a));
-            batch_list.push(SlotState::new_prefill_state(200, prefill_len_b));
+            batch_list.push(prefill_state(0, prefill_len_a));
+            batch_list.push(prefill_state(200, prefill_len_b));
         });
 
         assert!(scheduler.schedule_batch());
@@ -535,8 +525,8 @@ mod tests {
         let prefill_len_c = 32usize;
         let prefill_len_d = 80usize;
         batch_list.with_mut(|batch_list| {
-            batch_list.push(SlotState::new_prefill_state(400, prefill_len_c));
-            batch_list.push(SlotState::new_prefill_state(600, prefill_len_d));
+            batch_list.push(prefill_state(400, prefill_len_c));
+            batch_list.push(prefill_state(600, prefill_len_d));
         });
 
         assert!(scheduler.schedule_batch());
@@ -639,9 +629,9 @@ mod tests {
 
         batch_list.with_mut(|batch_list| {
             for i in 0..3 {
-                batch_list.push(SlotState::new_decode_state(i * 100, i * 100));
+                batch_list.push(decode_state(i * 100, i * 100));
             }
-            batch_list.push(SlotState::new_prefill_state(500, 50));
+            batch_list.push(prefill_state(500, 50));
         });
 
         assert!(scheduler.schedule_batch());
@@ -680,9 +670,9 @@ mod tests {
         let scheduler = Scheduler::new(8, MAX_PREFILL_SIZE, 2, Arc::clone(&batch_list));
 
         batch_list.with_mut(|batch_list| {
-            batch_list.push(SlotState::new_decode_state(0, 0));
-            batch_list.push(SlotState::new_decode_state(50, 50));
-            batch_list.push(SlotState::new_prefill_state(200, 250));
+            batch_list.push(decode_state(0, 0));
+            batch_list.push(decode_state(50, 50));
+            batch_list.push(prefill_state(200, 250));
         });
 
         assert!(scheduler.schedule_batch());
@@ -715,9 +705,9 @@ mod tests {
         let scheduler = Scheduler::new(16, 1024, 2, Arc::clone(&batch_list));
 
         batch_list.with_mut(|batch_list| {
-            batch_list.push(SlotState::new_decode_state(0, 0));
-            batch_list.push(SlotState::new_decode_state(100, 100));
-            batch_list.push(SlotState::new_prefill_state(300, 40));
+            batch_list.push(decode_state(0, 0));
+            batch_list.push(decode_state(100, 100));
+            batch_list.push(prefill_state(300, 40));
         });
 
         assert!(scheduler.schedule_batch());

@@ -1,8 +1,7 @@
-pub mod types;
-pub mod lru;
 pub mod manager;
-pub mod batch_sequence;
+pub mod sequence;
+pub mod slot;
 
-pub use types::{Phase, SessionHandle, SessionMode, SlotError, SlotResult, SlotState};
 pub use manager::SlotManager;
-pub use batch_sequence::{BatchSequence, build_batch_sequence};
+pub use sequence::{build_batch_sequence, BatchSequence};
+pub use slot::{Phase, SessionHandle, SessionMode, SlotState};

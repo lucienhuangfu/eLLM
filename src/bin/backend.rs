@@ -156,12 +156,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
 
     let mut batch_list = Vec::with_capacity(batch_size);
-    batch_list.extend(
-        written_lengths
-            .iter()
-            .enumerate()
-            .map(|(_, &len)| SlotState::new_prefill_state(0, len.min(sequence_length))),
-    );
+    batch_list.extend(written_lengths.iter().enumerate().map(|(_, &len)| {
+        let mut s = SlotState::idle();
+        s.start_prefill(0, len.min(sequence_length));
+        s
+    }));
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
     let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
 
@@ -184,8 +183,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         f16::take_operator_queue(),
         Arc::clone(&batch_scheduler),
         thread_num,
-        chunk_size,
-        Duration::from_millis(10),
     );
 
     println!("Starting inference with ExecutorPool...");

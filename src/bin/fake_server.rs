@@ -8,7 +8,6 @@ use ellm::runtime::{
 };
 use ellm::serving;
 use std::sync::Arc;
-use std::time::Duration;
 
 fn create_runtime() -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error>> {
     tokio::runtime::Builder::new_multi_thread()
@@ -30,13 +29,7 @@ async fn run_server(
 
     let fake_echo = FakeEcho::new(sequences_ptr, sequence_length, 151643);
     let operator_queue = vec![Operator::<f16>::FakeEcho(fake_echo)];
-    let worker_pool = ExecutorPool::new(
-        operator_queue,
-        Arc::clone(&scheduler),
-        4,
-        64,
-        Duration::from_millis(10),
-    );
+    let worker_pool = ExecutorPool::new(operator_queue, Arc::clone(&scheduler), 4);
     worker_pool.start();
 
     serving::run(scheduler, slot_manager).await?;
@@ -57,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let batch_states = Arc::new(SharedMut::new(
         (0..batch_size)
-            .map(|_| SlotState::new_start_state())
+            .map(|_| SlotState::idle())
             .collect::<Vec<_>>(),
     ));
 

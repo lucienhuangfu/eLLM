@@ -1,5 +1,6 @@
 #![feature(f16)]
 
+use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
@@ -7,10 +8,11 @@ use ellm::runtime::loader::load_tiktoken;
 use ellm::runtime::loader::ChatTemplate;
 use ellm::runtime::loader::SafeTensorsLoader;
 use ellm::runtime::{
-    BatchSequence, Config, ExecutorPool, GenerationConfig, Phase, ScheduleTask, Scheduler,
-    SessionMode, SlotManager, SlotState,
+    BatchSequence, ExecutorPool, Phase, ScheduleTask, Scheduler, SessionMode, SlotManager,
+    SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
+use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::env;
@@ -168,7 +170,11 @@ fn main() {
 
     let batch_list: Vec<SlotState> = written_lengths
         .iter()
-        .map(|&len| SlotState::new_prefill_state(0, len))
+        .map(|&len| {
+            let mut s = SlotState::idle();
+            s.start_prefill(0, len);
+            s
+        })
         .collect();
     let batch_list_arc = Arc::new(SharedMut::new(batch_list));
     let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
@@ -192,8 +198,6 @@ fn main() {
         f16::take_operator_queue(),
         Arc::clone(&batch_scheduler),
         thread_num,
-        chunk_size,
-        Duration::from_millis(10),
     );
 
     if batch_scheduler.schedule_batch() {

@@ -195,7 +195,18 @@ mod tests {
     use super::FakeEcho;
     use crate::runtime::SequenceSlice;
     use crate::runtime::{Phase, SlotState};
-    use std::sync::Arc;
+
+    fn decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+        let mut s = SlotState::idle();
+        s.start_decode(sequence_index, kv_index);
+        s
+    }
+
+    fn prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+        let mut s = SlotState::idle();
+        s.start_prefill(sequence_index, filling_length);
+        s
+    }
 
     /// Number of pre-written tokens in each sequence (none of them are eos_id).
     const PRE_TOKEN_COUNT: usize = 10;
@@ -224,7 +235,7 @@ mod tests {
         fill_sequence(&mut sequences, 0, sequence_stride, 0, PRE_TOKEN_COUNT);
 
         let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID);
-        let mut batch_list = vec![SlotState::new_prefill_state(0, 0)];
+        let mut batch_list = vec![prefill_state(0, 0)];
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
@@ -252,7 +263,7 @@ mod tests {
         fill_sequence(&mut sequences, 0, sequence_stride, 0, PRE_TOKEN_COUNT);
 
         let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID);
-        let mut batch_list = vec![SlotState::new_prefill_state(PRE_TOKEN_COUNT, 0)];
+        let mut batch_list = vec![prefill_state(PRE_TOKEN_COUNT, 0)];
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
@@ -283,9 +294,9 @@ mod tests {
 
         let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID);
         let mut batch_list = vec![
-            SlotState::new_prefill_state(PRE_TOKEN_COUNT, 0),
-            SlotState::new_prefill_state(PRE_TOKEN_COUNT, 0),
-            SlotState::new_prefill_state(PRE_TOKEN_COUNT, 0),
+            prefill_state(PRE_TOKEN_COUNT, 0),
+            prefill_state(PRE_TOKEN_COUNT, 0),
+            prefill_state(PRE_TOKEN_COUNT, 0),
         ];
         let prefill_list = vec![];
         let decode_list = vec![
@@ -342,7 +353,7 @@ mod tests {
 
         let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID);
         // sequence_index=89, length=10 → write_start = 89 + 10 = 99 → triggers EOS
-        let mut batch_list = vec![SlotState::new_decode_state(99, 99)];
+        let mut batch_list = vec![decode_state(99, 99)];
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
@@ -368,10 +379,7 @@ mod tests {
         fill_sequence(&mut sequences, 0, sequence_stride, 0, PRE_TOKEN_COUNT);
 
         let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID);
-        let mut batch_list = vec![SlotState::new_decode_state(
-            PRE_TOKEN_COUNT,
-            PRE_TOKEN_COUNT,
-        )];
+        let mut batch_list = vec![decode_state(PRE_TOKEN_COUNT, PRE_TOKEN_COUNT)];
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,

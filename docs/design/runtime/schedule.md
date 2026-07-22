@@ -86,12 +86,11 @@
 
 | Method | Description |
 |--------|-------------|
-| `new_start_state()` | Creates Start state with sentinel values |
-| `new_prefill_state(sequence_index, filling_length)` | Creates Prefill state with KV index set to sequence_index |
-| `new_decode_state(sequence_index, kv_index)` | Creates Decode state |
-| `is_active()` | Returns true if phase is Prefill or Decode |
+| `idle()` | Creates Start state with sentinel values |
+| `start_prefill(sequence_index, filling_length)` | Transitions to Prefill phase; sets token_count = filling_length |
+| `start_decode(sequence_index, kv_index)` | Transitions to Decode phase |
 | `is_available()` | Returns true if phase is Start or Eos |
-| `touch()` | Updates last_accessed to current time |
+| `reset_to_start()` | Resets all fields to Start phase |
 
 ### 2.3 BatchPlan Structure
 

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::runtime::scheduler::lookup_global_index;
 use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::Phase;
+use crate::runtime::session::SlotState;
 
 use super::test_utils::*;
 
@@ -16,10 +17,7 @@ fn test_empty_batch_returns_no_work() {
 
 #[test]
 fn test_prefill_only_batch() {
-    let batch_list = make_batch_list(vec![
-        crate::runtime::session::SlotState::new_prefill_state(0, 64),
-        crate::runtime::session::SlotState::new_prefill_state(100, 32),
-    ]);
+    let batch_list = make_batch_list(vec![make_prefill_state(0, 64), make_prefill_state(100, 32)]);
     let scheduler = Scheduler::new(8, 256, 2, Arc::clone(&batch_list));
 
     assert!(scheduler.schedule_batch());
@@ -33,9 +31,9 @@ fn test_prefill_only_batch() {
 #[test]
 fn test_decode_only_batch() {
     let batch_list = make_batch_list(vec![
-        crate::runtime::session::SlotState::new_decode_state(0, 0),
-        crate::runtime::session::SlotState::new_decode_state(10, 10),
-        crate::runtime::session::SlotState::new_decode_state(20, 20),
+        make_decode_state(0, 0),
+        make_decode_state(10, 10),
+        make_decode_state(20, 20),
     ]);
     let scheduler = Scheduler::new(8, 256, 2, Arc::clone(&batch_list));
 
@@ -49,10 +47,10 @@ fn test_decode_only_batch() {
 #[test]
 fn test_mixed_prefill_and_decode() {
     let batch_list = make_batch_list(vec![
-        crate::runtime::session::SlotState::new_decode_state(0, 0),
-        crate::runtime::session::SlotState::new_decode_state(10, 10),
-        crate::runtime::session::SlotState::new_prefill_state(100, 50),
-        crate::runtime::session::SlotState::new_prefill_state(200, 30),
+        make_decode_state(0, 0),
+        make_decode_state(10, 10),
+        make_prefill_state(100, 50),
+        make_prefill_state(200, 30),
     ]);
     let scheduler = Scheduler::new(8, 256, 2, Arc::clone(&batch_list));
 
@@ -67,7 +65,7 @@ fn test_mixed_prefill_and_decode() {
 fn test_decode_respects_max_limit() {
     let batch_list: Vec<crate::runtime::session::SlotState> = (0..20)
         .map(|i| {
-            let mut s = crate::runtime::session::SlotState::new_decode_state(i, i);
+            let mut s = make_decode_state(i, i);
             s.phase = Phase::Decode;
             s
         })
@@ -86,9 +84,7 @@ fn test_chunked_prefill_across_multiple_rounds() {
     const MAX_PREFILL: usize = 100;
     const TOTAL_TOKENS: usize = 250;
 
-    let batch_list = make_batch_list(vec![
-        crate::runtime::session::SlotState::new_prefill_state(0, TOTAL_TOKENS),
-    ]);
+    let batch_list = make_batch_list(vec![make_prefill_state(0, TOTAL_TOKENS)]);
     let scheduler = Scheduler::new(8, MAX_PREFILL, 2, Arc::clone(&batch_list));
 
     let mut rounds = 0;
@@ -127,8 +123,8 @@ fn test_full_lifecycle_prefill_to_decode_to_eos() {
     let scheduler = Scheduler::new(MAX_DECODE, MAX_PREFILL, THREADS, Arc::clone(&batch_list));
 
     batch_list.with_mut(|bl| {
-        bl.push(crate::runtime::session::SlotState::new_prefill_state(0, 64));
-        bl.push(crate::runtime::session::SlotState::new_prefill_state(200, 48));
+        bl.push(make_prefill_state(0, 64));
+        bl.push(make_prefill_state(200, 48));
     });
 
     assert!(scheduler.schedule_batch());
@@ -182,7 +178,7 @@ fn test_new_prefill_arrives_during_decode() {
 
     batch_list.with_mut(|bl| {
         for i in 0..3 {
-            let mut s = crate::runtime::session::SlotState::new_decode_state(i, i);
+            let mut s = make_decode_state(i, i);
             s.phase = Phase::Decode;
             bl.push(s);
         }
@@ -203,8 +199,8 @@ fn test_new_prefill_arrives_during_decode() {
     }
 
     batch_list.with_mut(|bl| {
-        bl.push(crate::runtime::session::SlotState::new_prefill_state(100, 64));
-        bl.push(crate::runtime::session::SlotState::new_prefill_state(200, 32));
+        bl.push(make_prefill_state(100, 64));
+        bl.push(make_prefill_state(200, 32));
     });
 
     assert!(scheduler.schedule_batch());
@@ -221,7 +217,7 @@ fn test_partial_sequence_completion() {
 
     batch_list.with_mut(|bl| {
         for i in 0..5 {
-            let mut s = crate::runtime::session::SlotState::new_decode_state(i, i);
+            let mut s = make_decode_state(i, i);
             s.phase = Phase::Decode;
             bl.push(s);
         }
@@ -264,9 +260,9 @@ fn test_partial_sequence_completion() {
 #[test]
 fn test_slices_token_layout_prefill_then_decode() {
     let batch_list = make_batch_list(vec![
-        crate::runtime::session::SlotState::new_decode_state(0, 0),
-        crate::runtime::session::SlotState::new_decode_state(100, 100),
-        crate::runtime::session::SlotState::new_prefill_state(300, 50),
+        make_decode_state(0, 0),
+        make_decode_state(100, 100),
+        make_prefill_state(300, 50),
     ]);
     let scheduler = Scheduler::new(16, 1024, 2, batch_list);
 
@@ -298,9 +294,9 @@ fn test_slices_token_layout_prefill_then_decode() {
 #[test]
 fn test_lookup_global_index_across_slices() {
     let batch_list = make_batch_list(vec![
-        crate::runtime::session::SlotState::new_decode_state(0, 0),
-        crate::runtime::session::SlotState::new_decode_state(100, 100),
-        crate::runtime::session::SlotState::new_prefill_state(300, 40),
+        make_decode_state(0, 0),
+        make_decode_state(100, 100),
+        make_prefill_state(300, 40),
     ]);
     let scheduler = Scheduler::new(16, 1024, 2, batch_list);
 
@@ -329,10 +325,7 @@ fn test_lookup_global_index_across_slices() {
 
 #[test]
 fn test_prefilling_chunked_slices_sum_matches() {
-    let batch_list = make_batch_list(vec![
-        crate::runtime::session::SlotState::new_prefill_state(0, 60),
-        crate::runtime::session::SlotState::new_prefill_state(100, 80),
-    ]);
+    let batch_list = make_batch_list(vec![make_prefill_state(0, 60), make_prefill_state(100, 80)]);
     let scheduler = Scheduler::new(8, 200, 2, batch_list);
 
     assert!(scheduler.schedule_batch());
@@ -351,9 +344,7 @@ fn test_prefilling_chunked_slices_sum_matches() {
 
 #[test]
 fn test_slot_reuse_workflow() {
-    let batch_list = make_batch_list(vec![
-        crate::runtime::session::SlotState::new_decode_state(0, 0),
-    ]);
+    let batch_list = make_batch_list(vec![make_decode_state(0, 0)]);
     let scheduler = Scheduler::new(4, 256, 2, Arc::clone(&batch_list));
 
     assert!(scheduler.schedule_batch());
@@ -368,7 +359,7 @@ fn test_slot_reuse_workflow() {
 
     batch_list.with_mut(|bl| {
         bl[0].reset_to_start();
-        bl[0] = crate::runtime::session::SlotState::new_prefill_state(100, 50);
+        bl[0].start_prefill(100, 50);
     });
 
     assert!(scheduler.schedule_batch());
