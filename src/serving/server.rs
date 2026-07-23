@@ -152,9 +152,9 @@ async fn chat_completions(
         }
 
         let generated_text = slot_manager.decode_generated_text(slot_index);
-        let token_count = slot_manager.get_sequence_index(slot_index);
+        let sequence_length = slot_manager.get_next_sequence_index(slot_index);
         Arc::clone(&slot_manager)
-            .release_session(&session_id, token_count)
+            .release_session(&session_id, sequence_length)
             .await;
 
         Json(ChatCompletionResponse {
@@ -188,106 +188,123 @@ fn build_stream_response(
     let mut parser = IncrementalStreamingParser::with_options(ParserOptions::default());
     let mut role_sent = false;
     let mut tool_call_index = 0u32;
+    let mut last_emitted = slot_manager.get_prompt_length(slot_index);
 
     let stream_body = stream! {
         loop {
             notifier.notified().await;
 
             let (token_index, phase) = slot_manager.get_token_index_and_phase(slot_index);
-            let text = slot_manager.decode_single_token(slot_index, token_index);
             let is_eos = matches!(phase, Phase::Eos);
 
-            let mut events = parser.feed(&text);
-            if is_eos {
-                events.push(super::parser::ParserEvent::Finish);
+            while last_emitted < token_index {
+                let text = slot_manager.decode_single_token(slot_index, last_emitted);
+                last_emitted += 1;
+                let events = parser.feed(&text);
+
+                for event in events {
+                    let (delta, finish_reason) = match event {
+                        super::parser::ParserEvent::Content(content) => {
+                            let delta = StreamDelta {
+                                role: (!role_sent).then(|| "assistant".to_string()),
+                                content: Some(content),
+                                reasoning_content: None,
+                                tool_calls: None,
+                            };
+                            role_sent = true;
+                            (delta, None)
+                        }
+                        super::parser::ParserEvent::Reasoning(reasoning) => {
+                            let delta = StreamDelta {
+                                role: (!role_sent).then(|| "assistant".to_string()),
+                                content: None,
+                                reasoning_content: Some(reasoning),
+                                tool_calls: None,
+                            };
+                            role_sent = true;
+                            (delta, None)
+                        }
+                        super::parser::ParserEvent::ToolCallDelta(delta) => {
+                            let delta = StreamDelta {
+                                role: (!role_sent).then(|| "assistant".to_string()),
+                                content: None,
+                                reasoning_content: None,
+                                tool_calls: Some(vec![StreamToolCall {
+                                    index: tool_call_index,
+                                    id: None,
+                                    kind: "function".to_string(),
+                                    function: StreamToolFunction {
+                                        name: None,
+                                        arguments: Some(delta.fragment),
+                                    },
+                                }]),
+                            };
+                            role_sent = true;
+                            (delta, None)
+                        }
+                        super::parser::ParserEvent::ToolCall(tool_call) => {
+                            let delta = StreamDelta {
+                                role: (!role_sent).then(|| "assistant".to_string()),
+                                content: None,
+                                reasoning_content: None,
+                                tool_calls: Some(vec![StreamToolCall {
+                                    index: tool_call_index,
+                                    id: None,
+                                    kind: "function".to_string(),
+                                    function: StreamToolFunction {
+                                        name: Some(tool_call.name),
+                                        arguments: Some(tool_call.arguments.to_string()),
+                                    },
+                                }]),
+                            };
+                            tool_call_index += 1;
+                            role_sent = true;
+                            (delta, None)
+                        }
+                        super::parser::ParserEvent::Finish => (StreamDelta::default(), Some("stop".to_string())),
+                    };
+
+                    let response = StreamResponse {
+                        id: request_id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created,
+                        model: model.clone(),
+                        choices: vec![StreamChoice {
+                            index: 0,
+                            delta,
+                            finish_reason,
+                        }],
+                    };
+
+                    if let Ok(json) = serde_json::to_string(&response) {
+                        yield Ok::<Event, axum::Error>(Event::default().data(json));
+                    }
+                }
             }
 
-            for event in events {
-                let (delta, finish_reason) = match event {
-                    super::parser::ParserEvent::Content(content) => {
-                        let delta = StreamDelta {
-                            role: (!role_sent).then(|| "assistant".to_string()),
-                            content: Some(content),
-                            reasoning_content: None,
-                            tool_calls: None,
-                        };
-                        role_sent = true;
-                        (delta, None)
-                    }
-                    super::parser::ParserEvent::Reasoning(reasoning) => {
-                        let delta = StreamDelta {
-                            role: (!role_sent).then(|| "assistant".to_string()),
-                            content: None,
-                            reasoning_content: Some(reasoning),
-                            tool_calls: None,
-                        };
-                        role_sent = true;
-                        (delta, None)
-                    }
-                    super::parser::ParserEvent::ToolCallDelta(delta) => {
-                        let delta = StreamDelta {
-                            role: (!role_sent).then(|| "assistant".to_string()),
-                            content: None,
-                            reasoning_content: None,
-                            tool_calls: Some(vec![StreamToolCall {
-                                index: tool_call_index,
-                                id: None,
-                                kind: "function".to_string(),
-                                function: StreamToolFunction {
-                                    name: None,
-                                    arguments: Some(delta.fragment),
-                                },
-                            }]),
-                        };
-                        role_sent = true;
-                        (delta, None)
-                    }
-                    super::parser::ParserEvent::ToolCall(tool_call) => {
-                        let delta = StreamDelta {
-                            role: (!role_sent).then(|| "assistant".to_string()),
-                            content: None,
-                            reasoning_content: None,
-                            tool_calls: Some(vec![StreamToolCall {
-                                index: tool_call_index,
-                                id: None,
-                                kind: "function".to_string(),
-                                function: StreamToolFunction {
-                                    name: Some(tool_call.name),
-                                    arguments: Some(tool_call.arguments.to_string()),
-                                },
-                            }]),
-                        };
-                        tool_call_index += 1;
-                        role_sent = true;
-                        (delta, None)
-                    }
-                    super::parser::ParserEvent::Finish => (StreamDelta::default(), Some("stop".to_string())),
-                };
-
-                let response = StreamResponse {
+            if is_eos {
+                let finish_delta = StreamDelta::default();
+                let finish_response = StreamResponse {
                     id: request_id.clone(),
                     object: "chat.completion.chunk".to_string(),
                     created,
                     model: model.clone(),
                     choices: vec![StreamChoice {
                         index: 0,
-                        delta,
-                        finish_reason,
+                        delta: finish_delta,
+                        finish_reason: Some("stop".to_string()),
                     }],
                 };
 
-                if let Ok(json) = serde_json::to_string(&response) {
+                if let Ok(json) = serde_json::to_string(&finish_response) {
                     yield Ok::<Event, axum::Error>(Event::default().data(json));
                 }
-            }
-
-            if is_eos {
                 break;
             }
         }
 
-        let token_count = slot_manager.get_sequence_index(slot_index);
-        Arc::clone(&slot_manager).release_session(&session_id, token_count).await;
+        let sequence_length = slot_manager.get_next_sequence_index(slot_index);
+        Arc::clone(&slot_manager).release_session(&session_id, sequence_length).await;
     };
 
     Sse::new(stream_body).into_response()

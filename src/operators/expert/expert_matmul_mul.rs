@@ -367,18 +367,18 @@ where
                     routed_count += 1;
                 }
 
-                let token_count = routed_count - token_begin;
-                if token_count == 0 {
+                let sequence_length = routed_count - token_begin;
+                if sequence_length == 0 {
                     routed_count = token_begin;
                     continue;
                 }
 
-                let token_tile_count = token_count.div_ceil(token_block_rows);
+                let token_tile_count = sequence_length.div_ceil(token_block_rows);
                 let task_count = token_tile_count * output_column_tile_count;
                 *expert_tasks_ptr.add(expert_task_count) = ExpertTaskMeta {
                     expert_id,
                     token_begin,
-                    token_count,
+                    sequence_length,
                     task_begin: total_tasks,
                     task_end: total_tasks + task_count,
                 };
@@ -448,7 +448,7 @@ where
                     }
 
                     let tokens_in_block =
-                        (task_meta.token_count - token_block_start).min(token_block_rows);
+                        (task_meta.sequence_length - token_block_start).min(token_block_rows);
                     debug_assert!(tokens_in_block > 0);
 
                     let routed_token_begin = task_meta.token_begin + token_block_start;

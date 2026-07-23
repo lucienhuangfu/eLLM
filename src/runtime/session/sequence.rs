@@ -6,7 +6,6 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::num_traits::FromNumber;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::loader::{load_tiktoken, ChatTemplate};
-use crate::runtime::session::SlotState;
 
 pub struct BatchSequence<T> {
     pub sequences: *mut usize,
@@ -79,12 +78,6 @@ where
             slot_index, write_len, temperature
         );
         Ok(write_len)
-    }
-
-    pub fn decode_generated_text(&self, slot_index: usize, record: &SlotState) -> String {
-        let sequence_index = record.sequence_index;
-        let kv_index = record.kv_index;
-        self.decode_token_span(slot_index, kv_index, sequence_index)
     }
 
     pub fn decode_single_token(&self, slot_index: usize, token_index: usize) -> Option<String> {

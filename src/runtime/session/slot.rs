@@ -16,38 +16,34 @@ pub enum Phase {
 // ── SlotState ──────────────────────────────────────────────
 
 pub struct SlotState {
-    pub sequence_index: usize,
-    pub kv_index: usize,
-    pub filling_length: usize,
+    pub next_sequence_index: usize,
+    pub prompt_length: usize,
     pub phase: Phase,
-    pub token_count: usize,
+    pub sequence_length: usize,
     pub(crate) notify: Arc<Notify>,
 }
 
 impl SlotState {
     pub fn idle() -> Self {
         Self {
-            sequence_index: usize::MAX,
-            kv_index: usize::MAX,
-            filling_length: 0,
+            next_sequence_index: usize::MAX,
+            prompt_length: usize::MAX,
             phase: Phase::Start,
-            token_count: 0,
+            sequence_length: 0,
             notify: Arc::new(Notify::new()),
         }
     }
 
-    pub fn start_prefill(&mut self, sequence_index: usize, filling_length: usize) {
-        self.sequence_index = sequence_index;
-        self.kv_index = sequence_index;
-        self.filling_length = filling_length;
+    pub fn start_prefill(&mut self, start_index: usize, filling_length: usize) {
+        self.next_sequence_index = start_index;
+        self.prompt_length = start_index + filling_length;
         self.phase = Phase::Prefill;
-        self.token_count = filling_length;
+        self.sequence_length = filling_length;
     }
 
-    pub fn start_decode(&mut self, sequence_index: usize, kv_index: usize) {
-        self.sequence_index = sequence_index;
-        self.kv_index = kv_index;
-        self.filling_length = 0;
+    pub fn start_decode(&mut self, next_sequence_index: usize, prompt_length: usize) {
+        self.next_sequence_index = next_sequence_index;
+        self.prompt_length = prompt_length;
         self.phase = Phase::Decode;
     }
 
@@ -55,12 +51,15 @@ impl SlotState {
         matches!(self.phase, Phase::Start | Phase::Eos)
     }
 
+    pub fn filling_length(&self) -> usize {
+        self.prompt_length.saturating_sub(self.next_sequence_index)
+    }
+
     pub fn reset_to_start(&mut self) {
-        self.sequence_index = usize::MAX;
-        self.kv_index = usize::MAX;
-        self.filling_length = 0;
+        self.next_sequence_index = usize::MAX;
+        self.prompt_length = usize::MAX;
         self.phase = Phase::Start;
-        self.token_count = 0;
+        self.sequence_length = 0;
     }
 }
 

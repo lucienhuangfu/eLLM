@@ -11,7 +11,7 @@ pub trait AttentionTrait<T> {
         col_begin: usize,
         col_end: usize,
         total_col_end: usize,
-        sequence_index: usize,
+        next_sequence_index: usize,
         k_seq_stride: usize,
         v_seq_stride: usize,
         q_seq_stride: usize,

@@ -44,11 +44,10 @@ fn test_topk_softmax_f32() {
     let mut batch_list = Vec::with_capacity(batch_size);
     for i in 0..batch_size {
         batch_list.push(SlotState {
-            sequence_index: 0,
-            kv_index: 0,
-            filling_length: 0,
+            next_sequence_index: 0,
+            prompt_length: 0,
             phase: Phase::Decode,
-            token_count: 0,
+            sequence_length: 0,
             notify: Arc::new(Notify::new()),
         });
     }
@@ -61,7 +60,7 @@ fn test_topk_softmax_f32() {
         for batch_index in start..end {
             slices.push(SequenceSlice {
                 batch_index,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: batch_index,
                 length: 1,
                 last_token_flag: true,
@@ -200,11 +199,10 @@ fn test_topk_softmax_f16() {
     let mut batch_list = Vec::with_capacity(batch_size);
     for i in 0..batch_size {
         batch_list.push(SlotState {
-            sequence_index: 0,
-            kv_index: 0,
-            filling_length: 0,
+            next_sequence_index: 0,
+            prompt_length: 0,
             phase: Phase::Decode,
-            token_count: 0,
+            sequence_length: 0,
             notify: Arc::new(Notify::new()),
         });
     }
@@ -217,7 +215,7 @@ fn test_topk_softmax_f16() {
         for batch_index in start..end {
             slices.push(SequenceSlice {
                 batch_index,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: batch_index,
                 length: 1,
                 last_token_flag: true,

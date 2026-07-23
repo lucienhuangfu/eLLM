@@ -223,7 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     batch_list_arc.with(|list| {
         batch_seq_arc.with(|batch_seq| {
             for (slot, record) in list.iter().enumerate() {
-                let text = batch_seq.decode_generated_text(slot, record);
+                let text = batch_seq.decode_token_span(slot, record.prompt_length, record.next_sequence_index);
                 if !text.is_empty() {
                     println!("Slot {}: {}", slot, text);
                 }

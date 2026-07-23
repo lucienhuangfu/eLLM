@@ -246,15 +246,15 @@ mod test {
     // use std::sync::{Arc, Barrier};
     // use std::thread;
 
-    fn prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+    fn prefill_state(next_sequence_index: usize, filling_length: usize) -> SlotState {
         let mut s = SlotState::idle();
-        s.start_prefill(sequence_index, filling_length);
+        s.start_prefill(next_sequence_index, filling_length);
         s
     }
 
-    fn decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+    fn decode_state(next_sequence_index: usize) -> SlotState {
         let mut s = SlotState::idle();
-        s.start_decode(sequence_index, kv_index);
+        s.start_decode(next_sequence_index, next_sequence_index);
         s
     }
 
@@ -494,8 +494,8 @@ mod test {
             );
         });
 
-        let cache_offset = |sequence_index: usize, batch_index: usize| {
-            (sequence_index * BATCH_SIZE + batch_index) * HEAD_DIM
+        let cache_offset = |next_sequence_index: usize, batch_index: usize| {
+            (next_sequence_index * BATCH_SIZE + batch_index) * HEAD_DIM
         };
         assert!(v_cache[cache_offset(0, 0)] != 0.0);
         assert!(v_cache[cache_offset(2, 0)] != 0.0);
@@ -604,11 +604,9 @@ mod test {
             );
 
             assert_eq!(batch_list[0].phase, Phase::Decode);
-            assert_eq!(batch_list[0].sequence_index, 3);
-            assert_eq!(batch_list[0].kv_index, 4);
+            assert_eq!(batch_list[0].next_sequence_index, 4);
             assert_eq!(batch_list[1].phase, Phase::Decode);
-            assert_eq!(batch_list[1].sequence_index, 4);
-            assert_eq!(batch_list[1].kv_index, 5);
+            assert_eq!(batch_list[1].next_sequence_index, 5);
         });
 
         assert_eq!(sequences[3], 42);
@@ -787,8 +785,8 @@ mod test {
         ));
         let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
         scheduler.batch_list().with_mut(|bl| {
-            bl.push(decode_state(3, 4));
-            bl.push(decode_state(4, 5));
+            bl.push(decode_state(4));
+            bl.push(decode_state(5));
         });
 
         scheduler.schedule_batch();
@@ -798,9 +796,9 @@ mod test {
         assert_eq!(prefill_size, 0);
         assert_eq!(decode_size, 2);
         assert!(task.prefilling_chunked_slices.iter().all(Vec::is_empty));
-        assert_eq!(task.slices[0].sequence_index, 3);
+        assert_eq!(task.slices[0].next_sequence_index, 3);
         assert_eq!(task.slices[0].token_start_index, 0);
-        assert_eq!(task.slices[1].sequence_index, 4);
+        assert_eq!(task.slices[1].next_sequence_index, 4);
         assert_eq!(task.slices[1].token_start_index, 1);
 
         let prefill_list = task.prefilling_chunked_slices.clone();
@@ -894,8 +892,8 @@ mod test {
             );
         });
 
-        let cache_offset = |sequence_index: usize, batch_index: usize| {
-            (sequence_index * BATCH_SIZE + batch_index) * HEAD_DIM
+        let cache_offset = |next_sequence_index: usize, batch_index: usize| {
+            (next_sequence_index * BATCH_SIZE + batch_index) * HEAD_DIM
         };
         assert!(v_cache[cache_offset(3, 0)] != 0.0);
         assert!(v_cache[cache_offset(4, 1)] != 0.0);
@@ -988,11 +986,9 @@ mod test {
             );
 
             assert_eq!(batch_list[0].phase, Phase::Decode);
-            assert_eq!(batch_list[0].sequence_index, 4);
-            assert_eq!(batch_list[0].kv_index, 5);
+            assert_eq!(batch_list[0].next_sequence_index, 5);
             assert_eq!(batch_list[1].phase, Phase::Decode);
-            assert_eq!(batch_list[1].sequence_index, 5);
-            assert_eq!(batch_list[1].kv_index, 6);
+            assert_eq!(batch_list[1].next_sequence_index, 6);
         });
 
         assert_eq!(sequences[4], 43);
@@ -1053,7 +1049,7 @@ mod test {
         };
         let mut k_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
         let mut v_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
-        let cache_offset = |sequence_index: usize| (sequence_index * BATCH_SIZE) * HEAD_DIM;
+        let cache_offset = |next_sequence_index: usize| (next_sequence_index * BATCH_SIZE) * HEAD_DIM;
 
         scheduler.schedule_batch();
         let task = scheduler.with_task(|t| t.clone());
@@ -1061,7 +1057,7 @@ mod test {
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 3);
         assert_eq!(decode_size, 1);
-        assert_eq!(task.slices[0].sequence_index, 0);
+        assert_eq!(task.slices[0].next_sequence_index, 0);
         assert_eq!(task.slices[0].length, 3);
         assert!(task.slices[0].last_token_flag);
 
@@ -1227,8 +1223,7 @@ mod test {
                 batch_list,
             );
             assert_eq!(batch_list[0].phase, Phase::Decode);
-            assert_eq!(batch_list[0].sequence_index, 3);
-            assert_eq!(batch_list[0].kv_index, 4);
+            assert_eq!(batch_list[0].next_sequence_index, 4);
         });
         assert_eq!(sequences[3], 42);
         assert_eq!(v_cache[cache_offset(3)], 0.0);
@@ -1241,7 +1236,7 @@ mod test {
         assert_eq!(decode_prefill_size, 0);
         assert_eq!(decode_size, 1);
         assert!(task.prefilling_chunked_slices.iter().all(Vec::is_empty));
-        assert_eq!(task.slices[0].sequence_index, 3);
+        assert_eq!(task.slices[0].next_sequence_index, 3);
         assert_eq!(task.slices[0].length, 1);
 
         let prefill_list = task.prefilling_chunked_slices.clone();
@@ -1391,8 +1386,7 @@ mod test {
                 batch_list,
             );
             assert_eq!(batch_list[0].phase, Phase::Decode);
-            assert_eq!(batch_list[0].sequence_index, 4);
-            assert_eq!(batch_list[0].kv_index, 5);
+            assert_eq!(batch_list[0].next_sequence_index, 5);
         });
         assert_eq!(sequences[4], 43);
     }
@@ -1509,7 +1503,7 @@ mod test {
         let eos_id = 0usize;
         let mut batch_temperature = vec![1.0f32; batch_size];
 
-        let batch_records: Vec<SlotState> = (0..batch_size).map(|_| decode_state(0, 0)).collect();
+        let batch_records: Vec<SlotState> = (0..batch_size).map(|_| decode_state(0)).collect();
         let mut batch_list = batch_records;
 
         let tokens_per_thread = (batch_size + thread_num - 1) / thread_num;
@@ -1521,7 +1515,7 @@ mod test {
             for batch_index in start..end {
                 slices.push(SequenceSlice {
                     batch_index,
-                    sequence_index: 0,
+                    next_sequence_index: 0,
                     token_start_index: batch_index,
                     length: 1,
                     last_token_flag: true,

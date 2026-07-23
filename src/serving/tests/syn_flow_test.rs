@@ -9,7 +9,7 @@ use super::test_utils::*;
 async fn test_chat_completions_sync_full_flow() {
     let (router, manager, _buffer) = create_test_router();
 
-    start_generation_loop(Arc::clone(&manager), vec![15496, 198]);
+    start_generation_loop(Arc::clone(&manager), vec![15, 16]);
 
     let body = serde_json::json!({
         "model": "test-model",
@@ -40,6 +40,6 @@ async fn test_chat_completions_sync_full_flow() {
     assert!(json["choices"].is_array());
     assert_eq!(json["choices"][0]["index"], 0);
     assert_eq!(json["choices"][0]["message"]["role"], "assistant");
-    assert!(json["choices"][0]["message"]["content"].is_string());
+    assert_eq!(json["choices"][0]["message"]["content"], "token_15token_16");
     assert_eq!(json["choices"][0]["finish_reason"], "stop");
 }

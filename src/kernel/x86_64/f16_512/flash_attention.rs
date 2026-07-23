@@ -154,13 +154,13 @@ pub unsafe fn block_flash_attention(
     q_seq_stride: usize,
     head_size: usize,
     inverse_sqrt_head: f16,
-    sequence_index: usize,
+    next_sequence_index: usize,
     running_max: &mut [f16],
     running_denom: &mut [f16],
     scores: &mut [f16],
 ) {
     for (row_offset, row) in (row_begin..row_end).enumerate() {
-        let visible_col_end = (sequence_index + row + 1).min(total_col_end);
+        let visible_col_end = (next_sequence_index + row + 1).min(total_col_end);
         let row_col_end = col_end.min(visible_col_end);
         if col_begin >= row_col_end {
             continue;

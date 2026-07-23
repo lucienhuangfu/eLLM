@@ -12,7 +12,7 @@ pub(crate) struct ExpertTaskMeta {
     pub token_begin: usize,
     /// Number of tokens routed to this expert.
     /// 路由到当前 expert 的 token 数量。
-    pub token_count: usize,
+    pub sequence_length: usize,
     /// First global task id owned by this expert.
     /// 当前 expert 覆盖的第一个全局 task id。
     pub task_begin: usize,

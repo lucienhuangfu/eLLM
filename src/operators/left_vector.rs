@@ -66,21 +66,21 @@ mod test {
         let decode_list = vec![
             SequenceSlice {
                 batch_index: 0,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 2,
                 length: 1,
                 last_token_flag: true,
             },
             SequenceSlice {
                 batch_index: 0,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 2,
                 length: 2,
                 last_token_flag: true,
             },
             SequenceSlice {
                 batch_index: 0,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 2,
                 length: 3,
                 last_token_flag: true,

@@ -245,8 +245,8 @@ fn main() {
         batch_seq_arc.with(|batch_seq| {
             for (slot, record) in list.iter().enumerate() {
                 let input_len = written_lengths[slot];
-                let actual_gen_len = record.kv_index.saturating_sub(input_len);
-                let gen_end = record.kv_index.min(sequence_length);
+                let actual_gen_len = record.next_sequence_index.saturating_sub(input_len);
+                let gen_end = record.next_sequence_index.min(sequence_length);
                 let gen_len = gen_end.saturating_sub(input_len);
                 let _text_short = batch_seq.decode_token_span(slot, input_len, gen_end);
                 let _ids = batch_seq.token_ids(slot, input_len, gen_end.min(input_len + 5));

@@ -81,14 +81,14 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
         SessionHandle::new(session_id.to_string(), slot_index)
     }
 
-    pub async fn release_session(self: Arc<Self>, session_id: &str, token_count: usize) {
+    pub async fn release_session(self: Arc<Self>, session_id: &str, sequence_length: usize) {
         let mut map = self.session_map.lock().await;
         let Some(&slot_index) = map.get(session_id) else {
             return;
         };
 
         self.batch_states.with_mut(|slots| {
-            slots[slot_index].token_count = token_count;
+            slots[slot_index].sequence_length = sequence_length;
         });
 
         if self.mode == SessionMode::NonReusable {
@@ -170,9 +170,9 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
                 let record = &mut slots[slot_index];
                 seq.write_tokens_at(slot_index, prefix_len, remaining_tokens, temperature)
                     .map(|write_len| {
-                        record.sequence_index = prefix_len;
-                        record.kv_index = if prefix_len > 0 { slot_index } else { 0 };
-                        record.filling_length = write_len;
+                        let total_prompt_length = prefix_len + write_len;
+                        record.next_sequence_index = prefix_len;
+                        record.prompt_length = total_prompt_length;
                         record.phase = Phase::Prefill;
                         (write_len, record.notify.clone())
                     })
@@ -190,11 +190,17 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
         })
     }
 
+    pub fn decode_token_span(&self, slot_index: usize, begin: usize, end: usize) -> String {
+        self.batch_sequences
+            .with(|seq| seq.decode_token_span(slot_index, begin, end))
+    }
+
     pub fn decode_generated_text(&self, slot_index: usize) -> String {
         self.batch_states.with(|slots| {
             let record = &slots[slot_index];
-            self.batch_sequences
-                .with(|seq| seq.decode_generated_text(slot_index, record))
+            self.batch_sequences.with(|seq| {
+                seq.decode_token_span(slot_index, record.prompt_length, record.next_sequence_index)
+            })
         })
     }
 
@@ -205,12 +211,17 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
 
     pub fn get_token_index_and_phase(&self, slot_index: usize) -> (usize, Phase) {
         self.batch_states
-            .with(|slots| (slots[slot_index].sequence_index, slots[slot_index].phase))
+            .with(|slots| (slots[slot_index].next_sequence_index, slots[slot_index].phase))
     }
 
-    pub fn get_sequence_index(&self, slot_index: usize) -> usize {
+    pub fn get_next_sequence_index(&self, slot_index: usize) -> usize {
         self.batch_states
-            .with(|slots| slots[slot_index].sequence_index)
+            .with(|slots| slots[slot_index].next_sequence_index)
+    }
+
+    pub fn get_prompt_length(&self, slot_index: usize) -> usize {
+        self.batch_states
+            .with(|slots| slots[slot_index].prompt_length)
     }
 
     // ── Private helpers ───────────────────────────────────
@@ -251,7 +262,7 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
         let &slot_index = map.get(session_id)?;
         let cached_count = self
             .batch_states
-            .with(|slots| slots[slot_index].token_count);
+            .with(|slots| slots[slot_index].sequence_length);
         if cached_count == 0 {
             return None;
         }

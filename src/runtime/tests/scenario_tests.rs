@@ -30,16 +30,16 @@ async fn test_multi_round_chat_with_kv_cache_reuse() {
             current_slot = slot_idx;
         }
 
-        let prefill_len = 20 + round * 10;
+        let prefill_length = 20 + round * 10;
         let decode_steps = 5 + round * 2;
 
         manager.batch_states.with_mut(|slots| {
-            slots[slot_idx].start_prefill(total_tokens, prefill_len);
+            slots[slot_idx].start_prefill(total_tokens, prefill_length);
         });
 
         assert!(scheduler.schedule_batch());
         manager.batch_states.with_mut(|slots| {
-            advance_slot(&mut slots[slot_idx], prefill_len);
+            advance_slot(&mut slots[slot_idx], prefill_length);
         });
 
         for _ in 0..decode_steps {
@@ -55,7 +55,7 @@ async fn test_multi_round_chat_with_kv_cache_reuse() {
 
         total_tokens = manager
             .batch_states
-            .with(|slots| slots[slot_idx].sequence_index);
+            .with(|slots| slots[slot_idx].next_sequence_index);
 
         Arc::clone(&manager)
             .release_session(user_id, total_tokens)
@@ -84,9 +84,9 @@ async fn test_concurrent_multi_user_chat_simulation() {
         }
 
         for (i, handle) in handles.iter().enumerate() {
-            let prefill_len = 16 + i * 8 + round * 4;
+            let prefill_length = 16 + i * 8 + round * 4;
             manager.batch_states.with_mut(|slots| {
-                slots[handle.slot_index].start_prefill(0, prefill_len);
+                slots[handle.slot_index].start_prefill(0, prefill_length);
             });
         }
 
@@ -94,7 +94,7 @@ async fn test_concurrent_multi_user_chat_simulation() {
 
         for handle in &handles {
             manager.batch_states.with_mut(|slots| {
-                let fl = slots[handle.slot_index].filling_length;
+                let fl = slots[handle.slot_index].filling_length();
                 advance_slot(&mut slots[handle.slot_index], fl);
             });
         }
@@ -116,7 +116,7 @@ async fn test_concurrent_multi_user_chat_simulation() {
             });
             let tc = manager
                 .batch_states
-                .with(|slots| slots[handles[i].slot_index].sequence_index);
+                .with(|slots| slots[handles[i].slot_index].next_sequence_index);
             Arc::clone(&manager).release_session(user, tc).await;
         }
     }
@@ -243,7 +243,7 @@ async fn test_multiple_users_with_mixed_phases_in_scheduler() {
 
     for handle in &handles {
         manager.batch_states.with_mut(|slots| {
-            let fl = slots[handle.slot_index].filling_length;
+            let fl = slots[handle.slot_index].filling_length();
             advance_slot(&mut slots[handle.slot_index], fl);
         });
     }
@@ -278,9 +278,9 @@ async fn test_multiple_users_with_mixed_phases_in_scheduler() {
     assert_eq!(active_count, 3);
 
     for (i, uid) in user_ids.iter().enumerate() {
-        let token_count = manager
+        let sequence_length = manager
             .batch_states
-            .with(|slots| slots[handles[i].slot_index].sequence_index);
-        Arc::clone(&manager).release_session(uid, token_count).await;
+            .with(|slots| slots[handles[i].slot_index].next_sequence_index);
+        Arc::clone(&manager).release_session(uid, sequence_length).await;
     }
 }

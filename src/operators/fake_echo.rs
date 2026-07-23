@@ -14,7 +14,7 @@
 //! - For each sequence slice it:
 //!   1. Reads the **last token** from the sequence buffer.
 //!   2. Copies that token to the next position in the sequence.
-//!   3. Advances `sequence_index` and `kv_index`.
+//!   3. Advances `next_sequence_index`.
 //!   4. Transitions the request from `Phase::Prefill` → `Phase::Decode`.
 //! - When the write position reaches 99 (i.e. the sequence has 99 tokens):
 //!   - Writes `eos_id` instead of echoing the token.
@@ -94,12 +94,11 @@ impl FakeEcho {
     /// 1. Read the **last token** currently stored in the sequence buffer.
     /// 2. If the next write position is **< 99**:
     ///    - Copy (echo) the last token to the next position.
-    ///    - Advance `sequence_index` and `kv_index` by 1.
-    ///    - If the slot is still in `Phase::Prefill`, transition it to `Phase::Decode`
-    ///      and reset `filling_length` to 0.
+    ///    - Advance `next_sequence_index` by 1.
+    ///    - If the slot is still in `Phase::Prefill`, transition it to `Phase::Decode`.
     /// 3. If the next write position is **>= 99**:
     ///    - Write `eos_id` at the current position.
-    ///    - Advance `sequence_index` and `kv_index` by 1.
+    ///    - Advance `next_sequence_index` by 1.
     ///    - Transition the slot to `Phase::Eos` and wake the waiting consumer via
     ///      `notify.notify_one()`.
     ///
@@ -143,9 +142,9 @@ impl FakeEcho {
             };
 
             // ---- Step 3: Read the last token from the sequence buffer ----
-            // The last token sits at offset (sequence_index + length - 1) within the
+            // The last token sits at offset (next_sequence_index + length - 1) within the
             // batch's row in the flat buffer.
-            let last_token_index = slice.sequence_index + slice.length - 1;
+            let last_token_index = slice.next_sequence_index + slice.length - 1;
             let last_token = unsafe {
                 *self
                     .sequences_ptr
@@ -154,7 +153,7 @@ impl FakeEcho {
 
             // ---- Step 4: Compute the write position ----
             // The next token should be written right after the current sequence content.
-            let write_start = slice.sequence_index + slice.length;
+            let write_start = slice.next_sequence_index + slice.length;
 
             if write_start >= 99 {
                 // ---- Case A: Sequence is long enough → emit EOS ----
@@ -164,9 +163,7 @@ impl FakeEcho {
                     *self.sequences_ptr.add(eos_write_index) = self.eos_id;
                 }
                 // Update the slot metadata to reflect the new sequence length.
-                record.sequence_index = write_start + 1;
-                record.kv_index = record.kv_index.saturating_add(1);
-                record.filling_length = 0;
+                record.next_sequence_index = write_start + 1;
                 // Transition to Eos phase so the scheduler knows this request is done.
                 record.phase = Phase::Eos;
                 // Wake up the async task waiting for this request's result.
@@ -178,11 +175,9 @@ impl FakeEcho {
                     *self.sequences_ptr.add(write_index) = last_token;
                 }
                 // Advance the slot's position counters.
-                record.sequence_index = write_start + 1;
-                record.kv_index = record.kv_index.saturating_add(1);
+                record.next_sequence_index = write_start + 1;
                 // If this is the first run after prefill, transition Prefill → Decode.
                 if matches!(record.phase, Phase::Prefill) {
-                    record.filling_length = 0;
                     record.phase = Phase::Decode;
                 }
             }
@@ -196,15 +191,15 @@ mod tests {
     use crate::runtime::SequenceSlice;
     use crate::runtime::{Phase, SlotState};
 
-    fn decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+    fn decode_state(next_sequence_index: usize, prompt_length: usize) -> SlotState {
         let mut s = SlotState::idle();
-        s.start_decode(sequence_index, kv_index);
+        s.start_decode(next_sequence_index, prompt_length);
         s
     }
 
-    fn prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+    fn prefill_state(next_sequence_index: usize, filling_length: usize) -> SlotState {
         let mut s = SlotState::idle();
-        s.start_prefill(sequence_index, filling_length);
+        s.start_prefill(next_sequence_index, filling_length);
         s
     }
 
@@ -239,7 +234,7 @@ mod tests {
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            sequence_index: 0,
+            next_sequence_index: 0,
             token_start_index: 0,
             length: PRE_TOKEN_COUNT,
             last_token_flag: true,
@@ -248,9 +243,8 @@ mod tests {
         echo.run(0, 1, 1, 0, &prefill_list, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
-        assert_eq!(batch_list[0].sequence_index, PRE_TOKEN_COUNT + 1);
-        assert_eq!(batch_list[0].kv_index, 1);
-        assert_eq!(batch_list[0].filling_length, 0);
+        assert_eq!(batch_list[0].next_sequence_index, PRE_TOKEN_COUNT + 1);
+        assert_eq!(batch_list[0].filling_length(), 0);
         // The echoed token should be the last pre-written token: (9) % 50 + 1 = 10
         assert_eq!(sequences[PRE_TOKEN_COUNT], 10);
     }
@@ -267,7 +261,7 @@ mod tests {
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            sequence_index: 0,
+            next_sequence_index: 0,
             token_start_index: 0,
             length: PRE_TOKEN_COUNT,
             last_token_flag: true,
@@ -276,9 +270,8 @@ mod tests {
         echo.run(0, 1, 2, 0, &prefill_list, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
-        assert_eq!(batch_list[0].sequence_index, PRE_TOKEN_COUNT + 1);
-        assert_eq!(batch_list[0].kv_index, PRE_TOKEN_COUNT + 1);
-        assert_eq!(batch_list[0].filling_length, 0);
+        assert_eq!(batch_list[0].next_sequence_index, PRE_TOKEN_COUNT + 1);
+        assert_eq!(batch_list[0].filling_length(), 0);
         // Echoed token: last of the 10 pre-written = (9) % 50 + 1 = 10
         assert_eq!(sequences[PRE_TOKEN_COUNT], 10);
     }
@@ -302,21 +295,21 @@ mod tests {
         let decode_list = vec![
             SequenceSlice {
                 batch_index: 0,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 0,
                 length: PRE_TOKEN_COUNT,
                 last_token_flag: true,
             },
             SequenceSlice {
                 batch_index: 1,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 0,
                 length: PRE_TOKEN_COUNT,
                 last_token_flag: true,
             },
             SequenceSlice {
                 batch_index: 2,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 0,
                 length: PRE_TOKEN_COUNT,
                 last_token_flag: true,
@@ -352,12 +345,12 @@ mod tests {
         }
 
         let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID);
-        // sequence_index=89, length=10 → write_start = 89 + 10 = 99 → triggers EOS
+        // next_sequence_index=89, length=10 → write_start = 89 + 10 = 99 → triggers EOS
         let mut batch_list = vec![decode_state(99, 99)];
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            sequence_index: 89,
+            next_sequence_index: 89,
             token_start_index: 89,
             length: 10,
             last_token_flag: true,
@@ -366,8 +359,7 @@ mod tests {
         echo.run(0, 1, 1, 0, &prefill_list, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Eos);
-        assert_eq!(batch_list[0].sequence_index, 100);
-        assert_eq!(batch_list[0].kv_index, 100);
+        assert_eq!(batch_list[0].next_sequence_index, 100);
         assert_eq!(sequences[99], EOS_ID);
     }
 
@@ -383,7 +375,7 @@ mod tests {
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            sequence_index: 0,
+            next_sequence_index: 0,
             token_start_index: 0,
             length: PRE_TOKEN_COUNT,
             last_token_flag: true,

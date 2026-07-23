@@ -164,7 +164,7 @@ impl<
                     continue;
                 }
 
-                let write_sequence_index = record.kv_index;
+                let write_sequence_index = record.next_sequence_index;
                 if write_sequence_index >= self.sequence_stride {
                     record.phase = Phase::Eos;
                     continue;
@@ -195,9 +195,8 @@ impl<
                 let out_offset = batch_index * self.sequence_stride + write_sequence_index;
                 ptr::write(output_sequences_ptr.add(out_offset), predict_token);
 
-                record.sequence_index = write_sequence_index;
-                record.kv_index = record.kv_index.saturating_add(1);
-                record.token_count += 1;
+                record.next_sequence_index = record.next_sequence_index.saturating_add(1);
+                record.sequence_length += 1;
 
                 if self.eos_ids.contains(&predict_token) {
                     record.phase = Phase::Eos;
@@ -208,11 +207,9 @@ impl<
 
     fn update_prefill_state(&self, record: &mut SlotState, slice_length: usize) {
         if matches!(record.phase, Phase::Prefill) {
-            record.sequence_index = record.sequence_index.saturating_add(slice_length);
-            record.kv_index = record.kv_index.saturating_add(slice_length);
-            record.filling_length = record.filling_length.saturating_sub(slice_length);
+            record.next_sequence_index = record.next_sequence_index.saturating_add(slice_length);
 
-            if record.filling_length == 0usize {
+            if record.filling_length() == 0usize {
                 record.phase = Phase::Decode;
             }
         }
@@ -526,15 +523,15 @@ mod test {
     use crate::runtime::{Phase, SlotState};
     use approx::assert_ulps_eq;
 
-    fn decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+    fn decode_state(next_sequence_index: usize, prompt_length: usize) -> SlotState {
         let mut s = SlotState::idle();
-        s.start_decode(sequence_index, kv_index);
+        s.start_decode(next_sequence_index, prompt_length);
         s
     }
 
-    fn prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+    fn prefill_state(next_sequence_index: usize, filling_length: usize) -> SlotState {
         let mut s = SlotState::idle();
-        s.start_prefill(sequence_index, filling_length);
+        s.start_prefill(next_sequence_index, filling_length);
         s
     }
 
@@ -572,7 +569,7 @@ mod test {
             for batch_index in start..end {
                 slices.push(SequenceSlice {
                     batch_index,
-                    sequence_index: 1,
+                    next_sequence_index: 1,
                     token_start_index: batch_index,
                     length: 1,
                     last_token_flag: true,
@@ -641,8 +638,7 @@ mod test {
             assert_ulps_eq!(output_vals_slice, expected_probs.as_slice(), max_ulps = 4);
             assert_eq!(output_idx_slice, expected_indices.as_slice());
             assert_eq!(output_sequences[batch_size + i], expected_indices[0]);
-            assert_eq!(batch_list[i].sequence_index, 1);
-            assert_eq!(batch_list[i].kv_index, 2);
+            assert_eq!(batch_list[i].next_sequence_index, 2);
         }
     }
 
@@ -660,7 +656,7 @@ mod test {
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
-            sequence_index: 1,
+            next_sequence_index: 1,
             token_start_index: 0,
             length: 1,
             last_token_flag: true,
@@ -710,7 +706,7 @@ mod test {
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
-            sequence_index: 0,
+            next_sequence_index: 0,
             token_start_index: 0,
             length: 3,
             last_token_flag: false,
@@ -737,9 +733,8 @@ mod test {
         operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
-        assert_eq!(batch_list[0].sequence_index, 6);
-        assert_eq!(batch_list[0].filling_length, 0);
-        assert_eq!(batch_list[0].kv_index, 6);
+        assert_eq!(batch_list[0].next_sequence_index, 6);
+        assert_eq!(batch_list[0].filling_length(), 0);
         assert_eq!(output_indices, vec![usize::MAX; batch_size * top_k]);
         assert!(output_values.iter().all(|value| value.is_nan()));
         assert_eq!(
@@ -758,11 +753,11 @@ mod test {
 
         let input_indices = vec![10usize, 11];
         let input_values = vec![1.0f32, 0.5];
-        let mut batch_list = vec![decode_state(3, 7)];
+        let mut batch_list = vec![decode_state(7, 3)];
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
-            sequence_index: 0,
+            next_sequence_index: 0,
             token_start_index: 0,
             length: 1,
             last_token_flag: false,
@@ -789,8 +784,7 @@ mod test {
         operator.run(0, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
-        assert_eq!(batch_list[0].sequence_index, 3);
-        assert_eq!(batch_list[0].kv_index, 7);
+        assert_eq!(batch_list[0].next_sequence_index, 7);
         assert_eq!(output_indices, vec![usize::MAX; batch_size * top_k]);
         assert!(output_values.iter().all(|value| value.is_nan()));
         assert_eq!(
@@ -819,7 +813,7 @@ mod test {
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
-            sequence_index: 0,
+            next_sequence_index: 0,
             token_start_index: 0,
             length: 3,
             last_token_flag: true,
@@ -846,9 +840,8 @@ mod test {
         operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
-        assert_eq!(batch_list[0].sequence_index, 3);
-        assert_eq!(batch_list[0].filling_length, 0);
-        assert_eq!(batch_list[0].kv_index, 4);
+        assert_eq!(batch_list[0].next_sequence_index, 4);
+        assert_eq!(batch_list[0].filling_length(), 0);
         assert_eq!(output_indices[0], 10);
         assert_eq!(output_sequences[3], 10);
     }
@@ -867,7 +860,7 @@ mod test {
 
         let decode_list = [SequenceSlice {
             batch_index: 0,
-            sequence_index: 2,
+            next_sequence_index: 2,
             token_start_index: 0,
             length: 2,
             last_token_flag: false,
@@ -894,9 +887,8 @@ mod test {
         operator.run(2, 0, thread_num, 0, &[], &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Prefill);
-        assert_eq!(batch_list[0].sequence_index, 4);
-        assert_eq!(batch_list[0].filling_length, 2);
-        assert_eq!(batch_list[0].kv_index, 4);
+        assert_eq!(batch_list[0].next_sequence_index, 4);
+        assert_eq!(batch_list[0].filling_length(), 2);
         assert_eq!(output_indices, vec![usize::MAX; batch_size * top_k]);
         assert!(output_values.iter().all(|value| value.is_nan()));
         assert_eq!(
@@ -945,7 +937,7 @@ mod test {
             for batch_index in start..end {
                 slices.push(SequenceSlice {
                     batch_index,
-                    sequence_index: 1,
+                    next_sequence_index: 1,
                     token_start_index: batch_index,
                     length: 1,
                     last_token_flag: true,
@@ -1028,8 +1020,7 @@ mod test {
                 assert_eq!(output_idx_slice[k], expected_indices[k]);
             }
             assert_eq!(output_sequences[batch_size + i], expected_indices[0]);
-            assert_eq!(batch_list[i].sequence_index, 1);
-            assert_eq!(batch_list[i].kv_index, 2);
+            assert_eq!(batch_list[i].next_sequence_index, 2);
         }
     }
 }

@@ -75,7 +75,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
 
                 for slice in prefill_slices {
                     let batch_index = slice.batch_index;
-                    let position_start = slice.sequence_index;
+                    let position_start = slice.next_sequence_index;
                     let token_start = slice.token_start_index;
 
                     for t in 0..slice.length {
@@ -110,7 +110,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
                         output_hidden_ptr,
                         output_normal_ptr,
                         slice.batch_index,
-                        slice.sequence_index,
+                        slice.next_sequence_index,
                         slice.token_start_index,
                     );
                 }
@@ -202,7 +202,7 @@ mod test {
             for i in start..end {
                 slices.push(SequenceSlice {
                     batch_index: i,
-                    sequence_index: 0,
+                    next_sequence_index: 0,
                     token_start_index: i,
                     length: 1,
                     last_token_flag: false,
@@ -299,28 +299,28 @@ mod test {
         let decode_list = vec![
             SequenceSlice {
                 batch_index: 0,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 0,
                 length: 1,
                 last_token_flag: false,
             },
             SequenceSlice {
                 batch_index: 1,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 1,
                 length: 1,
                 last_token_flag: false,
             },
             SequenceSlice {
                 batch_index: 2,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 2,
                 length: 1,
                 last_token_flag: false,
             },
             SequenceSlice {
                 batch_index: 3,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 3,
                 length: 1,
                 last_token_flag: false,
@@ -381,14 +381,14 @@ mod test {
         let prefill_list = vec![vec![
             SequenceSlice {
                 batch_index: 0,
-                sequence_index: 1,
+                next_sequence_index: 1,
                 token_start_index: 0,
                 length: 2,
                 last_token_flag: false,
             },
             SequenceSlice {
                 batch_index: 1,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 2,
                 length: 2,
                 last_token_flag: false,

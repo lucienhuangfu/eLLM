@@ -135,7 +135,7 @@ fn test_full_lifecycle_prefill_to_decode_to_eos() {
 
     batch_list.with_mut(|bl| {
         for s in bl.iter_mut() {
-            let fl = s.filling_length;
+            let fl = s.filling_length();
             advance_slot(s, fl);
         }
     });
@@ -306,19 +306,19 @@ fn test_lookup_global_index_across_slices() {
 
     let r0 = lookup_global_index(slices, 0).unwrap();
     assert_eq!(r0.batch_index, 2);
-    assert_eq!(r0.sequence_index, 300);
+    assert_eq!(r0.next_sequence_index, 300);
 
     let r39 = lookup_global_index(slices, 39).unwrap();
     assert_eq!(r39.batch_index, 2);
-    assert_eq!(r39.sequence_index, 339);
+    assert_eq!(r39.next_sequence_index, 339);
 
     let r40 = lookup_global_index(slices, 40).unwrap();
     assert_eq!(r40.batch_index, 0);
-    assert_eq!(r40.sequence_index, 0);
+    assert_eq!(r40.next_sequence_index, 0);
 
     let r41 = lookup_global_index(slices, 41).unwrap();
     assert_eq!(r41.batch_index, 1);
-    assert_eq!(r41.sequence_index, 100);
+    assert_eq!(r41.next_sequence_index, 100);
 
     assert!(lookup_global_index(slices, 42).is_none());
 }

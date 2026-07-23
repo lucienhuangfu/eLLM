@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::num_traits::FromNumber;
-use crate::runtime::scheduler::{total_token_count, walk_global_range};
+use crate::runtime::scheduler::{total_sequence_length, walk_global_range};
 use crate::runtime::session::BatchSequence;
 use crate::runtime::session::{Phase, SlotState};
 
@@ -190,7 +190,7 @@ async fn test_get_prefix_match_len_exact_match() {
 }
 
 #[tokio::test]
-async fn test_get_prefix_match_len_zero_token_count() {
+async fn test_get_prefix_match_len_zero_sequence_length() {
     let (manager, _buffer) = create_test_manager(4, 1000);
 
     manager.acquire_session("zero_token").await;
@@ -210,27 +210,27 @@ async fn test_get_prefix_match_len_session_not_found() {
 }
 
 #[test]
-fn test_total_token_count_and_walk_global_range() {
+fn test_total_sequence_length_and_walk_global_range() {
     use crate::runtime::scheduler::SequenceSlice;
 
     let slices = vec![
         SequenceSlice {
             batch_index: 0,
-            sequence_index: 0,
+            next_sequence_index: 0,
             token_start_index: 0,
             length: 6,
             last_token_flag: false,
         },
         SequenceSlice {
             batch_index: 1,
-            sequence_index: 0,
+            next_sequence_index: 0,
             token_start_index: 6,
             length: 2,
             last_token_flag: false,
         },
     ];
 
-    assert_eq!(total_token_count(&slices), 8);
+    assert_eq!(total_sequence_length(&slices), 8);
 
     let mut visited = Vec::new();
     walk_global_range(&slices, 4, 8, |g, b, s| visited.push((g, b, s)));
@@ -246,11 +246,11 @@ fn test_slot_state_phase_transitions() {
     state.start_prefill(0, 100);
     assert_eq!(state.phase, Phase::Prefill);
     assert!(!state.is_available());
-    assert_eq!(state.filling_length, 100);
+    assert_eq!(state.filling_length(), 100);
 
     advance_slot(&mut state, 50);
     assert_eq!(state.phase, Phase::Prefill);
-    assert_eq!(state.filling_length, 50);
+    assert_eq!(state.filling_length(), 50);
 
     advance_slot(&mut state, 50);
     assert_eq!(state.phase, Phase::Decode);
@@ -258,7 +258,7 @@ fn test_slot_state_phase_transitions() {
 
     advance_slot(&mut state, 20);
     assert_eq!(state.phase, Phase::Decode);
-    assert_eq!(state.sequence_index, 120);
+    assert_eq!(state.next_sequence_index, 120);
 
     state.phase = Phase::Eos;
     assert_eq!(state.phase, Phase::Eos);
@@ -267,6 +267,6 @@ fn test_slot_state_phase_transitions() {
     state.reset_to_start();
     assert_eq!(state.phase, Phase::Start);
     assert!(state.is_available());
-    assert_eq!(state.sequence_index, usize::MAX);
-    assert_eq!(state.filling_length, 0);
+    assert_eq!(state.next_sequence_index, usize::MAX);
+    assert_eq!(state.filling_length(), 0);
 }

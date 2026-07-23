@@ -92,8 +92,8 @@ pub fn start_generation_loop(manager: Arc<SlotManager<f16>>, generated_tokens: V
         manager.batch_states.with_mut(|slots| {
             let slot = &mut slots[slot_index];
             if slot.phase == Phase::Prefill {
-                slot.sequence_index += slot.filling_length;
-                slot.filling_length = 0;
+                let prefill_end = slot.next_sequence_index + slot.filling_length();
+                slot.next_sequence_index = prefill_end;
                 slot.phase = Phase::Decode;
                 slot.notify.notify_one();
             }
@@ -102,9 +102,9 @@ pub fn start_generation_loop(manager: Arc<SlotManager<f16>>, generated_tokens: V
         for &token_id in &generated_tokens {
             manager.batch_states.with_mut(|slots| {
                 let slot = &mut slots[slot_index];
-                let pos = slot.sequence_index;
-                slot.sequence_index += 1;
-                slot.token_count += 1;
+                let pos = slot.next_sequence_index;
+                slot.next_sequence_index += 1;
+                slot.sequence_length += 1;
                 manager.batch_sequences.with_mut(|seq| {
                     let offset = slot_index * seq.col_size + pos;
                     unsafe {

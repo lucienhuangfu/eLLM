@@ -270,11 +270,10 @@ mod test {
     fn build_batch_list(batch_size: usize) -> Vec<SlotState> {
         (0..batch_size)
             .map(|i| SlotState {
-                sequence_index: i,
-                kv_index: i,
-                filling_length: 0,
+                next_sequence_index: i,
+                prompt_length: i,
                 phase: Phase::Decode,
-                token_count: 0,
+                sequence_length: 0,
                 notify: Arc::new(Notify::new()),
             })
             .collect()
@@ -284,7 +283,7 @@ mod test {
         (0..batch_size)
             .map(|batch_index| SequenceSlice {
                 batch_index,
-                sequence_index: batch_index,
+                next_sequence_index: batch_index,
                 token_start_index: batch_index,
                 length: 1,
                 last_token_flag: true,
@@ -297,7 +296,7 @@ mod test {
             (0..batch_size)
                 .map(|batch_index| SequenceSlice {
                     batch_index,
-                    sequence_index: batch_index,
+                    next_sequence_index: batch_index,
                     token_start_index: batch_index,
                     length: 1,
                     last_token_flag: false,

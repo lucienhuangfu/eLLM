@@ -3,11 +3,11 @@ use super::task::SequenceSlice;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLookupResult {
     pub batch_index: usize,
-    pub sequence_index: usize,
+    pub next_sequence_index: usize,
     pub slice_index: usize,
 }
 
-pub fn total_token_count(slices: &[SequenceSlice]) -> usize {
+pub fn total_sequence_length(slices: &[SequenceSlice]) -> usize {
     slices.iter().map(|s| s.length).sum()
 }
 
@@ -24,7 +24,7 @@ pub fn lookup_global_index(
 
     Some(DecodeLookupResult {
         batch_index: slice.batch_index,
-        sequence_index: slice.sequence_index + (global_index - slice.token_start_index),
+        next_sequence_index: slice.next_sequence_index + (global_index - slice.token_start_index),
         slice_index,
     })
 }
@@ -61,7 +61,7 @@ pub fn walk_global_range(
             visit(
                 global_index,
                 slice.batch_index,
-                slice.sequence_index + (global_index - slice.token_start_index),
+                slice.next_sequence_index + (global_index - slice.token_start_index),
             );
             global_index += 1;
         }
@@ -79,14 +79,14 @@ mod tests {
         vec![
             SequenceSlice {
                 batch_index: 0,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 0,
                 length: 6,
                 last_token_flag: false,
             },
             SequenceSlice {
                 batch_index: 1,
-                sequence_index: 0,
+                next_sequence_index: 0,
                 token_start_index: 6,
                 length: 2,
                 last_token_flag: false,
@@ -108,7 +108,7 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(list.len(), 2);
-        assert_eq!(total_token_count(&list), 8);
+        assert_eq!(total_sequence_length(&list), 8);
 
         list.clear();
         assert_eq!(list.len(), 0);
@@ -141,7 +141,7 @@ mod tests {
             Some(DecodeLookupResult {
                 slice_index: 0,
                 batch_index: 0,
-                sequence_index: 0
+                next_sequence_index: 0
             })
         );
         assert_eq!(
@@ -149,7 +149,7 @@ mod tests {
             Some(DecodeLookupResult {
                 slice_index: 0,
                 batch_index: 0,
-                sequence_index: 5
+                next_sequence_index: 5
             })
         );
         assert_eq!(
@@ -157,7 +157,7 @@ mod tests {
             Some(DecodeLookupResult {
                 slice_index: 1,
                 batch_index: 1,
-                sequence_index: 0
+                next_sequence_index: 0
             })
         );
         assert_eq!(
@@ -165,7 +165,7 @@ mod tests {
             Some(DecodeLookupResult {
                 slice_index: 1,
                 batch_index: 1,
-                sequence_index: 1
+                next_sequence_index: 1
             })
         );
         assert_eq!(lookup_global_index(&slices, 8), None);
@@ -180,7 +180,7 @@ mod tests {
             token_start_index: 10,
             length: 5,
             batch_index: 0,
-            sequence_index: 100,
+            next_sequence_index: 100,
             last_token_flag: false,
         }];
         assert_eq!(lookup_global_index(&list, 9), None);
@@ -189,7 +189,7 @@ mod tests {
             Some(DecodeLookupResult {
                 slice_index: 0,
                 batch_index: 0,
-                sequence_index: 100
+                next_sequence_index: 100
             })
         );
         assert_eq!(lookup_global_index(&list, 15), None);

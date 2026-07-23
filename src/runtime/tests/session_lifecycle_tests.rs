@@ -13,11 +13,11 @@ async fn test_acquire_release_reuse_reusable() {
     let h1 = manager.acquire_session("user_a").await;
     let slot1 = h1.slot_index;
 
-    let token_count = manager
+    let sequence_length = manager
         .batch_states
-        .with(|slots| slots[slot1].sequence_index);
+        .with(|slots| slots[slot1].next_sequence_index);
     Arc::clone(&manager)
-        .release_session("user_a", token_count)
+        .release_session("user_a", sequence_length)
         .await;
 
     let h2 = manager.acquire_session("user_a").await;
@@ -222,11 +222,11 @@ async fn test_full_session_lifecycle_with_scheduler() {
 
     run_prefill_and_decode(&manager, &scheduler, slot_idx, 64, 10);
 
-    let token_count = manager
+    let sequence_length = manager
         .batch_states
-        .with(|slots| slots[slot_idx].sequence_index);
+        .with(|slots| slots[slot_idx].next_sequence_index);
     Arc::clone(&manager)
-        .release_session(session_id, token_count)
+        .release_session(session_id, sequence_length)
         .await;
 
     let handle2 = manager.acquire_session(session_id).await;
@@ -234,10 +234,10 @@ async fn test_full_session_lifecycle_with_scheduler() {
 
     run_prefill_and_decode(&manager, &scheduler, slot_idx, 32, 5);
 
-    let token_count2 = manager
+    let sequence_length2 = manager
         .batch_states
-        .with(|slots| slots[slot_idx].sequence_index);
+        .with(|slots| slots[slot_idx].next_sequence_index);
     Arc::clone(&manager)
-        .release_session(session_id, token_count2)
+        .release_session(session_id, sequence_length2)
         .await;
 }

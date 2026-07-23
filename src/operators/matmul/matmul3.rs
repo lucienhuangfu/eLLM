@@ -433,11 +433,11 @@ where
 
             for offset in 0..slice.length {
                 let token_index = slice.token_start_index + offset;
-                let sequence_index = slice.sequence_index + offset;
-                if token_index >= self.m_row || sequence_index >= self.sequence_length {
+                let next_sequence_index = slice.next_sequence_index + offset;
+                if token_index >= self.m_row || next_sequence_index >= self.sequence_length {
                     continue;
                 }
-                rows.push((token_index, slice.batch_index, sequence_index));
+                rows.push((token_index, slice.batch_index, next_sequence_index));
             }
         }
         rows
@@ -453,7 +453,7 @@ where
         head_index: usize,
         apply_rope: bool,
         norm_weight: *const T,
-        sequence_index: usize,
+        next_sequence_index: usize,
     ) where
         Self: MatMulkqvTrait<T>,
     {
@@ -484,7 +484,7 @@ where
 
         if apply_rope {
             let eps = T::from_f32(1e-6);
-            let rope_ptr = self.rope_ptr.ptr.add(sequence_index * self.head_dim);
+            let rope_ptr = self.rope_ptr.ptr.add(next_sequence_index * self.head_dim);
             if self.use_qk_norm {
                 self.compute_norm_rope(dst_head, norm_weight, rope_ptr, self.head_dim, eps);
             } else {
@@ -560,19 +560,19 @@ where
                         continue;
                     };
 
-                    let (token_index, batch_index, sequence_index) = row_map[row_idx];
+                    let (token_index, batch_index, next_sequence_index) = row_map[row_idx];
                     let input_row = a_base.add(token_index * reduction_cols);
 
                     let rope_sequence_index = if attention_list.is_empty() {
                         0
                     } else {
-                        sequence_index
+                        next_sequence_index
                     };
 
                     match path {
                         KqvPath::V => {
                             let cache_row =
-                                (sequence_index * self.batch_size + batch_index) * value_row_stride;
+                                (next_sequence_index * self.batch_size + batch_index) * value_row_stride;
                             let dst_head = cv_base.add(cache_row + head_index * self.head_dim);
                             self.compute_head_from_packed(
                                 input_row,
@@ -587,7 +587,7 @@ where
                         }
                         KqvPath::K => {
                             let cache_row =
-                                (sequence_index * self.batch_size + batch_index) * key_row_stride;
+                                (next_sequence_index * self.batch_size + batch_index) * key_row_stride;
                             let dst_head = ck_base.add(cache_row + head_index * self.head_dim);
                             self.compute_head_from_packed(
                                 input_row,

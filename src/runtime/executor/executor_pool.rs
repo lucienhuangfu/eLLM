@@ -154,15 +154,15 @@ mod tests {
     use crate::operators::send_sync_ptr::SharedMut;
     use crate::runtime::session::{Phase, SlotState};
 
-    fn decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+    fn decode_state(next_sequence_index: usize) -> SlotState {
         let mut s = SlotState::idle();
-        s.start_decode(sequence_index, kv_index);
+        s.start_decode(next_sequence_index, next_sequence_index);
         s
     }
 
-    fn prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+    fn prefill_state(next_sequence_index: usize, filling_length: usize) -> SlotState {
         let mut s = SlotState::idle();
-        s.start_prefill(sequence_index, filling_length);
+        s.start_prefill(next_sequence_index, filling_length);
         s
     }
 
@@ -179,9 +179,9 @@ mod tests {
     #[test]
     fn schedule_batch_builds_decode_plan_from_active_slots() {
         let batch_list = Arc::new(SharedMut::new(vec![
-            decode_state(0, 0),
+            decode_state(0),
             SlotState::idle(),
-            decode_state(2, 2),
+            decode_state(2),
         ]));
         let scheduler = Arc::new(Scheduler::new(32, 1024, 1, batch_list));
 
@@ -233,10 +233,10 @@ mod tests {
     #[test]
     fn worker_pool_uses_larger_thread_num_and_chunk_size_in_default_scheduler() {
         let batch_list = Arc::new(SharedMut::new(vec![
-            decode_state(0, 0),
-            decode_state(1, 1),
-            decode_state(2, 2),
-            decode_state(3, 3),
+            decode_state(0),
+            decode_state(1),
+            decode_state(2),
+            decode_state(3),
             prefill_state(10, 500),
             prefill_state(20, 500),
         ]));

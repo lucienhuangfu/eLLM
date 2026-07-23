@@ -163,7 +163,7 @@ where
         k_head_ptr: *const T,
         v_head_ptr: *const T,
         thread_id: usize,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         row_begin: usize,
         row_end: usize,
@@ -173,7 +173,7 @@ where
 
         for row_chunk in (row_begin..row_end).step_by(row_step) {
             let row_chunk_end = row_chunk + row_step;
-            let visible_row_end = row_chunk_end.min(col_end.saturating_sub(sequence_index));
+            let visible_row_end = row_chunk_end.min(col_end.saturating_sub(next_sequence_index));
             if row_chunk >= visible_row_end {
                 continue;
             }
@@ -202,7 +202,7 @@ where
                     col_begin,
                     col_chunk_end,
                     col_end,
-                    sequence_index,
+                    next_sequence_index,
                     self.k_seq_stride,
                     self.v_seq_stride,
                     self.q_seq_stride,
@@ -223,12 +223,12 @@ where
         k_head_ptr: *const T,
         v_head_ptr: *const T,
         thread_id: usize,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         row_begin: usize,
         row_end: usize,
     ) {
-        let visible_row_end = row_end.min(col_end.saturating_sub(sequence_index));
+        let visible_row_end = row_end.min(col_end.saturating_sub(next_sequence_index));
         if row_begin >= visible_row_end {
             return;
         }
@@ -258,7 +258,7 @@ where
                 col_begin,
                 col_chunk_end,
                 col_end,
-                sequence_index,
+                next_sequence_index,
                 self.k_seq_stride,
                 self.v_seq_stride,
                 self.q_seq_stride,
@@ -277,7 +277,7 @@ where
         k_head_ptr: *const T,
         v_head_ptr: *const T,
         thread_id: usize,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         row_plan: RowVisitPlan,
     ) {
@@ -288,7 +288,7 @@ where
                 k_head_ptr,
                 v_head_ptr,
                 thread_id,
-                sequence_index,
+                next_sequence_index,
                 col_end,
                 row_begin,
                 row_end,
@@ -302,7 +302,7 @@ where
                 k_head_ptr,
                 v_head_ptr,
                 thread_id,
-                sequence_index,
+                next_sequence_index,
                 col_end,
                 row_begin,
                 row_end,
@@ -317,7 +317,7 @@ where
         output_slice_ptr: *mut T,
         k_batch_ptr: *const T,
         v_batch_ptr: *const T,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         slice_len: usize,
         aligned_len: usize,
@@ -352,7 +352,7 @@ where
                     k_head_ptr,
                     v_head_ptr,
                     thread_id,
-                    sequence_index,
+                    next_sequence_index,
                     col_end,
                     row_plan,
                 );
@@ -367,7 +367,7 @@ where
         output_slice_ptr: *mut T,
         k_batch_ptr: *const T,
         v_batch_ptr: *const T,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         slice_len: usize,
         aligned_len: usize,
@@ -427,7 +427,7 @@ where
                     k_head_ptr,
                     v_head_ptr,
                     thread_id,
-                    sequence_index,
+                    next_sequence_index,
                     col_end,
                     row_plan,
                 );
@@ -461,7 +461,7 @@ where
                 let output_slice_ptr = output_ptr.add(slice.token_start_index * q_token_stride);
                 let k_batch_ptr = k_ptr.add(slice.batch_index * self.k_batch_stride);
                 let v_batch_ptr = v_ptr.add(slice.batch_index * self.v_batch_stride);
-                let col_end = slice.sequence_index + slice.length;
+                let col_end = slice.next_sequence_index + slice.length;
                 let aligned_len = slice.length / self.row_step * self.row_step;
                 let use_head_split = slice.length > 0
                     && thread_num > 0
@@ -473,7 +473,7 @@ where
                         output_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
-                        slice.sequence_index,
+                        slice.next_sequence_index,
                         col_end,
                         slice.length,
                         aligned_len,
@@ -489,7 +489,7 @@ where
                         output_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
-                        slice.sequence_index,
+                        slice.next_sequence_index,
                         col_end,
                         slice.length,
                         aligned_len,
@@ -592,7 +592,7 @@ mod tests {
         let slices = [SequenceSlice {
             token_start_index: 0,
             batch_index: 0,
-            sequence_index: 0,
+            next_sequence_index: 0,
             length: 3,
             last_token_flag: false,
         }];
@@ -662,7 +662,7 @@ mod tests {
         let slice = [SequenceSlice {
             token_start_index: 0,
             batch_index: 1,
-            sequence_index: 0,
+            next_sequence_index: 0,
             length: seq_len,
             last_token_flag: false,
         }];

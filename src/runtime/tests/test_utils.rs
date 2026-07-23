@@ -13,15 +13,14 @@ pub fn advance_slot(slot: &mut SlotState, steps: usize) -> Option<Phase> {
     if slot.phase == Phase::Eos {
         return None;
     }
-    slot.sequence_index += steps;
+    slot.next_sequence_index += steps;
     if slot.phase == Phase::Prefill {
-        slot.filling_length = slot.filling_length.saturating_sub(steps);
-        if slot.filling_length == 0 {
+        if slot.filling_length() == 0 {
             slot.phase = Phase::Decode;
             return Some(Phase::Decode);
         }
     } else {
-        slot.token_count += steps;
+        slot.sequence_length += steps;
     }
     None
 }
@@ -30,15 +29,15 @@ pub fn make_batch_list(slots: Vec<SlotState>) -> Arc<SharedMut<Vec<SlotState>>> 
     Arc::new(SharedMut::new(slots))
 }
 
-pub fn make_prefill_state(sequence_index: usize, filling_length: usize) -> SlotState {
+pub fn make_prefill_state(next_sequence_index: usize, filling_length: usize) -> SlotState {
     let mut s = SlotState::idle();
-    s.start_prefill(sequence_index, filling_length);
+    s.start_prefill(next_sequence_index, filling_length);
     s
 }
 
-pub fn make_decode_state(sequence_index: usize, kv_index: usize) -> SlotState {
+pub fn make_decode_state(next_sequence_index: usize, prompt_length: usize) -> SlotState {
     let mut s = SlotState::idle();
-    s.start_decode(sequence_index, kv_index);
+    s.start_decode(next_sequence_index, prompt_length);
     s
 }
 
@@ -103,17 +102,17 @@ pub fn run_prefill_and_decode(
     manager: &SlotManager<f16>,
     scheduler: &Scheduler,
     slot_index: usize,
-    prefill_len: usize,
+    prefill_length: usize,
     decode_steps: usize,
 ) {
     manager.batch_states.with_mut(|slots| {
-        slots[slot_index].start_prefill(0, prefill_len);
+        slots[slot_index].start_prefill(0, prefill_length);
     });
 
     assert!(scheduler.schedule_batch());
 
     manager.batch_states.with_mut(|slots| {
-        advance_slot(&mut slots[slot_index], prefill_len);
+        advance_slot(&mut slots[slot_index], prefill_length);
     });
 
     for _ in 0..decode_steps {
