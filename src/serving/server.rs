@@ -16,10 +16,86 @@ use super::types::{
     ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, StreamChoice,
     StreamDelta, StreamResponse, StreamToolCall, StreamToolFunction,
 };
+use crate::config::ResolvedConfig;
 use crate::runtime::scheduler::Scheduler;
+use crate::runtime::session::SessionMode;
 use crate::runtime::session::{Phase, SlotManager};
+use crate::runtime::{initialize_runtime, RuntimeContext};
 
-// ── Route handlers ──────────────────────────────────────────
+pub async fn run(
+    scheduler: Arc<Scheduler>,
+    slot_manager: Arc<SlotManager<f16>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("启动事件驱动的 OpenAI 兼容服务器...");
+
+    let app = build_router(slot_manager);
+
+    let listener = TcpListener::bind("0.0.0.0:8000").await?;
+
+    println!("服务器运行在 http://0.0.0.0:8000");
+    println!("API 端点:");
+    println!("  POST /v1/chat/completions - OpenAI 兼容的聊天完成");
+    println!("  GET  /status - 服务器状态");
+    println!("调度由 leader worker 线程内联执行");
+
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+pub fn initialize_serving_resources(
+    resolved_config: &ResolvedConfig,
+) -> Result<RuntimeContext<f16>, Box<dyn std::error::Error>> {
+    let api_server_count = resolved_config
+        .serve
+        .as_ref()
+        .map(|s| s.api_server_count)
+        .unwrap_or(2);
+    let batch_size = resolved_config.scheduler.max_num_seqs;
+    let sequence_length = resolved_config
+        .model
+        .raw_config
+        .max_model_len
+        .unwrap_or(128);
+    let chunk_size = resolved_config.scheduler.max_num_batched_tokens;
+    let session_mode = if resolved_config.scheduler.dialogue_cache_enabled {
+        SessionMode::Reusable
+    } else {
+        SessionMode::NonReusable
+    };
+    let slot_reuse_timeout_ms = resolved_config
+        .serve
+        .as_ref()
+        .map(|s| s.slot_reuse_timeout_ms)
+        .unwrap_or(30000);
+
+    let ctx = initialize_runtime(
+        resolved_config,
+        api_server_count,
+        batch_size,
+        sequence_length,
+        chunk_size,
+        session_mode,
+        slot_reuse_timeout_ms,
+    )?;
+
+    Ok(ctx)
+}
+
+pub(crate) fn build_router(state: Arc<SlotManager<f16>>) -> Router {
+    Router::new()
+        .route("/v1/chat/completions", post(chat_completions))
+        .route(
+            "/status",
+            axum::routing::get(|| async {
+                Json(serde_json::json!({
+                    "status": "running",
+                    "mode": "inlined_scheduler",
+                    "info": "Scheduler is inlined in worker loop, executed by leader thread"
+                }))
+            }),
+        )
+        .with_state(state)
+}
 
 async fn chat_completions(
     State(slot_manager): State<Arc<SlotManager<f16>>>,
@@ -215,40 +291,4 @@ fn build_stream_response(
     };
 
     Sse::new(stream_body).into_response()
-}
-
-pub(crate) fn build_router(state: Arc<SlotManager<f16>>) -> Router {
-    Router::new()
-        .route("/v1/chat/completions", post(chat_completions))
-        .route(
-            "/status",
-            axum::routing::get(|| async {
-                Json(serde_json::json!({
-                    "status": "running",
-                    "mode": "inlined_scheduler",
-                    "info": "Scheduler is inlined in worker loop, executed by leader thread"
-                }))
-            }),
-        )
-        .with_state(state)
-}
-
-pub async fn run(
-    scheduler: Arc<Scheduler>,
-    slot_manager: Arc<SlotManager<f16>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("启动事件驱动的 OpenAI 兼容服务器...");
-
-    let app = build_router(slot_manager);
-
-    let listener = TcpListener::bind("0.0.0.0:8000").await?;
-
-    println!("服务器运行在 http://0.0.0.0:8000");
-    println!("API 端点:");
-    println!("  POST /v1/chat/completions - OpenAI 兼容的聊天完成");
-    println!("  GET  /status - 服务器状态");
-    println!("调度由 leader worker 线程内联执行");
-
-    axum::serve(listener, app).await?;
-    Ok(())
 }

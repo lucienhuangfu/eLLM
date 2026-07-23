@@ -88,6 +88,8 @@ criterion = { version = "0.5.1", features = ["html_reports"] }
 approx = "0.5.1"
 tempfile = "3.8.1"
 tower = { version = "0.5", features = ["util"] }
+hyper = { version = "1.0", features = ["full"] }
+futures-util = "0.3"
 
 [features]
 default = []
