@@ -1,0 +1,17 @@
+schema_version: 1
+module_path: ""
+title: eLLM Rust 推理引擎与对齐测试根工程
+scope:
+    - README.md
+    - CODE_OF_CONDUCT.md
+    - .gitignore
+    - Cargo.toml
+    - rust-toolchain.toml
+    - mkdocs.yml
+    - test_request.json
+    - LICENSE
+    - README.zh-CN.md
+    - ellm.pdf
+source_files: []
+depends_on: []
+related_to: []
