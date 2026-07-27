@@ -109,7 +109,12 @@ async fn chat_completions(
 
     let session_id = request.session_id.unwrap_or_else(|| request_id.clone());
 
-    let handle = slot_manager.acquire_session(&session_id).await;
+    let handle = match slot_manager.acquire_session(&session_id).await {
+        Ok(h) => h,
+        Err(e) => {
+            return e.into_response();
+        }
+    };
 
     let slot_index = handle.slot_index;
 

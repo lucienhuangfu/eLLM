@@ -21,7 +21,7 @@ async fn test_multi_round_chat_with_kv_cache_reuse() {
     let mut total_tokens = 0usize;
 
     for round in 1..=3 {
-        let handle = manager.acquire_session(user_id).await;
+        let handle = manager.acquire_session(user_id).await.unwrap();
         let slot_idx = handle.slot_index;
 
         if round > 1 {
@@ -79,7 +79,7 @@ async fn test_concurrent_multi_user_chat_simulation() {
     for round in 0..3 {
         let mut handles = Vec::new();
         for user in &users {
-            let h = manager.acquire_session(user).await;
+            let h = manager.acquire_session(user).await.unwrap();
             handles.push(h);
         }
 
@@ -122,7 +122,7 @@ async fn test_concurrent_multi_user_chat_simulation() {
     }
 
     for user in &users {
-        let h = manager.acquire_session(user).await;
+        let h = manager.acquire_session(user).await.unwrap();
         Arc::clone(&manager).release_session(user, 100).await;
     }
 }
@@ -132,7 +132,7 @@ async fn test_incremental_prefill_with_prefix_match() {
     let (manager, _buffer) = create_test_manager(4, 5000);
     let session_id = "incremental_prefill_test";
 
-    let handle = manager.acquire_session(session_id).await;
+    let handle = manager.acquire_session(session_id).await.unwrap();
     let slot_idx = handle.slot_index;
 
     let round1_tokens: Vec<u32> = (1..=20).collect();
@@ -144,7 +144,7 @@ async fn test_incremental_prefill_with_prefix_match() {
         .release_session(session_id, round1_tokens.len())
         .await;
 
-    let handle2 = manager.acquire_session(session_id).await;
+    let handle2 = manager.acquire_session(session_id).await.unwrap();
     assert_eq!(handle2.slot_index, slot_idx);
 
     let round2_tokens: Vec<u32> = (1..=15).chain(100..110).collect();
@@ -177,17 +177,17 @@ async fn test_mixed_reusable_and_non_reusable_sessions() {
     let (non_reusable_manager, _buf2) =
         create_test_manager_with_mode(batch_size, 5000, SessionMode::NonReusable);
 
-    let h1 = reusable_manager.acquire_session("user_r").await;
+    let h1 = reusable_manager.acquire_session("user_r").await.unwrap();
     Arc::clone(&reusable_manager)
         .release_session("user_r", 10)
         .await;
-    let _h2 = reusable_manager.acquire_session("user_r").await;
+    let _h2 = reusable_manager.acquire_session("user_r").await.unwrap();
 
-    let h3 = non_reusable_manager.acquire_session("user_nr").await;
+    let h3 = non_reusable_manager.acquire_session("user_nr").await.unwrap();
     Arc::clone(&non_reusable_manager)
         .release_session("user_nr", 10)
         .await;
-    let _h4 = non_reusable_manager.acquire_session("user_nr").await;
+    let _h4 = non_reusable_manager.acquire_session("user_nr").await.unwrap();
 }
 
 #[tokio::test]
@@ -195,8 +195,8 @@ async fn test_session_eviction_when_all_slots_full() {
     let batch_size = 4;
     let (manager, _buffer) = create_test_manager(batch_size, 100);
 
-    let h1 = manager.acquire_session("user_1").await;
-    let h2 = manager.acquire_session("user_2").await;
+    let h1 = manager.acquire_session("user_1").await.unwrap();
+    let h2 = manager.acquire_session("user_2").await.unwrap();
     assert_ne!(h1.slot_index, h2.slot_index);
 
     Arc::clone(&manager).release_session("user_1", 10).await;
@@ -204,11 +204,11 @@ async fn test_session_eviction_when_all_slots_full() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let h3 = manager.acquire_session("user_3").await;
-    let h4 = manager.acquire_session("user_4").await;
+    let h3 = manager.acquire_session("user_3").await.unwrap();
+    let h4 = manager.acquire_session("user_4").await.unwrap();
     assert_ne!(h3.slot_index, h4.slot_index);
 
-    let _h1_again = manager.acquire_session("user_1").await;
+    let _h1_again = manager.acquire_session("user_1").await.unwrap();
 }
 
 #[tokio::test]
@@ -226,7 +226,7 @@ async fn test_multiple_users_with_mixed_phases_in_scheduler() {
     let mut handles = Vec::new();
 
     for uid in &user_ids {
-        let h = manager.acquire_session(uid).await;
+        let h = manager.acquire_session(uid).await.unwrap();
         handles.push(h);
     }
 

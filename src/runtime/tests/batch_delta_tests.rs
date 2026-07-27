@@ -99,7 +99,7 @@ async fn test_get_prefix_match_len_partial_prefix_match() {
     let (manager, _buffer) = create_test_manager(4, 5000);
     let session_id = "partial_test";
 
-    let handle = manager.acquire_session(session_id).await;
+    let handle = manager.acquire_session(session_id).await.unwrap();
     let slot_idx = handle.slot_index;
 
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -111,7 +111,7 @@ async fn test_get_prefix_match_len_partial_prefix_match() {
         .release_session(session_id, tokens.len())
         .await;
 
-    manager.acquire_session(session_id).await;
+    manager.acquire_session(session_id).await.unwrap();
 
     let new_tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 11, 12, 13];
     let prefix_len = manager.prefix_match_len(session_id, &new_tokens).await;
@@ -124,7 +124,7 @@ async fn test_get_prefix_match_len_no_prefix_match() {
     let (manager, _buffer) = create_test_manager(4, 5000);
     let session_id = "no_match_test";
 
-    let handle = manager.acquire_session(session_id).await;
+    let handle = manager.acquire_session(session_id).await.unwrap();
     let slot_idx = handle.slot_index;
 
     let tokens: Vec<u32> = vec![100, 200, 300];
@@ -135,7 +135,7 @@ async fn test_get_prefix_match_len_no_prefix_match() {
     Arc::clone(&manager)
         .release_session(session_id, tokens.len())
         .await;
-    manager.acquire_session(session_id).await;
+    manager.acquire_session(session_id).await.unwrap();
 
     let new_tokens: Vec<u32> = vec![999, 888];
     let delta = manager.prefix_match_len(session_id, &new_tokens).await;
@@ -147,7 +147,7 @@ async fn test_get_prefix_match_len_new_tokens_shorter() {
     let (manager, _buffer) = create_test_manager(4, 5000);
     let session_id = "shorter_test";
 
-    let handle = manager.acquire_session(session_id).await;
+    let handle = manager.acquire_session(session_id).await.unwrap();
     let slot_idx = handle.slot_index;
 
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -158,7 +158,7 @@ async fn test_get_prefix_match_len_new_tokens_shorter() {
     Arc::clone(&manager)
         .release_session(session_id, tokens.len())
         .await;
-    manager.acquire_session(session_id).await;
+    manager.acquire_session(session_id).await.unwrap();
 
     let new_tokens: Vec<u32> = vec![1, 2, 3];
     let prefix_len = manager.prefix_match_len(session_id, &new_tokens).await;
@@ -171,7 +171,7 @@ async fn test_get_prefix_match_len_exact_match() {
     let (manager, _buffer) = create_test_manager(4, 5000);
     let session_id = "exact_test";
 
-    let handle = manager.acquire_session(session_id).await;
+    let handle = manager.acquire_session(session_id).await.unwrap();
     let slot_idx = handle.slot_index;
 
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
@@ -182,7 +182,7 @@ async fn test_get_prefix_match_len_exact_match() {
     Arc::clone(&manager)
         .release_session(session_id, tokens.len())
         .await;
-    manager.acquire_session(session_id).await;
+    manager.acquire_session(session_id).await.unwrap();
 
     let prefix_len = manager.prefix_match_len(session_id, &tokens).await;
     assert!(prefix_len.is_some());
@@ -193,10 +193,10 @@ async fn test_get_prefix_match_len_exact_match() {
 async fn test_get_prefix_match_len_zero_sequence_length() {
     let (manager, _buffer) = create_test_manager(4, 1000);
 
-    manager.acquire_session("zero_token").await;
+    manager.acquire_session("zero_token").await.unwrap();
     Arc::clone(&manager).release_session("zero_token", 0).await;
 
-    manager.acquire_session("zero_token").await;
+    manager.acquire_session("zero_token").await.unwrap();
 
     let delta = manager.prefix_match_len("zero_token", &[1, 2, 3]).await;
     assert!(delta.is_none());

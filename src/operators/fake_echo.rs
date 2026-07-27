@@ -1,11 +1,11 @@
-//! Fake echo operator for integration tests and the standalone fake server.
+//! Fake generator operator for integration tests and the standalone fake server.
 //!
 //! # Overview
 //!
 //! `FakeEcho` is a minimal, self-contained operator designed to validate the runtime
-//! execution pipeline **without** requiring a real model or learned weights. It acts as
-//! a simple "echo" — it reads the last token of each sequence and copies it forward,
-//! effectively repeating the final token until a maximum length is reached.
+//! execution pipeline **without** requiring a real model or learned weights. It cycles
+//! through a fixed set of tokens during generation, producing readable and predictable
+//! output for testing purposes.
 //!
 //! # Behaviour
 //!
@@ -13,111 +13,55 @@
 //! - Handles both prefill and decode phases:
 //!   - **Prefill**: Processes the last chunk of each prefill sequence and transitions
 //!     the slot from `Phase::Prefill` → `Phase::Decode`.
-//!   - **Decode**: Generates one echo token per sequence per step.
-//! - For each sequence slice it:
-//!   1. Reads the **last token** from the sequence buffer.
-//!   2. Copies that token to the next position in the sequence.
-//!   3. Advances `next_sequence_index`.
-//!   4. Transitions the request from `Phase::Prefill` → `Phase::Decode` (if applicable).
-//! - When the write position reaches 99 (i.e. the sequence has 99 tokens):
-//!   - Writes `eos_id` instead of echoing the token.
+//!   - **Decode**: Generates one token per sequence per step, cycling through `tokens`.
+//! - When the write position reaches position 99:
+//!   - Writes `eos_id` instead of the next token.
 //!   - Transitions the request to `Phase::Eos`.
-//!   - Calls `notify_one()` to wake the waiting slot so the caller can collect results.
+//!   - Calls `notify_one()` to wake the waiting slot.
 //!
 //! # Design Goal
 //!
 //! Prove that the runtime correctly schedules and executes an operator end-to-end
 //! without needing a full model forward pass or any operator-owned state.
-//!
-//! # Memory Layout
-//!
-//! The `sequences_ptr` points to a flat, row-major buffer where each batch occupies
-//! `sequence_stride` consecutive `usize` elements:
-//!
-//! ```text
-//! batch 0: [tok0, tok1, tok2, ..., 0, 0, ...]   ← sequence_stride elements
-//! batch 1: [tok0, tok1, tok2, ..., 0, 0, ...]   ← sequence_stride elements
-//! ...
-//! ```
-//!
-//! The operator reads from and writes into this buffer using unsafe pointer arithmetic.
 
 use crate::operators::assign::assign;
 use crate::runtime::SequenceSlice;
 use crate::runtime::{Phase, SlotState};
 
-/// A lightweight "echo" operator that repeats the last token of each sequence
-/// until a maximum length is reached, then writes an EOS token.
+/// A lightweight fake generator operator that cycles through a fixed token sequence.
 ///
 /// This is **not** a real neural-network operator. It exists solely for:
 /// - Integration tests that need to verify the runtime scheduling pipeline.
-/// - The standalone fake server (`fake_server.rs`) that demonstrates serving
-///   without loading actual model weights.
-///
-/// # Fields
-///
-/// * `sequences_ptr`   – Raw pointer to the flat token buffer shared with the runtime.
-///                        Each batch row has `sequence_stride` elements.
-///                        The operator reads the last token and writes the next token
-///                        through this pointer using unsafe arithmetic.
-///
-/// * `sequence_stride` – The number of `usize` elements allocated per batch in the
-///                        flat buffer. Acts as the row stride for computing the
-///                        address: `batch_index * sequence_stride + offset`.
-///
-/// * `eos_id`          – The token ID that signals end-of-sequence. When the sequence
-///                        reaches length 99, this value is written and the slot is
-///                        transitioned to `Phase::Eos`.
+/// - The standalone fake server that demonstrates serving without loading actual model weights.
 #[derive(Clone)]
 pub struct FakeEcho {
     sequences_ptr: *mut usize,
     sequence_stride: usize,
     eos_id: usize,
+    tokens: Vec<usize>,
+    max_gen_tokens: usize,
 }
 
 unsafe impl Send for FakeEcho {}
 unsafe impl Sync for FakeEcho {}
 
 impl FakeEcho {
-    /// Create a new `FakeEcho` operator.
-    ///
-    /// # Arguments
-    ///
-    /// * `sequences_ptr`   – Pointer to the shared flat token buffer (mutable).
-    /// * `sequence_stride` – Number of `usize` slots per batch row.
-    /// * `eos_id`          – Token ID used to mark end-of-sequence.
-    pub fn new(sequences_ptr: *mut usize, sequence_stride: usize, eos_id: usize) -> Self {
+    pub fn new(
+        sequences_ptr: *mut usize,
+        sequence_stride: usize,
+        eos_id: usize,
+        tokens: Vec<usize>,
+        max_gen_tokens: usize,
+    ) -> Self {
         Self {
             sequences_ptr,
             sequence_stride,
             eos_id,
+            tokens,
+            max_gen_tokens,
         }
     }
 
-    /// Execute the fake-echo logic for the slice of `decode_list` assigned to this thread.
-    ///
-    /// For each sequence slice in the assigned range:
-    /// 1. Read the **last token** currently stored in the sequence buffer.
-    /// 2. If the next write position is **< 99**:
-    ///    - Copy (echo) the last token to the next position.
-    ///    - Advance `next_sequence_index` by 1.
-    ///    - If the slot is still in `Phase::Prefill`, transition it to `Phase::Decode`.
-    /// 3. If the next write position is **>= 99**:
-    ///    - Write `eos_id` at the current position.
-    ///    - Advance `next_sequence_index` by 1.
-    ///    - Transition the slot to `Phase::Eos` and wake the waiting consumer via
-    ///      `notify.notify_one()`.
-    ///
-    /// # Arguments
-    ///
-    /// * `prefill_size`   – Number of prefill tokens in this batch.
-    /// * `_decode_size`   – Number of decode tokens. Present for API compatibility.
-    /// * `thread_num`     – Total number of worker threads participating in this operator.
-    /// * `thread_id`      – 0-based index of the current thread.
-    /// * `prefill_list`   – Prefill sequence slices, chunked per thread.
-    /// * `decode_list`    – Slice of `SequenceSlice` describing the decode sequences.
-    /// * `batch_list`     – Mutable reference to the slot state table. Each entry tracks
-    ///                       the phase, indices, and notification primitive for one request.
     pub fn run(
         &self,
         _prefill_size: usize,
@@ -139,47 +83,45 @@ impl FakeEcho {
 
     fn process_slice(&self, slice: &SequenceSlice, batch_list: &mut Vec<SlotState>) {
         let batch_index = slice.batch_index;
-
         let record = match batch_list.get_mut(batch_index) {
             Some(r) => r,
             None => return,
         };
 
-        let last_token_pos = if matches!(record.phase, Phase::Prefill) {
-            slice.next_sequence_index + slice.length - 1
+        let prompt_length = if matches!(record.phase, Phase::Prefill) {
+            slice.next_sequence_index + slice.length
         } else {
-            record.next_sequence_index.saturating_sub(1)
+            record.prompt_length
         };
 
-        let last_token = unsafe {
-            *self
-                .sequences_ptr
-                .add(batch_index * self.sequence_stride + last_token_pos)
-        };
-
-        let write_start = if matches!(record.phase, Phase::Prefill) {
+        let write_pos = if matches!(record.phase, Phase::Prefill) {
             slice.next_sequence_index + slice.length
         } else {
             record.next_sequence_index
         };
 
-        if write_start >= 99 {
-            let eos_write_index = batch_index * self.sequence_stride + write_start;
-            unsafe {
-                *self.sequences_ptr.add(eos_write_index) = self.eos_id;
-            }
-            record.next_sequence_index = write_start + 1;
+        let gen_step = write_pos - prompt_length;
+
+        if gen_step >= self.max_gen_tokens {
+            self.write_token(batch_index, write_pos, self.eos_id);
+            record.next_sequence_index = write_pos + 1;
             record.phase = Phase::Eos;
             record.notify.notify_one();
         } else {
-            let write_index = batch_index * self.sequence_stride + write_start;
-            unsafe {
-                *self.sequences_ptr.add(write_index) = last_token;
-            }
-            record.next_sequence_index = write_start + 1;
+            let token = self.tokens[gen_step % self.tokens.len()];
+            self.write_token(batch_index, write_pos, token);
+            record.next_sequence_index = write_pos + 1;
             if matches!(record.phase, Phase::Prefill) {
                 record.phase = Phase::Decode;
             }
+        }
+    }
+
+    fn write_token(&self, batch_index: usize, offset: usize, token: usize) {
+        unsafe {
+            *self
+                .sequences_ptr
+                .add(batch_index * self.sequence_stride + offset) = token;
         }
     }
 }
@@ -202,13 +144,10 @@ mod tests {
         s
     }
 
-    /// Number of pre-written tokens in each sequence (none of them are eos_id).
     const PRE_TOKEN_COUNT: usize = 10;
-    /// The eos_id used across all tests.
     const EOS_ID: usize = 100;
+    const MAX_GEN_TOKENS: usize = 10;
 
-    /// Helper: fill `count` tokens starting at `offset` in the flat buffer for a given batch.
-    /// Token values are deterministic: (offset + i) % 50 + 1, guaranteed != EOS_ID (100).
     fn fill_sequence(
         sequences: &mut [usize],
         batch_index: usize,
@@ -222,13 +161,12 @@ mod tests {
     }
 
     #[test]
-    fn fake_echo_copies_single_token_each_run() {
+    fn fake_echo_generates_single_token_per_run() {
         let sequence_stride = 256;
         let mut sequences = vec![0usize; 2 * sequence_stride];
-        // Pre-write 10 tokens into batch 0: values are 1,2,3,...,10 (none == eos_id)
         fill_sequence(&mut sequences, 0, sequence_stride, 0, PRE_TOKEN_COUNT);
 
-        let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID);
+        let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID, vec![42], MAX_GEN_TOKENS);
         let mut batch_list = vec![prefill_state(0, 0)];
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
@@ -244,18 +182,46 @@ mod tests {
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[0].next_sequence_index, PRE_TOKEN_COUNT + 1);
         assert_eq!(batch_list[0].filling_length(), 0);
-        // The echoed token should be the last pre-written token: (9) % 50 + 1 = 10
-        assert_eq!(sequences[PRE_TOKEN_COUNT], 10);
+        assert_eq!(sequences[PRE_TOKEN_COUNT], 42);
+    }
+
+    #[test]
+    fn fake_echo_cycles_through_tokens() {
+        let sequence_stride = 256;
+        let mut sequences = vec![0usize; 2 * sequence_stride];
+        fill_sequence(&mut sequences, 0, sequence_stride, 0, PRE_TOKEN_COUNT);
+
+        let tokens = vec![1000, 2000, 3000];
+        let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID, tokens, 6);
+        let mut batch_list = vec![decode_state(PRE_TOKEN_COUNT, PRE_TOKEN_COUNT)];
+        let prefill_list = vec![];
+        let decode_list = vec![SequenceSlice {
+            batch_index: 0,
+            next_sequence_index: 0,
+            token_start_index: 0,
+            length: PRE_TOKEN_COUNT,
+            last_token_flag: true,
+        }];
+
+        for i in 0..6 {
+            echo.run(0, 1, 1, 0, &prefill_list, &decode_list, &mut batch_list);
+        }
+
+        assert_eq!(sequences[PRE_TOKEN_COUNT + 0], 1000);
+        assert_eq!(sequences[PRE_TOKEN_COUNT + 1], 2000);
+        assert_eq!(sequences[PRE_TOKEN_COUNT + 2], 3000);
+        assert_eq!(sequences[PRE_TOKEN_COUNT + 3], 1000);
+        assert_eq!(sequences[PRE_TOKEN_COUNT + 4], 2000);
+        assert_eq!(sequences[PRE_TOKEN_COUNT + 5], 3000);
     }
 
     #[test]
     fn fake_echo_runs_on_all_threads() {
         let sequence_stride = 256;
         let mut sequences = vec![0usize; 2 * sequence_stride];
-        // Pre-write 10 tokens into batch 0
         fill_sequence(&mut sequences, 0, sequence_stride, 0, PRE_TOKEN_COUNT);
 
-        let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID);
+        let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID, vec![7], MAX_GEN_TOKENS);
         let mut batch_list = vec![prefill_state(PRE_TOKEN_COUNT, 0)];
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
@@ -271,20 +237,18 @@ mod tests {
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[0].next_sequence_index, PRE_TOKEN_COUNT + 1);
         assert_eq!(batch_list[0].filling_length(), 0);
-        // Echoed token: last of the 10 pre-written = (9) % 50 + 1 = 10
-        assert_eq!(sequences[PRE_TOKEN_COUNT], 10);
+        assert_eq!(sequences[PRE_TOKEN_COUNT], 7);
     }
 
     #[test]
     fn fake_echo_thread_assignment() {
         let sequence_stride = 256;
         let mut sequences = vec![0usize; 3 * sequence_stride];
-        // Pre-write 10 tokens into each of the 3 batches
         for batch in 0..3 {
             fill_sequence(&mut sequences, batch, sequence_stride, 0, PRE_TOKEN_COUNT);
         }
 
-        let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID);
+        let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID, vec![99], MAX_GEN_TOKENS);
         let mut batch_list = vec![
             prefill_state(PRE_TOKEN_COUNT, 0),
             prefill_state(PRE_TOKEN_COUNT, 0),
@@ -321,55 +285,56 @@ mod tests {
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[1].phase, Phase::Decode);
         assert_eq!(batch_list[2].phase, Phase::Decode);
-
-        // Each batch's echoed token should be the last pre-written token: 10
-        assert_eq!(sequences[PRE_TOKEN_COUNT], 10);
-        assert_eq!(sequences[sequence_stride + PRE_TOKEN_COUNT], 10);
-        assert_eq!(sequences[sequence_stride * 2 + PRE_TOKEN_COUNT], 10);
+        assert_eq!(sequences[PRE_TOKEN_COUNT], 99);
+        assert_eq!(sequences[sequence_stride + PRE_TOKEN_COUNT], 99);
+        assert_eq!(sequences[sequence_stride * 2 + PRE_TOKEN_COUNT], 99);
     }
 
     #[test]
-    fn fake_echo_stops_at_length_100_with_eos() {
+    fn fake_echo_stops_after_max_gen_tokens_with_eos() {
         let sequence_stride = 256;
         let mut sequences = vec![0usize; 2 * sequence_stride];
-        // Pre-write 99 tokens into batch 0 (positions 0..98), none are eos_id.
-        // The first 10 are from fill_sequence; the rest (10..99) are also non-eos.
-        fill_sequence(&mut sequences, 0, sequence_stride, 0, 99);
-        // Verify none of the 99 tokens are eos_id
-        for i in 0..99 {
+        let prompt_len = PRE_TOKEN_COUNT;
+        let max_gen = 5;
+        fill_sequence(&mut sequences, 0, sequence_stride, 0, prompt_len);
+        for i in 0..prompt_len {
             assert_ne!(
                 sequences[i], EOS_ID,
                 "pre-written token at {i} must not be eos_id"
             );
         }
 
-        let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID);
-        // next_sequence_index=89, length=10 → write_start = 89 + 10 = 99 → triggers EOS
-        let mut batch_list = vec![decode_state(99, 99)];
+        let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID, vec![5], max_gen);
+        let mut batch_list = vec![decode_state(prompt_len, prompt_len)];
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            next_sequence_index: 89,
-            token_start_index: 89,
-            length: 10,
+            next_sequence_index: 0,
+            token_start_index: 0,
+            length: prompt_len,
             last_token_flag: true,
         }];
+
+        for i in 0..max_gen {
+            echo.run(0, 1, 1, 0, &prefill_list, &decode_list, &mut batch_list);
+            assert_eq!(batch_list[0].phase, Phase::Decode, "step {} should be decode", i);
+            assert_eq!(sequences[prompt_len + i], 5);
+        }
 
         echo.run(0, 1, 1, 0, &prefill_list, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Eos);
-        assert_eq!(batch_list[0].next_sequence_index, 100);
-        assert_eq!(sequences[99], EOS_ID);
+        assert_eq!(batch_list[0].next_sequence_index, prompt_len + max_gen + 1);
+        assert_eq!(sequences[prompt_len + max_gen], EOS_ID);
     }
 
     #[test]
     fn fake_echo_handles_decode_phase() {
         let sequence_stride = 256;
         let mut sequences = vec![0usize; 2 * sequence_stride];
-        // Pre-write 10 tokens into batch 0
         fill_sequence(&mut sequences, 0, sequence_stride, 0, PRE_TOKEN_COUNT);
 
-        let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID);
+        let echo = FakeEcho::new(sequences.as_mut_ptr(), sequence_stride, EOS_ID, vec![88], MAX_GEN_TOKENS);
         let mut batch_list = vec![decode_state(PRE_TOKEN_COUNT, PRE_TOKEN_COUNT)];
         let prefill_list = vec![];
         let decode_list = vec![SequenceSlice {
@@ -383,7 +348,6 @@ mod tests {
         echo.run(0, 1, 1, 0, &prefill_list, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
-        // Echoed token: last of the 10 pre-written = 10
-        assert_eq!(sequences[PRE_TOKEN_COUNT], 10);
+        assert_eq!(sequences[PRE_TOKEN_COUNT], 88);
     }
 }

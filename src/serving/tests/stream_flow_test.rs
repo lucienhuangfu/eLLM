@@ -13,7 +13,9 @@ async fn test_chat_completions_stream_full_flow() {
     let (manager, _buffer) = create_test_manager_with_mode(4, 1000, SessionMode::NonReusable);
     let router = build_router(Arc::clone(&manager));
 
-    start_generation_loop(Arc::clone(&manager), vec![15496, 198]);
+    let digit_tokens = digit_tokens_r50k();
+    let eos_id = 50256;
+    let _scheduler = start_runtime_with_fakeecho(Arc::clone(&manager), eos_id, 1, digit_tokens, 10);
 
     let body = serde_json::json!({
         "model": "test-model",
@@ -41,4 +43,6 @@ async fn test_chat_completions_stream_full_flow() {
 
     assert!(body_str.contains("data:"));
     assert!(body_str.contains("chat.completion.chunk"));
+    assert!(body_str.contains("0"));
+    assert!(body_str.contains("finish_reason"));
 }

@@ -10,7 +10,7 @@ use super::test_utils::*;
 async fn test_acquire_release_reuse_reusable() {
     let (manager, _buffer) = create_test_manager(4, 5000);
 
-    let h1 = manager.acquire_session("user_a").await;
+    let h1 = manager.acquire_session("user_a").await.unwrap();
     let slot1 = h1.slot_index;
 
     let sequence_length = manager
@@ -20,7 +20,7 @@ async fn test_acquire_release_reuse_reusable() {
         .release_session("user_a", sequence_length)
         .await;
 
-    let h2 = manager.acquire_session("user_a").await;
+    let h2 = manager.acquire_session("user_a").await.unwrap();
     assert_eq!(h2.slot_index, slot1);
 }
 
@@ -28,25 +28,25 @@ async fn test_acquire_release_reuse_reusable() {
 async fn test_acquire_release_non_reusable() {
     let (manager, _buffer) = create_test_manager_with_mode(4, 5000, SessionMode::NonReusable);
 
-    let h1 = manager.acquire_session("user_a").await;
+    let h1 = manager.acquire_session("user_a").await.unwrap();
     let slot1 = h1.slot_index;
 
     Arc::clone(&manager).release_session("user_a", 10).await;
 
-    let _h2 = manager.acquire_session("user_a").await;
+    let _h2 = manager.acquire_session("user_a").await.unwrap();
 }
 
 #[tokio::test]
 async fn test_non_reusable_releases_immediately() {
     let (manager, _buffer) = create_test_manager_with_mode(2, 5000, SessionMode::NonReusable);
 
-    let h1 = manager.acquire_session("s1").await;
-    let h2 = manager.acquire_session("s2").await;
+    let h1 = manager.acquire_session("s1").await.unwrap();
+    let h2 = manager.acquire_session("s2").await.unwrap();
     assert_ne!(h1.slot_index, h2.slot_index);
 
     Arc::clone(&manager).release_session("s1", 10).await;
 
-    let h3 = manager.acquire_session("s3").await;
+    let h3 = manager.acquire_session("s3").await.unwrap();
     assert_eq!(h3.slot_index, h1.slot_index);
 }
 
@@ -54,7 +54,7 @@ async fn test_non_reusable_releases_immediately() {
 async fn test_slot_reclaimed_after_timeout() {
     let (manager, _buffer) = create_test_manager(4, 100);
 
-    let h1 = manager.acquire_session("timeout_user").await;
+    let h1 = manager.acquire_session("timeout_user").await.unwrap();
     let slot1 = h1.slot_index;
     Arc::clone(&manager)
         .release_session("timeout_user", 10)
@@ -62,18 +62,18 @@ async fn test_slot_reclaimed_after_timeout() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let h2 = manager.acquire_session("other_user").await;
-    let h3 = manager.acquire_session("another_user").await;
+    let h2 = manager.acquire_session("other_user").await.unwrap();
+    let h3 = manager.acquire_session("another_user").await.unwrap();
     assert_ne!(h2.slot_index, h3.slot_index);
 
-    let _h4 = manager.acquire_session("timeout_user").await;
+    let _h4 = manager.acquire_session("timeout_user").await.unwrap();
 }
 
 #[tokio::test]
 async fn test_slot_not_reclaimed_before_timeout() {
     let (manager, _buffer) = create_test_manager(2, 2000);
 
-    let h1 = manager.acquire_session("quick_reuse").await;
+    let h1 = manager.acquire_session("quick_reuse").await.unwrap();
     let slot1 = h1.slot_index;
     Arc::clone(&manager)
         .release_session("quick_reuse", 10)
@@ -81,7 +81,7 @@ async fn test_slot_not_reclaimed_before_timeout() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let h2 = manager.acquire_session("quick_reuse").await;
+    let h2 = manager.acquire_session("quick_reuse").await.unwrap();
     assert_eq!(h2.slot_index, slot1);
 }
 
@@ -89,7 +89,7 @@ async fn test_slot_not_reclaimed_before_timeout() {
 async fn test_resumed_session_cancels_timeout() {
     let (manager, _buffer) = create_test_manager(2, 100);
 
-    let h1 = manager.acquire_session("cancel_test").await;
+    let h1 = manager.acquire_session("cancel_test").await.unwrap();
     let slot1 = h1.slot_index;
 
     manager.batch_states.with_mut(|slots| {
@@ -100,7 +100,7 @@ async fn test_resumed_session_cancels_timeout() {
         .release_session("cancel_test", 10)
         .await;
 
-    let h2 = manager.acquire_session("cancel_test").await;
+    let h2 = manager.acquire_session("cancel_test").await.unwrap();
     assert_eq!(h2.slot_index, slot1);
 
     manager.batch_states.with_mut(|slots| {
@@ -125,8 +125,8 @@ async fn test_release_nonexistent_session_no_panic() {
 async fn test_acquire_same_active_session_returns_reused() {
     let (manager, _buffer) = create_test_manager(4, 1000);
 
-    let h1 = manager.acquire_session("same_session").await;
-    let h2 = manager.acquire_session("same_session").await;
+    let h1 = manager.acquire_session("same_session").await.unwrap();
+    let h2 = manager.acquire_session("same_session").await.unwrap();
 
     assert_eq!(h1.slot_index, h2.slot_index);
 }
@@ -139,7 +139,7 @@ async fn test_multiple_users_concurrent_acquire() {
     let mut handles = Vec::new();
 
     for uid in &user_ids {
-        let h = manager.acquire_session(uid).await;
+        let h = manager.acquire_session(uid).await.unwrap();
         handles.push(h);
     }
 
@@ -154,15 +154,15 @@ async fn test_multiple_users_concurrent_acquire() {
 async fn test_user_arrives_and_departs_dynamically() {
     let (manager, _buffer) = create_test_manager(4, 5000);
 
-    let h1 = manager.acquire_session("alice").await;
-    let h2 = manager.acquire_session("bob").await;
+    let h1 = manager.acquire_session("alice").await.unwrap();
+    let h2 = manager.acquire_session("bob").await.unwrap();
     assert_ne!(h1.slot_index, h2.slot_index);
 
     Arc::clone(&manager).release_session("alice", 50).await;
 
-    let h3 = manager.acquire_session("charlie").await;
+    let h3 = manager.acquire_session("charlie").await.unwrap();
 
-    let h_alice2 = manager.acquire_session("alice").await;
+    let h_alice2 = manager.acquire_session("alice").await.unwrap();
     assert_eq!(h_alice2.slot_index, h1.slot_index);
 }
 
@@ -214,7 +214,7 @@ async fn test_full_session_lifecycle_with_scheduler() {
 
     let session_id = "full_lifecycle";
 
-    let handle = manager.acquire_session(session_id).await;
+    let handle = manager.acquire_session(session_id).await.unwrap();
     let slot_idx = handle.slot_index;
 
     let phase = manager.batch_states.with(|slots| slots[slot_idx].phase);
@@ -229,7 +229,7 @@ async fn test_full_session_lifecycle_with_scheduler() {
         .release_session(session_id, sequence_length)
         .await;
 
-    let handle2 = manager.acquire_session(session_id).await;
+    let handle2 = manager.acquire_session(session_id).await.unwrap();
     assert_eq!(handle2.slot_index, slot_idx);
 
     run_prefill_and_decode(&manager, &scheduler, slot_idx, 32, 5);
@@ -240,4 +240,69 @@ async fn test_full_session_lifecycle_with_scheduler() {
     Arc::clone(&manager)
         .release_session(session_id, sequence_length2)
         .await;
+}
+
+#[tokio::test]
+async fn test_acquire_session_returns_error_when_all_slots_occupied() {
+    let batch_size = 2;
+    let (manager, _buffer) = create_test_manager_with_mode(batch_size, 5000, SessionMode::NonReusable);
+
+    let h1 = manager.acquire_session("user_1").await.unwrap();
+    let h2 = manager.acquire_session("user_2").await.unwrap();
+    assert_ne!(h1.slot_index, h2.slot_index);
+
+    let result = manager.acquire_session("user_3").await;
+    assert!(result.is_err());
+
+    let err = result.unwrap_err();
+    match err {
+        crate::serving::ApiError::SlotUnavailable(msg) => {
+            assert!(msg.contains("all slots are occupied"));
+        }
+        _ => panic!("expected SlotUnavailable error"),
+    }
+}
+
+#[tokio::test]
+async fn test_slot_becomes_available_after_release_non_reusable() {
+    let batch_size = 2;
+    let (manager, _buffer) = create_test_manager_with_mode(batch_size, 5000, SessionMode::NonReusable);
+
+    let h1 = manager.acquire_session("user_1").await.unwrap();
+    let _h2 = manager.acquire_session("user_2").await.unwrap();
+
+    assert!(manager.acquire_session("user_3").await.is_err());
+
+    Arc::clone(&manager).release_session("user_1", 10).await;
+
+    let h3 = manager.acquire_session("user_3").await.unwrap();
+    assert_eq!(h3.slot_index, h1.slot_index);
+}
+
+#[tokio::test]
+async fn test_reusable_mode_slot_eviction_when_full() {
+    let batch_size = 3;
+    let (manager, _buffer) = create_test_manager(batch_size, 100);
+
+    let h1 = manager.acquire_session("user_a").await.unwrap();
+    let h2 = manager.acquire_session("user_b").await.unwrap();
+    let h3 = manager.acquire_session("user_c").await.unwrap();
+    assert_ne!(h1.slot_index, h2.slot_index);
+    assert_ne!(h2.slot_index, h3.slot_index);
+
+    Arc::clone(&manager).release_session("user_a", 10).await;
+    Arc::clone(&manager).release_session("user_b", 20).await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let h4 = manager.acquire_session("user_d").await.unwrap();
+    let h5 = manager.acquire_session("user_e").await.unwrap();
+    assert_ne!(h4.slot_index, h5.slot_index);
+
+    let h6 = manager.acquire_session("user_f").await;
+    assert!(h6.is_err());
+    match h6.unwrap_err() {
+        crate::serving::ApiError::SlotUnavailable(_) => {}
+        _ => panic!("expected SlotUnavailable"),
+    }
 }

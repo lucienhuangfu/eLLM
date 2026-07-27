@@ -45,11 +45,11 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
 
     // ── Session lifecycle ─────────────────────────────────
 
-    pub async fn acquire_session(&self, session_id: &str) -> SessionHandle {
+    pub async fn acquire_session(&self, session_id: &str) -> ApiResult<SessionHandle> {
         let mut map = self.session_map.lock().await;
 
         if let Some(&slot_index) = map.get(session_id) {
-            return SessionHandle::new(session_id.to_string(), slot_index);
+            return Ok(SessionHandle::new(session_id.to_string(), slot_index));
         }
 
         // 尝试回收 reserved slot
@@ -57,12 +57,14 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
         {
             cancel_flag.store(true, Ordering::Release);
             map.insert(session_id.to_string(), slot_index);
-            return SessionHandle::new(session_id.to_string(), slot_index);
+            return Ok(SessionHandle::new(session_id.to_string(), slot_index));
         }
 
         // 从 LRU 尾部淘汰
         let mut lru = self.lru.lock().unwrap();
-        let slot_index = lru.pop().expect("LRU list is empty");
+        let slot_index = lru
+            .pop()
+            .ok_or_else(|| ApiError::SlotUnavailable("all slots are occupied, please retry later".into()))?;
         drop(lru);
 
         if let Some(old_id) = map
@@ -78,7 +80,7 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
             slots[slot_index] = SlotState::idle();
         });
 
-        SessionHandle::new(session_id.to_string(), slot_index)
+        Ok(SessionHandle::new(session_id.to_string(), slot_index))
     }
 
     pub async fn release_session(self: Arc<Self>, session_id: &str, sequence_length: usize) {

@@ -4,8 +4,12 @@ use futures_util::StreamExt;
 use std::sync::Arc;
 
 use crate::num_traits::FromNumber;
+use crate::operators::fake_echo::FakeEcho;
+use crate::operators::operator::Operator;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::loader::ChatTemplate;
+use crate::runtime::executor::executor_pool::ExecutorPool;
+use crate::runtime::loader::{load_tiktoken, ChatTemplate};
+use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{BatchSequence, Phase, SessionMode, SlotManager, SlotState};
 use crate::serving::server::build_router;
 use rustc_hash::FxHashMap;
@@ -24,9 +28,25 @@ pub fn test_tokenizer() -> Arc<CoreBPE> {
 
 pub fn test_chat_template() -> Arc<ChatTemplate> {
     Arc::new(
-        ChatTemplate::from_template_source("{{ system }}\n{{ user }}\n{{ assistant }}".to_string())
-            .unwrap(),
+        ChatTemplate::from_template_source(
+            "{% for message in messages %}{{ message.role }}: {{ message.content }}\n{% endfor %}{% if add_generation_prompt %}assistant: {% endif %}"
+                .to_string(),
+        )
+        .unwrap(),
     )
+}
+
+const QWEN3_MODEL_DIR: &str = "./models/Qwen3-Coder-30B-A3B-Instruct";
+
+pub fn qwen3_tokenizer() -> Arc<CoreBPE> {
+    let tokenizer_path = format!("{}/tokenizer.json", QWEN3_MODEL_DIR);
+    let config_path = format!("{}/tokenizer_config.json", QWEN3_MODEL_DIR);
+    Arc::new(load_tiktoken(&tokenizer_path, &config_path).unwrap())
+}
+
+pub fn qwen3_chat_template() -> Arc<ChatTemplate> {
+    let template_path = format!("{}/chat_template.jinja", QWEN3_MODEL_DIR);
+    Arc::new(ChatTemplate::new(&template_path).unwrap())
 }
 
 pub fn create_test_manager(
@@ -74,6 +94,44 @@ pub fn create_test_router() -> (Router, Arc<SlotManager<f16>>, Vec<usize>) {
 
 pub fn create_test_router_with_mode(mode: SessionMode) -> (Router, Arc<SlotManager<f16>>, Vec<usize>) {
     let (manager, buffer) = create_test_manager_with_mode(4, 1000, mode);
+    let router = build_router(Arc::clone(&manager));
+    (router, manager, buffer)
+}
+
+pub fn create_qwen3_test_manager_with_mode(
+    batch_size: usize,
+    timeout_ms: u64,
+    mode: SessionMode,
+) -> (Arc<SlotManager<f16>>, Vec<usize>) {
+    let seq_len = 1024;
+    let mut buffer = vec![0usize; batch_size * seq_len];
+    let batch_sequences = Arc::new(SharedMut::new(BatchSequence::<f16> {
+        sequences: buffer.as_mut_ptr(),
+        batch_temperature: vec![<f16 as FromNumber>::from_f32(1.0); batch_size],
+        row_size: batch_size,
+        col_size: seq_len,
+        tokenizer: qwen3_tokenizer(),
+        chat_template: qwen3_chat_template(),
+    }));
+    let batch_states = Arc::new(SharedMut::new(
+        (0..batch_size)
+            .map(|_| SlotState::idle())
+            .collect::<Vec<_>>(),
+    ));
+    let manager = Arc::new(SlotManager::new(
+        batch_size,
+        batch_sequences,
+        batch_states,
+        mode,
+        timeout_ms,
+    ));
+    (manager, buffer)
+}
+
+pub fn create_qwen3_test_router_with_mode(
+    mode: SessionMode,
+) -> (Router, Arc<SlotManager<f16>>, Vec<usize>) {
+    let (manager, buffer) = create_qwen3_test_manager_with_mode(4, 1000, mode);
     let router = build_router(Arc::clone(&manager));
     (router, manager, buffer)
 }
@@ -220,4 +278,38 @@ pub async fn collect_body(body: Body) -> Vec<u8> {
         bytes.extend_from_slice(&chunk.unwrap());
     }
     bytes
+}
+
+pub fn digit_tokens_r50k() -> Vec<usize> {
+    let bpe = tiktoken_rs::r50k_base().unwrap();
+    "0123456789"
+        .chars()
+        .map(|c| {
+            let s: String = c.to_string();
+            bpe.encode_with_special_tokens(&s)[0] as usize
+        })
+        .collect()
+}
+
+pub fn start_runtime_with_fakeecho(
+    manager: Arc<SlotManager<f16>>,
+    eos_id: usize,
+    thread_num: usize,
+    tokens: Vec<usize>,
+    max_gen_tokens: usize,
+) -> Arc<Scheduler> {
+    let (batch_size, seq_len, sequences_ptr) = manager.batch_sequences.with(|seq| {
+        (seq.row_size, seq.col_size, seq.sequences)
+    });
+
+    let batch_states = manager.batch_states.clone();
+    let scheduler = Arc::new(Scheduler::new(batch_size, seq_len, thread_num, batch_states));
+
+    let fake_echo = FakeEcho::new(sequences_ptr, seq_len, eos_id, tokens, max_gen_tokens);
+    let operator_queue: Vec<Operator<f16>> = vec![Operator::FakeEcho(fake_echo)];
+
+    let executor = ExecutorPool::new(operator_queue, Arc::clone(&scheduler), thread_num);
+    executor.start();
+
+    scheduler
 }

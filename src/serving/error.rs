@@ -27,6 +27,7 @@ impl std::error::Error for ApiError {}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let is_slot_unavailable = matches!(self, ApiError::SlotUnavailable(_));
         let (status, message) = match self {
             ApiError::TokenizationError(msg) => {
                 eprintln!("Tokenization error: {}", msg);
@@ -38,8 +39,8 @@ impl IntoResponse for ApiError {
             ApiError::SlotUnavailable(msg) => {
                 eprintln!("Slot unavailable: {}", msg);
                 (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Slot unavailable: {}", msg),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("Service unavailable: {}", msg),
                 )
             }
             ApiError::InternalError(msg) => {
@@ -51,7 +52,14 @@ impl IntoResponse for ApiError {
             }
         };
 
-        (status, message).into_response()
+        let mut response = (status, message).into_response();
+        if is_slot_unavailable {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+        }
+        response
     }
 }
 

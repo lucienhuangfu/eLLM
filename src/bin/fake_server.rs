@@ -27,7 +27,8 @@ async fn run_server(
     let batch_size = batch_states.with(|list| list.len());
     let scheduler = Arc::new(Scheduler::new(batch_size, 64, 4, Arc::clone(&batch_states)));
 
-    let fake_echo = FakeEcho::new(sequences_ptr, sequence_length, 151643);
+    let digit_tokens: Vec<usize> = (15..25).collect();
+    let fake_echo = FakeEcho::new(sequences_ptr, sequence_length, 151643, digit_tokens, 10);
     let operator_queue = vec![Operator::<f16>::FakeEcho(fake_echo)];
     let worker_pool = ExecutorPool::new(operator_queue, Arc::clone(&scheduler), 4);
     worker_pool.start();
