@@ -82,7 +82,7 @@ where
         while !shutdown.load(Ordering::Acquire) {
             if thread_id == 0 {
                 if !scheduler.schedule_batch() {
-                    wait.wait(|| shutdown.load(Ordering::Acquire) || scheduler.has_work());
+                    wait.wait(|| shutdown.load(Ordering::Acquire) || scheduler.schedule_batch());
                     continue;
                 }
             } else {

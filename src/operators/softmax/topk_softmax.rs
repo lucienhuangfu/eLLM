@@ -198,8 +198,13 @@ impl<
                 record.next_sequence_index = record.next_sequence_index.saturating_add(1);
                 record.sequence_length += 1;
 
-                if self.eos_ids.contains(&predict_token) {
+                let is_eos = self.eos_ids.contains(&predict_token);
+                if is_eos {
                     record.phase = Phase::Eos;
+                }
+
+                if is_eos || write_sequence_index % 10 == 0 {
+                    record.notify.notify_one();
                 }
             }
         }

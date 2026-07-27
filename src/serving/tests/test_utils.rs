@@ -12,16 +12,14 @@ use rustc_hash::FxHashMap;
 use tiktoken_rs::CoreBPE;
 
 pub fn test_tokenizer() -> Arc<CoreBPE> {
-    Arc::new(
-        crate::runtime::loader::load_tiktoken("gpt2", "gpt2").unwrap_or_else(|_| {
-            let mut vocab: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
-            let merges: FxHashMap<String, u32> = FxHashMap::default();
-            for i in 0..100 {
-                vocab.insert(format!("token_{}", i).into_bytes(), i as u32);
-            }
-            CoreBPE::new(vocab, merges, "bpe").unwrap()
-        }),
-    )
+    Arc::new(tiktoken_rs::r50k_base().unwrap_or_else(|_| {
+        let mut vocab: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
+        let merges: FxHashMap<String, u32> = FxHashMap::default();
+        for i in 0..100 {
+            vocab.insert(format!("token_{}", i).into_bytes(), i as u32);
+        }
+        CoreBPE::new(vocab, merges, "bpe").unwrap()
+    }))
 }
 
 pub fn test_chat_template() -> Arc<ChatTemplate> {
@@ -74,6 +72,12 @@ pub fn create_test_router() -> (Router, Arc<SlotManager<f16>>, Vec<usize>) {
     (router, manager, buffer)
 }
 
+pub fn create_test_router_with_mode(mode: SessionMode) -> (Router, Arc<SlotManager<f16>>, Vec<usize>) {
+    let (manager, buffer) = create_test_manager_with_mode(4, 1000, mode);
+    let router = build_router(Arc::clone(&manager));
+    (router, manager, buffer)
+}
+
 pub fn find_active_slot(manager: &SlotManager<f16>) -> Option<usize> {
     manager.batch_states.with(|slots| {
         slots.iter().position(|s| !matches!(s.phase, Phase::Start | Phase::Eos))
@@ -120,6 +124,92 @@ pub fn start_generation_loop(manager: Arc<SlotManager<f16>>, generated_tokens: V
             slots[slot_index].phase = Phase::Eos;
             slots[slot_index].notify.notify_one();
         });
+    });
+}
+
+pub fn start_generation_worker(
+    manager: Arc<SlotManager<f16>>,
+    generated_tokens: Vec<u32>,
+    total_requests: usize,
+) {
+    use std::collections::HashMap;
+    let tokens_len = generated_tokens.len();
+
+    tokio::spawn(async move {
+        let mut slot_progress: HashMap<usize, usize> = HashMap::new();
+        let mut completed = 0;
+
+        loop {
+            if completed >= total_requests {
+                break;
+            }
+
+            let batch_size = manager.batch_states.with(|slots| slots.len());
+            let mut any_activity = false;
+
+            for slot_index in 0..batch_size {
+                let (phase, prompt_length, next_idx) = manager.batch_states.with(|slots| {
+                    let slot = &slots[slot_index];
+                    (slot.phase, slot.prompt_length, slot.next_sequence_index)
+                });
+
+                match phase {
+                    Phase::Prefill => {
+                        manager.batch_states.with_mut(|slots| {
+                            let slot = &mut slots[slot_index];
+                            if slot.phase == Phase::Prefill {
+                                let prefill_end =
+                                    slot.next_sequence_index + slot.filling_length();
+                                slot.next_sequence_index = prefill_end;
+                                slot.phase = Phase::Decode;
+                                slot.notify.notify_one();
+                                any_activity = true;
+                            }
+                        });
+                        slot_progress.insert(slot_index, 0);
+                    }
+                    Phase::Decode => {
+                        let progress = slot_progress.get(&slot_index).copied().unwrap_or(0);
+                        if progress < tokens_len {
+                            let token_id = generated_tokens[progress];
+                            manager.batch_states.with_mut(|slots| {
+                                let slot = &mut slots[slot_index];
+                                if slot.phase != Phase::Decode {
+                                    return;
+                                }
+                                let pos = slot.next_sequence_index;
+                                slot.next_sequence_index += 1;
+                                slot.sequence_length += 1;
+                                manager.batch_sequences.with_mut(|seq| {
+                                    let offset = slot_index * seq.col_size + pos;
+                                    unsafe {
+                                        *seq.sequences.add(offset) = token_id as usize;
+                                    }
+                                });
+                                slot.notify.notify_one();
+                                any_activity = true;
+                            });
+                            slot_progress.insert(slot_index, progress + 1);
+                        } else {
+                            manager.batch_states.with_mut(|slots| {
+                                let slot = &mut slots[slot_index];
+                                if slot.phase == Phase::Decode {
+                                    slot.phase = Phase::Eos;
+                                    slot.notify.notify_one();
+                                    any_activity = true;
+                                    completed += 1;
+                                }
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if !any_activity {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        }
     });
 }
 

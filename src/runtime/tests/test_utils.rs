@@ -42,16 +42,14 @@ pub fn make_decode_state(next_sequence_index: usize, prompt_length: usize) -> Sl
 }
 
 pub fn test_tokenizer() -> Arc<CoreBPE> {
-    Arc::new(
-        crate::runtime::loader::load_tiktoken("gpt2", "gpt2").unwrap_or_else(|_| {
-            let mut vocab: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
-            let merges: FxHashMap<String, u32> = FxHashMap::default();
-            for i in 0..100 {
-                vocab.insert(format!("token_{}", i).into_bytes(), i as u32);
-            }
-            CoreBPE::new(vocab, merges, "bpe").unwrap()
-        }),
-    )
+    Arc::new(tiktoken_rs::r50k_base().unwrap_or_else(|_| {
+        let mut vocab: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
+        let merges: FxHashMap<String, u32> = FxHashMap::default();
+        for i in 0..100 {
+            vocab.insert(format!("token_{}", i).into_bytes(), i as u32);
+        }
+        CoreBPE::new(vocab, merges, "bpe").unwrap()
+    }))
 }
 
 pub fn test_chat_template() -> Arc<ChatTemplate> {

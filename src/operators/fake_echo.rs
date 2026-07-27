@@ -10,12 +10,15 @@
 //! # Behaviour
 //!
 //! - All threads participate in the work (no idle threads).
-//! - It only reacts to `Phase::Prefill` sequences in the `decode_list`.
+//! - Handles both prefill and decode phases:
+//!   - **Prefill**: Processes the last chunk of each prefill sequence and transitions
+//!     the slot from `Phase::Prefill` → `Phase::Decode`.
+//!   - **Decode**: Generates one echo token per sequence per step.
 //! - For each sequence slice it:
 //!   1. Reads the **last token** from the sequence buffer.
 //!   2. Copies that token to the next position in the sequence.
 //!   3. Advances `next_sequence_index`.
-//!   4. Transitions the request from `Phase::Prefill` → `Phase::Decode`.
+//!   4. Transitions the request from `Phase::Prefill` → `Phase::Decode` (if applicable).
 //! - When the write position reaches 99 (i.e. the sequence has 99 tokens):
 //!   - Writes `eos_id` instead of echoing the token.
 //!   - Transitions the request to `Phase::Eos`.
@@ -72,6 +75,9 @@ pub struct FakeEcho {
     eos_id: usize,
 }
 
+unsafe impl Send for FakeEcho {}
+unsafe impl Sync for FakeEcho {}
+
 impl FakeEcho {
     /// Create a new `FakeEcho` operator.
     ///
@@ -104,13 +110,12 @@ impl FakeEcho {
     ///
     /// # Arguments
     ///
-    /// * `_prefill_size`  – (unused) Number of prefill tokens. Present for API compatibility
-    ///                       with real operators.
-    /// * `_decode_size`   – (unused) Number of decode tokens. Present for API compatibility.
+    /// * `prefill_size`   – Number of prefill tokens in this batch.
+    /// * `_decode_size`   – Number of decode tokens. Present for API compatibility.
     /// * `thread_num`     – Total number of worker threads participating in this operator.
     /// * `thread_id`      – 0-based index of the current thread.
-    /// * `_prefill_list`  – (unused) Prefill sequence slices. `FakeEcho` only processes decode slices.
-    /// * `decode_list`    – Slice of `SequenceSlice` describing the sequences to process.
+    /// * `prefill_list`   – Prefill sequence slices, chunked per thread.
+    /// * `decode_list`    – Slice of `SequenceSlice` describing the decode sequences.
     /// * `batch_list`     – Mutable reference to the slot state table. Each entry tracks
     ///                       the phase, indices, and notification primitive for one request.
     pub fn run(
@@ -123,63 +128,57 @@ impl FakeEcho {
         decode_list: &[SequenceSlice],
         batch_list: &mut Vec<SlotState>,
     ) {
-        // ---- Step 1: Determine this thread's work range ----
-        // `assign` splits `decode_list.len()` evenly across `thread_num` threads.
-        // Returns `None` if this thread has nothing to do (e.g. more threads than sequences).
         let Some((begin, end)) = assign(decode_list.len(), thread_num, thread_id) else {
             return;
         };
 
-        // ---- Step 2: Process each sequence slice in [begin, end) ----
         for slice in decode_list.iter().take(end).skip(begin) {
-            // `batch_index` identifies which slot (row in `batch_list`) this slice belongs to.
-            let batch_index = slice.batch_index;
+            self.process_slice(slice, batch_list);
+        }
+    }
 
-            // Look up the mutable slot state for this batch. Skip if out of bounds.
-            let record = match batch_list.get_mut(batch_index) {
-                Some(r) => r,
-                None => continue,
-            };
+    fn process_slice(&self, slice: &SequenceSlice, batch_list: &mut Vec<SlotState>) {
+        let batch_index = slice.batch_index;
 
-            // ---- Step 3: Read the last token from the sequence buffer ----
-            // The last token sits at offset (next_sequence_index + length - 1) within the
-            // batch's row in the flat buffer.
-            let last_token_index = slice.next_sequence_index + slice.length - 1;
-            let last_token = unsafe {
-                *self
-                    .sequences_ptr
-                    .add(batch_index * self.sequence_stride + last_token_index)
-            };
+        let record = match batch_list.get_mut(batch_index) {
+            Some(r) => r,
+            None => return,
+        };
 
-            // ---- Step 4: Compute the write position ----
-            // The next token should be written right after the current sequence content.
-            let write_start = slice.next_sequence_index + slice.length;
+        let last_token_pos = if matches!(record.phase, Phase::Prefill) {
+            slice.next_sequence_index + slice.length - 1
+        } else {
+            record.next_sequence_index.saturating_sub(1)
+        };
 
-            if write_start >= 99 {
-                // ---- Case A: Sequence is long enough → emit EOS ----
-                // Write the EOS token at the current position to signal end-of-sequence.
-                let eos_write_index = batch_index * self.sequence_stride + write_start;
-                unsafe {
-                    *self.sequences_ptr.add(eos_write_index) = self.eos_id;
-                }
-                // Update the slot metadata to reflect the new sequence length.
-                record.next_sequence_index = write_start + 1;
-                // Transition to Eos phase so the scheduler knows this request is done.
-                record.phase = Phase::Eos;
-                // Wake up the async task waiting for this request's result.
-                record.notify.notify_one();
-            } else {
-                // ---- Case B: Normal echo — copy the last token forward ----
-                let write_index = batch_index * self.sequence_stride + write_start;
-                unsafe {
-                    *self.sequences_ptr.add(write_index) = last_token;
-                }
-                // Advance the slot's position counters.
-                record.next_sequence_index = write_start + 1;
-                // If this is the first run after prefill, transition Prefill → Decode.
-                if matches!(record.phase, Phase::Prefill) {
-                    record.phase = Phase::Decode;
-                }
+        let last_token = unsafe {
+            *self
+                .sequences_ptr
+                .add(batch_index * self.sequence_stride + last_token_pos)
+        };
+
+        let write_start = if matches!(record.phase, Phase::Prefill) {
+            slice.next_sequence_index + slice.length
+        } else {
+            record.next_sequence_index
+        };
+
+        if write_start >= 99 {
+            let eos_write_index = batch_index * self.sequence_stride + write_start;
+            unsafe {
+                *self.sequences_ptr.add(eos_write_index) = self.eos_id;
+            }
+            record.next_sequence_index = write_start + 1;
+            record.phase = Phase::Eos;
+            record.notify.notify_one();
+        } else {
+            let write_index = batch_index * self.sequence_stride + write_start;
+            unsafe {
+                *self.sequences_ptr.add(write_index) = last_token;
+            }
+            record.next_sequence_index = write_start + 1;
+            if matches!(record.phase, Phase::Prefill) {
+                record.phase = Phase::Decode;
             }
         }
     }
