@@ -92,6 +92,8 @@ pub fn create_test_manager_with_mode(
         batch_states,
         mode,
         timeout_ms,
+        true,
+        true,
     ));
     (manager, buffer)
 }

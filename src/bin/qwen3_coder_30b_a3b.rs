@@ -265,6 +265,8 @@ fn main() {
         Arc::clone(&batch_list_arc),
         SessionMode::Reusable,
         600000, // 10 minutes
+        true,
+        true,
     ));
 
     let worker_pool = ExecutorPool::new(

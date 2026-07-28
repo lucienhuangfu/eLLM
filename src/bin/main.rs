@@ -17,9 +17,12 @@ fn create_runtime(
         .map_err(Into::into)
 }
 
-async fn run_server(ctx: RuntimeContext<f16>) -> Result<(), Box<dyn std::error::Error>> {
-    serving::run(ctx.scheduler, ctx.slot_manager).await?;
-
+async fn run_server(
+    ctx: RuntimeContext<f16>,
+    host: String,
+    port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    serving::run(ctx.slot_manager, &host, port).await?;
     Ok(())
 }
 
@@ -30,11 +33,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_cli(cli)?;
     let resolved_config = config.resolve()?;
 
+    let host = resolved_config
+        .serve
+        .as_ref()
+        .map(|s| s.host.clone())
+        .unwrap_or_else(|| "0.0.0.0".to_string());
+    let port = resolved_config
+        .serve
+        .as_ref()
+        .map(|s| s.port)
+        .unwrap_or(8000);
+
     let ctx = initialize_serving_resources(&resolved_config)?;
 
     let rt = create_runtime(&ctx)?;
 
-    rt.block_on(async move { run_server(ctx).await })?;
+    rt.block_on(async move { run_server(ctx, host, port).await })?;
 
     Ok(())
 }

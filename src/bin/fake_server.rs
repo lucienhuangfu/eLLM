@@ -33,7 +33,7 @@ async fn run_server(
     let worker_pool = ExecutorPool::new(operator_queue, Arc::clone(&scheduler), 4);
     worker_pool.start();
 
-    serving::run(scheduler, slot_manager).await?;
+    serving::run(slot_manager, "0.0.0.0", 8000).await?;
 
     Ok(())
 }
@@ -61,6 +61,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&batch_states),
         SessionMode::NonReusable,
         600000,
+        true,
+        true,
     ));
 
     let rt = create_runtime()?;

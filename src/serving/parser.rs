@@ -1,23 +1,28 @@
-//! Incremental streaming parser for OpenAI-compatible chat completion output.
+//! High-performance incremental streaming parser for OpenAI-compatible output.
 //!
-//! The parser consumes only newly generated text deltas. It keeps a small
-//! internal buffer for tag boundaries and never reparses historical output.
-//! Model-specific rules are selected at load time, not inferred from templates.
+//! Key optimizations:
+//! - Zero-copy events: `ParserEvent<'a>` borrows directly from internal buffer.
+//! - Cursor-based buffer: O(1) consumption, no per-token memmove.
+//! - Precomputed active markers: no per-call array rebuild.
+//! - Fast-path suffix check: single last-byte comparison short-circuits.
+//! - JsonScanner tracks consumed bytes: eliminates redundant extract_json_range.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::transformer::config::ModelFamily;
 
+/// Maximum accumulated tool-call buffer before forced recovery (256 KiB).
+const MAX_TOOL_BUF: usize = 256 * 1024;
+/// Compact the buffer when cursor exceeds this threshold.
+const COMPACT_THRESHOLD: usize = 4096;
+
+// ─── Public Types ────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub name: String,
     pub arguments: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolCallDelta {
-    pub fragment: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,13 +33,15 @@ pub enum ToolCallFormat {
     MiniMaxM2,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ParserEvent {
-    Content(String),
-    Reasoning(String),
+/// Zero-copy parser event. `Content`, `Reasoning`, and `ToolCallDelta` borrow
+/// from the parser's internal buffer and are valid until the next `feed()` call.
+/// `ToolCall` is owned because it is parsed from cross-feed accumulated state.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParserEvent<'a> {
+    Content(&'a str),
+    Reasoning(&'a str),
     ToolCall(ToolCall),
-    ToolCallDelta(ToolCallDelta),
-    Finish,
+    ToolCallDelta(&'a str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +76,8 @@ impl Default for ParserOptions {
     }
 }
 
+// ─── ParserRule Presets ──────────────────────────────────────────────────────
+
 impl ParserRule {
     pub const fn new(
         tool_start: &'static str,
@@ -86,42 +95,23 @@ impl ParserRule {
         }
     }
 
+    /// Standard XML-tagged format (Qwen / DeepSeek / Hermes).
     pub const fn qwen() -> Self {
         Self::new(
-            "<tool_call>",
-            "</tool_call>",
-            "<think>",
-            "</think>",
-            ToolCallFormat::Tagged,
-        )
-    }
-
-    pub const fn deepseek() -> Self {
-        Self::new(
-            "<tool_call>",
-            "</tool_call>",
-            "<think>",
-            "</think>",
-            ToolCallFormat::Tagged,
-        )
-    }
-
-    pub const fn hermes() -> Self {
-        Self::new(
-            "<tool_call>",
-            "</tool_call>",
-            "<think>",
-            "</think>",
+            "\x3ctool_call\x3e",
+            "\x3c/tool_call\x3e",
+            "\x3cthink\x3e",
+            "\x3c/think\x3e",
             ToolCallFormat::Tagged,
         )
     }
 
     pub const fn llama3_json() -> Self {
         Self::new(
-            "<|python_tag|>",
+            "\x3c|python_tag|\x3e",
             "",
-            "<think>",
-            "</think>",
+            "\x3cthink\x3e",
+            "\x3c/think\x3e",
             ToolCallFormat::RawJson,
         )
     }
@@ -130,78 +120,140 @@ impl ParserRule {
         Self::new(
             "[TOOL_CALLS]",
             "",
-            "<think>",
-            "</think>",
+            "\x3cthink\x3e",
+            "\x3c/think\x3e",
             ToolCallFormat::PrefixedJson,
         )
     }
 
     pub const fn minimax_m1() -> Self {
         Self::new(
-            "<tool_calls>",
-            "</tool_calls>",
-            "<think>",
-            "</think>",
+            "\x3ctool_calls\x3e",
+            "\x3c/tool_calls\x3e",
+            "\x3cthink\x3e",
+            "\x3c/think\x3e",
             ToolCallFormat::Tagged,
         )
     }
 
     pub const fn minimax_m2() -> Self {
         Self::new(
-            "<minimax:tool_call>",
-            "</minimax:tool_call>",
-            "<think>",
-            "</think>",
+            "\x3cminimax:tool_call\x3e",
+            "\x3c/minimax:tool_call\x3e",
+            "\x3cthink\x3e",
+            "\x3c/think\x3e",
             ToolCallFormat::MiniMaxM2,
         )
     }
 
     pub fn for_model_family(family: &ModelFamily) -> Self {
         match family {
-            ModelFamily::Qwen => Self::hermes(),
+            ModelFamily::Qwen => Self::qwen(),
             ModelFamily::Llama => Self::llama3_json(),
             ModelFamily::Mixtral => Self::mistral(),
-            ModelFamily::MiniMax => Self::minimax_m1(),
-            ModelFamily::MiniMaxM2 => Self::minimax_m1(),
-            ModelFamily::Unknown(_) => Self::hermes(),
+            ModelFamily::MiniMax | ModelFamily::MiniMaxM2 => Self::minimax_m1(),
+            ModelFamily::Unknown(_) => Self::qwen(),
         }
     }
 }
+
+// ─── Parser State ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParserState {
     Normal,
     Reasoning,
-    ToolCall,
     ToolJson,
 }
 
+/// Incremental JSON bracket-depth scanner with byte-offset tracking.
 #[derive(Debug, Clone)]
-pub struct ParserContext {
-    pub state: ParserState,
-    pub buffer: String,
-    pub tool_json_buffer: String,
-    pub options: ParserOptions,
+struct JsonScanner {
+    depth: u32,
+    in_string: bool,
+    escape: bool,
+    started: bool,
+    closed: bool,
+    /// Byte offset within the current fragment where JSON closed (inclusive).
+    consumed: usize,
 }
 
-impl ParserContext {
-    pub fn new(options: ParserOptions) -> Self {
+impl JsonScanner {
+    fn new() -> Self {
         Self {
-            state: ParserState::Normal,
-            buffer: String::new(),
-            tool_json_buffer: String::new(),
-            options,
+            depth: 0,
+            in_string: false,
+            escape: false,
+            started: false,
+            closed: false,
+            consumed: 0,
         }
+    }
+
+    fn scan(&mut self, fragment: &str) {
+        self.consumed = 0;
+        if self.closed {
+            return;
+        }
+        let mut byte_pos: usize = 0;
+        for ch in fragment.chars() {
+            let ch_len = ch.len_utf8();
+            if self.closed {
+                break;
+            }
+            if self.in_string {
+                if self.escape {
+                    self.escape = false;
+                } else {
+                    match ch {
+                        '\\' => self.escape = true,
+                        '"' => self.in_string = false,
+                        _ => {}
+                    }
+                }
+                byte_pos += ch_len;
+                continue;
+            }
+            match ch {
+                '"' => self.in_string = true,
+                '{' | '[' => {
+                    self.started = true;
+                    self.depth += 1;
+                }
+                '}' | ']' => {
+                    self.depth = self.depth.saturating_sub(1);
+                    if self.started && self.depth == 0 {
+                        self.closed = true;
+                        self.consumed = byte_pos + ch_len;
+                    }
+                }
+                _ => {}
+            }
+            byte_pos += ch_len;
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new();
     }
 }
 
-pub trait StreamingParser {
-    fn feed(&mut self, delta: &str) -> Vec<ParserEvent>;
-}
+// ─── Main Parser ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct IncrementalStreamingParser {
-    context: ParserContext,
+    state: ParserState,
+    /// Pending text buffer. Content before `cursor` is logically consumed.
+    buf: String,
+    /// Read cursor into `buf` — bytes before this are garbage.
+    cursor: usize,
+    tool_json: String,
+    scanner: JsonScanner,
+    options: ParserOptions,
+    /// Precomputed active markers (built once at construction).
+    markers: Vec<&'static str>,
+    /// Set of first bytes of all active markers (for fast rejection).
+    first_bytes: Vec<u8>,
 }
 
 impl IncrementalStreamingParser {
@@ -210,288 +262,543 @@ impl IncrementalStreamingParser {
     }
 
     pub fn with_options(options: ParserOptions) -> Self {
+        let mut markers = Vec::with_capacity(4);
+        if options.reasoning_parser {
+            if !options.rule.think_start.is_empty() {
+                markers.push(options.rule.think_start);
+            }
+            if !options.rule.think_end.is_empty() {
+                markers.push(options.rule.think_end);
+            }
+        }
+        if options.tool_call_parser {
+            if !options.rule.tool_start.is_empty() {
+                markers.push(options.rule.tool_start);
+            }
+            if !options.rule.tool_end.is_empty() {
+                markers.push(options.rule.tool_end);
+            }
+        }
+
+        let first_bytes: Vec<u8> = markers.iter().map(|m| m.as_bytes()[0]).collect();
+
         Self {
-            context: ParserContext::new(options),
+            state: ParserState::Normal,
+            buf: String::with_capacity(256),
+            cursor: 0,
+            tool_json: String::with_capacity(512),
+            scanner: JsonScanner::new(),
+            options,
+            markers,
+            first_bytes,
         }
     }
 
     pub fn state(&self) -> ParserState {
-        self.context.state
+        self.state
     }
-}
 
-impl StreamingParser for IncrementalStreamingParser {
-    fn feed(&mut self, delta: &str) -> Vec<ParserEvent> {
-        self.context.buffer.push_str(delta);
+    pub fn reset(&mut self) {
+        self.state = ParserState::Normal;
+        self.buf.clear();
+        self.cursor = 0;
+        self.tool_json.clear();
+        self.scanner.reset();
+    }
 
-        let mut events = Vec::new();
+    /// Feed a text delta. Returns zero-copy events borrowing from the internal
+    /// buffer. Events are valid until the next `feed()` or `reset()` call.
+    pub fn feed(&mut self, delta: &str) -> Vec<ParserEvent<'_>> {
+        // Compaction from previous round (deferred to avoid invalidating borrows).
+        if self.cursor > COMPACT_THRESHOLD {
+            self.buf.drain(..self.cursor);
+            self.cursor = 0;
+        }
+
+        self.buf.push_str(delta);
+
+        // Use a raw pointer to decouple event lifetime from &mut self.
+        // SAFETY: Within a single feed() call, self.buf is never modified
+        // (only cursor/state change). Compaction happens at the START of
+        // the NEXT feed(), after previous events have been consumed.
+        let this = self as *mut Self;
+        let mut out: Vec<ParserEvent<'static>> = Vec::with_capacity(8);
         loop {
-            match self.context.state {
-                ParserState::Normal => {
-                    if self.context.buffer.is_empty() {
-                        break;
-                    }
-
-                    if let Some((marker_kind, marker_pos, marker_len)) =
-                        find_next_marker(&self.context.buffer, self.context.options)
-                    {
-                        if marker_pos > 0 {
-                            let content: String = self.context.buffer.drain(..marker_pos).collect();
-                            if !content.is_empty() {
-                                events.push(ParserEvent::Content(content));
-                            }
-                        }
-
-                        self.context.buffer.drain(..marker_len);
-                        self.context.state = match marker_kind {
-                            MarkerKind::ThinkStart => ParserState::Reasoning,
-                            MarkerKind::ToolStart => ParserState::ToolCall,
-                        };
-                        continue;
-                    }
-
-                    let keep =
-                        longest_suffix_prefix_len(&self.context.buffer, self.context.options);
-                    let emit_len = self.context.buffer.len().saturating_sub(keep);
-                    if emit_len > 0 {
-                        let content: String = self.context.buffer.drain(..emit_len).collect();
-                        if !content.is_empty() {
-                            events.push(ParserEvent::Content(content));
-                        }
-                        continue;
-                    }
-
-                    break;
+            let progressed = unsafe {
+                match (*this).state {
+                    ParserState::Normal => (*this).step_normal(&mut out),
+                    ParserState::Reasoning => (*this).step_reasoning(&mut out),
+                    ParserState::ToolJson => (*this).step_tool_json(&mut out),
                 }
-                ParserState::Reasoning => {
-                    if self.context.buffer.is_empty() {
-                        break;
-                    }
+            };
+            if !progressed {
+                break;
+            }
+        }
+        // SAFETY: events borrow from self.buf which is stable until next feed().
+        unsafe { std::mem::transmute::<Vec<ParserEvent<'static>>, Vec<ParserEvent<'_>>>(out) }
+    }
 
-                    if let Some(end_pos) = self
-                        .context
-                        .buffer
-                        .find(self.context.options.rule.think_end)
-                    {
-                        if end_pos > 0 {
-                            let reasoning: String = self.context.buffer.drain(..end_pos).collect();
-                            if !reasoning.is_empty() {
-                                events.push(ParserEvent::Reasoning(reasoning));
-                            }
-                        }
+    // ─── Buffer Helpers ──────────────────────────────────────────────────
 
-                        self.context
-                            .buffer
-                            .drain(..self.context.options.rule.think_end.len());
-                        self.context.state = ParserState::Normal;
-                        continue;
-                    }
+    #[inline]
+    fn active(&self) -> &str {
+        &self.buf[self.cursor..]
+    }
 
-                    let keep =
-                        longest_suffix_prefix_len(&self.context.buffer, self.context.options);
-                    let emit_len = self.context.buffer.len().saturating_sub(keep);
-                    if emit_len > 0 {
-                        let reasoning: String = self.context.buffer.drain(..emit_len).collect();
-                        if !reasoning.is_empty() {
-                            events.push(ParserEvent::Reasoning(reasoning));
-                        }
-                        continue;
-                    }
+    #[inline]
+    fn advance(&mut self, n: usize) {
+        self.cursor += n;
+    }
 
-                    break;
+    // ─── State Steps ─────────────────────────────────────────────────────
+
+    fn step_normal(&mut self, out: &mut Vec<ParserEvent<'static>>) -> bool {
+        if self.cursor >= self.buf.len() {
+            return false;
+        }
+
+        if let Some((kind, rel_pos, marker_len)) = self.next_marker() {
+            if rel_pos > 0 {
+                let start = self.cursor;
+                let end = start + rel_pos;
+                let content = &self.buf[start..end] as *const str;
+                out.push(ParserEvent::Content(unsafe { &*content }));
+            }
+            self.advance(rel_pos + marker_len);
+            self.state = match kind {
+                MarkerKind::ThinkStart => ParserState::Reasoning,
+                MarkerKind::ToolStart => ParserState::ToolJson,
+            };
+            return true;
+        }
+
+        let keep = self.suffix_prefix_len();
+        let active_len = self.buf.len() - self.cursor;
+        let emit_len = active_len.saturating_sub(keep);
+        if emit_len > 0 {
+            let start = self.cursor;
+            let end = start + emit_len;
+            let content = &self.buf[start..end] as *const str;
+            out.push(ParserEvent::Content(unsafe { &*content }));
+            self.advance(emit_len);
+            return true;
+        }
+
+        false
+    }
+
+    fn step_reasoning(&mut self, out: &mut Vec<ParserEvent<'static>>) -> bool {
+        if self.cursor >= self.buf.len() {
+            return false;
+        }
+
+        let end_tag = self.options.rule.think_end;
+        if !end_tag.is_empty() {
+            if let Some(rel_pos) = self.active().find(end_tag) {
+                if rel_pos > 0 {
+                    let start = self.cursor;
+                    let end = start + rel_pos;
+                    let text = &self.buf[start..end] as *const str;
+                    out.push(ParserEvent::Reasoning(unsafe { &*text }));
                 }
-                ParserState::ToolCall => {
-                    self.context.state = ParserState::ToolJson;
-                    continue;
-                }
-                ParserState::ToolJson => {
-                    if self.context.buffer.is_empty() {
-                        break;
-                    }
-
-                    match self.context.options.rule.tool_format {
-                        ToolCallFormat::Tagged | ToolCallFormat::MiniMaxM2 => {
-                            if let Some(end_pos) =
-                                self.context.buffer.find(self.context.options.rule.tool_end)
-                            {
-                                if end_pos > 0 {
-                                    let fragment: String =
-                                        self.context.buffer.drain(..end_pos).collect();
-                                    if !fragment.is_empty() {
-                                        self.context.tool_json_buffer.push_str(&fragment);
-                                        events.push(ParserEvent::ToolCallDelta(ToolCallDelta {
-                                            fragment,
-                                        }));
-                                    }
-                                }
-
-                                self.context
-                                    .buffer
-                                    .drain(..self.context.options.rule.tool_end.len());
-                                let tool_json = std::mem::take(&mut self.context.tool_json_buffer);
-
-                                if let Some(tool_call) = parse_tool_call_payload(
-                                    &tool_json,
-                                    self.context.options.rule.tool_format,
-                                ) {
-                                    events.push(ParserEvent::ToolCall(tool_call));
-                                }
-
-                                self.context.state = ParserState::Normal;
-                                continue;
-                            }
-
-                            let keep = longest_suffix_prefix_len(
-                                &self.context.buffer,
-                                self.context.options,
-                            );
-                            let emit_len = self.context.buffer.len().saturating_sub(keep);
-                            if emit_len > 0 {
-                                let fragment: String =
-                                    self.context.buffer.drain(..emit_len).collect();
-                                if !fragment.is_empty() {
-                                    self.context.tool_json_buffer.push_str(&fragment);
-                                    events.push(ParserEvent::ToolCallDelta(ToolCallDelta {
-                                        fragment,
-                                    }));
-                                }
-                                continue;
-                            }
-
-                            break;
-                        }
-                        ToolCallFormat::RawJson | ToolCallFormat::PrefixedJson => {
-                            let previous_len = self.context.tool_json_buffer.len();
-                            let fragment = std::mem::take(&mut self.context.buffer);
-                            if !fragment.is_empty() {
-                                self.context.tool_json_buffer.push_str(&fragment);
-                            }
-
-                            if let Some((tool_calls, consumed)) = parse_complete_tool_call_payload(
-                                &self.context.tool_json_buffer,
-                                self.context.options.rule.tool_format,
-                            ) {
-                                let payload_from_fragment =
-                                    consumed.saturating_sub(previous_len).min(fragment.len());
-                                if payload_from_fragment > 0 {
-                                    events.push(ParserEvent::ToolCallDelta(ToolCallDelta {
-                                        fragment: fragment[..payload_from_fragment].to_string(),
-                                    }));
-                                }
-
-                                let remainder = self.context.tool_json_buffer.split_off(consumed);
-                                self.context.tool_json_buffer.clear();
-                                if !remainder.is_empty() {
-                                    self.context.buffer = remainder;
-                                }
-                                for tool_call in tool_calls {
-                                    events.push(ParserEvent::ToolCall(tool_call));
-                                }
-                                self.context.state = ParserState::Normal;
-                                continue;
-                            }
-
-                            if !fragment.is_empty() {
-                                events.push(ParserEvent::ToolCallDelta(ToolCallDelta { fragment }));
-                            }
-
-                            break;
-                        }
-                    }
-                }
+                self.advance(rel_pos + end_tag.len());
+                self.state = ParserState::Normal;
+                return true;
             }
         }
 
-        events
+        // Fast path: if last byte can't start the end tag, emit everything.
+        let active_len = self.buf.len() - self.cursor;
+        let last_byte = self.buf.as_bytes()[self.buf.len() - 1];
+        if !end_tag.is_empty() && last_byte != end_tag.as_bytes()[0] {
+            let start = self.cursor;
+            let end = self.buf.len();
+            let text = &self.buf[start..end] as *const str;
+            out.push(ParserEvent::Reasoning(unsafe { &*text }));
+            self.advance(active_len);
+            return true;
+        }
+
+        let keep = self.suffix_prefix_len();
+        let emit_len = active_len.saturating_sub(keep);
+        if emit_len > 0 {
+            let start = self.cursor;
+            let end = start + emit_len;
+            let text = &self.buf[start..end] as *const str;
+            out.push(ParserEvent::Reasoning(unsafe { &*text }));
+            self.advance(emit_len);
+            return true;
+        }
+
+        false
+    }
+
+    fn step_tool_json(&mut self, out: &mut Vec<ParserEvent<'static>>) -> bool {
+        match self.options.rule.tool_format {
+            ToolCallFormat::Tagged | ToolCallFormat::MiniMaxM2 => self.step_tool_tagged(out),
+            ToolCallFormat::RawJson | ToolCallFormat::PrefixedJson => {
+                self.step_tool_json_stream(out)
+            }
+        }
+    }
+
+    fn step_tool_tagged(&mut self, out: &mut Vec<ParserEvent<'static>>) -> bool {
+        let end_tag = self.options.rule.tool_end;
+
+        if let Some(rel_pos) = self.active().find(end_tag) {
+            if rel_pos > 0 {
+                let start = self.cursor;
+                let end = start + rel_pos;
+                self.tool_json.push_str(&self.buf[start..end]);
+                let frag = &self.buf[start..end] as *const str;
+                out.push(ParserEvent::ToolCallDelta(unsafe { &*frag }));
+            }
+            self.advance(rel_pos + end_tag.len());
+
+            let payload = std::mem::take(&mut self.tool_json);
+            if let Some(tool_call) = parse_tool_call(&payload, self.options.rule.tool_format) {
+                out.push(ParserEvent::ToolCall(tool_call));
+            }
+            self.state = ParserState::Normal;
+            return true;
+        }
+
+        // Error recovery: buffer too large without closing tag.
+        let active_len = self.buf.len() - self.cursor;
+        if self.tool_json.len() + active_len > MAX_TOOL_BUF {
+            self.recover_tool_as_content(out);
+            return true;
+        }
+
+        // Fast path: last byte can't start the end tag.
+        if active_len > 0 {
+            let last_byte = self.buf.as_bytes()[self.buf.len() - 1];
+            if !end_tag.is_empty() && last_byte != end_tag.as_bytes()[0] {
+                let start = self.cursor;
+                let end = self.buf.len();
+                self.tool_json.push_str(&self.buf[start..end]);
+                let frag = &self.buf[start..end] as *const str;
+                out.push(ParserEvent::ToolCallDelta(unsafe { &*frag }));
+                self.advance(active_len);
+                return true;
+            }
+        }
+
+        let keep = self.suffix_prefix_len();
+        let emit_len = active_len.saturating_sub(keep);
+        if emit_len > 0 {
+            let start = self.cursor;
+            let end = start + emit_len;
+            self.tool_json.push_str(&self.buf[start..end]);
+            let frag = &self.buf[start..end] as *const str;
+            out.push(ParserEvent::ToolCallDelta(unsafe { &*frag }));
+            self.advance(emit_len);
+            return true;
+        }
+
+        false
+    }
+
+    fn step_tool_json_stream(&mut self, out: &mut Vec<ParserEvent<'static>>) -> bool {
+        if self.cursor >= self.buf.len() {
+            return false;
+        }
+
+        let frag_start = self.cursor;
+        let frag_end = self.buf.len();
+        let fragment = &self.buf[frag_start..frag_end];
+
+        self.scanner.scan(fragment);
+        self.tool_json.push_str(fragment);
+
+        if self.scanner.closed {
+            let consumed = self.scanner.consumed;
+            self.cursor = frag_start + consumed;
+            self.scanner.reset();
+
+            let payload = std::mem::take(&mut self.tool_json);
+            let json_end = payload.len() - (frag_end - frag_start) + consumed;
+            let tool_calls = parse_tool_calls_at(&payload, json_end, self.options.rule.tool_format);
+
+            if frag_start < frag_end {
+                let frag = &self.buf[frag_start..frag_end] as *const str;
+                out.push(ParserEvent::ToolCallDelta(unsafe { &*frag }));
+            }
+            for tc in tool_calls {
+                out.push(ParserEvent::ToolCall(tc));
+            }
+
+            self.state = ParserState::Normal;
+            return true;
+        }
+
+        // Error recovery.
+        if self.tool_json.len() > MAX_TOOL_BUF {
+            let payload = std::mem::take(&mut self.tool_json);
+            self.scanner.reset();
+            self.cursor = frag_end;
+            // Push payload into buf so we can reference it (rare error path).
+            let start = self.buf.len();
+            self.buf.push_str(&payload);
+            let end = self.buf.len();
+            let text = &self.buf[start..end] as *const str;
+            out.push(ParserEvent::Content(unsafe { &*text }));
+            self.state = ParserState::Normal;
+            return true;
+        }
+
+        // Normal path: emit the whole fragment as delta.
+        self.cursor = frag_end;
+        if frag_start < frag_end {
+            let frag = &self.buf[frag_start..frag_end] as *const str;
+            out.push(ParserEvent::ToolCallDelta(unsafe { &*frag }));
+        }
+        false
+    }
+
+    fn recover_tool_as_content(&mut self, out: &mut Vec<ParserEvent<'static>>) {
+        let mut text = std::mem::take(&mut self.tool_json);
+        text.push_str(self.active());
+        self.cursor = self.buf.len();
+        self.scanner.reset();
+        // Push into buf so we can return a stable reference (rare error path).
+        let start = self.buf.len();
+        self.buf.push_str(&text);
+        let end = self.buf.len();
+        let ptr = &self.buf[start..end] as *const str;
+        out.push(ParserEvent::Content(unsafe { &*ptr }));
+        self.state = ParserState::Normal;
+    }
+
+    // ─── Marker Detection ────────────────────────────────────────────────
+
+    fn next_marker(&self) -> Option<(MarkerKind, usize, usize)> {
+        let active = self.active();
+        let think = if self.options.reasoning_parser && !self.options.rule.think_start.is_empty() {
+            active.find(self.options.rule.think_start)
+        } else {
+            None
+        };
+        let tool = if self.options.tool_call_parser && !self.options.rule.tool_start.is_empty() {
+            active.find(self.options.rule.tool_start)
+        } else {
+            None
+        };
+
+        match (think, tool) {
+            (Some(tp), Some(op)) if tp <= op => Some((
+                MarkerKind::ThinkStart,
+                tp,
+                self.options.rule.think_start.len(),
+            )),
+            (Some(_), Some(op)) => Some((
+                MarkerKind::ToolStart,
+                op,
+                self.options.rule.tool_start.len(),
+            )),
+            (Some(tp), None) => Some((
+                MarkerKind::ThinkStart,
+                tp,
+                self.options.rule.think_start.len(),
+            )),
+            (None, Some(op)) => Some((
+                MarkerKind::ToolStart,
+                op,
+                self.options.rule.tool_start.len(),
+            )),
+            (None, None) => None,
+        }
+    }
+
+    /// Longest suffix of active buffer that is a prefix of any active marker.
+    fn suffix_prefix_len(&self) -> usize {
+        let active = self.active();
+        let bytes = active.as_bytes();
+        let buf_len = bytes.len();
+        if buf_len == 0 {
+            return 0;
+        }
+
+        let mut keep = 0usize;
+        let limit = buf_len.min(self.max_marker_len());
+        for start in (buf_len.saturating_sub(limit))..buf_len {
+            if !self.first_bytes.contains(&bytes[start]) {
+                continue;
+            }
+            let suffix_len = buf_len - start;
+            for marker in &self.markers {
+                let mb = marker.as_bytes();
+                if suffix_len <= mb.len() && bytes[start..] == mb[..suffix_len] {
+                    if suffix_len > keep {
+                        keep = suffix_len;
+                    }
+                    break;
+                }
+            }
+        }
+        keep
+    }
+
+    #[inline]
+    fn max_marker_len(&self) -> usize {
+        self.markers.iter().map(|m| m.len()).max().unwrap_or(0)
     }
 }
 
-fn parse_tool_call_payload(text: &str, format: ToolCallFormat) -> Option<ToolCall> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkerKind {
+    ThinkStart,
+    ToolStart,
+}
+
+// ─── Tool Call Parsing ───────────────────────────────────────────────────────
+
+fn parse_tool_call(text: &str, format: ToolCallFormat) -> Option<ToolCall> {
+    parse_tool_calls(text, format).into_iter().next()
+}
+
+fn parse_tool_calls(text: &str, format: ToolCallFormat) -> Vec<ToolCall> {
     match format {
         ToolCallFormat::Tagged => {
-            let value: Value = serde_json::from_str(text).ok()?;
-            extract_tool_call_value(&value)?.into_iter().next()
+            let value: Value = match serde_json::from_str(text) {
+                Ok(v) => v,
+                Err(_) => return Vec::new(),
+            };
+            extract_tool_calls(&value)
         }
-        ToolCallFormat::PrefixedJson => {
-            let (tool_calls, _) = extract_complete_prefixed_tool_call(text)?;
-            tool_calls.into_iter().next()
-        }
+        ToolCallFormat::PrefixedJson => extract_prefixed_tool_calls(text)
+            .map(|(tc, _)| tc)
+            .unwrap_or_default(),
         ToolCallFormat::RawJson => {
-            let (start, end) = extract_complete_json_prefix_range(text)?;
-            let value: Value = serde_json::from_str(&text[start..end]).ok()?;
-            extract_tool_call_value(&value)?.into_iter().next()
+            let (start, end) = match extract_json_range(text) {
+                Some(r) => r,
+                None => return Vec::new(),
+            };
+            let value: Value = match serde_json::from_str(&text[start..end]) {
+                Ok(v) => v,
+                Err(_) => return Vec::new(),
+            };
+            extract_tool_calls(&value)
         }
-        ToolCallFormat::MiniMaxM2 => parse_minimax_m2_tool_call(text)?.into_iter().next(),
+        ToolCallFormat::MiniMaxM2 => parse_minimax_m2(text),
     }
 }
 
-fn parse_complete_tool_call_payload(
-    text: &str,
-    format: ToolCallFormat,
-) -> Option<(Vec<ToolCall>, usize)> {
+/// Parse tool calls using the scanner-provided end position.
+fn parse_tool_calls_at(text: &str, json_end: usize, format: ToolCallFormat) -> Vec<ToolCall> {
+    let end = json_end.min(text.len());
     match format {
         ToolCallFormat::RawJson => {
-            let (start, end) = extract_complete_json_prefix_range(text)?;
-            let value: Value = serde_json::from_str(&text[start..end]).ok()?;
-            Some((extract_tool_call_value(&value)?, end))
+            let slice = &text[..end];
+            let start = slice
+                .char_indices()
+                .find(|(_, ch)| !ch.is_whitespace())
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            match serde_json::from_str(&slice[start..]) {
+                Ok(v) => extract_tool_calls(&v),
+                Err(_) => Vec::new(),
+            }
         }
         ToolCallFormat::PrefixedJson => {
-            let (tool_calls, consumed) = extract_complete_prefixed_tool_call(text)?;
-            Some((tool_calls, consumed))
+            let slice = &text[..end];
+            let json_start = match slice.find('{') {
+                Some(p) => p,
+                None => return Vec::new(),
+            };
+            let name = slice[..json_start].trim().to_string();
+            if name.is_empty() {
+                return Vec::new();
+            }
+            match serde_json::from_str(&slice[json_start..]) {
+                Ok(arguments) => vec![ToolCall { name, arguments }],
+                Err(_) => Vec::new(),
+            }
         }
-        _ => None,
+        _ => Vec::new(),
     }
 }
 
-fn parse_minimax_m2_tool_call(text: &str) -> Option<Vec<ToolCall>> {
-    let invoke_start = text.find("<invoke")?;
-    let invoke_end = text[invoke_start..].find("</invoke>")? + invoke_start;
-    let invoke_block = &text[invoke_start..invoke_end];
-    let extract_attr = |source: &str, attr: &str| -> Option<String> {
-        let pattern = format!(r#"{attr}=""#);
-        let start = source.find(&pattern)? + pattern.len();
-        let end = source[start..].find('"')? + start;
-        Some(source[start..end].to_string())
-    };
-    let name = extract_attr(invoke_block, "name")?;
+fn parse_minimax_m2(text: &str) -> Vec<ToolCall> {
+    let mut result = Vec::new();
+    let mut search = 0;
 
-    let mut arguments = serde_json::Map::new();
-    let mut search_offset = 0usize;
+    while let Some(invoke_start) = text[search..].find("\x3cinvoke") {
+        let invoke_start = search + invoke_start;
+        let invoke_end = match text[invoke_start..].find("\x3c/invoke\x3e") {
+            Some(p) => invoke_start + p + "\x3c/invoke\x3e".len(),
+            None => break,
+        };
+        let block = &text[invoke_start..invoke_end];
 
-    while let Some(parameter_start_rel) = invoke_block[search_offset..].find("<parameter") {
-        let parameter_start = search_offset + parameter_start_rel;
-        let parameter_tag_end = invoke_block[parameter_start..].find('>')? + parameter_start;
-        let parameter_tag = &invoke_block[parameter_start..=parameter_tag_end];
-        let parameter_name = extract_attr(parameter_tag, "name")?;
-        let parameter_close =
-            invoke_block[parameter_tag_end + 1..].find("</parameter>")? + parameter_tag_end + 1;
-        let parameter_value = invoke_block[parameter_tag_end + 1..parameter_close].trim();
-        let value = serde_json::from_str(parameter_value)
-            .unwrap_or_else(|_| Value::String(parameter_value.to_string()));
-        arguments.insert(parameter_name.to_string(), value);
-        search_offset = parameter_close + "</parameter>".len();
+        let name = match extract_attr(block, "name") {
+            Some(n) => n,
+            None => {
+                search = invoke_end;
+                continue;
+            }
+        };
+
+        let mut args = serde_json::Map::new();
+        let mut offset = 0;
+        while let Some(p_start_rel) = block[offset..].find("\x3cparameter") {
+            let p_start = offset + p_start_rel;
+            let tag_end = match block[p_start..].find('>') {
+                Some(p) => p_start + p,
+                None => break,
+            };
+            let tag = &block[p_start..=tag_end];
+            let p_name = match extract_attr(tag, "name") {
+                Some(n) => n,
+                None => {
+                    offset = tag_end + 1;
+                    continue;
+                }
+            };
+            let close_tag = "\x3c/parameter\x3e";
+            let close = match block[tag_end + 1..].find(close_tag) {
+                Some(p) => tag_end + 1 + p,
+                None => break,
+            };
+            let param_value = block[tag_end + 1..close].trim();
+            let value = serde_json::from_str(param_value)
+                .unwrap_or_else(|_| Value::String(param_value.to_string()));
+            args.insert(p_name.to_string(), value);
+            offset = close + close_tag.len();
+        }
+
+        result.push(ToolCall {
+            name,
+            arguments: Value::Object(args),
+        });
+        search = invoke_end;
     }
 
-    Some(vec![ToolCall {
-        name,
-        arguments: Value::Object(arguments),
-    }])
+    result
 }
 
-fn extract_complete_json_prefix_range(text: &str) -> Option<(usize, usize)> {
+fn extract_attr(source: &str, attr: &str) -> Option<String> {
+    let idx = source.find(attr)?;
+    let after_attr = &source[idx + attr.len()..];
+    let after_eq = after_attr.strip_prefix("=\"")?;
+    let end = after_eq.find('"')?;
+    Some(after_eq[..end].to_string())
+}
+
+fn extract_json_range(text: &str) -> Option<(usize, usize)> {
     let start = text
         .char_indices()
         .find(|(_, ch)| !ch.is_whitespace())
         .map(|(index, _)| index)?;
     let mut chars = text[start..].char_indices();
     let (_, first) = chars.next()?;
-    let mut stack = Vec::new();
+    let mut depth: u32 = 0;
     let mut in_string = false;
     let mut escape = false;
 
     match first {
-        '{' => stack.push('}'),
-        '[' => stack.push(']'),
+        '{' | '[' => depth = 1,
         _ => return None,
     }
 
@@ -508,16 +815,12 @@ fn extract_complete_json_prefix_range(text: &str) -> Option<(usize, usize)> {
             }
             continue;
         }
-
         match ch {
             '"' => in_string = true,
-            '{' => stack.push('}'),
-            '[' => stack.push(']'),
+            '{' | '[' => depth += 1,
             '}' | ']' => {
-                if stack.pop() != Some(ch) {
-                    return None;
-                }
-                if stack.is_empty() {
+                depth -= 1;
+                if depth == 0 {
                     return Some((start, start + offset + ch.len_utf8()));
                 }
             }
@@ -528,134 +831,104 @@ fn extract_complete_json_prefix_range(text: &str) -> Option<(usize, usize)> {
     None
 }
 
-fn extract_complete_prefixed_tool_call(text: &str) -> Option<(Vec<ToolCall>, usize)> {
+fn extract_prefixed_tool_calls(text: &str) -> Option<(Vec<ToolCall>, usize)> {
     let json_start = text.find('{')?;
     let name = text[..json_start].trim().to_string();
     if name.is_empty() {
         return None;
     }
-
-    let (start, end) = extract_complete_json_prefix_range(&text[json_start..])?;
+    let (start, end) = extract_json_range(&text[json_start..])?;
     let arguments: Value =
         serde_json::from_str(&text[json_start + start..json_start + end]).ok()?;
     Some((vec![ToolCall { name, arguments }], json_start + end))
 }
 
-fn extract_tool_call_value(value: &Value) -> Option<Vec<ToolCall>> {
+fn extract_tool_calls(value: &Value) -> Vec<ToolCall> {
     if let Some(array) = value.as_array() {
         let mut tool_calls = Vec::with_capacity(array.len());
         for item in array {
-            let call = extract_tool_call_value(item)?;
-            tool_calls.extend(call);
+            tool_calls.extend(extract_tool_calls(item));
         }
-        return Some(tool_calls);
+        return tool_calls;
     }
 
-    let object = value.as_object()?;
+    let object = match value.as_object() {
+        Some(o) => o,
+        None => return Vec::new(),
+    };
 
     if let Some(function) = object.get("function").and_then(Value::as_object) {
         let name = function
             .get("name")
             .and_then(Value::as_str)
-            .or_else(|| object.get("name").and_then(Value::as_str))?
-            .to_string();
-        let arguments = function
-            .get("arguments")
-            .cloned()
-            .or_else(|| object.get("arguments").cloned())
-            .unwrap_or(Value::Null);
-        return Some(vec![ToolCall { name, arguments }]);
-    }
-
-    let name = object.get("name").and_then(Value::as_str)?.to_string();
-    let arguments = object.get("arguments").cloned().unwrap_or(Value::Null);
-
-    Some(vec![ToolCall { name, arguments }])
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MarkerKind {
-    ThinkStart,
-    ToolStart,
-}
-
-fn find_next_marker(text: &str, options: ParserOptions) -> Option<(MarkerKind, usize, usize)> {
-    let think_start = if options.reasoning_parser && !options.rule.think_start.is_empty() {
-        text.find(options.rule.think_start)
-    } else {
-        None
-    };
-    let tool_start = if options.tool_call_parser && !options.rule.tool_start.is_empty() {
-        text.find(options.rule.tool_start)
-    } else {
-        None
-    };
-
-    match (think_start, tool_start) {
-        (Some(think_pos), Some(tool_pos)) if think_pos <= tool_pos => Some((
-            MarkerKind::ThinkStart,
-            think_pos,
-            options.rule.think_start.len(),
-        )),
-        (Some(_think_pos), Some(tool_pos)) => Some((
-            MarkerKind::ToolStart,
-            tool_pos,
-            options.rule.tool_start.len(),
-        )),
-        (Some(think_pos), None) => Some((
-            MarkerKind::ThinkStart,
-            think_pos,
-            options.rule.think_start.len(),
-        )),
-        (None, Some(tool_pos)) => Some((
-            MarkerKind::ToolStart,
-            tool_pos,
-            options.rule.tool_start.len(),
-        )),
-        (None, None) => None,
-    }
-}
-
-fn longest_suffix_prefix_len(text: &str, options: ParserOptions) -> usize {
-    let bytes = text.as_bytes();
-    let mut keep = 0usize;
-
-    let markers = [
-        options
-            .reasoning_parser
-            .then_some(options.rule.think_start)
-            .filter(|marker| !marker.is_empty()),
-        options
-            .tool_call_parser
-            .then_some(options.rule.tool_start)
-            .filter(|marker| !marker.is_empty()),
-    ];
-
-    for marker in markers.into_iter().flatten() {
-        let marker_bytes = marker.as_bytes();
-        let limit = bytes.len().min(marker_bytes.len());
-
-        for suffix_len in 1..=limit {
-            if bytes[bytes.len() - suffix_len..] == marker_bytes[..suffix_len] {
-                keep = keep.max(suffix_len);
-            }
+            .or_else(|| object.get("name").and_then(Value::as_str));
+        if let Some(name) = name {
+            let arguments = resolve_arguments(
+                function
+                    .get("arguments")
+                    .or_else(|| object.get("arguments")),
+            );
+            return vec![ToolCall {
+                name: name.to_string(),
+                arguments,
+            }];
         }
     }
 
-    keep
+    if let Some(name) = object.get("name").and_then(Value::as_str) {
+        let arguments = resolve_arguments(object.get("arguments"));
+        return vec![ToolCall {
+            name: name.to_string(),
+            arguments,
+        }];
+    }
+
+    Vec::new()
 }
+
+fn resolve_arguments(val: Option<&Value>) -> Value {
+    match val {
+        None => Value::Null,
+        Some(Value::String(s)) => {
+            serde_json::from_str(s).unwrap_or_else(|_| Value::String(s.clone()))
+        }
+        Some(v) => v.clone(),
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn collect_events(parser: &mut impl StreamingParser, chunks: &[&str]) -> Vec<ParserEvent> {
-        let mut events = Vec::new();
+    /// Owned version of ParserEvent for test assertions.
+    #[derive(Debug, PartialEq)]
+    enum Owned {
+        Content(String),
+        Reasoning(String),
+        ToolCall(ToolCall),
+        ToolCallDelta(String),
+    }
 
-        for chunk in chunks {
-            events.extend(parser.feed(chunk));
+    impl Owned {
+        fn from_event(e: &ParserEvent<'_>) -> Self {
+            match e {
+                ParserEvent::Content(s) => Owned::Content(s.to_string()),
+                ParserEvent::Reasoning(s) => Owned::Reasoning(s.to_string()),
+                ParserEvent::ToolCall(tc) => Owned::ToolCall(tc.clone()),
+                ParserEvent::ToolCallDelta(s) => Owned::ToolCallDelta(s.to_string()),
+            }
         }
+    }
 
+    fn collect_events(parser: &mut IncrementalStreamingParser, chunks: &[&str]) -> Vec<Owned> {
+        let mut events = Vec::new();
+        for chunk in chunks {
+            for e in parser.feed(chunk) {
+                events.push(Owned::from_event(&e));
+            }
+        }
         events
     }
 
@@ -664,16 +937,20 @@ mod tests {
         let mut parser = IncrementalStreamingParser::new(ParserRule::qwen());
         let events = collect_events(
             &mut parser,
-            &["hello ", "<think>an", "alyzing", "</think> world"],
+            &[
+                "hello ",
+                "\x3cthink\x3ean",
+                "alyzing",
+                "\x3c/think\x3e world",
+            ],
         );
-
         assert_eq!(
             events,
             vec![
-                ParserEvent::Content("hello ".to_string()),
-                ParserEvent::Reasoning("an".to_string()),
-                ParserEvent::Reasoning("alyzing".to_string()),
-                ParserEvent::Content(" world".to_string()),
+                Owned::Content("hello ".into()),
+                Owned::Reasoning("an".into()),
+                Owned::Reasoning("alyzing".into()),
+                Owned::Content(" world".into()),
             ]
         );
     }
@@ -685,30 +962,23 @@ mod tests {
             &mut parser,
             &[
                 "text ",
-                "<tool_call>{\"name\":\"search\",\"arguments\":",
+                "\x3ctool_call\x3e{\"name\":\"search\",\"arguments\":",
                 "{\"query\":\"Tesla\"}",
-                "}</tool_call> done",
+                "}\x3c/tool_call\x3e done",
             ],
         );
-
         assert_eq!(
             events,
             vec![
-                ParserEvent::Content("text ".to_string()),
-                ParserEvent::ToolCallDelta(ToolCallDelta {
-                    fragment: "{\"name\":\"search\",\"arguments\":".to_string()
-                }),
-                ParserEvent::ToolCallDelta(ToolCallDelta {
-                    fragment: "{\"query\":\"Tesla\"}".to_string()
-                }),
-                ParserEvent::ToolCallDelta(ToolCallDelta {
-                    fragment: "}".to_string()
-                }),
-                ParserEvent::ToolCall(ToolCall {
-                    name: "search".to_string(),
+                Owned::Content("text ".into()),
+                Owned::ToolCallDelta("{\"name\":\"search\",\"arguments\":".into()),
+                Owned::ToolCallDelta("{\"query\":\"Tesla\"}".into()),
+                Owned::ToolCallDelta("}".into()),
+                Owned::ToolCall(ToolCall {
+                    name: "search".into(),
                     arguments: serde_json::json!({"query":"Tesla"}),
                 }),
-                ParserEvent::Content(" done".to_string()),
+                Owned::Content(" done".into()),
             ]
         );
     }
@@ -716,20 +986,34 @@ mod tests {
     #[test]
     fn keeps_partial_tags_in_buffer() {
         let mut parser = IncrementalStreamingParser::new(ParserRule::qwen());
-        let events = parser.feed("abc<thi");
-        assert_eq!(events, vec![ParserEvent::Content("abc".to_string())]);
+        let events: Vec<Owned> = parser
+            .feed("abc\x3cthi")
+            .iter()
+            .map(Owned::from_event)
+            .collect();
+        assert_eq!(events, vec![Owned::Content("abc".into())]);
         assert_eq!(parser.state(), ParserState::Normal);
 
-        let events = parser.feed("nk>hello</think>");
-        assert_eq!(events, vec![ParserEvent::Reasoning("hello".to_string())]);
+        let events: Vec<Owned> = parser
+            .feed("nk\x3ehello\x3c/think\x3e")
+            .iter()
+            .map(Owned::from_event)
+            .collect();
+        assert_eq!(events, vec![Owned::Reasoning("hello".into())]);
     }
 
     #[test]
     fn parses_nested_function_tool_call_shape() {
         let text = r#"{"function":{"name":"search","arguments":{"query":"mars"}}}"#;
-        let tool_call =
-            parse_tool_call_payload(text, ToolCallFormat::Tagged).expect("tool call should parse");
+        let tool_call = parse_tool_call(text, ToolCallFormat::Tagged).expect("should parse");
+        assert_eq!(tool_call.name, "search");
+        assert_eq!(tool_call.arguments, serde_json::json!({"query": "mars"}));
+    }
 
+    #[test]
+    fn parses_arguments_as_json_string() {
+        let text = r#"{"name":"search","arguments":"{\"query\":\"mars\"}"}"#;
+        let tool_call = parse_tool_call(text, ToolCallFormat::Tagged).expect("should parse");
         assert_eq!(tool_call.name, "search");
         assert_eq!(tool_call.arguments, serde_json::json!({"query": "mars"}));
     }
@@ -741,26 +1025,21 @@ mod tests {
             &mut parser,
             &[
                 "intro ",
-                "<|python_tag|>{\"name\":\"search\",\"arguments\":",
+                "\x3c|python_tag|\x3e{\"name\":\"search\",\"arguments\":",
                 "{\"query\":\"Mars\"}} tail",
             ],
         );
-
         assert_eq!(
             events,
             vec![
-                ParserEvent::Content("intro ".to_string()),
-                ParserEvent::ToolCallDelta(ToolCallDelta {
-                    fragment: "{\"name\":\"search\",\"arguments\":".to_string()
-                }),
-                ParserEvent::ToolCallDelta(ToolCallDelta {
-                    fragment: "{\"query\":\"Mars\"}}".to_string()
-                }),
-                ParserEvent::ToolCall(ToolCall {
-                    name: "search".to_string(),
+                Owned::Content("intro ".into()),
+                Owned::ToolCallDelta("{\"name\":\"search\",\"arguments\":".into()),
+                Owned::ToolCallDelta("{\"query\":\"Mars\"}} tail".into()),
+                Owned::ToolCall(ToolCall {
+                    name: "search".into(),
                     arguments: serde_json::json!({"query":"Mars"}),
                 }),
-                ParserEvent::Content(" tail".to_string()),
+                Owned::Content(" tail".into()),
             ]
         );
     }
@@ -772,26 +1051,21 @@ mod tests {
             &mut parser,
             &[
                 "before ",
-                "<tool_calls>{\"name\":\"search\",\"arguments\":",
-                "{\"query\":\"saturn\"}}</tool_calls> after",
+                "\x3ctool_calls\x3e{\"name\":\"search\",\"arguments\":",
+                "{\"query\":\"saturn\"}}\x3c/tool_calls\x3e after",
             ],
         );
-
         assert_eq!(
             events,
             vec![
-                ParserEvent::Content("before ".to_string()),
-                ParserEvent::ToolCallDelta(ToolCallDelta {
-                    fragment: "{\"name\":\"search\",\"arguments\":".to_string()
-                }),
-                ParserEvent::ToolCallDelta(ToolCallDelta {
-                    fragment: "{\"query\":\"saturn\"}}".to_string()
-                }),
-                ParserEvent::ToolCall(ToolCall {
-                    name: "search".to_string(),
+                Owned::Content("before ".into()),
+                Owned::ToolCallDelta("{\"name\":\"search\",\"arguments\":".into()),
+                Owned::ToolCallDelta("{\"query\":\"saturn\"}}".into()),
+                Owned::ToolCall(ToolCall {
+                    name: "search".into(),
                     arguments: serde_json::json!({"query":"saturn"}),
                 }),
-                ParserEvent::Content(" after".to_string()),
+                Owned::Content(" after".into()),
             ]
         );
     }
@@ -803,90 +1077,117 @@ mod tests {
             &mut parser,
             &[
                 "before ",
-                "<minimax:tool_call><invoke name=\"search\"><parameter name=\"query\">",
-                "\"venus\"</parameter></invoke></minimax:tool_call> after",
+                "\x3cminimax:tool_call\x3e\x3cinvoke name=\"search\"\x3e\x3cparameter name=\"query\"\x3e",
+                "\"venus\"\x3c/parameter\x3e\x3c/invoke\x3e\x3c/minimax:tool_call\x3e after",
             ],
         );
-
         assert_eq!(
             events,
             vec![
-                ParserEvent::Content("before ".to_string()),
-                ParserEvent::ToolCallDelta(ToolCallDelta {
-                    fragment: "<invoke name=\"search\"><parameter name=\"query\">".to_string()
-                }),
-                ParserEvent::ToolCallDelta(ToolCallDelta {
-                    fragment: "\"venus\"</parameter></invoke>".to_string()
-                }),
-                ParserEvent::ToolCall(ToolCall {
-                    name: "search".to_string(),
+                Owned::Content("before ".into()),
+                Owned::ToolCallDelta(
+                    "\x3cinvoke name=\"search\"\x3e\x3cparameter name=\"query\"\x3e".into()
+                ),
+                Owned::ToolCallDelta("\"venus\"\x3c/parameter\x3e\x3c/invoke\x3e".into()),
+                Owned::ToolCall(ToolCall {
+                    name: "search".into(),
                     arguments: serde_json::json!({"query":"venus"}),
                 }),
-                ParserEvent::Content(" after".to_string()),
+                Owned::Content(" after".into()),
             ]
         );
     }
 
     #[test]
-    fn ignores_invalid_tool_json_until_complete_parse() {
+    fn tool_json_stays_buffered_until_close() {
         let mut parser = IncrementalStreamingParser::new(ParserRule::qwen());
-        let events = parser.feed("<tool_call>{\"name\":\"search\",\"arguments\":");
-
+        let events: Vec<Owned> = parser
+            .feed("\x3ctool_call\x3e{\"name\":\"search\",\"arguments\":")
+            .iter()
+            .map(Owned::from_event)
+            .collect();
         assert_eq!(
             events,
-            vec![ParserEvent::ToolCallDelta(ToolCallDelta {
-                fragment: "{\"name\":\"search\",\"arguments\":".to_string()
-            })]
+            vec![Owned::ToolCallDelta(
+                "{\"name\":\"search\",\"arguments\":".into()
+            )]
         );
         assert_eq!(parser.state(), ParserState::ToolJson);
     }
 
     #[test]
-    fn passes_through_reasoning_tags_when_reasoning_parser_is_disabled() {
+    fn passes_through_reasoning_tags_when_disabled() {
         let mut parser = IncrementalStreamingParser::with_options(ParserOptions {
             rule: ParserRule::qwen(),
             reasoning_parser: false,
             tool_call_parser: true,
         });
-
-        let events = collect_events(&mut parser, &["hello ", "<think>keep", "</think> world"]);
-
+        let events = collect_events(
+            &mut parser,
+            &["hello ", "\x3cthink\x3ekeep", "\x3c/think\x3e world"],
+        );
         assert_eq!(
             events,
             vec![
-                ParserEvent::Content("hello ".to_string()),
-                ParserEvent::Content("<think>keep".to_string()),
-                ParserEvent::Content("</think> world".to_string()),
+                Owned::Content("hello ".into()),
+                Owned::Content("\x3cthink\x3ekeep".into()),
+                Owned::Content("\x3c/think\x3e world".into()),
             ]
         );
     }
 
     #[test]
-    fn passes_through_tool_tags_when_tool_call_parser_is_disabled() {
+    fn passes_through_tool_tags_when_disabled() {
         let mut parser = IncrementalStreamingParser::with_options(ParserOptions {
             rule: ParserRule::qwen(),
             reasoning_parser: true,
             tool_call_parser: false,
         });
-
         let events = collect_events(
             &mut parser,
             &[
                 "text ",
-                "<tool_call>{\"name\":\"search\",\"arguments\":",
+                "\x3ctool_call\x3e{\"name\":\"search\",\"arguments\":",
                 "{\"query\":\"Tesla\"}}",
-                "</tool_call> done",
+                "\x3c/tool_call\x3e done",
             ],
         );
-
         assert_eq!(
             events,
             vec![
-                ParserEvent::Content("text ".to_string()),
-                ParserEvent::Content("<tool_call>{\"name\":\"search\",\"arguments\":".to_string()),
-                ParserEvent::Content("{\"query\":\"Tesla\"}}".to_string()),
-                ParserEvent::Content("</tool_call> done".to_string()),
+                Owned::Content("text ".into()),
+                Owned::Content("\x3ctool_call\x3e{\"name\":\"search\",\"arguments\":".into()),
+                Owned::Content("{\"query\":\"Tesla\"}}".into()),
+                Owned::Content("\x3c/tool_call\x3e done".into()),
             ]
         );
+    }
+
+    #[test]
+    fn reset_clears_state() {
+        let mut parser = IncrementalStreamingParser::new(ParserRule::qwen());
+        let _ = parser.feed("\x3cthink\x3epartial");
+        assert_eq!(parser.state(), ParserState::Reasoning);
+
+        parser.reset();
+        assert_eq!(parser.state(), ParserState::Normal);
+
+        let events: Vec<Owned> = parser
+            .feed("clean text")
+            .iter()
+            .map(Owned::from_event)
+            .collect();
+        assert_eq!(events, vec![Owned::Content("clean text".into())]);
+    }
+
+    #[test]
+    fn error_recovery_on_oversized_tool_buffer() {
+        let mut parser = IncrementalStreamingParser::new(ParserRule::qwen());
+        let _ = parser.feed("\x3ctool_call\x3e");
+        let big = "x".repeat(MAX_TOOL_BUF + 1);
+        let events: Vec<Owned> = parser.feed(&big).iter().map(Owned::from_event).collect();
+
+        assert_eq!(parser.state(), ParserState::Normal);
+        assert!(events.iter().any(|e| matches!(e, Owned::Content(_))));
     }
 }

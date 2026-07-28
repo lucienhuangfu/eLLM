@@ -107,12 +107,21 @@ pub fn initialize_runtime(
         batch_sequences.with_mut(|batch_sequence| batch_sequence.batch_temperature.as_mut_ptr());
     let _ = model.forward(sequences_ptr, batch_temperature_ptr);
 
+    let (reasoning_parser_enabled, tool_call_parser_enabled) =
+        if let Some(serve) = &resolved_config.serve {
+            (serve.reasoning_parser_enabled, serve.tool_call_parser_enabled)
+        } else {
+            (true, true)
+        };
+
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
         batch_sequences.clone(),
         batch_states,
         session_mode,
         slot_reuse_timeout_ms as u64,
+        reasoning_parser_enabled,
+        tool_call_parser_enabled,
     ));
 
     let operator_queue = f16::take_operator_queue();

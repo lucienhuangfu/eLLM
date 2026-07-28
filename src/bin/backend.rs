@@ -177,6 +177,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&batch_list_arc),
         SessionMode::Reusable,
         600000, // 10 minutes
+        true,
+        true,
     ));
 
     let worker_pool = ExecutorPool::<f16>::new(

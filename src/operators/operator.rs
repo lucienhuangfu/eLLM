@@ -382,6 +382,8 @@ mod test {
             Arc::clone(&batch_list),
             SessionMode::Reusable,
             600000, // 10 minutes
+            true,
+            true,
         ));
         let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
         scheduler.batch_list().with_mut(|bl| {
@@ -641,6 +643,8 @@ mod test {
                 Arc::clone(&batch_list),
                 SessionMode::Reusable,
                 600000, // 10 minutes
+                true,
+                true,
             ));
             let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, thread_num, batch_list);
             scheduler.batch_list().with_mut(|bl| {
@@ -782,6 +786,8 @@ mod test {
             Arc::clone(&batch_list),
             SessionMode::Reusable,
             600000, // 10 minutes
+            true,
+            true,
         ));
         let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
         scheduler.batch_list().with_mut(|bl| {
@@ -1024,6 +1030,8 @@ mod test {
             Arc::clone(&batch_list),
             SessionMode::Reusable,
             600000, // 10 minutes
+            true,
+            true,
         ));
         let scheduler = Scheduler::new(SEQUENCE_LENGTH, BATCH_SIZE, THREAD_NUM, batch_list);
         scheduler.batch_list().with_mut(|bl| {

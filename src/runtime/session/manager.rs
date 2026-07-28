@@ -22,6 +22,8 @@ pub struct SlotManager<T: Copy + FromNumber> {
     reserved_slots: TokioMutex<HashMap<String, (usize, Arc<AtomicBool>)>>,
     mode: SessionMode,
     reuse_timeout: Duration,
+    pub reasoning_parser_enabled: bool,
+    pub tool_call_parser_enabled: bool,
 }
 
 impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
@@ -31,6 +33,8 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
         batch_states: Arc<SharedMut<Vec<SlotState>>>,
         mode: SessionMode,
         reuse_timeout_ms: u64,
+        reasoning_parser_enabled: bool,
+        tool_call_parser_enabled: bool,
     ) -> Self {
         Self {
             batch_states,
@@ -40,6 +44,8 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
             reserved_slots: TokioMutex::new(HashMap::new()),
             mode,
             reuse_timeout: Duration::from_millis(reuse_timeout_ms),
+            reasoning_parser_enabled,
+            tool_call_parser_enabled,
         }
     }
 

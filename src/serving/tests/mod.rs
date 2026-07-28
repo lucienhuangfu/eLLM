@@ -3,6 +3,7 @@ mod syn_flow_test;
 mod stream_flow_test;
 mod concurrent_test;
 mod scheduler_fakeecho_test;
+mod stream_fakeecho_test;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

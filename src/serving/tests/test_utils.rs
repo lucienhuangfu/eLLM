@@ -82,6 +82,8 @@ pub fn create_test_manager_with_mode(
         batch_states,
         mode,
         timeout_ms,
+        true,
+        true,
     ));
     (manager, buffer)
 }
@@ -102,6 +104,16 @@ pub fn create_qwen3_test_manager_with_mode(
     batch_size: usize,
     timeout_ms: u64,
     mode: SessionMode,
+) -> (Arc<SlotManager<f16>>, Vec<usize>) {
+    create_qwen3_test_manager_with_parser(batch_size, timeout_ms, mode, true, true)
+}
+
+pub fn create_qwen3_test_manager_with_parser(
+    batch_size: usize,
+    timeout_ms: u64,
+    mode: SessionMode,
+    reasoning_parser_enabled: bool,
+    tool_call_parser_enabled: bool,
 ) -> (Arc<SlotManager<f16>>, Vec<usize>) {
     let seq_len = 1024;
     let mut buffer = vec![0usize; batch_size * seq_len];
@@ -124,6 +136,8 @@ pub fn create_qwen3_test_manager_with_mode(
         batch_states,
         mode,
         timeout_ms,
+        reasoning_parser_enabled,
+        tool_call_parser_enabled,
     ));
     (manager, buffer)
 }

@@ -619,6 +619,247 @@ async fn test_reusable_sequence_prefix_match_direct() {
     );
 }
 
+const REUSABLE_NUM_USERS: usize = 50;
+const REUSABLE_BATCH_SIZE: usize = 32;
+const REUSABLE_NUM_ROUNDS: usize = 3;
+const REUSABLE_MIN_DELAY_MS: u64 = 10;
+const REUSABLE_MAX_DELAY_MS: u64 = 200;
+const REUSABLE_INTER_ROUND_DELAY_MS: u64 = 30;
+const REUSABLE_MAX_RETRIES: usize = 20;
+const REUSABLE_RETRY_BASE_DELAY_MS: u64 = 50;
+
+async fn send_chat_request_with_retry(
+    router: axum::Router,
+    body: &serde_json::Value,
+    user_id: usize,
+    round: usize,
+) -> (serde_json::Value, usize) {
+    let mut retries = 0;
+    loop {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(body).unwrap()))
+            .unwrap();
+
+        let response = router.clone().oneshot(request).await.unwrap();
+
+        if response.status() == StatusCode::OK {
+            let resp_body = collect_body(response.into_body()).await;
+            let json: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
+            return (json, retries);
+        }
+
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "user {} round {}: unexpected status {}",
+            user_id,
+            round,
+            response.status()
+        );
+
+        retries += 1;
+        assert!(
+            retries <= REUSABLE_MAX_RETRIES,
+            "user {} round {}: too many retries ({})",
+            user_id,
+            round,
+            retries
+        );
+
+        let delay = REUSABLE_RETRY_BASE_DELAY_MS * (1 << retries.min(6));
+        let jitter = (user_id as u64 * round as u64 + retries as u64 * 7) % 30;
+        tokio::time::sleep(Duration::from_millis(delay + jitter)).await;
+    }
+}
+
+#[tokio::test]
+async fn test_multi_user_reusable_multi_round() {
+    let (manager, _buffer) = create_qwen3_test_manager_with_mode(
+        REUSABLE_BATCH_SIZE,
+        5000,
+        SessionMode::Reusable,
+    );
+    let router = crate::serving::server::build_router(Arc::clone(&manager));
+
+    let digit_tokens: Vec<usize> = (15..25).collect();
+    let eos_id = 151645;
+    let _scheduler = start_runtime_with_fakeecho(
+        Arc::clone(&manager),
+        eos_id,
+        4,
+        digit_tokens,
+        10,
+    );
+
+    let mut user_handles = Vec::with_capacity(REUSABLE_NUM_USERS);
+
+    for user_id in 0..REUSABLE_NUM_USERS {
+        let router = router.clone();
+        let initial_delay = REUSABLE_MIN_DELAY_MS
+            + (user_id as u64 * 37) % (REUSABLE_MAX_DELAY_MS - REUSABLE_MIN_DELAY_MS);
+
+        let handle = tokio::spawn(async move {
+            let session_id = format!("reusable-user-{}", user_id);
+            let mut round_results = Vec::with_capacity(REUSABLE_NUM_ROUNDS);
+            let mut conversation: Vec<(String, String)> = Vec::new();
+            let mut total_retries = 0usize;
+
+            for round in 0..REUSABLE_NUM_ROUNDS {
+                if round > 0 {
+                    let jitter = (user_id as u64 * round as u64 * 13) % 20;
+                    tokio::time::sleep(Duration::from_millis(
+                        REUSABLE_INTER_ROUND_DELAY_MS + jitter,
+                    ))
+                    .await;
+                }
+
+                let user_message = format!(
+                    "User {} round {}: hello world test message number {}",
+                    user_id, round, round + 1
+                );
+
+                let mut messages = Vec::new();
+                for (role, content) in &conversation {
+                    messages.push(serde_json::json!({
+                        "role": role,
+                        "content": content
+                    }));
+                }
+                messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": user_message
+                }));
+
+                let body = serde_json::json!({
+                    "model": "test-model",
+                    "messages": messages,
+                    "stream": false,
+                    "session_id": session_id
+                });
+
+                let start = std::time::Instant::now();
+                let (json, retries) =
+                    send_chat_request_with_retry(router.clone(), &body, user_id, round).await;
+                let elapsed = start.elapsed();
+                total_retries += retries;
+
+                let content = json["choices"][0]["message"]["content"]
+                    .as_str()
+                    .expect("content should be a string");
+
+                assert!(
+                    !content.is_empty(),
+                    "user {} round {}: content should not be empty",
+                    user_id,
+                    round
+                );
+
+                let eos_text = "<|im_end|>";
+                assert!(
+                    content.ends_with(eos_text),
+                    "user {} round {}: content should end with eos, got: {:?}",
+                    user_id,
+                    round,
+                    content
+                );
+
+                let generated_part = &content[..content.len() - eos_text.len()];
+                assert!(
+                    !generated_part.is_empty(),
+                    "user {} round {}: should have generated tokens before eos",
+                    user_id,
+                    round
+                );
+
+                let expected_pattern = "0123456789".repeat(generated_part.len() / 10 + 1);
+                assert!(
+                    generated_part
+                        .chars()
+                        .eq(expected_pattern.chars().take(generated_part.len())),
+                    "user {} round {}: generated content should cycle through 0-9 digits, got: {:?}",
+                    user_id,
+                    round,
+                    generated_part
+                );
+
+                conversation.push(("user".to_string(), user_message));
+                conversation.push((
+                    "assistant".to_string(),
+                    generated_part.to_string(),
+                ));
+
+                round_results.push((round, elapsed, generated_part.len(), retries));
+            }
+
+            (user_id, round_results, total_retries)
+        });
+
+        user_handles.push(handle);
+        tokio::time::sleep(Duration::from_millis(initial_delay)).await;
+    }
+
+    let mut all_results = Vec::with_capacity(REUSABLE_NUM_USERS);
+    for handle in user_handles {
+        let (user_id, round_results, total_retries) = handle.await.unwrap();
+        all_results.push((user_id, round_results, total_retries));
+    }
+
+    assert_eq!(all_results.len(), REUSABLE_NUM_USERS);
+
+    let mut total_requests = 0;
+    let mut total_latency = Duration::from_millis(0);
+    let mut max_latency = Duration::from_millis(0);
+    let mut min_latency = Duration::from_millis(u64::MAX);
+    let mut total_gen_len = 0usize;
+    let mut total_retries_all = 0usize;
+    let mut users_with_retries = 0usize;
+
+    for (user_id, rounds, total_retries) in &all_results {
+        for (round, latency, gen_len, _retries) in rounds {
+            total_requests += 1;
+            total_latency += *latency;
+            if *latency > max_latency {
+                max_latency = *latency;
+            }
+            if *latency < min_latency {
+                min_latency = *latency;
+            }
+            total_gen_len += gen_len;
+        }
+        assert_eq!(
+            rounds.len(),
+            REUSABLE_NUM_ROUNDS,
+            "user {} should have {} rounds",
+            user_id,
+            REUSABLE_NUM_ROUNDS
+        );
+        total_retries_all += total_retries;
+        if *total_retries > 0 {
+            users_with_retries += 1;
+        }
+    }
+
+    let avg_latency = total_latency / total_requests as u32;
+    let avg_gen_len = total_gen_len as f64 / total_requests as f64;
+
+    println!(
+        "Reusable multi-user multi-round test: {} users, batch_size={}, {} rounds each, total_requests={}",
+        REUSABLE_NUM_USERS, REUSABLE_BATCH_SIZE, REUSABLE_NUM_ROUNDS, total_requests
+    );
+    println!(
+        "  avg_latency={:?}, min_latency={:?}, max_latency={:?}",
+        avg_latency, min_latency, max_latency
+    );
+    println!("  avg_gen_len={:.1}", avg_gen_len);
+    println!(
+        "  total_retries={}, users_with_retries={}/{}",
+        total_retries_all, users_with_retries, REUSABLE_NUM_USERS
+    );
+}
+
 fn start_runtime_with_fakeecho(
     manager: Arc<SlotManager<f16>>,
     eos_id: usize,
