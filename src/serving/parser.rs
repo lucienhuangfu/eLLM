@@ -408,19 +408,8 @@ impl IncrementalStreamingParser {
             }
         }
 
-        // Fast path: if last byte can't start the end tag, emit everything.
-        let active_len = self.buf.len() - self.cursor;
-        let last_byte = self.buf.as_bytes()[self.buf.len() - 1];
-        if !end_tag.is_empty() && last_byte != end_tag.as_bytes()[0] {
-            let start = self.cursor;
-            let end = self.buf.len();
-            let text = &self.buf[start..end] as *const str;
-            out.push(ParserEvent::Reasoning(unsafe { &*text }));
-            self.advance(active_len);
-            return true;
-        }
-
         let keep = self.suffix_prefix_len();
+        let active_len = self.buf.len() - self.cursor;
         let emit_len = active_len.saturating_sub(keep);
         if emit_len > 0 {
             let start = self.cursor;
@@ -469,20 +458,6 @@ impl IncrementalStreamingParser {
         if self.tool_json.len() + active_len > MAX_TOOL_BUF {
             self.recover_tool_as_content(out);
             return true;
-        }
-
-        // Fast path: last byte can't start the end tag.
-        if active_len > 0 {
-            let last_byte = self.buf.as_bytes()[self.buf.len() - 1];
-            if !end_tag.is_empty() && last_byte != end_tag.as_bytes()[0] {
-                let start = self.cursor;
-                let end = self.buf.len();
-                self.tool_json.push_str(&self.buf[start..end]);
-                let frag = &self.buf[start..end] as *const str;
-                out.push(ParserEvent::ToolCallDelta(unsafe { &*frag }));
-                self.advance(active_len);
-                return true;
-            }
         }
 
         let keep = self.suffix_prefix_len();

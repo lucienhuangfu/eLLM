@@ -5,6 +5,7 @@ pub struct SequenceSlice {
     pub next_sequence_index: usize,
     pub length: usize,
     pub last_token_flag: bool,
+    pub left_index: usize,
 }
 
 #[derive(Debug, Clone)]
