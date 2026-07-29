@@ -25,7 +25,7 @@ pub fn advance_slot(slot: &mut SlotState, steps: usize) -> Option<Phase> {
     None
 }
 
-pub fn make_batch_list(slots: Vec<SlotState>) -> Arc<SharedMut<Vec<SlotState>>> {
+pub fn make_slot_list(slots: Vec<SlotState>) -> Arc<SharedMut<Vec<SlotState>>> {
     Arc::new(SharedMut::new(slots))
 }
 

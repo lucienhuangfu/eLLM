@@ -125,21 +125,17 @@ where
     ) {
         let prefill_size = task.prefill_size;
         let decode_size = task.decode_size;
-        let prefill_list = &task.prefilling_chunked_slices;
-        let decode_list = &task.slices;
-
         for operator in operator_queue.iter() {
-            let batch_list_ptr = scheduler.batch_list().get();
+            let slot_list_ptr = scheduler.slot_list().get();
             unsafe {
-                let batch_list = &mut *batch_list_ptr;
+                let slot_list = &mut *slot_list_ptr;
                 operator.run(
                     prefill_size,
                     decode_size,
                     thread_num,
                     thread_id,
-                    prefill_list,
-                    decode_list,
-                    batch_list,
+                    &task.slices,
+                    slot_list,
                 );
             }
 
@@ -251,7 +247,6 @@ mod tests {
 
         executor.scheduler.with_task(|task| {
             assert_eq!(task.decode_size, 4);
-            assert_eq!(task.prefilling_chunked_slices.len(), 8);
             assert!(task.prefill_size <= 2048);
             assert_eq!(task.slices.len(), 6);
         });

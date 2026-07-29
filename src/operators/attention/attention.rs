@@ -438,8 +438,6 @@ where
     /// Main entry point for running attention computation
     pub fn run(
         &self,
-        _prefill_size: usize,
-        _decode_size: usize,
         attention_list: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
@@ -509,6 +507,8 @@ where
 mod tests {
     use super::Attention;
     use crate::runtime::SequenceSlice;
+
+    const EMPTY_SLICES: &[SequenceSlice] = &[];
 
     fn naive_attention_row(
         q: &[f32],
@@ -589,16 +589,16 @@ mod tests {
             1,
         );
 
-        let slices = [SequenceSlice {
+        let slices = vec![SequenceSlice {
             token_start_index: 0,
             batch_index: 0,
             next_sequence_index: 0,
             length: 3,
             last_token_flag: false,
-            left_index: 0,
+            lift_index: 0,
         }];
 
-        attention.run(0, 0, &slices, 1, 0);
+        attention.run(&slices, 1, 0);
 
         for row in 0..3 {
             let expected = naive_attention_row(
@@ -660,16 +660,16 @@ mod tests {
             1,
         );
 
-        let slice = [SequenceSlice {
+        let slice = vec![SequenceSlice {
             token_start_index: 0,
             batch_index: 1,
             next_sequence_index: 0,
             length: seq_len,
             last_token_flag: false,
-            left_index: 0,
+            lift_index: 0,
         }];
 
-        attention.run(0, 0, &slice, 1, 0);
+        attention.run(&slice, 1, 0);
 
         let batch1_k_base = kv_heads * head_size;
         let batch1_k = [

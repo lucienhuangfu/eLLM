@@ -168,7 +168,7 @@ fn main() {
     let (_indices, _values) =
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
 
-    let batch_list: Vec<SlotState> = written_lengths
+    let slot_list: Vec<SlotState> = written_lengths
         .iter()
         .map(|&len| {
             let mut s = SlotState::idle();
@@ -176,20 +176,20 @@ fn main() {
             s
         })
         .collect();
-    let batch_list_arc = Arc::new(SharedMut::new(batch_list));
+    let slot_list_arc = Arc::new(SharedMut::new(slot_list));
     let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
 
     let batch_scheduler = Arc::new(Scheduler::new(
         batch_size,
         chunk_size,
         thread_num,
-        Arc::clone(&batch_list_arc),
+        Arc::clone(&slot_list_arc),
     ));
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
         Arc::clone(&batch_seq_arc),
-        Arc::clone(&batch_list_arc),
+        Arc::clone(&slot_list_arc),
         SessionMode::Reusable,
         600000, // 10 minutes
         true,
@@ -218,7 +218,7 @@ fn main() {
     loop {
         generated_count += 1;
 
-        let all_done = batch_scheduler.batch_list().with(|list| {
+        let all_done = batch_scheduler.slot_list().with(|list| {
             list.iter().all(|s| matches!(s.phase, Phase::Eos))
                 || generated_count > max_output_tokens_u
         });
@@ -243,7 +243,7 @@ fn main() {
     let elapsed = start.elapsed();
     println!("Done in {elapsed:.2?}\n");
 
-    batch_list_arc.with(|list| {
+    slot_list_arc.with(|list| {
         batch_seq_arc.with(|batch_seq| {
             for (slot, record) in list.iter().enumerate() {
                 let input_len = written_lengths[slot];

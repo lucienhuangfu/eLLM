@@ -571,8 +571,8 @@ where
 
                     match path {
                         KqvPath::V => {
-                            let cache_row =
-                                (next_sequence_index * self.batch_size + batch_index) * value_row_stride;
+                            let cache_row = (next_sequence_index * self.batch_size + batch_index)
+                                * value_row_stride;
                             let dst_head = cv_base.add(cache_row + head_index * self.head_dim);
                             self.compute_head_from_packed(
                                 input_row,
@@ -586,8 +586,8 @@ where
                             );
                         }
                         KqvPath::K => {
-                            let cache_row =
-                                (next_sequence_index * self.batch_size + batch_index) * key_row_stride;
+                            let cache_row = (next_sequence_index * self.batch_size + batch_index)
+                                * key_row_stride;
                             let dst_head = ck_base.add(cache_row + head_index * self.head_dim);
                             self.compute_head_from_packed(
                                 input_row,
@@ -825,34 +825,36 @@ impl MatMulkqvTrait<f16> for MatMul3<f16> {
 
             #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
             {
-            for head_col in (0..head_dim).step_by(micro_tile_cols) {
-                let output_panel = head_output_panel + head_col / micro_tile_cols;
-                let mut acc = [0.0f32; 32];
-                let mut reduction_col_start = 0usize;
-                while reduction_col_start < reduction_cols {
-                    let reduction_cols_this =
-                        reduction_block_cols.min(reduction_cols - reduction_col_start);
-                    let reduction_panel = reduction_col_start / reduction_block_cols;
-                    let weight_panel = packed_b.add(
-                        (reduction_panel * output_panel_count + output_panel)
-                            * reduction_block_cols
-                            * micro_tile_cols,
-                    );
-                    for reduction_lane in 0..reduction_cols_this {
-                        let input_value = *a_row.add(reduction_col_start + reduction_lane) as f32;
-                        for output_lane in 0..micro_tile_cols {
-                            acc[output_lane] += input_value
-                                * (*weight_panel.add(reduction_lane * micro_tile_cols + output_lane)
-                                    as f32);
+                for head_col in (0..head_dim).step_by(micro_tile_cols) {
+                    let output_panel = head_output_panel + head_col / micro_tile_cols;
+                    let mut acc = [0.0f32; 32];
+                    let mut reduction_col_start = 0usize;
+                    while reduction_col_start < reduction_cols {
+                        let reduction_cols_this =
+                            reduction_block_cols.min(reduction_cols - reduction_col_start);
+                        let reduction_panel = reduction_col_start / reduction_block_cols;
+                        let weight_panel = packed_b.add(
+                            (reduction_panel * output_panel_count + output_panel)
+                                * reduction_block_cols
+                                * micro_tile_cols,
+                        );
+                        for reduction_lane in 0..reduction_cols_this {
+                            let input_value =
+                                *a_row.add(reduction_col_start + reduction_lane) as f32;
+                            for output_lane in 0..micro_tile_cols {
+                                acc[output_lane] += input_value
+                                    * (*weight_panel
+                                        .add(reduction_lane * micro_tile_cols + output_lane)
+                                        as f32);
+                            }
                         }
+                        reduction_col_start += reduction_cols_this;
                     }
-                    reduction_col_start += reduction_cols_this;
-                }
 
-                for output_lane in 0..micro_tile_cols {
-                    *dst_head.add(head_col + output_lane) = acc[output_lane] as f16;
+                    for output_lane in 0..micro_tile_cols {
+                        *dst_head.add(head_col + output_lane) = acc[output_lane] as f16;
+                    }
                 }
-            }
             }
         }
     }
@@ -961,6 +963,8 @@ mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
 
+    const EMPTY_SLICES: &[SequenceSlice] = &[];
+
     // ========================================================================
     // Helpers for f32 tests
     // ========================================================================
@@ -1060,7 +1064,7 @@ mod tests {
 
     fn run_runner(runner: &MatMul3<f16>, m: usize, thread_num: usize) {
         for tid in 0..thread_num {
-            runner.run(m, 0, &[], thread_num, tid);
+            runner.run(m, 0, EMPTY_SLICES, thread_num, tid);
         }
     }
 
@@ -1148,7 +1152,7 @@ mod tests {
                 32,              // b_row_step_micro
             );
 
-            matmul.run(m, 0, &[], 1, 0);
+            matmul.run(m, 0, EMPTY_SLICES, 1, 0);
 
             // reference（从 W_nt 计算）
             ref_matmul_f32_from_wnt(m, k, n_q, &a, &wq_nt, &mut cq_ref);

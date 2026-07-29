@@ -155,26 +155,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_output_indices, _output_tensor) =
         model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
 
-    let mut batch_list = Vec::with_capacity(batch_size);
-    batch_list.extend(written_lengths.iter().enumerate().map(|(_, &len)| {
+    let mut slot_list = Vec::with_capacity(batch_size);
+    slot_list.extend(written_lengths.iter().enumerate().map(|(_, &len)| {
         let mut s = SlotState::idle();
         s.start_prefill(0, len.min(sequence_length));
         s
     }));
-    let batch_list_arc = Arc::new(SharedMut::new(batch_list));
+    let slot_list_arc = Arc::new(SharedMut::new(slot_list));
     let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
 
     let batch_scheduler = Arc::new(Scheduler::new(
         batch_size,
         chunk_size,
         thread_num,
-        Arc::clone(&batch_list_arc),
+        Arc::clone(&slot_list_arc),
     ));
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
         Arc::clone(&batch_seq_arc),
-        Arc::clone(&batch_list_arc),
+        Arc::clone(&slot_list_arc),
         SessionMode::Reusable,
         600000, // 10 minutes
         true,
@@ -202,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         generated_count += 1;
 
         let all_done =
-            batch_list_arc.with(|list| list.iter().all(|s| matches!(s.phase, Phase::Eos)));
+            slot_list_arc.with(|list| list.iter().all(|s| matches!(s.phase, Phase::Eos)));
         if all_done {
             break;
         }
@@ -222,7 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n=== Generated Output ===");
-    batch_list_arc.with(|list| {
+    slot_list_arc.with(|list| {
         batch_seq_arc.with(|batch_seq| {
             for (slot, record) in list.iter().enumerate() {
                 let text = batch_seq.decode_token_span(slot, record.prompt_length, record.next_sequence_index);

@@ -130,15 +130,14 @@ impl<
         decode_size: usize,
         thread_num: usize,
         thread_id: usize,
-        _prefill_list: &[Vec<SequenceSlice>],
-        decode_list: &[SequenceSlice],
+        computing_slices: &[SequenceSlice],
         batch_list: &mut Vec<SlotState>,
     ) {
         if prefill_size == 0 && decode_size == 0 {
             return;
         }
 
-        let Some((begin, end)) = assign(decode_list.len(), thread_num, thread_id) else {
+        let Some((begin, end)) = assign(computing_slices.len(), thread_num, thread_id) else {
             return;
         };
 
@@ -149,7 +148,7 @@ impl<
             let output_values_ptr = self.output_values_ptr.ptr;
             let output_sequences_ptr = self.output_sequences.ptr;
 
-            for (row_index, slice) in decode_list.iter().enumerate().take(end).skip(begin) {
+            for (row_index, slice) in computing_slices.iter().enumerate().take(end).skip(begin) {
                 let batch_index = slice.batch_index;
                 let slice_length = slice.length;
 
@@ -528,6 +527,8 @@ mod test {
     use crate::runtime::{Phase, SlotState};
     use approx::assert_ulps_eq;
 
+    const EMPTY_SLICES: &[SequenceSlice] = &[];
+
     fn decode_state(next_sequence_index: usize, prompt_length: usize) -> SlotState {
         let mut s = SlotState::idle();
         s.start_decode(next_sequence_index, prompt_length);
@@ -578,12 +579,12 @@ mod test {
                     token_start_index: batch_index,
                     length: 1,
                     last_token_flag: true,
-                    left_index: 0,
+                    lift_index: 0,
                 });
             }
             decode_lists.push(slices);
         }
-        let decode_list = decode_lists.iter().flatten().cloned().collect::<Vec<_>>();
+        let decode_list: Vec<SequenceSlice> = decode_lists.iter().flatten().cloned().collect();
 
         let mut output_values = vec![0.0f32; batch_size * top_k];
         let mut output_indices = vec![0; batch_size * top_k];
@@ -609,7 +610,6 @@ mod test {
                 batch_size,
                 thread_num,
                 i,
-                &[],
                 &decode_list,
                 &mut batch_list,
             );
@@ -660,13 +660,13 @@ mod test {
         let input_values = vec![8.0f32, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
         let mut batch_list = vec![decode_state(1, 1)];
 
-        let decode_list = [SequenceSlice {
+        let decode_list = vec![SequenceSlice {
             batch_index: 0,
             next_sequence_index: 1,
             token_start_index: 0,
             length: 1,
             last_token_flag: true,
-            left_index: 0,
+            lift_index: 0,
         }];
 
         let mut output_values = vec![0.0f32; batch_size * top_k];
@@ -687,7 +687,7 @@ mod test {
             vec![eos_id],
         );
 
-        operator.run(1, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
+        operator.run(1, 1, thread_num, 0, &decode_list, &mut batch_list);
 
         let max_val = 8.0f32;
         let expected: Vec<f32> = input_values.iter().map(|&v| (v - max_val).exp()).collect();
@@ -711,13 +711,13 @@ mod test {
         let input_values = vec![1.0f32, 0.5, 0.25, 0.125];
         let mut batch_list = vec![prefill_state(3, 0)];
 
-        let decode_list = [SequenceSlice {
+        let decode_list = vec![SequenceSlice {
             batch_index: 0,
             next_sequence_index: 0,
             token_start_index: 0,
             length: 3,
             last_token_flag: false,
-            left_index: 0,
+            lift_index: 0,
         }];
 
         let mut output_values = vec![f32::NAN; batch_size * top_k];
@@ -738,7 +738,7 @@ mod test {
             vec![eos_id],
         );
 
-        operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
+        operator.run(3, 1, thread_num, 0, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[0].next_sequence_index, 6);
@@ -763,13 +763,13 @@ mod test {
         let input_values = vec![1.0f32, 0.5];
         let mut batch_list = vec![decode_state(7, 3)];
 
-        let decode_list = [SequenceSlice {
+        let decode_list = vec![SequenceSlice {
             batch_index: 0,
             next_sequence_index: 0,
             token_start_index: 0,
             length: 1,
             last_token_flag: false,
-            left_index: 0,
+            lift_index: 0,
         }];
 
         let mut output_values = vec![f32::NAN; batch_size * top_k];
@@ -790,7 +790,7 @@ mod test {
             vec![eos_id],
         );
 
-        operator.run(0, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
+        operator.run(0, 1, thread_num, 0, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[0].next_sequence_index, 7);
@@ -820,13 +820,13 @@ mod test {
         }
         let mut batch_list = vec![prefill_state(0, 3)];
 
-        let decode_list = [SequenceSlice {
+        let decode_list = vec![SequenceSlice {
             batch_index: 0,
             next_sequence_index: 0,
             token_start_index: 0,
             length: 3,
             last_token_flag: true,
-            left_index: 0,
+            lift_index: 0,
         }];
 
         let mut output_values = vec![0.0f32; sequence_length * top_k];
@@ -847,7 +847,7 @@ mod test {
             vec![eos_id],
         );
 
-        operator.run(3, 1, thread_num, 0, &[], &decode_list, &mut batch_list);
+        operator.run(3, 1, thread_num, 0, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Decode);
         assert_eq!(batch_list[0].next_sequence_index, 4);
@@ -868,13 +868,13 @@ mod test {
         let input_values = vec![1.0f32, 0.5, 0.25, 0.125];
         let mut batch_list = vec![prefill_state(2, 4)];
 
-        let decode_list = [SequenceSlice {
+        let decode_list = vec![SequenceSlice {
             batch_index: 0,
             next_sequence_index: 2,
             token_start_index: 0,
             length: 2,
             last_token_flag: false,
-            left_index: 0,
+            lift_index: 0,
         }];
 
         let mut output_values = vec![f32::NAN; batch_size * top_k];
@@ -895,7 +895,7 @@ mod test {
             vec![eos_id],
         );
 
-        operator.run(2, 0, thread_num, 0, &[], &decode_list, &mut batch_list);
+        operator.run(2, 0, thread_num, 0, &decode_list, &mut batch_list);
 
         assert_eq!(batch_list[0].phase, Phase::Prefill);
         assert_eq!(batch_list[0].next_sequence_index, 4);
@@ -952,12 +952,12 @@ mod test {
                     token_start_index: batch_index,
                     length: 1,
                     last_token_flag: true,
-                    left_index: 0,
+                    lift_index: 0,
                 });
             }
             decode_lists.push(slices);
         }
-        let decode_list = decode_lists.iter().flatten().cloned().collect::<Vec<_>>();
+        let decode_list: Vec<SequenceSlice> = decode_lists.iter().flatten().cloned().collect();
 
         let mut output_values = vec![0.0 as f16; batch_size * top_k];
         let mut output_indices = vec![0; batch_size * top_k];
@@ -983,7 +983,6 @@ mod test {
                 batch_size,
                 thread_num,
                 i,
-                &[],
                 &decode_list,
                 &mut batch_list,
             );

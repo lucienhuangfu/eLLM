@@ -213,7 +213,10 @@ where
 mod test {
     use super::*;
     use crate::mem_mgr::mem_pool::GlobalMemPool;
+    use crate::runtime::SequenceSlice;
     use std::collections::HashMap;
+
+    const EMPTY_SLICES: &[SequenceSlice] = &[];
 
     #[test]
     fn test_self_attention() {
@@ -284,7 +287,7 @@ mod test {
         f32::with_operator_queue(|queue| {
             for operator in queue.iter() {
                 for i in 0..thread_num {
-                    operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+                    operator.run(batch_size, 0, thread_num, i, EMPTY_SLICES, &mut Vec::new());
                 }
             }
         });
@@ -355,7 +358,7 @@ mod test {
         f16::with_operator_queue(|queue| {
             for operator in queue.iter() {
                 for i in 0..thread_num {
-                    operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+                    operator.run(batch_size, 0, thread_num, i, EMPTY_SLICES, &mut Vec::new());
                 }
             }
         });

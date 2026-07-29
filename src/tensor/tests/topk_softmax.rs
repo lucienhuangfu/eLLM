@@ -1,5 +1,9 @@
 use super::common::*;
 use super::*;
+use crate::runtime::scheduler::task::SequenceSlice;
+
+const EMPTY_SLICES: &[SequenceSlice] = &[];
+
 // TopKSoftmax tests (unchanged - not matmul RHS related)
 // ============================================================
 
@@ -64,7 +68,7 @@ fn test_topk_softmax_f32() {
                 token_start_index: batch_index,
                 length: 1,
                 last_token_flag: true,
-                left_index: 0,
+                lift_index: 0,
             });
         }
         decode_lists.push(slices);
@@ -96,17 +100,9 @@ fn test_topk_softmax_f32() {
     for i in 0..thread_num {
         for op in operator_queue.iter() {
             if let Operator::TopKSoftmax(operator) = op {
-                operator.run(
-                    batch_size,
-                    1,
-                    thread_num,
-                    i,
-                    &[],
-                    &decode_list,
-                    &mut batch_list,
-                );
+                operator.run(batch_size, 1, thread_num, i, &decode_list, &mut batch_list);
             } else {
-                op.run(batch_size, 1, thread_num, i, &[], &[], &mut Vec::new());
+                op.run(batch_size, 1, thread_num, i, EMPTY_SLICES, &mut Vec::new());
             }
         }
     }
@@ -220,7 +216,7 @@ fn test_topk_softmax_f16() {
                 token_start_index: batch_index,
                 length: 1,
                 last_token_flag: true,
-                left_index: 0,
+                lift_index: 0,
             });
         }
         decode_lists.push(slices);
@@ -252,17 +248,9 @@ fn test_topk_softmax_f16() {
     for i in 0..thread_num {
         for op in operator_queue.iter() {
             if let Operator::TopKSoftmax(operator) = op {
-                operator.run(
-                    batch_size,
-                    1,
-                    thread_num,
-                    i,
-                    &[],
-                    &decode_list,
-                    &mut batch_list,
-                );
+                operator.run(batch_size, 1, thread_num, i, &decode_list, &mut batch_list);
             } else {
-                op.run(batch_size, 1, thread_num, i, &[], &[], &mut Vec::new());
+                op.run(batch_size, 1, thread_num, i, EMPTY_SLICES, &mut Vec::new());
             }
         }
     }

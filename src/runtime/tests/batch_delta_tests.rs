@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::num_traits::FromNumber;
-use crate::runtime::scheduler::{total_sequence_length, walk_global_range};
 use crate::runtime::session::BatchSequence;
 use crate::runtime::session::{Phase, SlotState};
 
@@ -207,36 +206,6 @@ async fn test_get_prefix_match_len_session_not_found() {
     let (manager, _buffer) = create_test_manager(4, 1000);
     let delta = manager.prefix_match_len("nonexistent", &[1, 2, 3]).await;
     assert!(delta.is_none());
-}
-
-#[test]
-fn test_total_sequence_length_and_walk_global_range() {
-    use crate::runtime::scheduler::SequenceSlice;
-
-    let slices = vec![
-        SequenceSlice {
-            batch_index: 0,
-            next_sequence_index: 0,
-            token_start_index: 0,
-            length: 6,
-            last_token_flag: false,
-            left_index: 0,
-        },
-        SequenceSlice {
-            batch_index: 1,
-            next_sequence_index: 0,
-            token_start_index: 6,
-            length: 2,
-            last_token_flag: false,
-            left_index: 0,
-        },
-    ];
-
-    assert_eq!(total_sequence_length(&slices), 8);
-
-    let mut visited = Vec::new();
-    walk_global_range(&slices, 4, 8, |g, b, s| visited.push((g, b, s)));
-    assert_eq!(visited, vec![(4, 0, 4), (5, 0, 5), (6, 1, 0), (7, 1, 1)]);
 }
 
 #[test]

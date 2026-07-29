@@ -5,29 +5,23 @@ pub struct SequenceSlice {
     pub next_sequence_index: usize,
     pub length: usize,
     pub last_token_flag: bool,
-    pub left_index: usize,
+    pub lift_index: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct ScheduleTask {
     pub prefill_size: usize,
     pub decode_size: usize,
-    pub total_token_num: usize,
-    pub prefilling_chunked_slices: Vec<Vec<SequenceSlice>>,
+    pub total_size: usize,
     pub slices: Vec<SequenceSlice>,
 }
 
 impl ScheduleTask {
-    pub fn new(thread_num: usize, max_batch_size: usize) -> Self {
-        let mut prefilling_chunked_slices = Vec::with_capacity(thread_num);
-        for _ in 0..thread_num {
-            prefilling_chunked_slices.push(Vec::with_capacity(max_batch_size));
-        }
+    pub fn new(_thread_num: usize, max_batch_size: usize) -> Self {
         Self {
             prefill_size: 0,
             decode_size: 0,
-            total_token_num: 0,
-            prefilling_chunked_slices,
+            total_size: 0,
             slices: Vec::with_capacity(max_batch_size),
         }
     }
@@ -36,10 +30,7 @@ impl ScheduleTask {
     pub fn reset(&mut self) {
         self.prefill_size = 0;
         self.decode_size = 0;
-        self.total_token_num = 0;
-        for list in self.prefilling_chunked_slices.iter_mut() {
-            list.clear();
-        }
+        self.total_size = 0;
         self.slices.clear();
     }
 
@@ -60,14 +51,12 @@ mod tests {
 
         task.prefill_size = 10;
         task.decode_size = 5;
-        task.prefilling_chunked_slices[0].push(SequenceSlice::default());
         task.slices.push(SequenceSlice::default());
 
         assert!(!task.is_empty());
 
         task.reset();
         assert!(task.is_empty());
-        assert!(task.prefilling_chunked_slices[0].is_empty());
         assert!(task.slices.is_empty());
     }
 }

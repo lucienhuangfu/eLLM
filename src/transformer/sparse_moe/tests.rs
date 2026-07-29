@@ -1,9 +1,12 @@
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::operator::Operator;
+use crate::runtime::SequenceSlice;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 use crate::transformer::config::RouterScoringKind;
 use crate::transformer::names::SparseMoeTensorNames;
 use std::collections::HashMap;
+
+const EMPTY_SLICES: &[SequenceSlice] = &[];
 
 use super::SparseMoe;
 
@@ -43,7 +46,14 @@ fn run_queue(_output: &Tensor<f16>, batch_size: usize, thread_num: usize) {
     f16::with_operator_queue(|queue| {
         for op in queue.iter() {
             for tid in 0..thread_num {
-                op.run(batch_size, 0, thread_num, tid, &[], &[], &mut Vec::new());
+                op.run(
+                    batch_size,
+                    0,
+                    thread_num,
+                    tid,
+                    EMPTY_SLICES,
+                    &mut Vec::new(),
+                );
             }
         }
     });

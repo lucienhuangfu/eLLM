@@ -57,26 +57,23 @@ impl FakeEcho {
 
     pub fn run(
         &self,
-        _prefill_size: usize,
-        _decode_size: usize,
         thread_num: usize,
         thread_id: usize,
-        _prefill_list: &[Vec<SequenceSlice>],
-        decode_list: &[SequenceSlice],
-        batch_list: &mut Vec<SlotState>,
+        computing_slices: &[SequenceSlice],
+        slot_list: &mut Vec<SlotState>,
     ) {
-        let Some((begin, end)) = assign(decode_list.len(), thread_num, thread_id) else {
+        let Some((begin, end)) = assign(computing_slices.len(), thread_num, thread_id) else {
             return;
         };
 
-        for slice in decode_list.iter().take(end).skip(begin) {
-            self.process_slice(slice, batch_list);
+        for slice in computing_slices.iter().take(end).skip(begin) {
+            self.process_slice(slice, slot_list);
         }
     }
 
-    fn process_slice(&self, slice: &SequenceSlice, batch_list: &mut Vec<SlotState>) {
+    fn process_slice(&self, slice: &SequenceSlice, slot_list: &mut Vec<SlotState>) {
         let batch_index = slice.batch_index;
-        let record = match batch_list.get_mut(batch_index) {
+        let record = match slot_list.get_mut(batch_index) {
             Some(r) => r,
             None => return,
         };
@@ -129,6 +126,7 @@ impl FakeEcho {
 mod tests {
     use super::*;
 
+    const EMPTY_SLICES: &[SequenceSlice] = &[];
     const STRIDE: usize = 256;
     const PRE_COUNT: usize = 5;
     const EOS: usize = 100;
@@ -158,7 +156,7 @@ mod tests {
             token_start_index: 0,
             length: len,
             last_token_flag: true,
-            left_index: 0,
+            lift_index: 0,
         }
     }
 
@@ -169,20 +167,19 @@ mod tests {
 
         let echo = FakeEcho::new(seq.as_mut_ptr(), STRIDE, EOS, vec![10, 20, 30, 40, 50]);
         let mut batch = vec![prefill_state(0, 0)];
-        let pl: Vec<Vec<SequenceSlice>> = vec![];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(0, 1, 1, 0, &pl, &dl, &mut batch);
+        echo.run(1, 0, &dl, &mut batch);
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 1);
         assert_eq!(seq[PRE_COUNT], 10);
 
         for i in 1..5 {
-            echo.run(0, 1, 1, 0, &pl, &dl, &mut batch);
+            echo.run(1, 0, &dl, &mut batch);
             assert_eq!(seq[PRE_COUNT + i], (i + 1) * 10);
         }
 
-        echo.run(0, 1, 1, 0, &pl, &dl, &mut batch);
+        echo.run(1, 0, &dl, &mut batch);
         assert_eq!(batch[0].phase, Phase::Eos);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 6);
         assert_eq!(seq[PRE_COUNT + 5], EOS);
@@ -195,10 +192,9 @@ mod tests {
 
         let echo = FakeEcho::new(seq.as_mut_ptr(), STRIDE, EOS, vec![]);
         let mut batch = vec![decode_state(PRE_COUNT, PRE_COUNT)];
-        let pl: Vec<Vec<SequenceSlice>> = vec![];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(0, 1, 1, 0, &pl, &dl, &mut batch);
+        echo.run(1, 0, &dl, &mut batch);
 
         assert_eq!(batch[0].phase, Phase::Eos);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 1);
@@ -212,14 +208,13 @@ mod tests {
 
         let echo = FakeEcho::new(seq.as_mut_ptr(), STRIDE, EOS, vec![42]);
         let mut batch = vec![decode_state(PRE_COUNT, PRE_COUNT)];
-        let pl: Vec<Vec<SequenceSlice>> = vec![];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(0, 1, 1, 0, &pl, &dl, &mut batch);
+        echo.run(1, 0, &dl, &mut batch);
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(seq[PRE_COUNT], 42);
 
-        echo.run(0, 1, 1, 0, &pl, &dl, &mut batch);
+        echo.run(1, 0, &dl, &mut batch);
         assert_eq!(batch[0].phase, Phase::Eos);
         assert_eq!(seq[PRE_COUNT + 1], EOS);
     }
@@ -231,10 +226,9 @@ mod tests {
 
         let echo = FakeEcho::new(seq.as_mut_ptr(), STRIDE, EOS, vec![7, 8, 9]);
         let mut batch = vec![prefill_state(PRE_COUNT, 0)];
-        let pl: Vec<Vec<SequenceSlice>> = vec![];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(0, 1, 2, 0, &pl, &dl, &mut batch);
+        echo.run(2, 0, &dl, &mut batch);
 
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 1);
@@ -254,15 +248,14 @@ mod tests {
             prefill_state(PRE_COUNT, 0),
             prefill_state(PRE_COUNT, 0),
         ];
-        let pl: Vec<Vec<SequenceSlice>> = vec![];
         let dl = vec![
             make_slice(0, PRE_COUNT),
             make_slice(1, PRE_COUNT),
             make_slice(2, PRE_COUNT),
         ];
 
-        echo.run(0, 3, 2, 0, &pl, &dl, &mut batch);
-        echo.run(0, 3, 2, 1, &pl, &dl, &mut batch);
+        echo.run(2, 0, &dl, &mut batch);
+        echo.run(2, 1, &dl, &mut batch);
 
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(batch[1].phase, Phase::Decode);

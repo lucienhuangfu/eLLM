@@ -267,6 +267,8 @@ mod test {
     use std::sync::Arc;
     use tokio::sync::Notify;
 
+    const EMPTY_SLICES: &[SequenceSlice] = &[];
+
     fn build_batch_list(batch_size: usize) -> Vec<SlotState> {
         (0..batch_size)
             .map(|i| SlotState {
@@ -287,7 +289,7 @@ mod test {
                 token_start_index: batch_index,
                 length: 1,
                 last_token_flag: true,
-                left_index: 0,
+                lift_index: 0,
             })
             .collect()
     }
@@ -301,7 +303,7 @@ mod test {
                     token_start_index: batch_index,
                     length: 1,
                     last_token_flag: false,
-                    left_index: 0,
+                    lift_index: 0,
                 })
                 .collect()
         }]
@@ -348,7 +350,6 @@ mod test {
             AlignedBox::allocate_init((config.max_position_embeddings) * batch_size, 0);
 
         let mut batch_list = build_batch_list(batch_size);
-        let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
         let (_output_indices, _output_tensor) =
@@ -362,7 +363,6 @@ mod test {
                         1,
                         thread_num,
                         thread_id,
-                        &prefill_list,
                         &decode_list,
                         &mut batch_list,
                     );
@@ -423,7 +423,6 @@ mod test {
         let mut sequences_box =
             AlignedBox::allocate_init((config.max_position_embeddings) * batch_size, 0);
         let mut batch_list = build_batch_list(batch_size);
-        let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
         let (_output_indices, _output_tensor) =
@@ -437,7 +436,6 @@ mod test {
                         1,
                         thread_num,
                         thread_id,
-                        &prefill_list,
                         &decode_list,
                         &mut batch_list,
                     );

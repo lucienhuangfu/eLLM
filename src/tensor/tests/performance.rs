@@ -1,5 +1,8 @@
 use super::common::*;
 use super::*;
+use crate::runtime::scheduler::task::SequenceSlice;
+
+const EMPTY_SLICES: &[SequenceSlice] = &[];
 
 fn avail_threads() -> usize {
     std::thread::available_parallelism()
@@ -22,7 +25,7 @@ fn run_operator_parallel_once(op: Arc<Operator<f16>>, batch: usize, cpu_num: usi
                 core_affinity::set_for_current(core_id);
             }
 
-            op.run(batch, 0, cpu_num, thread_id, &[], &[], &mut Vec::new());
+            op.run(batch, 0, cpu_num, thread_id, EMPTY_SLICES, &mut Vec::new());
         });
         handles.push(handle);
     }
