@@ -158,6 +158,7 @@ mod tests {
             token_start_index: 0,
             length: len,
             last_token_flag: true,
+            left_index: 0,
         }
     }
 

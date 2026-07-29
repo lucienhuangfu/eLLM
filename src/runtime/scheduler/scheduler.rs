@@ -166,6 +166,7 @@ impl Scheduler {
                 token_start_index: prefill_count,
                 length: prefill_length,
                 last_token_flag: prefill_length == slot.filling_length,
+                left_index: 0,
             });
             prefill_count += prefill_length;
 
@@ -189,6 +190,7 @@ impl Scheduler {
                     token_start_index: scheduled,
                     length: chunk,
                     last_token_flag: false,
+                    left_index: 0,
                 });
 
                 scheduled += chunk;
@@ -215,6 +217,7 @@ impl Scheduler {
                     token_start_index: token_offset + count,
                     length: 1,
                     last_token_flag: true,
+                    left_index: 0,
                 });
                 count += 1;
             }

@@ -595,6 +595,7 @@ mod tests {
             next_sequence_index: 0,
             length: 3,
             last_token_flag: false,
+            left_index: 0,
         }];
 
         attention.run(0, 0, &slices, 1, 0);
@@ -665,6 +666,7 @@ mod tests {
             next_sequence_index: 0,
             length: seq_len,
             last_token_flag: false,
+            left_index: 0,
         }];
 
         attention.run(0, 0, &slice, 1, 0);

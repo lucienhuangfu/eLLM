@@ -206,6 +206,7 @@ mod test {
                     token_start_index: i,
                     length: 1,
                     last_token_flag: false,
+                    left_index: 0,
                 });
             }
             prefill_lists.push(slices);
@@ -303,6 +304,7 @@ mod test {
                 token_start_index: 0,
                 length: 1,
                 last_token_flag: false,
+                left_index: 0,
             },
             SequenceSlice {
                 batch_index: 1,
@@ -310,6 +312,7 @@ mod test {
                 token_start_index: 1,
                 length: 1,
                 last_token_flag: false,
+                left_index: 0,
             },
             SequenceSlice {
                 batch_index: 2,
@@ -317,6 +320,7 @@ mod test {
                 token_start_index: 2,
                 length: 1,
                 last_token_flag: false,
+                left_index: 0,
             },
             SequenceSlice {
                 batch_index: 3,
@@ -324,6 +328,7 @@ mod test {
                 token_start_index: 3,
                 length: 1,
                 last_token_flag: false,
+                left_index: 0,
             },
         ];
 
@@ -385,6 +390,7 @@ mod test {
                 token_start_index: 0,
                 length: 2,
                 last_token_flag: false,
+                left_index: 0,
             },
             SequenceSlice {
                 batch_index: 1,
@@ -392,6 +398,7 @@ mod test {
                 token_start_index: 2,
                 length: 2,
                 last_token_flag: false,
+                left_index: 0,
             },
         ]];
 

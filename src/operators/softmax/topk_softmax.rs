@@ -578,6 +578,7 @@ mod test {
                     token_start_index: batch_index,
                     length: 1,
                     last_token_flag: true,
+                    left_index: 0,
                 });
             }
             decode_lists.push(slices);
@@ -665,6 +666,7 @@ mod test {
             token_start_index: 0,
             length: 1,
             last_token_flag: true,
+            left_index: 0,
         }];
 
         let mut output_values = vec![0.0f32; batch_size * top_k];
@@ -715,6 +717,7 @@ mod test {
             token_start_index: 0,
             length: 3,
             last_token_flag: false,
+            left_index: 0,
         }];
 
         let mut output_values = vec![f32::NAN; batch_size * top_k];
@@ -766,6 +769,7 @@ mod test {
             token_start_index: 0,
             length: 1,
             last_token_flag: false,
+            left_index: 0,
         }];
 
         let mut output_values = vec![f32::NAN; batch_size * top_k];
@@ -822,6 +826,7 @@ mod test {
             token_start_index: 0,
             length: 3,
             last_token_flag: true,
+            left_index: 0,
         }];
 
         let mut output_values = vec![0.0f32; sequence_length * top_k];
@@ -869,6 +874,7 @@ mod test {
             token_start_index: 0,
             length: 2,
             last_token_flag: false,
+            left_index: 0,
         }];
 
         let mut output_values = vec![f32::NAN; batch_size * top_k];
@@ -946,6 +952,7 @@ mod test {
                     token_start_index: batch_index,
                     length: 1,
                     last_token_flag: true,
+                    left_index: 0,
                 });
             }
             decode_lists.push(slices);

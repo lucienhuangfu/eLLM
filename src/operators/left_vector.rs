@@ -70,6 +70,7 @@ mod test {
                 token_start_index: 2,
                 length: 1,
                 last_token_flag: true,
+                left_index: 0,
             },
             SequenceSlice {
                 batch_index: 0,
@@ -77,6 +78,7 @@ mod test {
                 token_start_index: 2,
                 length: 2,
                 last_token_flag: true,
+                left_index: 0,
             },
             SequenceSlice {
                 batch_index: 0,
@@ -84,6 +86,7 @@ mod test {
                 token_start_index: 2,
                 length: 3,
                 last_token_flag: true,
+                left_index: 0,
             },
         ];
 

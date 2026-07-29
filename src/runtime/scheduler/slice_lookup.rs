@@ -83,6 +83,7 @@ mod tests {
                 token_start_index: 0,
                 length: 6,
                 last_token_flag: false,
+                left_index: 0,
             },
             SequenceSlice {
                 batch_index: 1,
@@ -90,6 +91,7 @@ mod tests {
                 token_start_index: 6,
                 length: 2,
                 last_token_flag: false,
+                left_index: 0,
             },
         ]
     }
@@ -182,6 +184,7 @@ mod tests {
             batch_index: 0,
             next_sequence_index: 100,
             last_token_flag: false,
+            left_index: 0,
         }];
         assert_eq!(lookup_global_index(&list, 9), None);
         assert_eq!(

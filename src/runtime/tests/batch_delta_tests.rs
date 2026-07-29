@@ -220,6 +220,7 @@ fn test_total_sequence_length_and_walk_global_range() {
             token_start_index: 0,
             length: 6,
             last_token_flag: false,
+            left_index: 0,
         },
         SequenceSlice {
             batch_index: 1,
@@ -227,6 +228,7 @@ fn test_total_sequence_length_and_walk_global_range() {
             token_start_index: 6,
             length: 2,
             last_token_flag: false,
+            left_index: 0,
         },
     ];
 
