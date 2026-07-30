@@ -255,6 +255,7 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
@@ -699,7 +700,7 @@ mod tests {
 
             let used = cpu_num.min(runner.thread_max());
             for tid in 0..used {
-                runner.run(M, 0, used, tid);
+                runner.run(M, 0, 0, used, tid);
             }
 
             verify_topk_result_from_bnt(
@@ -769,7 +770,7 @@ mod tests {
 
             let used = cpu_num.min(runner.thread_max());
             for tid in 0..used {
-                runner.run(M, 0, used, tid);
+                runner.run(M, 0, 0, used, tid);
             }
 
             verify_topk_result_from_bnt(
@@ -837,7 +838,7 @@ mod tests {
 
             let used = cpu_num.min(runner.thread_max());
             for tid in 0..used {
-                runner.run(M, 0, used, tid);
+                runner.run(M, 0, 0, used, tid);
             }
 
             verify_topk_result_from_bnt(
@@ -912,7 +913,7 @@ mod tests {
 
             let used = cpu_num.min(runner.thread_max());
             for tid in 0..used {
-                runner.run(M_RUN, 0, used, tid); // batch_size=7
+                runner.run(M_RUN, 0, 0, used, tid); // batch_size=7
             }
 
             // 期望 topk：因为输出随 j 单调递增，topk 就是最大的 TOPK 个列索引
@@ -978,7 +979,7 @@ mod tests {
             );
 
             for tid in 0..THREADS {
-                runner.run(M_RUN, 0, THREADS, tid);
+                runner.run(M_RUN, 0, 0, THREADS, tid);
             }
 
             let row = 3;

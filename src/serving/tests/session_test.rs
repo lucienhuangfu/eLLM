@@ -299,7 +299,7 @@ async fn test_reusable_sequence_prefix_match_direct() {
     let prompt_len1 = manager.get_prompt_length(slot_index);
     assert_eq!(prompt_len1, write_len1);
 
-    let tokens_after_first = manager.batch_sequences.with(|seq| {
+    let tokens_after_first = manager.slot_sequences.with(|seq| {
         seq.token_ids(slot_index, 0, prompt_len1)
     });
     assert_eq!(tokens_after_first.len(), prompt_len1);
@@ -321,7 +321,7 @@ async fn test_reusable_sequence_prefix_match_direct() {
     assert_eq!(seq_len_reserved, seq_len_after_gen);
     assert!(seq_len_reserved > 0);
 
-    let tokens_reserved = manager.batch_sequences.with(|seq| {
+    let tokens_reserved = manager.slot_sequences.with(|seq| {
         seq.token_ids(slot_index, 0, seq_len_reserved)
     });
     assert_eq!(tokens_reserved.len(), seq_len_reserved);
@@ -367,7 +367,7 @@ async fn test_reusable_sequence_prefix_match_direct() {
         "write_len should be less than total prompt_len because of prefix reuse"
     );
 
-    let tokens_after_second = manager.batch_sequences.with(|seq| {
+    let tokens_after_second = manager.slot_sequences.with(|seq| {
         seq.token_ids(slot_index, 0, prompt_len2)
     });
 

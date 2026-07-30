@@ -154,10 +154,6 @@ pub struct SchedulerConfig {
     #[serde(alias = "scheduling-policy")]
     pub scheduling_policy: SchedulingPolicy,
 
-    #[serde(default = "default_schedule_timeout_ms")]
-    #[serde(alias = "schedule-timeout-ms")]
-    pub schedule_timeout_ms: usize,
-
     #[serde(default = "default_dialogue_cache_enabled")]
     #[serde(alias = "dialogue-cache-enabled")]
     pub dialogue_cache_enabled: bool,
@@ -284,6 +280,10 @@ pub struct ServeConfig {
     #[serde(default = "default_slot_reuse_timeout_ms")]
     #[serde(alias = "slot-reuse-timeout-ms")]
     pub slot_reuse_timeout_ms: usize,
+
+    #[serde(default)]
+    #[serde(alias = "max-slot-size")]
+    pub max_slot_size: Option<usize>,
 }
 
 impl Default for ServeConfig {
@@ -305,6 +305,7 @@ impl Default for ServeConfig {
             allowed_methods: default_allowed_methods(),
             allowed_headers: default_allowed_headers(),
             slot_reuse_timeout_ms: default_slot_reuse_timeout_ms(),
+            max_slot_size: None,
         }
     }
 }
@@ -340,7 +341,6 @@ impl Default for SchedulerConfig {
             max_num_batched_tokens: default_max_num_batched_tokens(),
             enable_continuous_batching: default_enable_continuous_batching(),
             scheduling_policy: default_scheduling_policy(),
-            schedule_timeout_ms: default_schedule_timeout_ms(),
             dialogue_cache_enabled: default_dialogue_cache_enabled(),
         }
     }
@@ -432,10 +432,6 @@ pub(crate) fn default_host() -> String {
 
 pub(crate) fn default_port() -> u16 {
     8000
-}
-
-pub(crate) fn default_schedule_timeout_ms() -> usize {
-    10
 }
 
 pub(crate) fn default_reasoning_parser_enabled() -> bool {

@@ -526,6 +526,7 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
         attention_list: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
@@ -1064,7 +1065,7 @@ mod tests {
 
     fn run_runner(runner: &MatMul3<f16>, m: usize, thread_num: usize) {
         for tid in 0..thread_num {
-            runner.run(m, 0, EMPTY_SLICES, thread_num, tid);
+            runner.run(m, 0, 0, EMPTY_SLICES, thread_num, tid);
         }
     }
 
@@ -1152,7 +1153,7 @@ mod tests {
                 32,              // b_row_step_micro
             );
 
-            matmul.run(m, 0, EMPTY_SLICES, 1, 0);
+            matmul.run(m, 0, 0, EMPTY_SLICES, 1, 0);
 
             // reference（从 W_nt 计算）
             ref_matmul_f32_from_wnt(m, k, n_q, &a, &wq_nt, &mut cq_ref);

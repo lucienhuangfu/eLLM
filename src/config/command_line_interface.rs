@@ -152,9 +152,6 @@ pub struct SharedArgs {
     #[arg(long = "scheduling-policy", value_enum, help = "Scheduling policy")]
     pub scheduling_policy: Option<SchedulingPolicy>,
 
-    #[arg(long = "schedule-timeout-ms", help = "Schedule timeout in ms")]
-    pub schedule_timeout_ms: Option<usize>,
-
     #[arg(long = "dialogue-cache-enabled", num_args = 0..=1, default_missing_value = "true", help = "Enable dialogue cache")]
     pub dialogue_cache_enabled: Option<bool>,
 }
@@ -179,10 +176,10 @@ pub struct ServeArgs {
     #[arg(long = "api-key", help = "API key")]
     pub api_key: Option<String>,
 
-    #[arg(long = "reasoning-parser-enabled", num_args = 0..=1, default_missing_value = "true", help = "Enable reasoning parser")]
+    #[arg(long = "reasoning-parser-enabled", num_args = 0..=1, default_missing_value = "false", help = "Enable reasoning parser")]
     pub reasoning_parser_enabled: Option<bool>,
 
-    #[arg(long = "tool-call-parser-enabled", num_args = 0..=1, default_missing_value = "true", help = "Enable tool call parser")]
+    #[arg(long = "tool-call-parser-enabled", num_args = 0..=1, default_missing_value = "false", help = "Enable tool call parser")]
     pub tool_call_parser_enabled: Option<bool>,
 
     #[arg(long = "api-server-count", help = "Number of API server threads")]
@@ -225,11 +222,14 @@ pub struct ServeArgs {
     pub allowed_headers: Option<Vec<String>>,
 
     #[arg(
-        long = "slot-reuse-timeout-ms",
-        default_value = "30000",
-        help = "Slot reuse timeout in milliseconds"
+        long = "slot-reuse-timeout",
+        default_value = "30",
+        help = "Slot reuse timeout in seconds"
     )]
-    pub slot_reuse_timeout_ms: Option<usize>,
+    pub slot_reuse_timeout: Option<usize>,
+
+    #[arg(long = "max-slot-size", help = "Maximum number of slots in the slot list (slot_list capacity)")]
+    pub max_slot_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -252,23 +252,23 @@ pub struct ChatArgs {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub struct VllmConfigFile {
+pub struct ConfigFile {
     #[serde(flatten)]
-    pub model: Option<VllmModelConfig>,
+    pub model: Option<FileModelConfig>,
 
     #[serde(flatten)]
-    pub scheduler: Option<VllmSchedulerConfig>,
+    pub scheduler: Option<FileSchedulerConfig>,
 
     #[serde(flatten)]
-    pub engine: Option<VllmEngineConfig>,
+    pub engine: Option<FileEngineConfig>,
 
     #[serde(flatten)]
-    pub server: Option<VllmServerConfig>,
+    pub server: Option<FileServerConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub struct VllmModelConfig {
+pub struct FileModelConfig {
     pub model: Option<String>,
     pub tokenizer: Option<String>,
     #[serde(alias = "tokenizer_mode")]
@@ -305,7 +305,7 @@ pub struct VllmModelConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub struct VllmSchedulerConfig {
+pub struct FileSchedulerConfig {
     #[serde(alias = "max_num_seqs")]
     pub max_num_seqs: Option<usize>,
     #[serde(alias = "max_num_batched_tokens")]
@@ -314,15 +314,13 @@ pub struct VllmSchedulerConfig {
     pub enable_continuous_batching: Option<bool>,
     #[serde(alias = "scheduling_policy")]
     pub scheduling_policy: Option<String>,
-    #[serde(alias = "schedule_timeout_ms")]
-    pub schedule_timeout_ms: Option<usize>,
     #[serde(alias = "dialogue_cache_enabled")]
     pub dialogue_cache_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub struct VllmEngineConfig {
+pub struct FileEngineConfig {
     pub runner: Option<String>,
     pub convert: Option<String>,
     #[serde(alias = "enforce_eager")]
@@ -335,7 +333,7 @@ pub struct VllmEngineConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub struct VllmServerConfig {
+pub struct FileServerConfig {
     pub host: Option<String>,
     pub port: Option<u16>,
     #[serde(alias = "log_requests")]
@@ -363,13 +361,15 @@ pub struct VllmServerConfig {
     pub allowed_methods: Option<Vec<String>>,
     #[serde(alias = "allowed_headers")]
     pub allowed_headers: Option<Vec<String>>,
+    #[serde(alias = "max_slot_size")]
+    pub max_slot_size: Option<usize>,
 }
 
-impl VllmConfigFile {
+impl ConfigFile {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let config: VllmConfigFile = serde_yaml::from_reader(reader)?;
+        let config: ConfigFile = serde_yaml::from_reader(reader)?;
         Ok(config)
     }
 
@@ -391,7 +391,7 @@ impl VllmConfigFile {
 
     fn apply_model_config(
         &self,
-        model: &VllmModelConfig,
+        model: &FileModelConfig,
         config: &mut Config,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(model_path) = &model.model {
@@ -458,7 +458,7 @@ impl VllmConfigFile {
 
     fn apply_scheduler_config(
         &self,
-        scheduler: &VllmSchedulerConfig,
+        scheduler: &FileSchedulerConfig,
         config: &mut Config,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(max_num_seqs) = scheduler.max_num_seqs {
@@ -475,9 +475,6 @@ impl VllmConfigFile {
                 SchedulingPolicy::from_str(scheduling_policy, false)
                     .map_err(|_| format!("Invalid scheduling_policy: {}", scheduling_policy))?;
         }
-        if let Some(schedule_timeout_ms) = scheduler.schedule_timeout_ms {
-            config.scheduler.schedule_timeout_ms = schedule_timeout_ms;
-        }
         if let Some(dialogue_cache_enabled) = scheduler.dialogue_cache_enabled {
             config.scheduler.dialogue_cache_enabled = dialogue_cache_enabled;
         }
@@ -486,7 +483,7 @@ impl VllmConfigFile {
 
     fn apply_engine_config(
         &self,
-        engine: &VllmEngineConfig,
+        engine: &FileEngineConfig,
         config: &mut Config,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(runner) = &engine.runner {
@@ -511,7 +508,7 @@ impl VllmConfigFile {
 
     fn apply_server_config(
         &self,
-        server: &VllmServerConfig,
+        server: &FileServerConfig,
         config: &mut Config,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if config.serve.is_none() {
@@ -562,6 +559,9 @@ impl VllmConfigFile {
             }
             if let Some(allowed_headers) = &server.allowed_headers {
                 serve.allowed_headers = allowed_headers.clone();
+            }
+            if let Some(max_slot_size) = server.max_slot_size {
+                serve.max_slot_size = Some(max_slot_size);
             }
         }
         Ok(())
@@ -795,9 +795,6 @@ impl JsonArgs {
                 "scheduling_policy" | "scheduling-policy" => {
                     config.scheduler.scheduling_policy = self.value_to_enum(value)?
                 }
-                "schedule_timeout_ms" | "schedule-timeout-ms" => {
-                    config.scheduler.schedule_timeout_ms = self.value_to_usize(value)?
-                }
                 "dialogue_cache_enabled" | "dialogue-cache-enabled" => {
                     config.scheduler.dialogue_cache_enabled = self.value_to_bool(value)?
                 }
@@ -879,8 +876,11 @@ impl JsonArgs {
                     "allowed_headers" | "allowed-headers" => {
                         serve.allowed_headers = self.value_to_vec_string(value)?
                     }
-                    "slot_reuse_timeout_ms" | "slot-reuse-timeout-ms" => {
-                        serve.slot_reuse_timeout_ms = self.value_to_usize(value)?
+                    "slot_reuse_timeout" | "slot-reuse-timeout" => {
+                        serve.slot_reuse_timeout_ms = self.value_to_usize(value)? * 1000
+                    }
+                    "max_slot_size" | "max-slot-size" => {
+                        serve.max_slot_size = Some(self.value_to_usize(value)?)
                     }
                     _ => {}
                 }
@@ -1056,9 +1056,6 @@ impl Config {
         if let Some(scheduling_policy) = shared.scheduling_policy {
             self.scheduler.scheduling_policy = scheduling_policy;
         }
-        if let Some(schedule_timeout_ms) = shared.schedule_timeout_ms {
-            self.scheduler.schedule_timeout_ms = schedule_timeout_ms;
-        }
         if let Some(dialogue_cache_enabled) = shared.dialogue_cache_enabled {
             self.scheduler.dialogue_cache_enabled = dialogue_cache_enabled;
         }
@@ -1114,8 +1111,11 @@ impl Config {
             if let Some(allowed_headers) = args.allowed_headers {
                 serve.allowed_headers = allowed_headers;
             }
-            if let Some(slot_reuse_timeout_ms) = args.slot_reuse_timeout_ms {
-                serve.slot_reuse_timeout_ms = slot_reuse_timeout_ms;
+            if let Some(slot_reuse_timeout) = args.slot_reuse_timeout {
+                serve.slot_reuse_timeout_ms = slot_reuse_timeout * 1000;
+            }
+            if let Some(max_slot_size) = args.max_slot_size {
+                serve.max_slot_size = Some(max_slot_size);
             }
         }
     }
@@ -1226,8 +1226,8 @@ impl Config {
         };
 
         if let Some(path) = config_path {
-            let vllm_config = VllmConfigFile::load_from_file(&path)?;
-            vllm_config.apply_to_config(&mut config)?;
+            let file_config = ConfigFile::load_from_file(&path)?;
+            file_config.apply_to_config(&mut config)?;
         }
 
         match command {

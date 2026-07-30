@@ -438,6 +438,7 @@ where
     /// Main entry point for running attention computation
     pub fn run(
         &self,
+        _total_size: usize,
         attention_list: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
@@ -598,7 +599,7 @@ mod tests {
             lift_index: 0,
         }];
 
-        attention.run(&slices, 1, 0);
+        attention.run(slices.iter().map(|s| s.length).sum(), &slices, 1, 0);
 
         for row in 0..3 {
             let expected = naive_attention_row(
@@ -669,7 +670,7 @@ mod tests {
             lift_index: 0,
         }];
 
-        attention.run(&slice, 1, 0);
+        attention.run(slice.iter().map(|s| s.length).sum(), &slice, 1, 0);
 
         let batch1_k_base = kv_heads * head_size;
         let batch1_k = [

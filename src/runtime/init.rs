@@ -9,7 +9,7 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::Scheduler;
-use crate::runtime::session::{build_batch_sequence, BatchSequence};
+use crate::runtime::session::{build_slot_sequence, SlotSequence};
 use crate::runtime::session::{SessionMode, SlotManager, SlotState};
 use crate::tensor::GlobalOperatorQueue;
 use crate::transformer::config::Config;
@@ -22,19 +22,21 @@ pub struct RuntimeContext<T>
 where
     T: Copy + crate::num_traits::FromNumber,
 {
-    pub batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
+    pub slot_sequences: Arc<SharedMut<SlotSequence<T>>>,
     pub scheduler: Arc<Scheduler>,
     pub slot_manager: Arc<SlotManager<T>>,
     pub thread_config: ThreadingConfig,
     pub _sequences_box: AlignedBox<usize>,
     pub session_mode: SessionMode,
     pub slot_reuse_timeout_ms: usize,
+    pub max_slot_size: usize,
 }
 
 pub fn initialize_runtime(
     resolved_config: &ResolvedConfig,
     api_server_count: usize,
     batch_size: usize,
+    max_slot_size: usize,
     sequence_length: usize,
     chunk_size: usize,
     session_mode: SessionMode,
@@ -63,12 +65,12 @@ pub fn initialize_runtime(
     let gen_params = extract_generation_params(&model_config, &generation_config);
     let thread_config = determine_thread_config(&generation_config, api_server_count);
 
-    let (sequences_box, batch_sequences) =
-        build_batch_sequence(model_dir, batch_size, sequence_length)?;
+    let (sequences_box, slot_sequences) =
+        build_slot_sequence(model_dir, max_slot_size, sequence_length)?;
     let sequences_ptr = sequences_box.as_mut_ptr();
 
     let batch_states = Arc::new(SharedMut::new(
-        (0..batch_size)
+        (0..max_slot_size)
             .map(|_| SlotState::idle())
             .collect::<Vec<_>>(),
     ));
@@ -93,7 +95,7 @@ pub fn initialize_runtime(
         position_vec,
         chunk_size,
         sequence_length,
-        batch_size,
+        max_slot_size,
         gen_params.top_k,
         gen_params.top_k_simd,
         gen_params.top_p,
@@ -103,9 +105,9 @@ pub fn initialize_runtime(
     );
     model.set_thread_num(thread_config.api_threads);
 
-    let batch_temperature_ptr =
-        batch_sequences.with_mut(|batch_sequence| batch_sequence.batch_temperature.as_mut_ptr());
-    let _ = model.forward(sequences_ptr, batch_temperature_ptr);
+    let slot_temperature_ptr =
+        slot_sequences.with_mut(|slot_sequence| slot_sequence.slot_temperature.as_mut_ptr());
+    let _ = model.forward(sequences_ptr, slot_temperature_ptr);
 
     let (reasoning_parser_enabled, tool_call_parser_enabled) =
         if let Some(serve) = &resolved_config.serve {
@@ -115,8 +117,8 @@ pub fn initialize_runtime(
         };
 
     let slot_manager = Arc::new(SlotManager::new(
-        batch_size,
-        batch_sequences.clone(),
+        max_slot_size,
+        slot_sequences.clone(),
         batch_states,
         session_mode,
         slot_reuse_timeout_ms as u64,
@@ -133,12 +135,13 @@ pub fn initialize_runtime(
     worker_pool.start();
 
     Ok(RuntimeContext {
-        batch_sequences,
+        slot_sequences,
         scheduler,
         slot_manager,
         thread_config,
         _sequences_box: sequences_box,
         session_mode,
         slot_reuse_timeout_ms,
+        max_slot_size,
     })
 }

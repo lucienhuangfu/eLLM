@@ -102,6 +102,7 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
@@ -237,7 +238,7 @@ mod tests {
             )
         };
 
-        runner.run(M, 0, 1, 0);
+        runner.run(M, 0, 0, 1, 0);
 
         for i in 0..M {
             for j in 0..N {

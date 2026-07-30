@@ -12,6 +12,7 @@ pub struct SequenceSlice {
 pub struct ScheduleTask {
     pub prefill_size: usize,
     pub decode_size: usize,
+    pub lift_size: usize,
     pub total_size: usize,
     pub slices: Vec<SequenceSlice>,
 }
@@ -21,6 +22,7 @@ impl ScheduleTask {
         Self {
             prefill_size: 0,
             decode_size: 0,
+            lift_size: 0,
             total_size: 0,
             slices: Vec::with_capacity(max_batch_size),
         }
@@ -30,13 +32,14 @@ impl ScheduleTask {
     pub fn reset(&mut self) {
         self.prefill_size = 0;
         self.decode_size = 0;
+        self.lift_size = 0;
         self.total_size = 0;
         self.slices.clear();
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.prefill_size == 0 && self.decode_size == 0
+        self.prefill_size == 0 && self.decode_size == 0 && self.lift_size == 0
     }
 }
 

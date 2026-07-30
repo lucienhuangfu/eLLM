@@ -49,6 +49,8 @@ fn run_queue(_output: &Tensor<f16>, batch_size: usize, thread_num: usize) {
                 op.run(
                     batch_size,
                     0,
+                    0,
+                    batch_size,
                     thread_num,
                     tid,
                     EMPTY_SLICES,

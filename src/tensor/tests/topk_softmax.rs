@@ -45,9 +45,9 @@ fn test_topk_softmax_f32() {
 
     let indices_ptr = all_indices.as_ptr();
 
-    let mut batch_list = Vec::with_capacity(batch_size);
+    let mut slot_list = Vec::with_capacity(batch_size);
     for i in 0..batch_size {
-        batch_list.push(SlotState {
+        slot_list.push(SlotState {
             next_sequence_index: 0,
             prompt_length: 0,
             phase: Phase::Decode,
@@ -68,7 +68,7 @@ fn test_topk_softmax_f32() {
                 token_start_index: batch_index,
                 length: 1,
                 last_token_flag: true,
-                lift_index: 0,
+                lift_index: batch_index,
             });
         }
         decode_lists.push(slices);
@@ -100,9 +100,9 @@ fn test_topk_softmax_f32() {
     for i in 0..thread_num {
         for op in operator_queue.iter() {
             if let Operator::TopKSoftmax(operator) = op {
-                operator.run(batch_size, 1, thread_num, i, &decode_list, &mut batch_list);
+                operator.run(batch_size, batch_size, 0, thread_num, i, &decode_list, &mut slot_list);
             } else {
-                op.run(batch_size, 1, thread_num, i, EMPTY_SLICES, &mut Vec::new());
+                op.run(batch_size, 1, 1, 0, thread_num, i, EMPTY_SLICES, &mut Vec::new());
             }
         }
     }
@@ -193,9 +193,9 @@ fn test_topk_softmax_f16() {
 
     let indices_ptr = all_indices.as_ptr();
 
-    let mut batch_list = Vec::with_capacity(batch_size);
+    let mut slot_list = Vec::with_capacity(batch_size);
     for i in 0..batch_size {
-        batch_list.push(SlotState {
+        slot_list.push(SlotState {
             next_sequence_index: 0,
             prompt_length: 0,
             phase: Phase::Decode,
@@ -216,7 +216,7 @@ fn test_topk_softmax_f16() {
                 token_start_index: batch_index,
                 length: 1,
                 last_token_flag: true,
-                lift_index: 0,
+                lift_index: batch_index,
             });
         }
         decode_lists.push(slices);
@@ -248,9 +248,9 @@ fn test_topk_softmax_f16() {
     for i in 0..thread_num {
         for op in operator_queue.iter() {
             if let Operator::TopKSoftmax(operator) = op {
-                operator.run(batch_size, 1, thread_num, i, &decode_list, &mut batch_list);
+                operator.run(batch_size, batch_size, 0, thread_num, i, &decode_list, &mut slot_list);
             } else {
-                op.run(batch_size, 1, thread_num, i, EMPTY_SLICES, &mut Vec::new());
+                op.run(batch_size, 1, 1, 0, thread_num, i, EMPTY_SLICES, &mut Vec::new());
             }
         }
     }

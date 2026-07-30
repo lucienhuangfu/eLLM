@@ -4,7 +4,7 @@ use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
 use ellm::runtime::{
-    build_batch_sequence, ExecutorPool, Scheduler, SessionMode, SlotManager, SlotState,
+    build_slot_sequence, ExecutorPool, Scheduler, SessionMode, SlotManager, SlotState,
 };
 use ellm::serving;
 use std::sync::Arc;
@@ -45,8 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sequence_length = 256usize;
     let batch_size = 4usize;
 
-    let (sequences_box, batch_sequences) =
-        build_batch_sequence(model_dir, batch_size, sequence_length)?;
+    let (sequences_box, slot_sequences) =
+        build_slot_sequence(model_dir, batch_size, sequence_length)?;
     let sequences_ptr = sequences_box.as_mut_ptr();
 
     let batch_states = Arc::new(SharedMut::new(
@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
-        batch_sequences.clone(),
+        slot_sequences.clone(),
         Arc::clone(&batch_states),
         SessionMode::NonReusable,
         600000,

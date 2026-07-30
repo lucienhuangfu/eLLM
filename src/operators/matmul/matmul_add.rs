@@ -168,14 +168,16 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
+        lift_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
-            let active_input_rows = if prefill_size == 0 {
-                decode_size
+            let active_input_rows = if self.decode_only_flag {
+                lift_size
             } else {
-                prefill_size
+                _total_size
             };
             let output_cols = self.n_max;
             let reduction_cols = self.k_max;
@@ -622,7 +624,7 @@ mod tests {
         };
 
         for tid in 0..thread_num {
-            runner.run(M, 0, thread_num, tid);
+            runner.run(M, 0, M, M, thread_num, tid);
         }
 
         for i in 0..M {
@@ -692,7 +694,7 @@ mod tests {
 
         let used = thread_num.min(runner.panel_threads()).max(1);
         for tid in 0..used {
-            runner.run(M_RUN, 0, used, tid);
+            runner.run(M_RUN, 0, M_RUN, M_RUN, used, tid);
         }
 
         for i in 0..M_RUN {

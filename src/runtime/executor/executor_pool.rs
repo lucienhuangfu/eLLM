@@ -125,6 +125,8 @@ where
     ) {
         let prefill_size = task.prefill_size;
         let decode_size = task.decode_size;
+        let lift_size = task.lift_size;
+        let total_size = task.total_size;
         for operator in operator_queue.iter() {
             let slot_list_ptr = scheduler.slot_list().get();
             unsafe {
@@ -132,6 +134,8 @@ where
                 operator.run(
                     prefill_size,
                     decode_size,
+                    lift_size,
+                    total_size,
                     thread_num,
                     thread_id,
                     &task.slices,

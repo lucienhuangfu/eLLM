@@ -49,7 +49,7 @@ fn run_test(
     );
 
     // Run single-threaded
-    operator.run(num_rows, 0, 1, 0);
+    operator.run(num_rows, 0, num_rows, num_rows, 1, 0);
 
     f16_to_f32(&output_f16)
 }
@@ -175,7 +175,7 @@ fn main() {
         eps,
         true,
     );
-    op_decode.run(0, 1, 1, 0);
+    op_decode.run(0, 1, 1, 1, 1, 0);
     let output_decode = f16_to_f32(&output_decode_f16);
     let expected_decode = &expected_rand_w[..hidden_size];
     write_npy_f32(dump_dir.join("rust_decode.npy"), &output_decode);

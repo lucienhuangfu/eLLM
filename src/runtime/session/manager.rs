@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tokio::sync::{Mutex as TokioMutex, Notify};
 
-use super::sequence::BatchSequence;
+use super::sequence::SlotSequence;
 use super::slot::{Phase, SessionHandle, SessionMode, SlotState};
 use crate::num_traits::FromNumber;
 use crate::operators::send_sync_ptr::SharedMut;
@@ -16,7 +16,7 @@ use crate::serving::{ApiError, ApiResult, ChatMessage};
 
 pub struct SlotManager<T: Copy + FromNumber> {
     pub(crate) batch_states: Arc<SharedMut<Vec<SlotState>>>,
-    pub(crate) batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
+    pub(crate) slot_sequences: Arc<SharedMut<SlotSequence<T>>>,
     lru: StdMutex<Vec<usize>>,
     session_map: TokioMutex<HashMap<String, usize>>,
     reserved_slots: TokioMutex<HashMap<String, (usize, Arc<AtomicBool>)>>,
@@ -29,7 +29,7 @@ pub struct SlotManager<T: Copy + FromNumber> {
 impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
     pub fn new(
         num_slots: usize,
-        batch_sequences: Arc<SharedMut<BatchSequence<T>>>,
+        slot_sequences: Arc<SharedMut<SlotSequence<T>>>,
         batch_states: Arc<SharedMut<Vec<SlotState>>>,
         mode: SessionMode,
         reuse_timeout_ms: u64,
@@ -38,7 +38,7 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
     ) -> Self {
         Self {
             batch_states,
-            batch_sequences,
+            slot_sequences,
             lru: StdMutex::new((0..num_slots).collect()),
             session_map: TokioMutex::new(HashMap::new()),
             reserved_slots: TokioMutex::new(HashMap::new()),
@@ -155,7 +155,7 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
             .collect();
 
         let new_tokens: Vec<u32> = self
-            .batch_sequences
+            .slot_sequences
             .with(|seq| seq.tokenize_messages(&message_pairs))
             .map_err(ApiError::TokenizationError)?;
 
@@ -174,7 +174,7 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
         let remaining_tokens = &new_tokens[prefix_len..];
 
         self.batch_states.with_mut(|slots| {
-            self.batch_sequences.with_mut(|seq| {
+            self.slot_sequences.with_mut(|seq| {
                 let record = &mut slots[slot_index];
                 seq.write_tokens_at(slot_index, prefix_len, remaining_tokens, temperature)
                     .map(|write_len| {
@@ -192,21 +192,21 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
     // ── Decode helpers ────────────────────────────────────
 
     pub fn decode_single_token(&self, slot_index: usize, token_index: usize) -> String {
-        self.batch_sequences.with(|seq| {
+        self.slot_sequences.with(|seq| {
             seq.decode_single_token(slot_index, token_index)
                 .unwrap_or_default()
         })
     }
 
     pub fn decode_token_span(&self, slot_index: usize, begin: usize, end: usize) -> String {
-        self.batch_sequences
+        self.slot_sequences
             .with(|seq| seq.decode_token_span(slot_index, begin, end))
     }
 
     pub fn decode_generated_text(&self, slot_index: usize) -> String {
         self.batch_states.with(|slots| {
             let record = &slots[slot_index];
-            self.batch_sequences.with(|seq| {
+            self.slot_sequences.with(|seq| {
                 seq.decode_token_span(slot_index, record.prompt_length, record.next_sequence_index)
             })
         })
@@ -277,7 +277,7 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
         drop(map);
 
         let cached_tokens = self
-            .batch_sequences
+            .slot_sequences
             .with(|seq| seq.token_ids(slot_index, 0, cached_count));
 
         let prefix_len = cached_tokens

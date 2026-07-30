@@ -8,7 +8,7 @@ use ellm::runtime::loader::load_tiktoken;
 use ellm::runtime::loader::ChatTemplate;
 use ellm::runtime::loader::SafeTensorsLoader;
 use ellm::runtime::{
-    BatchSequence, ExecutorPool, Phase, ScheduleTask, Scheduler, SessionMode, SlotManager,
+    ExecutorPool, Phase, ScheduleTask, Scheduler, SessionMode, SlotManager, SlotSequence,
     SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
@@ -184,7 +184,7 @@ fn main() {
     let sequences_box = AlignedBox::allocate_init(sequences_capacity, 0usize);
     let sequences_ptr = sequences_box.as_mut_ptr();
 
-    let mut batch_seq = BatchSequence::<f16>::new(
+    let mut slot_seq = SlotSequence::<f16>::new(
         sequences_ptr,
         batch_size,
         sequence_length,
@@ -196,7 +196,7 @@ fn main() {
 
     let mut written_lengths = Vec::new();
     for (slot, prompt) in prompts.iter().enumerate().take(batch_size) {
-        let write_len = batch_seq
+        let write_len = slot_seq
             .write_prompts(slot, &[("user", prompt.as_str())], 1.0)
             .unwrap();
         written_lengths.push(write_len);
@@ -238,7 +238,7 @@ fn main() {
     );
     model.set_thread_num(thread_num);
     let (_indices, _values) =
-        model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
+        model.forward(sequences_ptr, slot_seq.slot_temperature.as_mut_ptr());
     log_timing("build_graph", program_start);
 
     let slot_list: Vec<SlotState> = written_lengths
@@ -250,7 +250,7 @@ fn main() {
         })
         .collect();
     let slot_list_arc = Arc::new(SharedMut::new(slot_list));
-    let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
+    let slot_seq_arc = Arc::new(SharedMut::new(slot_seq));
 
     let batch_scheduler = Arc::new(Scheduler::new(
         batch_size,
@@ -261,7 +261,7 @@ fn main() {
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
-        batch_seq_arc,
+        slot_seq_arc,
         Arc::clone(&slot_list_arc),
         SessionMode::Reusable,
         600000, // 10 minutes

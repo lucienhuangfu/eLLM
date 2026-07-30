@@ -98,8 +98,10 @@ impl Scheduler {
 
                 // ===== Pass 2: 直接构建 slices，零后处理 =====
                 // 布局约定：[Prefill 0..prefill_total][Decode prefill_total..total]
-                let mut prefill_acc = 0usize;
+                let mut prefill_acc = 0usize;       // prefill token 在 token 布局中的偏移
                 let mut remaining_budget = prefill_budget;
+                let mut lift_acc = 0usize;          // 需要采样的总行数（prefill_last + decode slice）
+                let mut decode_token_acc = 0usize;  // decode 段 token 在 token 布局中的偏移（Decode phase slice 数）
 
                 // 先推 Prefill 切片（保证在前）
                 for (batch_index, slot) in slot_list.iter().enumerate() {
@@ -109,14 +111,22 @@ impl Scheduler {
                     if slot.phase == Phase::Prefill {
                         let remaining = slot.prompt_length.saturating_sub(slot.next_sequence_index);
                         let prefill_length = remaining.min(remaining_budget);
+                        let last_token_flag = prefill_length == remaining;
+                        let lift_index = if last_token_flag {
+                            let idx = lift_acc;
+                            lift_acc += 1; // prefill 的最后一块要生成 token，占用 lift 行
+                            idx
+                        } else {
+                            0
+                        };
 
                         task.slices.push(SequenceSlice {
                             batch_index,
                             next_sequence_index: slot.next_sequence_index,
                             token_start_index: prefill_acc,
                             length: prefill_length,
-                            last_token_flag: prefill_length == remaining,
-                            lift_index: 0,
+                            last_token_flag,
+                            lift_index,
                         });
                         prefill_acc += prefill_length;
                         remaining_budget -= prefill_length;
@@ -124,27 +134,33 @@ impl Scheduler {
                 }
 
                 // 再推 Decode 切片（保证在后）
-                let mut decode_acc = 0usize;
                 for (batch_index, slot) in slot_list.iter().enumerate() {
-                    if decode_acc >= decode_count {
+                    if decode_token_acc >= decode_count {
                         break;
                     }
                     if slot.phase == Phase::Decode {
+                        let lift_index = lift_acc;
+                        lift_acc += 1; // decode slice 必生成 token，占用 lift 行
+
                         task.slices.push(SequenceSlice {
                             batch_index,
                             next_sequence_index: slot.next_sequence_index,
-                            token_start_index: prefill_total + decode_acc,
+                            token_start_index: prefill_total + decode_token_acc,
                             length: 1,
                             last_token_flag: true,
-                            lift_index: 0,
+                            lift_index,
                         });
-                        decode_acc += 1;
+                        decode_token_acc += 1;
                     }
                 }
 
                 task.prefill_size = prefill_acc;
-                task.decode_size = decode_acc;
-                task.total_size = prefill_acc + decode_acc;
+                // decode_size = token 布局中 Decode 段的 slice 数（已处于 Decode 阶段的 slot 数）
+                task.decode_size = decode_token_acc;
+                // lift_size = 本轮要采样/生成 token 的行数（prefill_last + decode slice）
+                task.lift_size = lift_acc;
+                // total_size = token 布局的总行数（prefill + decode 段 token 数）
+                task.total_size = prefill_acc + decode_token_acc;
             });
             !self.task.with(|task| task.is_empty())
         })
@@ -211,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn test_realistic_batch_sequence_workflow() {
+    fn test_realistic_slot_sequence_workflow() {
         const MAX_BATCH_SIZE: usize = 8;
         const MAX_CHUNK_SIZE: usize = 512;
         const THREAD_NUM: usize = 4;

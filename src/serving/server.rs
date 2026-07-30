@@ -322,11 +322,17 @@ pub fn initialize_serving_resources(
         .as_ref()
         .map(|s| s.slot_reuse_timeout_ms)
         .unwrap_or(30000);
+    let max_slot_size = resolved_config
+        .serve
+        .as_ref()
+        .and_then(|s| s.max_slot_size)
+        .unwrap_or(batch_size);
 
     let ctx = initialize_runtime(
         resolved_config,
         api_server_count,
         batch_size,
+        max_slot_size,
         sequence_length,
         chunk_size,
         session_mode,

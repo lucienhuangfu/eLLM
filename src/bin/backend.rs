@@ -5,8 +5,8 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
-    BatchSequence, ExecutorPool, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SessionMode,
-    SlotManager, SlotState,
+    ExecutorPool, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SessionMode, SlotManager,
+    SlotSequence, SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sequences_box = AlignedBox::allocate_init(sequences_capacity, 0);
     let sequences_ptr = sequences_box.as_mut_ptr();
 
-    let mut batch_seq = BatchSequence::<f16>::new(
+    let mut slot_seq = SlotSequence::<f16>::new(
         sequences_ptr,
         batch_size,
         sequence_length,
@@ -103,13 +103,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &tokenizer_config_path,
         &chat_template_path,
     )
-    .map_err(|e| format!("failed to create batch sequence: {}", e))?;
+    .map_err(|e| format!("failed to create slot sequence: {}", e))?;
 
-    // Write fixed prompts into each slot using BatchSequence
+    // Write fixed prompts into each slot using SlotSequence
     let mut written_lengths = Vec::with_capacity(batch_size);
     for (slot, prompt) in fixed_prompts.iter().enumerate().take(batch_size) {
         let messages: [(&str, &str); 1] = [("user", prompt)];
-        let write_len = batch_seq
+        let write_len = slot_seq
             .write_prompts(slot, &messages, 1.0)
             .map_err(|e| format!("failed to write prompt: {}", e))?;
         written_lengths.push(write_len);
@@ -153,7 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run the model forward pass to populate the operator queue
     let (_output_indices, _output_tensor) =
-        model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
+        model.forward(sequences_ptr, slot_seq.slot_temperature.as_mut_ptr());
 
     let mut slot_list = Vec::with_capacity(batch_size);
     slot_list.extend(written_lengths.iter().enumerate().map(|(_, &len)| {
@@ -162,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         s
     }));
     let slot_list_arc = Arc::new(SharedMut::new(slot_list));
-    let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
+    let slot_seq_arc = Arc::new(SharedMut::new(slot_seq));
 
     let batch_scheduler = Arc::new(Scheduler::new(
         batch_size,
@@ -173,7 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
-        Arc::clone(&batch_seq_arc),
+        Arc::clone(&slot_seq_arc),
         Arc::clone(&slot_list_arc),
         SessionMode::Reusable,
         600000, // 10 minutes
@@ -223,7 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Generated Output ===");
     slot_list_arc.with(|list| {
-        batch_seq_arc.with(|batch_seq| {
+        slot_seq_arc.with(|batch_seq| {
             for (slot, record) in list.iter().enumerate() {
                 let text = batch_seq.decode_token_span(slot, record.prompt_length, record.next_sequence_index);
                 if !text.is_empty() {

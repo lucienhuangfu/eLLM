@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::num_traits::FromNumber;
-use crate::runtime::session::BatchSequence;
+use crate::runtime::session::SlotSequence;
 use crate::runtime::session::{Phase, SlotState};
 
 use super::test_utils::*;
@@ -12,11 +12,11 @@ fn test_write_and_read_tokens() {
     let batch_size = 2;
     let mut buffer = vec![0usize; batch_size * seq_len];
 
-    let mut batch = BatchSequence::<f32> {
+    let mut batch = SlotSequence::<f32> {
         sequences: buffer.as_mut_ptr(),
-        batch_temperature: vec![0.0; batch_size],
-        row_size: batch_size,
-        col_size: seq_len,
+        slot_temperature: vec![0.0; batch_size],
+        slot_count: batch_size,
+        slot_capacity: seq_len,
         tokenizer: test_tokenizer(),
         chat_template: test_chat_template(),
     };
@@ -24,7 +24,7 @@ fn test_write_and_read_tokens() {
     let tokens: Vec<u32> = vec![10, 20, 30, 40, 50];
     let written = batch.write_tokens_at(0, 0, &tokens, 0.7).unwrap();
     assert_eq!(written, 5);
-    assert_eq!(batch.batch_temperature[0], 0.7);
+    assert_eq!(batch.slot_temperature[0], 0.7);
 
     let read_back = batch.token_ids(0, 0, 5);
     assert_eq!(read_back, tokens);
@@ -35,11 +35,11 @@ fn test_write_tokens_at_offset() {
     let seq_len = 128;
     let mut buffer = vec![0usize; seq_len];
 
-    let mut batch = BatchSequence::<f32> {
+    let mut batch = SlotSequence::<f32> {
         sequences: buffer.as_mut_ptr(),
-        batch_temperature: vec![0.0; 1],
-        row_size: 1,
-        col_size: seq_len,
+        slot_temperature: vec![0.0; 1],
+        slot_count: 1,
+        slot_capacity: seq_len,
         tokenizer: test_tokenizer(),
         chat_template: test_chat_template(),
     };
@@ -56,15 +56,15 @@ fn test_write_tokens_at_offset() {
 }
 
 #[test]
-fn test_write_tokens_respects_col_size_limit() {
+fn test_write_tokens_respects_slot_capacity_limit() {
     let seq_len = 8;
     let mut buffer = vec![0usize; seq_len];
 
-    let mut batch = BatchSequence::<f32> {
+    let mut batch = SlotSequence::<f32> {
         sequences: buffer.as_mut_ptr(),
-        batch_temperature: vec![0.0; 1],
-        row_size: 1,
-        col_size: seq_len,
+        slot_temperature: vec![0.0; 1],
+        slot_count: 1,
+        slot_capacity: seq_len,
         tokenizer: test_tokenizer(),
         chat_template: test_chat_template(),
     };
@@ -79,11 +79,11 @@ fn test_token_ids_out_of_bounds_returns_empty() {
     let seq_len = 16;
     let mut buffer = vec![0usize; seq_len];
 
-    let batch = BatchSequence::<f32> {
+    let batch = SlotSequence::<f32> {
         sequences: buffer.as_mut_ptr(),
-        batch_temperature: vec![0.0; 1],
-        row_size: 1,
-        col_size: seq_len,
+        slot_temperature: vec![0.0; 1],
+        slot_count: 1,
+        slot_capacity: seq_len,
         tokenizer: test_tokenizer(),
         chat_template: test_chat_template(),
     };
@@ -102,7 +102,7 @@ async fn test_get_prefix_match_len_partial_prefix_match() {
     let slot_idx = handle.slot_index;
 
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    manager.batch_sequences.with_mut(|bs| {
+    manager.slot_sequences.with_mut(|bs| {
         bs.write_tokens_at(slot_idx, 0, &tokens, 1.0).unwrap();
     });
 
@@ -127,7 +127,7 @@ async fn test_get_prefix_match_len_no_prefix_match() {
     let slot_idx = handle.slot_index;
 
     let tokens: Vec<u32> = vec![100, 200, 300];
-    manager.batch_sequences.with_mut(|bs| {
+    manager.slot_sequences.with_mut(|bs| {
         bs.write_tokens_at(slot_idx, 0, &tokens, 1.0).unwrap();
     });
 
@@ -150,7 +150,7 @@ async fn test_get_prefix_match_len_new_tokens_shorter() {
     let slot_idx = handle.slot_index;
 
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    manager.batch_sequences.with_mut(|bs| {
+    manager.slot_sequences.with_mut(|bs| {
         bs.write_tokens_at(slot_idx, 0, &tokens, 1.0).unwrap();
     });
 
@@ -174,7 +174,7 @@ async fn test_get_prefix_match_len_exact_match() {
     let slot_idx = handle.slot_index;
 
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
-    manager.batch_sequences.with_mut(|bs| {
+    manager.slot_sequences.with_mut(|bs| {
         bs.write_tokens_at(slot_idx, 0, &tokens, 1.0).unwrap();
     });
 

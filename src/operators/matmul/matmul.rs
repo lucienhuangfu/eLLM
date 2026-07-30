@@ -166,6 +166,7 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
@@ -423,7 +424,7 @@ mod tests {
 
         // 顺序模拟多线程调用
         for tid in 0..thread_num {
-            matmul.run(M, 0, thread_num, tid);
+            matmul.run(M, 0, 0, thread_num, tid);
         }
 
         for i in 0..M {
@@ -490,7 +491,7 @@ mod tests {
         };
 
         for tid in 0..thread_num {
-            matmul.run(M, 0, thread_num, tid);
+            matmul.run(M, 0, 0, thread_num, tid);
         }
 
         for i in 0..M {
@@ -559,7 +560,7 @@ mod tests {
 
         // batch_size 传 7（不是 3 的倍数），内部会 pad 到 9
         for tid in 0..thread_num {
-            matmul.run(M_RUN, 0, thread_num, tid);
+            matmul.run(M_RUN, 0, 0, thread_num, tid);
         }
 
         // 只检查前 7 行（真实 batch），pad 行不检查
@@ -637,7 +638,7 @@ mod tests {
         };
 
         for tid in 0..thread_num {
-            matmul.run(M_RUN, 0, thread_num, tid);
+            matmul.run(M_RUN, 0, 0, thread_num, tid);
         }
 
         for i in 0..M_RUN {

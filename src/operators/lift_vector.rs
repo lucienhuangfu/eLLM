@@ -20,6 +20,7 @@ impl<T> LiftVector<T> {
 
     pub fn run(
         &self,
+        _total_size: usize,
         computing_slices: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
@@ -96,8 +97,8 @@ mod test {
         ];
 
         let lift_vector = LiftVector::new(data.as_mut_ptr(), length);
-        lift_vector.run(&decode_list, 2, 0);
-        lift_vector.run(&decode_list, 2, 1);
+        lift_vector.run(0, &decode_list, 2, 0);
+        lift_vector.run(0, &decode_list, 2, 1);
 
         assert_eq!(data[0..4], [1.0, 2.0, 3.0, 4.0]);
         assert_eq!(data[4..8], [5.0, 6.0, 7.0, 8.0]);

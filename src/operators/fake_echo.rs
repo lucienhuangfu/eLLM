@@ -57,6 +57,7 @@ impl FakeEcho {
 
     pub fn run(
         &self,
+        _total_size: usize,
         thread_num: usize,
         thread_id: usize,
         computing_slices: &[SequenceSlice],
@@ -169,17 +170,17 @@ mod tests {
         let mut batch = vec![prefill_state(0, 0)];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(1, 0, &dl, &mut batch);
+        echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 1);
         assert_eq!(seq[PRE_COUNT], 10);
 
         for i in 1..5 {
-            echo.run(1, 0, &dl, &mut batch);
+            echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
             assert_eq!(seq[PRE_COUNT + i], (i + 1) * 10);
         }
 
-        echo.run(1, 0, &dl, &mut batch);
+        echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
         assert_eq!(batch[0].phase, Phase::Eos);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 6);
         assert_eq!(seq[PRE_COUNT + 5], EOS);
@@ -194,7 +195,7 @@ mod tests {
         let mut batch = vec![decode_state(PRE_COUNT, PRE_COUNT)];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(1, 0, &dl, &mut batch);
+        echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
 
         assert_eq!(batch[0].phase, Phase::Eos);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 1);
@@ -210,11 +211,11 @@ mod tests {
         let mut batch = vec![decode_state(PRE_COUNT, PRE_COUNT)];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(1, 0, &dl, &mut batch);
+        echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(seq[PRE_COUNT], 42);
 
-        echo.run(1, 0, &dl, &mut batch);
+        echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
         assert_eq!(batch[0].phase, Phase::Eos);
         assert_eq!(seq[PRE_COUNT + 1], EOS);
     }
@@ -228,7 +229,7 @@ mod tests {
         let mut batch = vec![prefill_state(PRE_COUNT, 0)];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(2, 0, &dl, &mut batch);
+        echo.run(dl.iter().map(|s| s.length).sum(), 2, 0, &dl, &mut batch);
 
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 1);
@@ -254,8 +255,8 @@ mod tests {
             make_slice(2, PRE_COUNT),
         ];
 
-        echo.run(2, 0, &dl, &mut batch);
-        echo.run(2, 1, &dl, &mut batch);
+        echo.run(dl.iter().map(|s| s.length).sum(), 2, 0, &dl, &mut batch);
+        echo.run(dl.iter().map(|s| s.length).sum(), 2, 1, &dl, &mut batch);
 
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(batch[1].phase, Phase::Decode);

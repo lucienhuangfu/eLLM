@@ -8,7 +8,7 @@ use ellm::runtime::loader::load_tiktoken;
 use ellm::runtime::loader::ChatTemplate;
 use ellm::runtime::loader::SafeTensorsLoader;
 use ellm::runtime::{
-    BatchSequence, ExecutorPool, Phase, ScheduleTask, Scheduler, SessionMode, SlotManager,
+    ExecutorPool, Phase, ScheduleTask, Scheduler, SessionMode, SlotManager, SlotSequence,
     SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
@@ -110,7 +110,7 @@ fn main() {
     let sequences_box = AlignedBox::allocate_init(sequences_capacity, 0usize);
     let sequences_ptr = sequences_box.as_mut_ptr();
 
-    let mut batch_seq = BatchSequence::<f16>::new(
+    let mut slot_seq = SlotSequence::<f16>::new(
         sequences_ptr,
         batch_size,
         sequence_length,
@@ -122,7 +122,7 @@ fn main() {
 
     let mut written_lengths = Vec::new();
     for (slot, prompt) in prompts.iter().enumerate().take(batch_size) {
-        let write_len = batch_seq
+        let write_len = slot_seq
             .write_prompts(slot, &[("user", prompt)], 1.0)
             .unwrap();
         written_lengths.push(write_len);
@@ -166,7 +166,7 @@ fn main() {
     );
     model.set_thread_num(thread_num);
     let (_indices, _values) =
-        model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
+        model.forward(sequences_ptr, slot_seq.slot_temperature.as_mut_ptr());
 
     let slot_list: Vec<SlotState> = written_lengths
         .iter()
@@ -177,7 +177,7 @@ fn main() {
         })
         .collect();
     let slot_list_arc = Arc::new(SharedMut::new(slot_list));
-    let batch_seq_arc = Arc::new(SharedMut::new(batch_seq));
+    let slot_seq_arc = Arc::new(SharedMut::new(slot_seq));
 
     let batch_scheduler = Arc::new(Scheduler::new(
         batch_size,
@@ -188,7 +188,7 @@ fn main() {
 
     let slot_manager = Arc::new(SlotManager::new(
         batch_size,
-        Arc::clone(&batch_seq_arc),
+        Arc::clone(&slot_seq_arc),
         Arc::clone(&slot_list_arc),
         SessionMode::Reusable,
         600000, // 10 minutes
@@ -244,14 +244,14 @@ fn main() {
     println!("Done in {elapsed:.2?}\n");
 
     slot_list_arc.with(|list| {
-        batch_seq_arc.with(|batch_seq| {
+        slot_seq_arc.with(|slot_seq| {
             for (slot, record) in list.iter().enumerate() {
                 let input_len = written_lengths[slot];
                 let actual_gen_len = record.next_sequence_index.saturating_sub(input_len);
                 let gen_end = record.next_sequence_index.min(sequence_length);
                 let gen_len = gen_end.saturating_sub(input_len);
-                let _text_short = batch_seq.decode_token_span(slot, input_len, gen_end);
-                let _ids = batch_seq.token_ids(slot, input_len, gen_end.min(input_len + 5));
+                let _text_short = slot_seq.decode_token_span(slot, input_len, gen_end);
+                let _ids = slot_seq.token_ids(slot, input_len, gen_end.min(input_len + 5));
             let ids: Vec<u32> = (input_len..gen_end)
                 .map(|i| unsafe { *sequences_ptr.add(slot * sequence_length + i) as u32 })
                 .collect();

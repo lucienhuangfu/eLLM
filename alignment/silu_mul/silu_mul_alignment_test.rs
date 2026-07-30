@@ -45,7 +45,7 @@ fn main() {
         head_num,
         head_size,
     );
-    operator.run(prefill_size, 1, 0);
+    operator.run(prefill_size, 0, 1, 0);
 
     // Write Rust output to NumPy file
     write_npy_f32(dump_dir.join("rust_silu_mul_output.npy"), &output);

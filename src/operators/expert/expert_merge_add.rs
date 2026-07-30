@@ -91,16 +91,18 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
+        lift_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
             let thread_num = thread_num.max(1);
 
-            let active_size = if prefill_size == 0 {
-                decode_size
+            let active_size = if self.decode_only_flag {
+                lift_size
             } else {
-                prefill_size
+                _total_size
             };
             let active_token_count = self.sequence_chunk_size * active_size;
             let hidden_size = self.hidden_size;
@@ -272,7 +274,7 @@ mod tests {
             false,
         );
 
-        runner.run(batch, 0, 1, 0);
+        runner.run(batch, 0, batch, batch, 1, 0);
 
         verify_output(&out, &out_ref, 5e-2, "k1_basic");
     }
@@ -324,7 +326,7 @@ mod tests {
             false,
         );
 
-        runner.run(num_tokens, 0, 1, 0);
+        runner.run(num_tokens, 0, num_tokens, num_tokens, 1, 0);
 
         verify_output(&out, &out_ref, 5e-2, "k3_sum");
     }
@@ -376,7 +378,7 @@ mod tests {
             false,
         );
 
-        runner.run(num_tokens, 0, 1, 0);
+        runner.run(num_tokens, 0, num_tokens, num_tokens, 1, 0);
 
         verify_output(&out, &out_ref, 5e-2, "tail_h48");
     }
@@ -414,8 +416,8 @@ mod tests {
             false,
         );
 
-        runner.run(batch, 0, 2, 0);
-        runner.run(batch, 0, 2, 1);
+        runner.run(batch, 0, batch, batch, 2, 0);
+        runner.run(batch, 0, batch, batch, 2, 1);
 
         for e in 0..num_experts {
             let count = unsafe { (&*routing.expert_counts.ptr.add(e)).load(Ordering::Acquire) };
@@ -479,7 +481,7 @@ mod tests {
             );
 
             for tid in 0..num_threads {
-                op.run(batch_size, 0, num_threads, tid);
+                op.run(batch_size, 0, batch_size, batch_size, num_threads, tid);
             }
         }
 
@@ -559,7 +561,7 @@ mod tests {
 
         // 单线程运行：关键是把 batch_run 传进去
         // 你的 run() 现在把 _batch_size 忽略了，所以这个测试会失败（会写满 10 tokens）
-        op.run(batch_run, 0, 1, 0);
+        op.run(batch_run, 0, batch_run, batch_run, 1, 0);
 
         // 1) 检查 run 范围内：out == residual + input0 + input1
         for t in 0..num_tokens_run {

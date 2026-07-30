@@ -136,7 +136,7 @@ async fn test_incremental_prefill_with_prefix_match() {
     let slot_idx = handle.slot_index;
 
     let round1_tokens: Vec<u32> = (1..=20).collect();
-    manager.batch_sequences.with_mut(|bs| {
+    manager.slot_sequences.with_mut(|bs| {
         bs.write_tokens_at(slot_idx, 0, &round1_tokens, 1.0)
             .unwrap();
     });
@@ -157,7 +157,7 @@ async fn test_incremental_prefill_with_prefix_match() {
     let delta_tokens = &round2_tokens[prefix..];
     assert_eq!(delta_tokens.len(), 10);
 
-    manager.batch_sequences.with_mut(|bs| {
+    manager.slot_sequences.with_mut(|bs| {
         let written = bs
             .write_tokens_at(slot_idx, prefix, delta_tokens, 1.0)
             .unwrap();
@@ -165,7 +165,7 @@ async fn test_incremental_prefill_with_prefix_match() {
     });
 
     let verified = manager
-        .batch_sequences
+        .slot_sequences
         .with(|bs| bs.token_ids(slot_idx, 0, prefix + delta_tokens.len()));
     assert_eq!(verified, round2_tokens);
 }

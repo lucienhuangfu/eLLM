@@ -319,7 +319,7 @@ mod test {
     }
 
     #[test]
-    fn test_lookup_prefill_reads_row_major_batch_sequence_storage() {
+    fn test_lookup_prefill_reads_row_major_slot_sequence_storage() {
         let batch_size = 2;
         let sequence_stride = 5;
         let hidden_size = 2;

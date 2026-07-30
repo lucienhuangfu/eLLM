@@ -20,7 +20,6 @@ All parameters are configured via environment variables, read in `ServingConfig:
 | `batch_size` | `ELLM_BATCH_SIZE` | 3 | 1-32 | Max concurrent requests (number of batch slots) |
 | `sequence_length` | `ELLM_SEQUENCE_LENGTH` | 128 | 64-4096 | Max token sequence length per slot |
 | `chunk_size` | `ELLM_CHUNK_SIZE` | 64 | 32-1024 | Max tokens per prefill round; also used as `token_threshold` |
-| `schedule_timeout_ms` | `ELLM_SCHEDULE_TIMEOUT_MS` | 10 | 5-50 | Timeout window for triggering scheduling (milliseconds) |
 
 ---
 
@@ -31,7 +30,6 @@ All parameters are configured via environment variables, read in `ServingConfig:
 | **Low Latency** | Reduce `ELLM_CHUNK_SIZE` to limit tokens per prefill round, improving responsiveness |
 | **High Throughput** | Increase `ELLM_CHUNK_SIZE` and `ELLM_BATCH_SIZE` to improve batch efficiency |
 | **Long Context** | Increase `ELLM_SEQUENCE_LENGTH`; note memory usage grows linearly |
-| **Fluctuating Traffic** | Set smaller `ELLM_SCHEDULE_TIMEOUT_MS` to guarantee scheduling latency under low load |
 | **Compute Intensive** | `runner_count` is automatically set to CPU cores minus 2 (async threads) by `determine_thread_config()` |
 
 ---

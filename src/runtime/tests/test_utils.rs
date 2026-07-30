@@ -4,7 +4,7 @@ use crate::num_traits::FromNumber;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::loader::ChatTemplate;
 use crate::runtime::scheduler::Scheduler;
-use crate::runtime::session::BatchSequence;
+use crate::runtime::session::SlotSequence;
 use crate::runtime::session::{Phase, SessionMode, SlotManager, SlotState};
 use rustc_hash::FxHashMap;
 use tiktoken_rs::CoreBPE;
@@ -73,11 +73,11 @@ pub fn create_test_manager_with_mode(
 ) -> (Arc<SlotManager<f16>>, Vec<usize>) {
     let seq_len = 1024;
     let mut buffer = vec![0usize; batch_size * seq_len];
-    let batch_sequences = Arc::new(SharedMut::new(BatchSequence::<f16> {
+    let slot_sequences = Arc::new(SharedMut::new(SlotSequence::<f16> {
         sequences: buffer.as_mut_ptr(),
-        batch_temperature: vec![<f16 as FromNumber>::from_f32(1.0); batch_size],
-        row_size: batch_size,
-        col_size: seq_len,
+        slot_temperature: vec![<f16 as FromNumber>::from_f32(1.0); batch_size],
+        slot_count: batch_size,
+        slot_capacity: seq_len,
         tokenizer: test_tokenizer(),
         chat_template: test_chat_template(),
     }));
@@ -88,7 +88,7 @@ pub fn create_test_manager_with_mode(
     ));
     let manager = Arc::new(SlotManager::new(
         batch_size,
-        batch_sequences,
+        slot_sequences,
         batch_states,
         mode,
         timeout_ms,

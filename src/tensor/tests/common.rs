@@ -68,6 +68,8 @@ pub fn run_operator_all_threads(
         op.run(
             prefill_size,
             decode_size,
+            decode_size,
+            0,
             cpu_num,
             tid,
             EMPTY_SLICES,

@@ -65,6 +65,7 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
@@ -195,7 +196,7 @@ mod test {
         // operator.set_chunk(chunks);
 
         for i in 0..thread_num {
-            operator.run(batch_size, 0, thread_num, i);
+            operator.run(batch_size, 0, 0, thread_num, i);
         }
 
         // 如需打印输出数据，请取消以下注释

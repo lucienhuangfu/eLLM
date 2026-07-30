@@ -56,6 +56,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
@@ -250,7 +251,7 @@ mod test {
 
         let thread_num = 1;
         let thread_id = 0;
-        operator.run(batch_size, 0, thread_num, thread_id);
+        operator.run(batch_size, 0, 0, thread_num, thread_id);
 
         // Verification for token 0
         let mut expected1: Vec<(usize, f32)> = input_data1.iter().copied().enumerate().collect();
@@ -352,7 +353,7 @@ mod test {
 
         let thread_num = 8;
         for thread_id in 0..thread_num {
-            operator.run(batch_size, 0, thread_num, thread_id);
+            operator.run(batch_size, 0, 0, thread_num, thread_id);
         }
 
         // Verification

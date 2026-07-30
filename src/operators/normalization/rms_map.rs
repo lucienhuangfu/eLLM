@@ -39,13 +39,15 @@ impl<T: Sqrt> RMSMap<T> {
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
+        lift_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
-        let task_size = if prefill_size == 0 {
-            decode_size
+        let task_size = if self.decode_only_flag {
+            lift_size
         } else {
-            prefill_size
+            _total_size
         };
 
         if let Some((begin, end)) = assign(task_size, thread_num, thread_id) {
@@ -179,7 +181,7 @@ mod test {
         let thread_num: usize = cpu_num;
 
         for i in 0..thread_num {
-            operator.run(batch_size, 0, thread_num, i);
+            operator.run(batch_size, 0, batch_size, batch_size, thread_num, i);
         }
         // 如需打印输出数据，请取消以下注释
         assert_ulps_eq!(output_data[18..36], result, max_ulps = 4);
@@ -233,7 +235,7 @@ mod test {
         argmax_operator.set_chunk(chunks);
         let thread_num: usize = cpu_num;
         for i in 0..thread_num {
-            argmax_operator.run(batch_size, position_index, i);
+            argmax_operator.run(batch_size, position_index, 0, thread_num, i);
         }
 
         /*

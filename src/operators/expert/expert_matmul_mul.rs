@@ -400,14 +400,16 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
+        lift_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
-            let active_token_count = if prefill_size == 0 {
-                decode_size
+            let active_token_count = if self.decode_only_flag {
+                lift_size
             } else {
-                prefill_size
+                _total_size
             };
             let output_cols = self.h;
             let reduction_cols = self.hmid;
@@ -945,7 +947,7 @@ mod tests {
             )
         };
 
-        runner.run(num_token, 0, 1, 0);
+        runner.run(num_token, 0, num_token, num_token, 1, 0);
 
         // reference (f32)
         let mut out_ref = vec![0.0f32; num_token * num_topk * h];
@@ -1033,7 +1035,7 @@ mod tests {
             )
         };
 
-        runner.run(num_token, 0, 1, 0);
+        runner.run(num_token, 0, num_token, num_token, 1, 0);
 
         // reference
         let mut out_ref = vec![0.0f32; num_token * num_topk * h];
@@ -1136,7 +1138,7 @@ mod tests {
             )
         };
 
-        runner.run(num_token, 0, 1, 0);
+        runner.run(num_token, 0, num_token, num_token, 1, 0);
 
         // token0 只命中 expert0 => slot1 应接近 0
         {
@@ -1249,7 +1251,7 @@ mod tests {
         // 用 2 线程跑一遍
         let cpu_num = 2usize;
         for tid in 0..cpu_num {
-            runner.run(num_token, 0, cpu_num, tid);
+            runner.run(num_token, 0, num_token, num_token, cpu_num, tid);
         }
 
         // 保存一次结果
@@ -1257,7 +1259,7 @@ mod tests {
 
         // 再跑一遍（验证 += 语义：第二次的增量应基本等于第一次的增量）
         for tid in 0..cpu_num {
-            runner.run(num_token, 0, cpu_num, tid);
+            runner.run(num_token, 0, num_token, num_token, cpu_num, tid);
         }
 
         // reference：我们不做全量 ref（太慢），抽样检查若干点
@@ -1413,7 +1415,7 @@ mod tests {
         };
 
         // 单线程即可复现问题
-        runner.run(B_RUN, 0, 1, 0);
+        runner.run(B_RUN, 0, B_RUN, B_RUN, 1, 0);
 
         // -----------------------
         // 断言：token0/1 的 expert1(slot=1) 必须保持 0
@@ -1536,7 +1538,7 @@ mod tests {
         };
 
         // 单线程足够复现
-        runner.run(B_RUN, 0, 1, 0);
+        runner.run(B_RUN, 0, B_RUN, B_RUN, 1, 0);
 
         // 断言1：token0/1 的 expert1(slot=1) 必须仍为 0
         for b in 0..2 {
@@ -1654,7 +1656,7 @@ mod tests {
         };
 
         for tid in 0..cpu_num {
-            runner.run(num_token, 0, cpu_num, tid);
+            runner.run(num_token, 0, num_token, num_token, cpu_num, tid);
         }
 
         let mut out_ref = vec![0.0f32; num_token * num_topk * h];
@@ -1747,7 +1749,7 @@ mod tests {
         };
 
         for tid in 0..cpu_num {
-            runner.run(num_token, 0, cpu_num, tid);
+            runner.run(num_token, 0, num_token, num_token, cpu_num, tid);
         }
 
         let mut out_ref = vec![0.0f32; num_token * num_topk * h];
@@ -1840,7 +1842,7 @@ mod tests {
         };
 
         for tid in 0..4usize {
-            runner.run(num_token, 0, 4, tid);
+            runner.run(num_token, 0, num_token, num_token, 4, tid);
         }
 
         for b in 0..num_token {

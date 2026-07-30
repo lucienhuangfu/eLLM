@@ -13,7 +13,7 @@ use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::executor::executor_pool::ExecutorPool;
 use crate::runtime::loader::{load_tiktoken, ChatTemplate};
 use crate::runtime::scheduler::Scheduler;
-use crate::runtime::session::{BatchSequence, Phase, SessionMode, SlotManager, SlotState};
+use crate::runtime::session::{Phase, SessionMode, SlotManager, SlotSequence, SlotState};
 use crate::serving::server::build_router;
 use rustc_hash::FxHashMap;
 use tiktoken_rs::CoreBPE;
@@ -119,11 +119,11 @@ fn build_manager(
 ) -> (Arc<SlotManager<f16>>, Vec<usize>) {
     let seq_len = 1024;
     let mut buffer = vec![0usize; batch_size * seq_len];
-    let batch_sequences = Arc::new(SharedMut::new(BatchSequence::<f16> {
+    let slot_sequences = Arc::new(SharedMut::new(SlotSequence::<f16> {
         sequences: buffer.as_mut_ptr(),
-        batch_temperature: vec![<f16 as FromNumber>::from_f32(1.0); batch_size],
-        row_size: batch_size,
-        col_size: seq_len,
+        slot_temperature: vec![<f16 as FromNumber>::from_f32(1.0); batch_size],
+        slot_count: batch_size,
+        slot_capacity: seq_len,
         tokenizer,
         chat_template,
     }));
@@ -134,7 +134,7 @@ fn build_manager(
     ));
     let manager = Arc::new(SlotManager::new(
         batch_size,
-        batch_sequences,
+        slot_sequences,
         batch_states,
         mode,
         timeout_ms,
@@ -174,8 +174,8 @@ pub fn start_runtime_with_fakeecho(
     thread_num: usize,
     tokens: Vec<usize>,
 ) -> Arc<Scheduler> {
-    let (batch_size, seq_len, sequences_ptr) = manager.batch_sequences.with(|seq| {
-        (seq.row_size, seq.col_size, seq.sequences)
+    let (batch_size, seq_len, sequences_ptr) = manager.slot_sequences.with(|seq| {
+        (seq.slot_count, seq.slot_capacity, seq.sequences)
     });
 
     let batch_states = manager.batch_states.clone();
@@ -223,8 +223,8 @@ pub fn start_generation_loop(manager: Arc<SlotManager<f16>>, generated_tokens: V
                 let pos = slot.next_sequence_index;
                 slot.next_sequence_index += 1;
                 slot.sequence_length += 1;
-                manager.batch_sequences.with_mut(|seq| {
-                    let offset = slot_index * seq.col_size + pos;
+                manager.slot_sequences.with_mut(|seq| {
+                    let offset = slot_index * seq.slot_capacity + pos;
                     unsafe {
                         *seq.sequences.add(offset) = token_id as usize;
                     }
@@ -294,8 +294,8 @@ pub fn start_generation_worker(
                                 let pos = slot.next_sequence_index;
                                 slot.next_sequence_index += 1;
                                 slot.sequence_length += 1;
-                                manager.batch_sequences.with_mut(|seq| {
-                                    let offset = slot_index * seq.col_size + pos;
+                                manager.slot_sequences.with_mut(|seq| {
+                                    let offset = slot_index * seq.slot_capacity + pos;
                                     unsafe {
                                         *seq.sequences.add(offset) = token_id as usize;
                                     }

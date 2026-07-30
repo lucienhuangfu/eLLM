@@ -213,7 +213,7 @@ where
 
         // Lift: copy last prefill token's norm to batch position, so MatMulTopK
         // processes the correct token during both prefill and decode.
-        norm_state.lift_vector();
+        // norm_state.lift_vector();
 
         if trace_alignment {
             eprintln!("building lm_head/topk");
@@ -361,6 +361,8 @@ mod test {
                     operator.run(
                         batch_size,
                         1,
+                        1,
+                        batch_size + 1,
                         thread_num,
                         thread_id,
                         &decode_list,
@@ -434,6 +436,8 @@ mod test {
                     operator.run(
                         batch_size,
                         1,
+                        1,
+                        batch_size + 1,
                         thread_num,
                         thread_id,
                         &decode_list,

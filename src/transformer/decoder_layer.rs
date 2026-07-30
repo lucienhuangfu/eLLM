@@ -307,7 +307,7 @@ mod test {
             for (index, operator) in queue.iter().enumerate() {
                 println!("operator {} in queue", index);
                 for i in 0..thread_num {
-                    operator.run(batch_size, 0, thread_num, i, EMPTY_SLICES, &mut Vec::new());
+                    operator.run(batch_size, 0, 0, batch_size, thread_num, i, EMPTY_SLICES, &mut Vec::new());
                 }
             }
         });
@@ -390,6 +390,8 @@ mod test {
                     operator.run(
                         sequence_length * batch_size,
                         sequence_length,
+                        sequence_length,
+                        sequence_length * batch_size + sequence_length,
                         thread_num,
                         i,
                         EMPTY_SLICES,

@@ -16,5 +16,5 @@ pub use init::{initialize_runtime, RuntimeContext};
 pub use loader::{load_tiktoken, ChatTemplate, SafeTensorsLoader};
 pub use scheduler::SequenceSlice;
 pub use scheduler::{ScheduleTask, Scheduler};
-pub use session::{build_batch_sequence, BatchSequence};
+pub use session::{build_slot_sequence, SlotSequence};
 pub use session::{Phase, SessionHandle, SessionMode, SlotManager, SlotState};
