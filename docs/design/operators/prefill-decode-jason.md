@@ -50,10 +50,32 @@ K/V FP16 原布局
   -> denominator 归一化并写回 FP16 output
 ```
 
-Qwen3-Coder-30B-A3B 是 `32 Q heads / 4 KV heads / GQA ratio 8`。当前采用
-head-split：最多暴露 32 个 Q-head task，保留每个 task 的大 M BRGEMM 和连续 row
-访问。没有采用 `4 KV heads × row parts` 的 grouped/hybrid 方案，因为该方案虽然能
-构造 48 个 task，但实测破坏 AMX 吞吐和缓存局部性，TTFT 退化到 53.701s。
+Qwen3-Coder-30B-A3B 是 `32 Q heads / 4 KV heads / GQA ratio 8`。当前 BRGEMM
+prefill 采用 `Q head × query row block` 二维任务，和 SGLang/PyTorch CPU
+FlashAttention 的 `[head, MB]` 展开方式一致。5000 token、`M=512` 时共有
+`32 × 10 = 320` 个任务，可以铺满 48 个逻辑线程，不再受纯 head-split 最多只有
+32 个活跃线程的限制。
+
+任务不是简单连续均分，而是按 causal block 的估算矩形工作量执行
+longest-processing-time 静态分配：后段重 block 优先分散到当前累计负载最小的
+线程。这样既保留每个 task 的大 M BRGEMM，也避免某个线程集中拿到三角形后段。
+
+仍然没有采用 `4 KV heads × row parts` 的 grouped/hybrid 方案。该方案让一个 task
+串行处理 8 个 Q heads，虽然能构造 48 个 task，但实测破坏 AMX 吞吐和缓存局部性，
+TTFT 退化到 53.701s。这里新增的是“每个 Q head 独立拆 row block”，两者不能混同。
+
+### Causal query-block 列裁剪
+
+每个 query row block 现在只计算到该 block 最后一行可见的 key：
+
+```text
+key_end = min(sequence_index + row_block_end, sequence_end)
+```
+
+旧实现虽然在 softmax 中通过 `valid_cols` 排除了未来 token，但 QK BRGEMM 和 P×V
+BRGEMM 仍会一直计算到完整 sequence end，causal 三角形外存在大量空算。新实现和
+SGLang `num_keys = min(m + m_size, seqlen_k)` 的边界一致；block 内仍由逐行
+`valid_cols` 保证精确 causal 语义。
 
 ### 完整 K/V 预打包与 GQA8 共享
 
@@ -78,12 +100,44 @@ head-split：最多暴露 32 个 Q-head task，保留每个 task 的大 M BRGEMM
 | `<= 256` | 32 | 64 |
 | `257..=1024` | 128 | 256 |
 | `1025..=4096` | 256 | 768 |
-| `> 4096` | 512 | 768 |
+| `> 4096` | **160** | **384** |
+
+长 prefill 的新分块按每线程 L2 工作集调优。SGLang 的推导可概括为
+`MB × (1 + 1 + NB + Kv)`；eLLM 需要按实际类型展开，因为 score 和 probability
+分别保留为 FP32 和 FP16：
+
+```text
+workspace_bytes
+  = M × [2 × sizeof(FP32)
+         + N × (sizeof(FP32 score) + sizeof(FP16 probability))
+         + head_size × sizeof(FP32 accumulator)]
+  = M × (8 + 6N + 4Kv)
+```
+
+本机每个物理核有 2 MiB L2，25% 约为 512 KiB，`Kv=128`。原 `512×768`
+需要约 2.50 MiB/线程，单个 workspace 已超过 L2；新 `160×384` 为约
+441 KiB/线程，占 L2 约 21.5%。没有强行用满25%，是为了给同一物理核上的两个
+SMT sibling、活跃 Q block 和当前 packed K/V block 留出空间。
+
+环境变量可用于重新测试，不影响未设置变量的默认路径：
+
+```bash
+ELLM_ATTENTION_BRGEMM_ROW_STEP=160
+ELLM_ATTENTION_BRGEMM_COL_STEP=384
+```
 
 BRGEMM 只处理 `row_count > 1`。当 `row_count == 1` 时切回原生 Attention，并强制
 `col_step=32`，原因是原生 regular kernel 的 score 临时块为 32；不能沿用长
 prefill 的 768，否则会越界。decode 保持按 32 个 Q heads 并行，不强制退化成只有
 4 个 KV-head tasks 的 GQA8 group fusion。
+
+启用 `ELLM_ATTENTION_BACKEND=brgemm` 时，`head × row-block` 和 causal 列裁剪
+默认同时启用。定位回归时可分别显式设置：
+
+```bash
+ELLM_ATTENTION_HEAD_ROW_SPLIT=0
+ELLM_ATTENTION_CAUSAL_COL_PRUNE=0
+```
 
 ### 哪些部分参考了 SGLang
 
@@ -97,6 +151,8 @@ prefill 的 768，否则会越界。decode 保持按 32 个 Q heads 并行，不
 | 部分 | 与 SGLang 的关系 |
 | --- | --- |
 | 长度分档和 M/N block 选择 | 采用 SGLang CPU extend-attention 的分块思路和主要取值 |
+| `Q head × row block` 任务展开 | 采用 SGLang/PyTorch CPU FlashAttention 的 `[head, MB]` 并行维度 |
+| query-block causal key 上界 | 采用 SGLang `min(m + m_size, seqlen_k)` 的裁剪思路 |
 | K/V VNNI layout | 采用 SGLang `vec_pack.h` 使用的 BRGEMM 输入布局概念 |
 | FP16 BRGEMM + FP32 accumulator | 采用其 CPU Attention 的核心矩阵计算思路 |
 | 快速 FP32 exp | 多项式结构和常量参考 `vec.h` 的 `_mm512_fexp_u20_ps` |
@@ -107,7 +163,7 @@ prefill 的 768，否则会越界。decode 保持按 32 个 Q heads 并行，不
 - Rust 侧的 BRGEMM 动态加载、错误检查和原生 fallback。
 - Q/K/V pointer、batch/head/sequence stride 计算和静态图接入。
 - causal 可见长度、跨 column block 的 online softmax 状态与最终写回。
-- head-split、三角 row traversal、tail 处理以及 decode `col_step=32`。
+- 基于估算工作量的 longest-first 静态线程分配、tail 处理以及 decode `col_step=32`。
 - 完整 span prepack、GQA8 `OnceLock` 共享 cache、cache key 和容量限制。
 - eLLM 原生 GQA8 decode/prefill kernel；默认路径没有被替换。
 
@@ -116,20 +172,64 @@ prefill 的 768，否则会越界。decode 保持按 32 个 Q heads 并行，不
 
 ### 当前效果和已知限制
 
-10k、batch=1、48 线程、16 output 的当前最佳结果：
+batch=1、48 线程、16 output 的结果：
 
 | 配置 | TTFT | Attention run+barrier |
 | --- | ---: | ---: |
-| eLLM 原生 Attention | 45.193s | 约 17.81s |
-| BRGEMM + 完整 prepack | 39.400s | 14.198s |
-| BRGEMM + GQA8 共享 prepack | **38.309s** | **13.434s** |
-| 用户提供的 SGLang | 37.600s | 未提供 |
+| 5k：共享 prepack、纯 head-split | 17.452s | 3.784955s |
+| 5k：`Q head × row block` | 16.975s | 3.066401s |
+| 5k：causal 裁剪和负载均衡，旧 `512×768` | 15.299s | 1.751839s |
+| 5k：再加 L2 分块 `160×384` | 15.475s | **1.541649s** |
+| 用户提供的 SGLang 5k PyTorch Attention self time | — | 1.466938s |
+| 10k：旧共享 prepack、纯 head-split | 38.309s | 13.4336s |
+| 10k：causal 裁剪和负载均衡，旧 `512×768` | 32.786s | 6.155484s |
+| 10k：再加 L2 分块 `160×384`，48 线程 | **31.920s** | **5.645829s** |
+| 10k：L2 分块 `160×384`，24 个物理核 | 35.602s | 5.900723s |
+| 用户提供的 SGLang 10k 数据 | 37.600s | 5.467619s |
 
-当前还没有稳定达到 37s。剩余 Attention barrier 约 1.55s，但不能通过强制
-grouped/hybrid 简单消除。32 个 Q heads 天然少于 48 个逻辑线程，而进一步拆 row
-会减小 BRGEMM 的 M、增加 packed KV 读流量。下一步如果继续处理 barrier，应尝试
-`Q head × row tile` 二维任务，并保证每个 task 仍有足够大的 M；不能再次采用每个
-task 串行处理 8 个 Q heads 的失败结构。
+5k 相对旧 BRGEMM 路径：
+
+- TTFT 减少 2.153s，约 12.3%。
+- Attention wall time 减少约 53.7%。
+- Attention barrier 从 1.875085s 降至 0.150176s，减少约 92.0%。
+- 48 个线程的 Attention 累计 run 范围约 1.480s～1.678s，长尾已明显收敛。
+
+L2 25%附近的 5k 分块筛选如下。TTFT 会受其他算子波动影响，因此选择分块时以
+Attention wall time 为主：
+
+| M×N | 每线程 workspace | TTFT | Attention run+barrier |
+| --- | ---: | ---: | ---: |
+| `512×768` | 约 2.50 MiB | 15.299s | 1.751839s |
+| `96×768` | 约 481 KiB | 15.379s | 1.691200s |
+| `128×512` | 约 449 KiB | 15.505s | 1.591302s |
+| `160×384` | 约 441 KiB | 15.475s | **1.541649s** |
+| `192×384` | 约 529.5 KiB | 15.927s | 1.625691s |
+| `256×256` | 约 514 KiB | 15.563s | 1.831801s |
+
+`256×256` 虽然最接近 L2 的25%，但 N 太小导致 BRGEMM 调用和边缘开销增加；
+`192×384` 则出现更长 barrier。实测拐点是 `160×384`，说明缓存预算只是候选生成
+规则，不能替代实际 AMX/BRGEMM 测量。
+
+10k 文件经 tokenizer 得到 10001 tokens。最终 `160×384` 相对
+`512×768`：
+
+- TTFT 从 32.786s 降至 31.920s，减少 0.866s，约 2.6%。
+- Attention run 为 4.840381s，barrier 为 0.805448s，wall time 合计
+  5.645829s；相对 6.155484s 减少约 8.3%。
+- 相对最早纯 head-split 的 38.309s / 13.4336s，最终 TTFT 累计减少约 16.7%，
+  Attention wall time 累计减少约 58.0%。
+- 用户提供的 SGLang 10k Attention self time 为 5.467619s；eLLM 的纯 run 已低于
+  该值，加上线程 barrier 后仍多约 0.178s。两边 profile 口径并不完全相同。
+
+24 线程测试设置 `ELLM_THREAD_NUM=24`、`ELLM_ALLOW_LOGICAL_THREADS=0`，亲和性为
+`0,2,...,46`，确认只使用物理核。旧 `512×768` 下 24 核 Attention wall 曾比
+48线程少约0.260s；缩小到 `160×384` 后，48线程 wall 为5.645829s，反而比24核的
+5.900723s快约4.3%。这说明较小 workspace 已缓解 SMT sibling 的 L2压力，因此当前
+不再建议 Attention 单独限制到24核，全局和 Attention 都继续使用48线程。
+
+额外尝试过在线程 workspace 中缓存 packed-KV `Arc`，希望绕过每个 column block
+的共享 map mutex。5k 结果退化为 TTFT 15.363s、Attention wall 1.928098s，相比
+15.299s / 1.751839s 没有收益，已回退。不要再默认增加线程本地 HashMap。
 
 ---
 

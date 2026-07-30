@@ -218,9 +218,9 @@ where
             format!("{}.norm_hidden", self.scope_name),
         );
 
-        // Lift: copy last prefill token's norm to batch position, so MatMulTopK
-        // processes the correct token during both prefill and decode.
-        norm_state.lift_vector();
+        // The last attention layer has already compacted each sequence's last
+        // token into the leading decode rows. The remaining row-wise operators
+        // preserve that layout, and lm_head reads those decode rows directly.
 
         if trace_alignment {
             eprintln!("building lm_head/topk");

@@ -38,6 +38,8 @@ pub struct Attention<T> {
     pub(super) hybrid_split: bool,
     pub(super) profile_split: bool,
     pub(super) force_head_split: bool,
+    pub(super) head_row_split: bool,
+    pub(super) causal_col_prune: bool,
     pub(super) decode_gqa8: bool,
     pub(super) brgemm_backend: bool,
     pub(super) brgemm_shared_cache:
@@ -95,13 +97,21 @@ where
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
-        let decode_gqa8 = std::env::var("ELLM_ATTENTION_DECODE_GQA8")
-            .ok()
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(false);
         let requested_brgemm = std::env::var("ELLM_ATTENTION_BACKEND")
             .ok()
             .map(|value| value.eq_ignore_ascii_case("brgemm"))
+            .unwrap_or(false);
+        let head_row_split = std::env::var("ELLM_ATTENTION_HEAD_ROW_SPLIT")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(requested_brgemm);
+        let causal_col_prune = std::env::var("ELLM_ATTENTION_CAUSAL_COL_PRUNE")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(requested_brgemm);
+        let decode_gqa8 = std::env::var("ELLM_ATTENTION_DECODE_GQA8")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
         let brgemm_backend = requested_brgemm
             && std::mem::size_of::<T>() == std::mem::size_of::<f16>()
@@ -119,8 +129,23 @@ where
                 0..=256 => (32, 64),
                 257..=1024 => (128, 256),
                 1025..=4096 => (256, 768),
-                _ => (512, 768),
+                // For FP16 BRGEMM the per-thread hot workspace is approximately
+                // M * (2 * sizeof(f32) + N * (sizeof(f32) + sizeof(f16))
+                //     + head_size * sizeof(f32)).
+                // M=160/N=384 uses about 441 KiB at head_size=128, leaving room
+                // in a 2 MiB L2 for both SMT siblings' active Q/K/V blocks.
+                _ => (160, 384),
             };
+            row_step = std::env::var("ELLM_ATTENTION_BRGEMM_ROW_STEP")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(row_step);
+            col_step = std::env::var("ELLM_ATTENTION_BRGEMM_COL_STEP")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(col_step);
         }
 
         Self {
@@ -147,6 +172,8 @@ where
             hybrid_split,
             profile_split,
             force_head_split,
+            head_row_split,
+            causal_col_prune,
             decode_gqa8,
             brgemm_backend,
             brgemm_shared_cache: Arc::new(
@@ -251,8 +278,13 @@ where
                 }
             }
 
-            for col_begin in (0..col_end).step_by(col_step) {
-                let col_chunk_end = (col_begin + col_step).min(col_end);
+            let key_end = if self.causal_col_prune {
+                (sequence_index + visible_row_end).min(col_end)
+            } else {
+                col_end
+            };
+            for col_begin in (0..key_end).step_by(col_step) {
+                let col_chunk_end = (col_begin + col_step).min(key_end);
                 AttentionTrait::compute(
                     self,
                     q_head_ptr,
@@ -311,8 +343,13 @@ where
         let mut scratch = self.thread_buffers(thread_id, row_count, col_step);
         scratch.clear();
 
-        for col_begin in (0..col_end).step_by(col_step) {
-            let col_chunk_end = (col_begin + col_step).min(col_end);
+        let key_end = if self.causal_col_prune {
+            (sequence_index + visible_row_end).min(col_end)
+        } else {
+            col_end
+        };
+        for col_begin in (0..key_end).step_by(col_step) {
+            let col_chunk_end = (col_begin + col_step).min(key_end);
             AttentionTrait::compute(
                 self,
                 q_head_ptr,
@@ -766,6 +803,83 @@ where
         }
     }
 
+    /// Run prefill as independent `(query head, row block)` tasks.
+    ///
+    /// This follows the CPU FlashAttention scheduling used by SGLang/PyTorch:
+    /// exposing row blocks in addition to heads keeps machines with more worker
+    /// threads than query heads busy without serializing all GQA heads.
+    unsafe fn run_head_row_split(
+        &self,
+        q_slice_ptr: *const T,
+        output_slice_ptr: *mut T,
+        k_batch_ptr: *const T,
+        v_batch_ptr: *const T,
+        sequence_index: usize,
+        col_end: usize,
+        slice_len: usize,
+        thread_num: usize,
+        thread_id: usize,
+        attention_heads_per_kv: usize,
+        k_head_stride: usize,
+        v_head_stride: usize,
+    ) {
+        if slice_len == 0
+            || thread_num == 0
+            || thread_id >= thread_num
+            || attention_heads_per_kv == 0
+        {
+            return;
+        }
+
+        let row_blocks = slice_len.div_ceil(self.row_step.max(1));
+        let mut thread_loads = vec![0u128; thread_num];
+
+        // Longest-processing-time assignment: later causal blocks are more
+        // expensive, so distribute them first instead of handing each worker a
+        // contiguous (and potentially much heavier) range.
+        for row_block in (0..row_blocks).rev() {
+            let row_begin = row_block * self.row_step;
+            let row_end = (row_begin + self.row_step).min(slice_len);
+            let key_end = if self.causal_col_prune {
+                (sequence_index + row_end).min(col_end)
+            } else {
+                col_end
+            };
+            let task_weight = (row_end - row_begin) as u128 * key_end as u128;
+
+            for attention_head in 0..self.attention_head_num {
+                let mut owner = 0;
+                for candidate in 1..thread_num {
+                    if thread_loads[candidate] < thread_loads[owner] {
+                        owner = candidate;
+                    }
+                }
+                thread_loads[owner] += task_weight;
+                if owner != thread_id {
+                    continue;
+                }
+
+                let kv_head = attention_head / attention_heads_per_kv;
+                let q_head_offset = attention_head * self.head_size;
+                let k_head_ptr = k_batch_ptr.add(kv_head * k_head_stride);
+                let v_head_ptr = v_batch_ptr.add(kv_head * v_head_stride);
+                self.visit_blocks_for_head(
+                    q_slice_ptr.add(q_head_offset),
+                    output_slice_ptr.add(q_head_offset),
+                    k_head_ptr,
+                    v_head_ptr,
+                    thread_id,
+                    sequence_index,
+                    col_end,
+                    RowVisitPlan {
+                        main: Some((row_begin, row_end)),
+                        tail: None,
+                    },
+                );
+            }
+        }
+    }
+
     /// Main entry point for running attention computation
     pub fn run(
         &self,
@@ -798,15 +912,20 @@ where
                     || (slice.length > 0
                         && thread_num > 0
                         && slice.length.div_ceil(self.row_step.max(1)) < thread_num);
+                let use_head_row_split =
+                    self.head_row_split && self.brgemm_backend && slice.length > 1;
 
                 let use_grouped_sequence_split = self.hybrid_split
                     && !use_head_split
+                    && !use_head_row_split
                     && thread_num > self.kv_head_num
                     && self.kv_head_num > 1
                     && attention_heads_per_kv > 1
                     && slice.length >= thread_num;
                 if self.profile_split && thread_id == 0 {
-                    let mode = if use_head_split {
+                    let mode = if use_head_row_split {
+                        "head-row"
+                    } else if use_head_split {
                         "head"
                     } else if use_grouped_sequence_split {
                         "hybrid"
@@ -829,7 +948,22 @@ where
                     );
                 }
 
-                if use_head_split {
+                if use_head_row_split {
+                    self.run_head_row_split(
+                        q_slice_ptr,
+                        output_slice_ptr,
+                        k_batch_ptr,
+                        v_batch_ptr,
+                        slice.sequence_index,
+                        col_end,
+                        slice.length,
+                        thread_num,
+                        thread_id,
+                        attention_heads_per_kv,
+                        self.k_head_stride,
+                        self.v_head_stride,
+                    );
+                } else if use_head_split {
                     self.run_head_split(
                         q_slice_ptr,
                         output_slice_ptr,
@@ -888,6 +1022,27 @@ mod tests {
     use super::Attention;
     use crate::runtime::scheduling::SequenceSlice;
 
+    #[test]
+    fn head_row_split_assigns_every_task_once() {
+        let query_heads = 32;
+        let row_blocks = 10;
+        let thread_num = 48;
+        let total_tasks = query_heads * row_blocks;
+        let mut visits = vec![0usize; total_tasks];
+
+        for thread_id in 0..thread_num {
+            if let Some((begin, end)) =
+                Attention::<f32>::split_contiguous_range(total_tasks, thread_num, thread_id)
+            {
+                for task_id in begin..end {
+                    visits[task_id] += 1;
+                }
+            }
+        }
+
+        assert!(visits.iter().all(|&count| count == 1));
+    }
+
     fn naive_attention_row(
         q: &[f32],
         k: &[f32],
@@ -943,7 +1098,7 @@ mod tests {
         let v = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let mut output = vec![-1.0; q.len()];
 
-        let attention = Attention::new(
+        let mut attention = Attention::new(
             q.as_ptr(),
             k.as_ptr(),
             v.as_ptr(),
@@ -966,6 +1121,7 @@ mod tests {
             false,
             1,
         );
+        attention.causal_col_prune = true;
 
         let slices = [SequenceSlice {
             token_start_index: 0,
