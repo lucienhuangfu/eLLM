@@ -193,6 +193,11 @@ fn main() {
     ];
     let env_prompt = if let Ok(prompt_file) = env::var("ELLM_PROMPT_FILE") {
         Some(std::fs::read_to_string(prompt_file).expect("failed to read ELLM_PROMPT_FILE"))
+    } else if let Some(repeat) = env::var("ELLM_PROMPT_REPEAT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        Some("hello ".repeat(repeat))
     } else {
         env::var("ELLM_PROMPT").ok()
     };

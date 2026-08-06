@@ -231,6 +231,76 @@ Attention wall time 为主：
 的共享 map mutex。5k 结果退化为 TTFT 15.363s、Attention wall 1.928098s，相比
 15.299s / 1.751839s 没有收益，已回退。不要再默认增加线程本地 HashMap。
 
+### 10k input / 100 output 的 decode 全量 operator profile
+
+仓库根目录提供了一键复现脚本
+[`benchmark_qwen3_coder_10k_100.sh`](../../../benchmark_qwen3_coder_10k_100.sh)。
+新拉取仓库并准备好 `models/Qwen3-Coder-30B-A3B-Instruct` 后，可以直接运行：
+
+```bash
+# 关闭 profile，测 TTFT 和首 token 后 100-token 输出时间
+./benchmark_qwen3_coder_10k_100.sh
+
+# 对全部 100 个 decode step 做 operator profile
+./benchmark_qwen3_coder_10k_100.sh --profile-decode
+```
+
+脚本会自动构建 release binary、生成 10001-token prompt、保存带时间戳的完整日志，
+并在结束后汇总 TTFT、首 token 后输出时间和 decode 吞吐。已有 binary 时可以设置
+`ELLM_SKIP_BUILD=1` 跳过构建；日志目录可通过 `ELLM_BENCH_LOG_DIR` 修改。
+
+为避免只抽样单个 decode step，新增纯统计开关：
+
+```bash
+ELLM_PROFILE_DECODE_OPS=1
+ELLM_PROFILE_DECODE_ALL=1
+```
+
+它不改变算子计算路径，会为每个 decode step 输出同现有 `decode_profile` 一致的
+operator 分类时间。测试 prompt 文件不存在时，也可用
+`ELLM_PROMPT_REPEAT=9992` 生成和此前相同的 10001-token 重复 prompt。
+
+本次配置为 batch=1、48线程、10001 input、100 output。结果：
+
+| 指标 | 时间/吞吐 |
+| --- | ---: |
+| TTFT | 29.373s |
+| 首 token 后的 100-step decode wall | 15.401s |
+| decode 吞吐 | 约 6.49 token/s |
+| generate（TTFT + decode） | 44.774s |
+| decode operator run 累计 | 9.998398s |
+| decode operator barrier 累计 | 2.563302s |
+| decode operator run+barrier | 12.561700s |
+| operator profile 平均 | 125.617ms/token |
+
+100个 decode step 的分类汇总：
+
+| operator | run | barrier | run+barrier | 每 token | 占算子内时间 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Attention | 5.797467s | 0.671987s | 6.469454s | 64.695ms | 51.50% |
+| ExpertsMatMulSilu | 1.401290s | 0.289791s | 1.691081s | 16.911ms | 13.46% |
+| MatMulAdd | 0.885125s | 0.325535s | 1.210660s | 12.107ms | 9.64% |
+| ExpertsMatMulDown | 0.740869s | 0.266180s | 1.007049s | 10.070ms | 8.02% |
+| MatMul3 | 0.602301s | 0.339522s | 0.941823s | 9.418ms | 7.50% |
+| MatMulTopK | 0.344035s | 0.038635s | 0.382670s | 3.827ms | 3.05% |
+| RMSMap | 0.028094s | 0.251717s | 0.279811s | 2.798ms | 2.23% |
+| MatMul | 0.175110s | 0.100618s | 0.275728s | 2.757ms | 2.19% |
+| ExpertsSoftmaxNorm | 0.010012s | 0.098534s | 0.108546s | 1.085ms | 0.86% |
+| ExpertsMergeAdd | 0.012856s | 0.088764s | 0.101620s | 1.016ms | 0.81% |
+| LookupRMSMap | 0.000361s | 0.025991s | 0.026352s | 0.264ms | 0.21% |
+| LiftVector | 0.000081s | 0.006752s | 0.006833s | 0.068ms | 0.05% |
+| TopKSoftmax | 0.000811s | 0.004340s | 0.005151s | 0.052ms | 0.04% |
+
+逐步 operator wall 的中位数为111.208ms，P95为205.242ms，最大365.944ms；高分位
+主要来自 barrier 波动。Attention 第1步、50步、100步分别为59.602ms、65.599ms、
+60.005ms，前10步和后10步平均为62.331ms与60.725ms。100个token只让KV长度增加
+约1%，当前数据中没有观察到明显的 Attention 线性增长，decode主要问题仍是约
+58ms/token 的 Attention run 和偶发 barrier 长尾。
+
+算子内累计12.561700s与实际 decode wall 15.401s相差约2.839s，包括任务调度、
+通知/采样、逐步 profile 和日志等分类表外开销；因此全量 profile 的 wall time 不应
+直接当作关闭 profile 后的纯吞吐。
+
 ---
 
 ## 以下为历史实验记录

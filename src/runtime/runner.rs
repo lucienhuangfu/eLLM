@@ -131,6 +131,10 @@ where
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
+        let profile_decode_all = std::env::var("ELLM_PROFILE_DECODE_ALL")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
         let profile_decode_step = std::env::var("ELLM_PROFILE_DECODE_STEP")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -151,6 +155,7 @@ where
             let mut receiver = task_sender.subscribe();
             let profile_ops = profile_ops;
             let profile_decode_ops = profile_decode_ops;
+            let profile_decode_all = profile_decode_all;
             let profile_op_threads = profile_op_threads;
 
             join_set.spawn(async move {
@@ -176,7 +181,7 @@ where
                         && thread_id == 0
                         && prefill_size == 0
                         && decode_size > 0
-                        && decode_task_index == profile_decode_step
+                        && (profile_decode_all || decode_task_index == profile_decode_step)
                     {
                         Some("decode_profile")
                     } else {
@@ -191,7 +196,7 @@ where
                         && profile_decode_ops
                         && prefill_size == 0
                         && decode_size > 0
-                        && decode_task_index == profile_decode_step
+                        && (profile_decode_all || decode_task_index == profile_decode_step)
                     {
                         Some("decode_profile_thread")
                     } else {
