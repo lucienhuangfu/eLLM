@@ -23,7 +23,7 @@
 - 内存：足量 DDR（按模型规模配置）
   
 ## ✨ 优势
-eLLM 充分释放了 **CPU 在长程推理场景下的体系结构优势**。在 Prefill 阶段，相比现有 CPU 推理框架性能提升约**两个数量级**，足以弥补 DDR 内存带宽落后 HBM 约一个数量级的差距，从而具备与 GPU 竞争的能力；在 Decode 阶段，长文本的开销主要来自载入每个 request 的 KV Cache，而 eLLM 以更小的 batch 运行，使单个 request 可分得的内存带宽反而高于 GPU 方案，速度同样快于 GPU baseline。由此，eLLM 在多项关键指标上实现对 GPU 推理的全面超越：
+eLLM 采用“以存换算”的策略，以 CPU 大容量 DDR 内存弥补与 HBM 之间约一个数量级的带宽差距，让 CPU 在长程推理场景中快过 GPU。在 Prefill 阶段，eLLM 相比现有 CPU 推理框架实现约**两个数量级**的性能提升；在 Decode 阶段，开销主要来自反复载入模型参数与 KV Cache（尤其是 KV Cache），而 eLLM 以更小的 batch 运行，不仅激活的参数更少，单个 request 可分得的内存带宽反而高于 GPU 方案，推理速度同样快于 GPU baseline。在此基础上，eLLM 在多项关键指标上全面超越 GPU 推理：
 - **低延迟**：通过整段 Prefill 与增量 Prefill，显著降低首 token 延迟（TTFT）
 - **高吞吐**：单实例并发度虽低于 GPU 方案，但端到端延迟更小，**实际 QPS 反而更高**
 - **长上下文**：TB 级大内存支撑百万 token 级、近乎无限长度的上下文窗口
