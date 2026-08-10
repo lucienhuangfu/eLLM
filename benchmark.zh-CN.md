@@ -1,3 +1,5 @@
+# eLLM Benchmark
+
 ## 🧪 实验
 
 eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推理方案的正确性与可行性。详细实现过程参见 `alignment skill` 及 `align` 文件夹。
@@ -9,7 +11,7 @@ eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推�
 为验证 eLLM 在不同推理场景下的性能，我们设计了**短程任务**（单轮交互）和**长程任务**（多轮交互）两类实验。
 
 目前实验结果表明：
-* **大幅领先 CPU baseline**：在所有测试场景中，eLLM 均显著优于 SGLang CPU backend。 
+* **大幅领先 CPU baseline**：在所有测试场景中，eLLM 均显著优于 SGLang CPU backend。
 * **长上下文优势显著**：随着上下文长度的增加，eLLM 的优势持续扩大，Prefill 和 Decode 或可快过 GPU baseline。
 * **长程任务整体更快**：在多轮交互场景中，eLLM 的整体任务完成时间（TTC）预计优于 GPU baseline。
 
@@ -21,22 +23,19 @@ eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推�
 * **CPU baseline**：SGLang CPU backend
 * **GPU baseline**：公有云模型 API
 
-受实验条件限制，GPU baseline 未在独占 GPU 服务器上部署模型，而是直接调用公有云模型 API。因此 GPU 数据仅用于趋势分析和定性比较，不作为严格硬件对等测试。受条件限制，我们租用的是公有云的CPU虚拟机，相比裸机性能略差。
+受实验条件限制，GPU baseline 未在独占 GPU 服务器上部署模型，而是直接调用公有云模型 API。因此 GPU 数据仅用于趋势分析和定性比较，不作为严格硬件对等测试。受条件限制，我们租用的是公有云的 CPU 虚拟机，相比裸机性能略差。
 
 #### 机器配置
 
-
-| 条目                |      CPU 虚拟机 | GPU 服务器 |
-| ----------------- | -----------: |-----: |
+| 条目                | CPU 虚拟机 | GPU 服务器 |
+| ----------------- | -----------: | -----: |
 | 型号                | Xeon 6982P-C |      H20 |
-| 数量                |            1 |    8 |
-| 核数                |         48 of 128 |  16,000 |
-| FP16 矩阵算力（TFLOPS） |          250 |      296 |
-| Cache             |    504 MB L3 | | 60 MB L2 |
-| 最大内存容量            |        0.192 of 3 TB |0.141 TB |
-| 总价（USD）           |       14,000 |  220,000 |
+| 核数                |     48 / 128 | 14,592 / 卡 |
+| FP16 矩阵算力（TFLOPS） |          250 | 296 |
+| Cache             |    504 MB L3 | 60 MB L2 / 卡 |
+| 最大内存容量            | 0.192 / 3 TB | 0.768 TB（8 × 96 GB HBM） |
 
-
+> 注：GPU 服务器仅作为示例，不是真实运行的机器
 
 ### 短程任务实验（已完成）
 
@@ -52,6 +51,7 @@ eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推�
 * **Prefill 指标**：TTFT（Time To First Token, ms）
 * **Decode 指标**：TPOT（Time Per Output Token，ms/token）
 
+对比对象说明：由于短文本场景下，所有 CPU 推理框架在 Decode 性能上通常都明显落后于 GPU，因此本组实验不再单独加入 GPU 对比。
 
 #### Prefill
 
@@ -78,29 +78,27 @@ xychart-beta
     line "SgLang (CPU end)" [52.5, 52.47, 52.71]
 ```
 
+#### Decode 归因分析（vs CPU baseline）
+
+这一结果表明，短文本 decode 的瓶颈并不主要落在算子计算本身，而更多来自调度、内存管理和运行时这些“控制路径”开销。eLLM 的静态计算图和更轻量的执行路径减少了动态调度与状态维护成本，把更多时间留给真正的算子执行，因此能够在 CPU baseline 上获得稳定收益。
+
+从 CPU baseline 的执行链路看，主要损耗可以归纳为四类：
+
+- 调度开销：需要频繁执行 continuous batching、token 级路由以及请求合并/拆分；每生成一个 token 都要经过一次调度路径，随着活跃请求增多，控制开销会持续上升。
+- KV Cache 管理：自回归 Decode 需要持续保存历史 token 的 KV 状态，并处理 KV block 的分配、回收和地址映射；这些操作单次开销不大，但频率极高，容易放大元数据和访存成本。
+- 中间张量管理：Decode 过程中仍会产生 Q、K、V 投影、attention 中间结果、MLP 激活和 residual buffer 等临时 tensor；如果不能稳定复用，就会引入频繁分配与释放、内存碎片和带宽压力。
+- 服务框架/运行时开销：API 服务、请求生命周期和 streaming 调度都会带来额外成本；GIL、上下文切换和动态数据结构操作也会进一步拖慢端到端延迟。
 
 ### 长程任务实验（预计 8 月底完成）
 
 长程任务采用多轮交互，并在轮次之间加入用户等待时间，以模拟真实使用场景。实验采用 **TTC（Time To Completion）** 作为核心指标，即完成整个任务所需的实际时间（wall-clock time），用于评估端到端推理效率。
- 
 
-
-
-
-
-
-
-
-
-
-
-
-
+GPU 显存容量较小，chunk size 受限，使得长 Prompt 必须分段处理，同时也限制了 batch size 的规模。在 Prefill 阶段，需要对分段后的长上下文进行重复处理，带来额外开销。在 Decode 阶段，小 batch size 会导致并行度不足，从而引起性能明显下降。
 
 **结果**  
 目前实验数据仍在收集与整理中，尚未形成最终结论。
 
-**Prefill 分析**  
+**Prefill 分析（vs GPU baseline）**  
 eLLM 预计会显著快于 GPU baseline。在超长 Prompt 的 Prefill 阶段，首 token 延迟（TTFT）主要由两类因素驱动：其一是大规模的数据读取（模型参数与 KV 的加载），其二是分段处理带来的调度与同步开销。eLLM 的目标是将 Prefill 组织为尽可能连续、低干预的流水线，从根本上压缩这两类开销。若 eLLM 能稳定支持整段 Prefill，就有望将“连续访问、减少重复载入、降低控制开销”的优势转化为可观的首 token 延迟下降。下面按因果链逐项说明：
 
 - **1) 参数与 KV 的读取：**
@@ -115,7 +113,7 @@ eLLM 预计会显著快于 GPU baseline。在超长 Prompt 的 Prefill 阶段，
   - 问题：将长 Prompt 切成多个 chunk 会引入额外的调度点、同步开销、内存碎片和跨段中间态维护（例如 KV 重组与合并），这些都会直接增加首 token 的延迟。  
   - eLLM 优势：若能把 Prefill 做成一次连续的流水（整段 Prefill），就可以显著减少调度与同步点，从而把控制路径开销降到最低。  
 
-**Decode 分析**  
+**Decode 分析（vs GPU baseline）**  
 在长上下文的 decode 阶段，eLLM 虽然整体性能仍低于 GPU baseline，但两者之间的差距显著小于 DDR 与 HBM 的理论带宽差距。这表明，在该场景下，GPU 的带宽优势并未被充分发挥，其性能瓶颈更多来源于并行度不足与访存模式不理想，而非纯粹的带宽上限。
 
 - **1) batch size 小：**
@@ -142,26 +140,6 @@ eLLM 预计会显著快于 GPU baseline。在超长 Prompt 的 Prefill 阶段，
   - 问题：decode 是逐 token 推进的过程，每一步都会触发一系列 GPU kernel（attention、matmul、layernorm 等）。在小 batch 场景下，单次 kernel 计算量较小，但 kernel launch 与调度开销不变，导致其占比显著上升。同时由于计算粒度过小，GPU 难以形成持续饱和的执行流水线，utilization 波动明显，SM 无法长期满载，整体吞吐下降。
   - eLLM 优势：eLLM 在 CPU 上以函数调用方式执行，无需 kernel 启动开销，在小 batch 和低并行度场景下具有更稳定的执行效率。
 
-
-
-
-**Decode 分析**  
-这一结果表明，短文本 decode 的瓶颈并不主要落在算子计算本身，而更多来自调度、内存管理和运行时这些“控制路径”开销。eLLM 的静态计算图和更轻量的执行路径减少了动态调度与状态维护成本，把更多时间留给真正的算子执行，因此能够在 CPU baseline 上获得稳定收益。
-
-从 CPU baseline 的执行链路看，主要损耗可以归纳为四类：
-
-- 调度开销：需要频繁执行 continuous batching、token 级路由以及请求合并/拆分；每生成一个 token 都要经过一次调度路径，随着活跃请求增多，控制开销会持续上升。
-- KV Cache 管理：自回归 Decode 需要持续保存历史 token 的 KV 状态，并处理 KV block 的分配、回收和地址映射；这些操作单次开销不大，但频率极高，容易放大元数据和访存成本。
-- 中间张量管理：Decode 过程中仍会产生 Q、K、V 投影、attention 中间结果、MLP 激活和 residual buffer 等临时 tensor；如果不能稳定复用，就会引入频繁分配与释放、内存碎片和带宽压力。
-- 服务框架/运行时开销：API 服务、请求生命周期和 streaming 调度都会带来额外成本；GIL、上下文切换和动态数据结构操作也会进一步拖慢端到端延迟。
-
-
-
-
-
-
-
-
 ## 结论
 
 GPU 长期以来被视为大模型推理的主流选择，而 CPU 往往被认为难以在同一赛道上竞争。eLLM 的实验结果表明，这一判断并不总是成立：在长文本推理场景中，单块 CPU 也有机会在端到端性能上与多卡 GPU 系统正面竞争，甚至实现反超。
@@ -169,11 +147,3 @@ GPU 长期以来被视为大模型推理的主流选择，而 CPU 往往被认�
 其根本原因在于，eLLM 充分利用了 CPU 的两项核心硬件优势。第一，CPU 拥有更大的主内存，能够支持整段长 prompt 的 Prefill，减少分段处理带来的重复载入与调度开销。第二，CPU 具备更大的 Cache 空间，配合逐 head 计算 attention 的执行方式，可以显著提升数据驻留与复用效率，使 Prefill 阶段获得更低的整体延迟。
 
 因此，在 Prefill 占主导的推理任务中，即便 Decode 阶段略慢，Prefill 的优势仍然足以主导总体耗时，最终带来更好的端到端表现。进一步看，如果将 eLLM 扩展到 NUMA 架构的多路 CPU 服务器上，并结合更大规模的内存与并行资源，它有望覆盖更多长上下文、长生命周期、低延迟的推理场景，形成一条区别于 GPU 路线的高性价比推理方案。
-
-
-
-- 由于短文本场景下，所有 CPU 推理框架在 Decode 性能上通常都明显落后于 GPU，因此本组实验不再单独加入 GPU 对比。
-- 本组只做 Decode 实验，不做 Prefill；Prefill 的效果放到长文本实验中验证。
-
-GPU 显存容量较小，chunk size 受限，使得长 Prompt 必须分段处理，同时也限制了 batch size 的规模。在 Prefill 阶段，需要对分段后的长上下文进行重复处理，带来额外开销。在 Decode 阶段，小 batch size 会导致并行度不足，从而引起性能明显下降。
-

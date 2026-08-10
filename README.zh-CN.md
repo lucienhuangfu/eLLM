@@ -1,9 +1,10 @@
-# eLLM：让 CPU 在长程推理中快过 GPU
-## eLLM：让 CPU 成为 AI 推理芯片的首选
+# eLLM：让 CPU 在长程推理任务中快过 GPU
+
 👉 项目主页：[https://github.com/lucienhuangfu/eLLM](https://github.com/lucienhuangfu/eLLM)  
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)  
 📚 文档：[Documentation](docs/index.md)  
 🎓 目前仅开放 1–2 个 Trainee 名额，欢迎计算机专业在校生报名  
+🛠️ 项目正在紧张开发中，代码会定期推送到 main 分支  
 💼 我们致力于推动开源与 AI 民主化，期待与产业携手合作  
 📧 联系方式：**lucienhuangfu@outlook.com**
 
@@ -18,20 +19,17 @@
 - 兼容 vLLM API，可直接接入现有生态
 - 推理结果与 GPU 保持一致
 
-## 🖥️ 硬件要求
-- CPU：Intel Xeon / AMD EPYC（推荐 Xeon Gen4+）
-- 内存：足量 DDR（按模型规模配置）
-  
 ## ✨ 优势
-eLLM 采用“以存换算”的策略，以 CPU 大容量 DDR 内存弥补与 HBM 之间约一个数量级的带宽差距，让 CPU 在长程推理场景中快过 GPU。在 Prefill 阶段，eLLM 相比现有 CPU 推理框架实现约**两个数量级**的性能提升；在 Decode 阶段，开销主要来自反复载入模型参数与 KV Cache（尤其是 KV Cache），而 eLLM 以更小的 batch 运行，不仅激活的参数更少，单个 request 可分得的内存带宽反而高于 GPU 方案，推理速度同样快于 GPU baseline。在此基础上，eLLM 在多项关键指标上全面超越 GPU 推理：
+eLLM 是一款面向纯 CPU 服务器的大模型推理框架，核心策略是“以存换算”：利用 CPU 大容量 DDR 内存弥补其与 GPU HBM 之间的带宽差距，让 CPU 在长程推理中快过 GPU。在 Prefill 阶段，eLLM 比现有 CPU 推理框架快约**两个数量级**；在 Decode 阶段，eLLM 以更小的 batch 运行，不仅激活参数更少，还能为单个 request 分配更高的内存带宽载入 KV Cache，因此推理速度同样可以超过 GPU baseline。由此，eLLM 在多项关键指标上全面超越 GPU 推理：
 - **低延迟**：通过整段 Prefill 与增量 Prefill，显著降低首 token 延迟（TTFT）
 - **高吞吐**：单实例并发度虽低于 GPU 方案，但端到端延迟更小，**实际 QPS 反而更高**
 - **长上下文**：TB 级大内存支撑百万 token 级、近乎无限长度的上下文窗口
 - **低能耗**：Prefill 阶段参数仅需加载一次，大幅减少重复访存带来的能耗
 - **低成本**：无需水冷散热与大功率供电，硬件成本与单用户推理成本远低于 GPU 方案
 
+实测数据见 [Benchmark](#-benchmark)。
 
-## 应用场景
+## 🎯 应用场景
 eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中持续保持目标、状态与推理一致性的 Agent 工作流：
 - **Open Claw（Computer-use Agent）**
   - 在执行过程中按需动态加载技能与上下文，持续规划、调用工具并完成复杂任务
@@ -57,26 +55,66 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
   为张量预留足够大的 sequence 维度，构建近似“无限长度”的 KV tensor，支持整段 Prefill，从而尽量避免重复 Prefill 和参数反复载入，适配超长 Prompt 和长上下文。
 - 🔁 **Session Cache**
   在多轮交互中持续保留 KV 状态，仅对新输入进行增量 Prefill，而无需重复计算历史上下文；从机制上实现“状态连续性”，支撑 Agent 在长时间任务中保持上下文一致与执行连贯。
-- **⚡ 逐头计算 Attention**
+- ⚡ **逐头计算 Attention**
   在 Prefill 阶段，以“单个 token 的单个 KV head”为基本计算单元，CPU 完成一个 head 的计算后再切换到下一个 head。该设计更契合 CPU 核数有限但缓存容量较大的硬件特性：尽可能让单个 head 的 KV 数据长期驻留在片上 Cache 中，从而减少重复内存加载。
 
 ## 🤖 支持模型
 - ✅ Qwen3 系列
-- ⏳ Qwen3.8 系列
-- ⏳ MiniMax M2.7
+- ⏳ Qwen3.8 系列 （开发中）
+- ⏳ MiniMax M2.7 （开发中）
+
+## 🖥️ 硬件要求
+- CPU：Intel Xeon / AMD EPYC（推荐 Xeon Gen4+）
+- 内存：足量 DDR（按模型规模配置）
+
+## ⚡ 快速开始
+eLLM 兼容 vLLM API，从构建到上线只需四步：
+
+1. **构建**：需要 Rust nightly 工具链（rustup 会根据 `rust-toolchain.toml` 自动安装）
+
+   ```bash
+   git clone https://github.com/lucienhuangfu/eLLM.git
+   cd eLLM
+   cargo build --release
+   ```
+
+2. **准备模型**：将 HuggingFace 格式的模型目录放到 `models/` 下，至少包含：
+
+   ```
+   models/Qwen3-0.6B/
+   ├── config.json
+   ├── generation_config.json
+   ├── model.safetensors
+   └── tokenizer.json
+   ```
+
+3. **启动服务**：默认监听 `0.0.0.0:8000`
+
+   ```bash
+   cargo run --release --bin main -- models/Qwen3-0.6B
+   ```
+
+4. **发起请求**：请求体中加上 `"stream": true` 即可获得逐 token 的 SSE 流式输出
+
+   ```bash
+   curl http://localhost:8000/v1/chat/completions \
+     -H "Content-Type: application/json" \
+     -d '{
+       "model": "Qwen3-0.6B",
+       "messages": [{"role": "user", "content": "你好，介绍一下你自己"}]
+     }'
+   ```
+
+更详细的安装、配置与采样参数说明见：[安装指南](docs/getting_started/installation.md) 与 [Quickstart](docs/getting_started/quickstart.md)。
 
 ## 📊 Benchmark
-
 eLLM 推理结果已与 SGLang CPU backend 完全对齐，核心功能已可用，欢迎试用。当前版本仍在持续优化中，暂不建议用于生产环境部署。
 
-
 性能对比显示，eLLM 在 Prefill 阶段具备显著优势，长文本场景下甚至超过 GPU baseline：
-- **Prefill（TTFT, ms）**：相比 CPU baseline 性能提升约 **20% ~ 10000%**，40K tokens 后超过 GPU baseline。
-- **Decode（TPOT, ms/token）**：相比 CPU baseline 稳定提升约 **20%**。
+- **Prefill（TTFT, ms）**：相比 CPU baseline 提升约 **20% ~ 10000%**（最高约两个数量级），40K tokens 后超过 GPU baseline
+- **Decode（TPOT, ms/token）**：相比 CPU baseline 稳定提升约 **20%**
 
 详细 benchmark 结果见：[benchmark.zh-CN.md](benchmark.zh-CN.md)。
-
-
 
 ## 📄 论文
 如果你对 eLLM 的底层设计与技术细节感兴趣，欢迎阅读我们的[论文](ellm.pdf)并引用。需要说明的是，当前公开版本为**早期论文**，其中部分实现细节尚未完全反映 eLLM 的最新进展，我们正在持续更新中，敬请理解。
