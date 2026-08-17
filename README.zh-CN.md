@@ -1,33 +1,38 @@
 # eLLM：让 CPU 在长程推理任务中快过 GPU
+eLLM 是一款面向纯 CPU 服务器的大模型推理框架。它采用“以存换算”策略，利用 CPU 大容量 DDR 内存，弥补其与 GPU HBM 之间的带宽差距，从而在长程任务推理场景下实现超越 GPU 的性能。
 
-👉 项目主页：[https://github.com/lucienhuangfu/eLLM](https://github.com/lucienhuangfu/eLLM)  
+- **Prefill**：相较现有 CPU 推理框架可实现约**两个数量级**的性能提升
+  - 长文本一次性整段 Prefill，
+  - 多轮交互仅对新增输入做增量 Prefill；
+- **Decode**：以更小的 batch 运行，不仅激活的参数更少，单个 request 可分得的内存带宽也更高，因此推理速度同样可以超过 GPU baseline。
+
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)  
 📚 文档：[Documentation](docs/index.md)  
 🎓 目前仅开放 1–2 个 Trainee 名额，欢迎计算机专业在校生报名  
 🛠️ 项目正在紧张开发中，代码会定期推送到 main 分支  
-💼 我们致力于推动开源与 AI 民主化，期待与产业携手合作  
-📧 联系方式：**lucienhuangfu@outlook.com**
+💼 我们致力于推动开源与 AI 民主化，期待与产业携手合作，联系方式：**lucienhuangfu@outlook.com**
 
 ## 🚀 进展与更新
-- `v0.1.0`（2026-07-10）：发布 Beta 版本
+- `v0.1.0`（2026-08-10）：发布 Beta 版本，核心功能开发完成，推理结果与 SGLang CPU 完全对齐
 - `v0.0.2`（2026-04-06）：发布 Alpha 版本
 - `v0.0.1`（2025-12-20）：项目开源
 
 ## 🔑 功能
 **eLLM**：面向 CPU 服务器的大模型推理框架
 - 纯 CPU 推理，无需 GPU / NPU
+  - CPU：Intel Xeon / AMD EPYC（推荐 Xeon Gen4+）
+  - 内存：足量 DDR（按模型规模配置）
 - 兼容 vLLM API，可直接接入现有生态
 - 推理结果与 GPU 保持一致
 
+
 ## ✨ 优势
-eLLM 是一款面向纯 CPU 服务器的大模型推理框架，核心策略是“以存换算”：利用 CPU 大容量 DDR 内存弥补其与 GPU HBM 之间的带宽差距，让 CPU 在长程推理中快过 GPU。在 Prefill 阶段，eLLM 比现有 CPU 推理框架快约**两个数量级**；在 Decode 阶段，eLLM 以更小的 batch 运行，不仅激活参数更少，还能为单个 request 分配更高的内存带宽载入 KV Cache，因此推理速度同样可以超过 GPU baseline。由此，eLLM 在多项关键指标上全面超越 GPU 推理：
+eLLM 在多项关键指标上全面超越 GPU 推理：
 - **低延迟**：通过整段 Prefill 与增量 Prefill，显著降低首 token 延迟（TTFT）
 - **高吞吐**：单实例并发度虽低于 GPU 方案，但端到端延迟更小，**实际 QPS 反而更高**
 - **长上下文**：TB 级大内存支撑百万 token 级、近乎无限长度的上下文窗口
 - **低能耗**：Prefill 阶段参数仅需加载一次，大幅减少重复访存带来的能耗
 - **低成本**：无需水冷散热与大功率供电，硬件成本与单用户推理成本远低于 GPU 方案
-
-实测数据见 [Benchmark](#-benchmark)。
 
 ## 🎯 应用场景
 eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中持续保持目标、状态与推理一致性的 Agent 工作流：
@@ -45,7 +50,7 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
   - 适用于持续数小时甚至数天的研究任务，而不仅仅是单次长上下文推理
 
 ## ⚙️ 方法
-为了更好地支持**长程任务（Long-Horizon Tasks）**，eLLM 针对“多轮执行 + 长时间状态维护 + 低延迟交互”的 Agent 场景，基于 CPU 体系结构（内存大、缓存大、算力相对弱）提出“以存换算”的整体设计理念，将推理过程重构为**可复用、可持续增长、可局部增量更新的执行链路**，从而降低长任务中的重复计算与状态重建开销
+为了更好地支持**长程任务（Long-Horizon Tasks）**，eLLM 针对“多轮执行 + 长时间状态维护 + 低延迟交互”的 Agent 场景，基于 CPU 体系结构（内存大、缓存大、算力相对弱）提出“以存换算”的整体设计理念。它将推理过程重构为**可复用、可持续增长、可局部增量更新的执行链路**，从而降低长任务中的重复计算与状态重建开销。
 
 - 🧩 **弹性静态计算图**
   构建全局唯一的静态计算图，并采用 **维度优先（dimension-first）** 的布局存取张量，让相同逻辑坐标的元素稳定映射到相同内存位置，使同一套执行图可以在不重建计算图的前提下支持不同输入长度。
@@ -63,9 +68,7 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 - ⏳ Qwen3.8 系列 （开发中）
 - ⏳ MiniMax M2.7 （开发中）
 
-## 🖥️ 硬件要求
-- CPU：Intel Xeon / AMD EPYC（推荐 Xeon Gen4+）
-- 内存：足量 DDR（按模型规模配置）
+
 
 ## ⚡ 快速开始
 eLLM 兼容 vLLM API，从构建到上线只需四步：
@@ -108,8 +111,6 @@ eLLM 兼容 vLLM API，从构建到上线只需四步：
 更详细的安装、配置与采样参数说明见：[安装指南](docs/getting_started/installation.md) 与 [Quickstart](docs/getting_started/quickstart.md)。
 
 ## 📊 Benchmark
-eLLM 推理结果已与 SGLang CPU backend 完全对齐，核心功能已可用，欢迎试用。当前版本仍在持续优化中，暂不建议用于生产环境部署。
-
 性能对比显示，eLLM 在 Prefill 阶段具备显著优势，长文本场景下甚至超过 GPU baseline：
 - **Prefill（TTFT, ms）**：相比 CPU baseline 提升约 **20% ~ 10000%**（最高约两个数量级），40K tokens 后超过 GPU baseline
 - **Decode（TPOT, ms/token）**：相比 CPU baseline 稳定提升约 **20%**

@@ -6,3 +6,4 @@ eLLM 是一款面向纯 CPU 服务器的大模型推理框架。它采用“以�
   - 支持超长文本一次性完成 Prefill，避免分块处理带来的额外开销与重复计算；
   - 缓存多轮交互中的 KV Cache，仅针对新增输入执行增量 Prefill。
 - 在 Decode 阶段，主要开销来自模型参数和 KV Cache 的加载，其中 KV Cache 占比较高。eLLM 采用更小的 batch 运行，不仅能够减少激活参数量，还能为单个 request 分配更高的内存带宽载入 KV Cache，因此其推理速度同样可以超过 GPU baseline。
+👉 项目主页：[https://github.com/lucienhuangfu/eLLM](https://github.com/lucienhuangfu/eLLM) 
