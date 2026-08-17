@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operator Creator"
+  short_description: "Create eLLM operators"
+  default_prompt: "Use $create-operator to implement a new Rust operator in src/operators, register it in the Operator enum, wire it into the Tensor API, and scaffold its alignment test."
