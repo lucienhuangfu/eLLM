@@ -51,6 +51,7 @@ pub struct ExpertMatMulSilu<T> {
     pub hidden: usize,      // Hidden size. hidden 大小。
     pub num_experts: usize, // Expert count. expert 数量。
     pub decode_only_flag: bool,
+    pub compact_output: bool,
 
     // === strides ===
     // === stride 参数 ===
@@ -179,6 +180,7 @@ where
             hidden,
             num_experts,
             decode_only_flag,
+            compact_output: crate::operators::expert::expert_routing::compact_moe_enabled(),
 
             packed_panel_stride,
             acc_stride,
@@ -325,6 +327,7 @@ where
                 .as_ptr()
                 .wrapping_add(thread_id * self.task_meta_stride) as *mut ExpertTaskMeta;
         let mut expert_task_count = 0usize;
+        let mut routed_row_count = 0usize;
         let mut total_tasks = 0usize;
 
         unsafe {
@@ -340,12 +343,13 @@ where
                 let task_count = token_tile_count * output_column_tile_count;
                 *expert_tasks_ptr.add(expert_task_count) = ExpertTaskMeta {
                     expert_id,
-                    token_begin: 0,
+                    token_begin: routed_row_count,
                     token_count: routed_token_count,
                     task_begin: total_tasks,
                     task_end: total_tasks + task_count,
                 };
                 expert_task_count += 1;
+                routed_row_count += routed_token_count;
                 total_tasks += task_count;
             }
 
@@ -385,8 +389,6 @@ where
             let input_row_stride = self.hidden;
 
             let output_base = self.output_ptr.ptr;
-            let output_expert_stride = self.batch * self.inter;
-
             let (gate_acc, up_acc, a_tile, idx_buf) = self.thread_slices(thread_id);
 
             let output_column_tile_count = output_cols.div_ceil(output_block_cols);
@@ -526,9 +528,16 @@ where
                         // 对每个 routed token 行计算 SiLU(gate) * up 并写回。
                         for row_in_tile in 0..valid_rows {
                             let token_id = *idx_buf.add(token_offset_in_block + row_in_tile);
+                            let output_row_index = if self.compact_output {
+                                task_meta.token_begin
+                                    + token_block_start
+                                    + token_offset_in_block
+                                    + row_in_tile
+                            } else {
+                                expert_id * self.batch + token_id
+                            };
                             let output_row = output_base
-                                .add(expert_id * output_expert_stride)
-                                .add(token_id * self.inter)
+                                .add(output_row_index * self.inter)
                                 .add(output_col_start + output_col_offset);
 
                             let gate_row = gate_acc.add(row_in_tile * micro_tile_cols);

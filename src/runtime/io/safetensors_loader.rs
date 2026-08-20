@@ -7,10 +7,33 @@ use anyhow::{Result, anyhow};
 use memmap2::MmapOptions;
 use safetensors::SafeTensors;
 
-use super::from_safetensors::FromSafetensors;
+use super::from_safetensors::{FromSafetensors, from_tensor_view_aligned_f16};
+use crate::mem_mgr::allocator::AlignedBox;
 
 pub struct SafeTensorsLoader {
     pub model_files: Vec<String>,
+}
+
+#[inline]
+fn release_consumed_mapping(data: &[u8]) {
+    // Dropping a shard mapping releases all of its resident file pages, but a
+    // 4 GiB shard can otherwise remain resident while its many tensors are
+    // copied. Reclaim large consumed ranges incrementally to avoid mmap +
+    // destination double residency with 16 concurrent shard loaders.
+    #[cfg(target_os = "linux")]
+    if data.len() >= 1024 * 1024 {
+        const MADV_DONTNEED: i32 = 4;
+        const PAGE_SIZE: usize = 4096;
+        unsafe extern "C" {
+            fn madvise(addr: *mut u8, length: usize, advice: i32) -> i32;
+        }
+        let start = data.as_ptr() as usize;
+        let page_start = start & !(PAGE_SIZE - 1);
+        let page_end = (start + data.len() + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        unsafe {
+            let _ = madvise(page_start as *mut u8, page_end - page_start, MADV_DONTNEED);
+        }
+    }
 }
 
 impl SafeTensorsLoader {
@@ -123,6 +146,60 @@ impl SafeTensorsLoader {
 
     pub fn load_all_weights_f16_parallel(&self) -> Result<HashMap<String, Vec<f16>>> {
         self.load_all_weights_parallel::<f16>()
+    }
+
+    fn load_file_weights_f16_aligned(model_file: &str) -> Result<HashMap<String, AlignedBox<f16>>> {
+        let file = File::open(model_file)?;
+        let mmap = unsafe { MmapOptions::new().map(&file)? };
+        let safetensors = SafeTensors::deserialize(&mmap)?;
+        let mut weights = HashMap::with_capacity(safetensors.tensors().len());
+        for (name, tensor_view) in safetensors.tensors() {
+            let data = tensor_view.data();
+            weights.insert(
+                name.to_string(),
+                from_tensor_view_aligned_f16(&tensor_view)?,
+            );
+            release_consumed_mapping(data);
+        }
+        Ok(weights)
+    }
+
+    /// Load directly into the pool's 64-byte-aligned ownership type. This
+    /// avoids the former Vec -> AlignedBox full-weight copy during graph build.
+    pub fn load_all_weights_f16_aligned_parallel(
+        &self,
+    ) -> Result<HashMap<String, AlignedBox<f16>>> {
+        let thread_count = std::env::var("ELLM_LOAD_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(16)
+            .min(self.model_files.len())
+            .max(1);
+        let mut all_weights = HashMap::with_capacity(512);
+        for chunk in self.model_files.chunks(thread_count) {
+            let file_maps = thread::scope(|scope| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|model_file| {
+                        scope
+                            .spawn(move || Self::load_file_weights_f16_aligned(model_file.as_str()))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle
+                            .join()
+                            .map_err(|_| anyhow!("parallel safetensors loader thread panicked"))?
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?;
+            for file_weights in file_maps {
+                all_weights.extend(file_weights);
+            }
+        }
+        Ok(all_weights)
     }
 
     pub fn merge_moe<T>(&self, weights: &mut HashMap<String, Vec<T>>) -> Result<()> {

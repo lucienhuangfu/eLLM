@@ -117,9 +117,10 @@ where
         let rotate_head_assignment = std::env::var("ELLM_ATTENTION_ROTATE_HEADS")
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            // Rotate the deterministic head order between row blocks so
-            // workers are not permanently tied to only a few Q/KV heads.
-            .unwrap_or(requested_brgemm);
+            // Rotation helped the 32-core/64-thread host at 20k+, but was
+            // neutral-to-negative on the 24-core/48-thread deployment host.
+            // Keep it available as an explicit machine-specific tuning knob.
+            .unwrap_or(false);
         let brgemm_backend = requested_brgemm
             && std::mem::size_of::<T>() == std::mem::size_of::<f16>()
             && cfg!(all(target_arch = "x86_64", target_feature = "avx512fp16"))
@@ -139,10 +140,10 @@ where
                 // For FP16 BRGEMM the per-thread hot workspace is approximately
                 // M * (2 * sizeof(f32) + N * (sizeof(f32) + sizeof(f16))
                 //     + head_size * sizeof(f32)).
-                // M=160/N=448 uses about 501 KiB at head_size=128, close to
-                // 25% of a 2 MiB L2 while leaving half the cache available for
-                // the other SMT sibling and active Q/K/V blocks.
-                _ => (160, 448),
+                // M=160/N=384 uses about 441 KiB at head_size=128. It was at
+                // least as fast as N=448 on the 24-core/48-thread deployment
+                // host and leaves more L2 room for its SMT sibling and Q/K/V.
+                _ => (160, 384),
             };
             row_step = std::env::var("ELLM_ATTENTION_BRGEMM_ROW_STEP")
                 .ok()

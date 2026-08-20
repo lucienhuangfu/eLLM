@@ -1,8 +1,10 @@
 use std::{f16, mem};
 
-use anyhow::{anyhow, Result};
-use safetensors::tensor::TensorView;
+use anyhow::{Result, anyhow};
 use safetensors::Dtype;
+use safetensors::tensor::TensorView;
+
+use crate::mem_mgr::allocator::AlignedBox;
 
 pub trait FromSafetensors: Sized {
     fn from_tensor_view(tensor_view: &TensorView) -> Result<Vec<Self>>;
@@ -35,6 +37,64 @@ impl FromSafetensors for f16 {
             )),
         }
     }
+}
+
+pub fn from_tensor_view_aligned_f16(tensor_view: &TensorView) -> Result<AlignedBox<f16>> {
+    let len = tensor_view.data().len()
+        / match tensor_view.dtype() {
+            Dtype::F32 => 4,
+            Dtype::F16 | Dtype::BF16 => 2,
+            dtype => return Err(anyhow!("Unsupported tensor dtype for f16: {dtype:?}")),
+        };
+    let mut output = AlignedBox::<f16>::allocate_transient(len);
+
+    match tensor_view.dtype() {
+        Dtype::F16 => {
+            if tensor_view.data().len() % mem::size_of::<f16>() != 0 {
+                return Err(anyhow!(
+                    "Invalid F16 tensor byte length: {}",
+                    tensor_view.data().len()
+                ));
+            }
+            #[cfg(target_endian = "little")]
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    tensor_view.data().as_ptr(),
+                    output.as_mut_ptr().cast::<u8>(),
+                    tensor_view.data().len(),
+                );
+            }
+            #[cfg(not(target_endian = "little"))]
+            for (dst, bytes) in output
+                .as_mut_slice()
+                .iter_mut()
+                .zip(tensor_view.data().chunks_exact(2))
+            {
+                *dst = f16::from_le_bytes([bytes[0], bytes[1]]);
+            }
+        }
+        Dtype::BF16 => {
+            for (dst, bytes) in output
+                .as_mut_slice()
+                .iter_mut()
+                .zip(tensor_view.data().chunks_exact(2))
+            {
+                let bits = u16::from_le_bytes([bytes[0], bytes[1]]);
+                *dst = f32::from_bits((bits as u32) << 16) as f16;
+            }
+        }
+        Dtype::F32 => {
+            for (dst, bytes) in output
+                .as_mut_slice()
+                .iter_mut()
+                .zip(tensor_view.data().chunks_exact(4))
+            {
+                *dst = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f16;
+            }
+        }
+        _ => unreachable!(),
+    }
+    Ok(output)
 }
 
 #[inline]

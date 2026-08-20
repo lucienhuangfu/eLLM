@@ -100,7 +100,7 @@ SGLang `num_keys = min(m + m_size, seqlen_k)` 的边界一致；block 内仍由�
 | `<= 256` | 32 | 64 |
 | `257..=1024` | 128 | 256 |
 | `1025..=4096` | 256 | 768 |
-| `> 4096` | **160** | **448** |
+| `> 4096` | **160** | **384** |
 
 长 prefill 的新分块按每线程 L2 工作集调优。SGLang 的推导可概括为
 `MB × (1 + 1 + NB + Kv)`；eLLM 需要按实际类型展开，因为 score 和 probability
@@ -115,15 +115,16 @@ workspace_bytes
 ```
 
 本机每个物理核有 2 MiB L2，25% 约为 512 KiB，`Kv=128`。原 `512×768`
-需要约 2.50 MiB/线程，单个 workspace 已超过 L2；新机器最终采用的 `160×448`
-约为 501 KiB/线程，接近 L2 的 25%，同时为同一物理核上的两个 SMT sibling、
-活跃 Q block 和当前 packed K/V block 留出空间。
+需要约 2.50 MiB/线程，单个 workspace 已超过 L2；当前默认 `160×384` 约为
+441 KiB/线程，为同一物理核上的两个 SMT sibling、活跃 Q block 和当前 packed
+K/V block 留出更多空间。`160×448` 约为 501 KiB，但在 24核/48线程部署机上
+没有带来收益，因此不作为跨机器默认值。
 
 环境变量可用于重新测试，不影响未设置变量的默认路径：
 
 ```bash
 ELLM_ATTENTION_BRGEMM_ROW_STEP=160
-ELLM_ATTENTION_BRGEMM_COL_STEP=448
+ELLM_ATTENTION_BRGEMM_COL_STEP=384
 ```
 
 BRGEMM 只处理 `row_count > 1`。当 `row_count == 1` 时切回原生 Attention，并强制
@@ -231,15 +232,16 @@ Attention wall time 为主：
 的共享 map mutex。5k 结果退化为 TTFT 15.363s、Attention wall 1.928098s，相比
 15.299s / 1.751839s 没有收益，已回退。不要再默认增加线程本地 HashMap。
 
-### 32 核 / 64 线程机器最终复测（2026-08）
+### 32 核 / 64 线程机器历史复测（2026-08）
 
 新机器为单路 Intel Xeon 6982P-C，32 个物理核、64 个逻辑线程，每核 2 MiB L2，
-单 NUMA 节点。长 prefill 使用全部 64 个逻辑线程。针对本机重新筛选后，默认长序列
-block 从旧机器的 `160×384` 调整为 `160×448`。
+单 NUMA 节点。长 prefill 使用全部 64 个逻辑线程。针对该机重新筛选时，长序列
+block 从 `160×384` 调整为 `160×448`。
 
 另外保留静态 head-order rotation：同一个 row block 内仍按静态 LPT 分配任务，
 不同 row block 使用旋转后的 Q-head 顺序，避免固定 worker 长期只处理少数 Q/KV
-heads。BRGEMM 默认启用，可用 `ELLM_ATTENTION_ROTATE_HEADS=0` 做回归定位。
+heads。该优化现在默认关闭，需要在适合的机器上显式设置
+`ELLM_ATTENTION_ROTATE_HEADS=1`。
 
 20k / 64线程 Attention 结果：
 
@@ -253,11 +255,17 @@ heads。BRGEMM 默认启用，可用 `ELLM_ATTENTION_ROTATE_HEADS=0` 做回归�
 30k 三次旧基线平均约 `30.478081s run + 5.010148s barrier = 35.488229s`；
 head rotation 后为 `29.738361s + 4.138841s = 33.877202s`，改善约 4.54%。
 
-最终只保留：
+该 32核机器当时建议保留：
 
 - `160×448` 长序列分块。
 - row-block 间 Q-head 顺序旋转。
 - LibTorch CPU 动态库自动发现，同时保留 `ELLM_LIBTORCH_CPU_PATH` 显式覆盖。
+
+后续在实际 24核/48线程部署机上，用 10001 input、16 output、batch=1 做 2×2
+复测。两次 `160×384 + rotation off` 的 Attention `run+barrier` 均值为
+4.985946s；两次 `160×448 + rotation on` 均值为 4.988937s，慢 0.06%，没有可测
+收益。组合 TTFT 均值则从 30.518s 上升到 31.509s。因此跨机器默认恢复为
+`160×384` 且 rotation 关闭；32核/64线程机器仍可通过环境变量显式启用原组合。
 
 下列实验没有收益，代码已经完全回退，不属于当前实现：
 

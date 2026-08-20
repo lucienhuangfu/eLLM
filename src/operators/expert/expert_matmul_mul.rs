@@ -52,6 +52,7 @@ pub struct ExpertMatMulDown<T> {
     pub h: usize,           // Output hidden size. 输出 hidden 大小。
     pub num_topk: usize,    // Top-k experts per token. 每个 token 的 top-k expert 数。
     pub decode_only_flag: bool,
+    pub compact_input: bool,
 
     pub params: MatMulParams,
     _marker: PhantomData<T>,
@@ -84,7 +85,7 @@ pub struct ExpertMatMulDown<T> {
     routed_tokens_pool: Box<[usize]>,
     routed_slots_pool: Box<[usize]>,
     routed_scores_pool: Box<[T]>,
-    routed_stride: usize, // num_experts * capacity_per_expert
+    routed_stride: usize, // total routing assignments: num_tokens * num_topk
 }
 
 impl<T> ExpertMatMulDown<T>
@@ -149,7 +150,10 @@ where
         let acc_pool = vec![T::default(); threads * acc_stride].into_boxed_slice();
         let idx_buf_pool = vec![0usize; threads * idx_stride].into_boxed_slice();
         let task_meta_stride = num_experts;
-        let routed_stride = num_experts * routing.capacity_per_expert;
+        // `capacity_per_expert` is already num_tokens * num_topk, which is
+        // also the maximum size of the global compact routing list. Multiplying
+        // by num_experts again over-reserved this per-thread scratch by E×.
+        let routed_stride = routing.capacity_per_expert;
         let task_meta_pool =
             vec![ExpertTaskMeta::default(); threads * task_meta_stride].into_boxed_slice();
         let routed_tokens_pool = vec![0usize; threads * routed_stride].into_boxed_slice();
@@ -170,6 +174,7 @@ where
             h,
             num_topk,
             decode_only_flag,
+            compact_input: crate::operators::expert::expert_routing::compact_moe_enabled(),
 
             params,
             _marker: PhantomData,
@@ -462,7 +467,11 @@ where
 
                 let routed_token_begin = task_meta.token_begin + token_block_start;
                 for token_offset in 0..tokens_in_block {
-                    *idx_buf.add(token_offset) = routed_tokens[routed_token_begin + token_offset];
+                    *idx_buf.add(token_offset) = if self.compact_input {
+                        routed_token_begin + token_offset
+                    } else {
+                        routed_tokens[routed_token_begin + token_offset]
+                    };
                 }
 
                 let expert_id = task_meta.expert_id;
@@ -497,11 +506,16 @@ where
 
                             if valid_rows == 1 {
                                 let token_id = *idx_buf.add(token_offset_in_block);
-                                let input_row = self
-                                    .nonlin_ptr
-                                    .ptr
-                                    .add(expert_id * (self.num_token * self.hmid))
-                                    .add(token_id * self.hmid + reduction_col_start);
+                                let input_row = if self.compact_input {
+                                    self.nonlin_ptr
+                                        .ptr
+                                        .add(token_id * self.hmid + reduction_col_start)
+                                } else {
+                                    self.nonlin_ptr
+                                        .ptr
+                                        .add(expert_id * (self.num_token * self.hmid))
+                                        .add(token_id * self.hmid + reduction_col_start)
+                                };
                                 self.compute1_single(
                                     input_row,
                                     weight_panel,
@@ -511,10 +525,13 @@ where
                             } else if valid_rows == 2 {
                                 // 2-row direct gather: skip a_tile pack.
                                 // 两行直接 gather：跳过 a_tile pack。
-                                let expert_input_base = self
-                                    .nonlin_ptr
-                                    .ptr
-                                    .add(expert_id * (self.num_token * self.hmid));
+                                let expert_input_base = if self.compact_input {
+                                    self.nonlin_ptr.ptr
+                                } else {
+                                    self.nonlin_ptr
+                                        .ptr
+                                        .add(expert_id * (self.num_token * self.hmid))
+                                };
                                 self.compute1_gather_2rows(
                                     expert_input_base,
                                     self.hmid,
@@ -526,10 +543,13 @@ where
                                     reduction_block_cols,
                                 );
                             } else {
-                                let expert_input_base = self
-                                    .nonlin_ptr
-                                    .ptr
-                                    .add(expert_id * (self.num_token * self.hmid));
+                                let expert_input_base = if self.compact_input {
+                                    self.nonlin_ptr.ptr
+                                } else {
+                                    self.nonlin_ptr
+                                        .ptr
+                                        .add(expert_id * (self.num_token * self.hmid))
+                                };
                                 self.compute1_gather_rows(
                                     expert_input_base,
                                     self.hmid,
@@ -548,7 +568,8 @@ where
                         // Scatter each valid row back to token-major output with route weight.
                         // 将每个有效行乘以路由权重后写回 token-major 输出。
                         for row_in_tile in 0..valid_rows {
-                            let token_id = *idx_buf.add(token_offset_in_block + row_in_tile);
+                            let token_id = routed_tokens
+                                [routed_token_begin + token_offset_in_block + row_in_tile];
                             let route_weight = routed_scores
                                 [routed_token_begin + token_offset_in_block + row_in_tile];
                             let topk_slot = routed_slots

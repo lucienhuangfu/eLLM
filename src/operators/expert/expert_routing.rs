@@ -2,6 +2,14 @@ use std::sync::atomic::AtomicUsize;
 
 use crate::operators::send_sync_ptr::MutPtr;
 
+/// Experimental compact MoE activation layout. The allocation remains static;
+/// only routed rows are packed contiguously at runtime.
+pub fn compact_moe_enabled() -> bool {
+    std::env::var("ELLM_COMPACT_MOE")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ExpertTaskMeta {
     /// Expert id for this contiguous task range.

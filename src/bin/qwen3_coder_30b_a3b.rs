@@ -226,9 +226,9 @@ fn main() {
 
     let params = SafeTensorsLoader::new(model_dir)
         .unwrap()
-        .load_all_weights_f16_parallel()
+        .load_all_weights_f16_aligned_parallel()
         .unwrap();
-    f16::init_global_strict(params);
+    f16::init_global_strict_aligned(params);
     log_timing("load_weights", program_start);
 
     let position_vec = RotaryEmbedding::new(
