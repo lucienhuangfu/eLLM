@@ -11,6 +11,7 @@ third_party/sglang
 # Local experiment outputs
 experiment/
 alignment/**/dump/
+benchmark_qwen3_coder_10k_100.sh
 
 # Local VS Code settings
 .vscode/settings.json

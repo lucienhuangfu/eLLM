@@ -45,6 +45,7 @@ pub struct Attention<T> {
     pub(super) brgemm_shared_cache:
         Arc<crate::kernel::x86_64::f16_512::brgemm_attention::SharedCache>,
     pub(super) thread_num: usize,
+    pub(super) rotate_head_assignment: bool,
     scratch: AttentionScratch<T>,
 }
 
@@ -113,6 +114,12 @@ where
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
+        let rotate_head_assignment = std::env::var("ELLM_ATTENTION_ROTATE_HEADS")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            // Rotate the deterministic head order between row blocks so
+            // workers are not permanently tied to only a few Q/KV heads.
+            .unwrap_or(requested_brgemm);
         let brgemm_backend = requested_brgemm
             && std::mem::size_of::<T>() == std::mem::size_of::<f16>()
             && cfg!(all(target_arch = "x86_64", target_feature = "avx512fp16"))
@@ -132,9 +139,10 @@ where
                 // For FP16 BRGEMM the per-thread hot workspace is approximately
                 // M * (2 * sizeof(f32) + N * (sizeof(f32) + sizeof(f16))
                 //     + head_size * sizeof(f32)).
-                // M=160/N=384 uses about 441 KiB at head_size=128, leaving room
-                // in a 2 MiB L2 for both SMT siblings' active Q/K/V blocks.
-                _ => (160, 384),
+                // M=160/N=448 uses about 501 KiB at head_size=128, close to
+                // 25% of a 2 MiB L2 while leaving half the cache available for
+                // the other SMT sibling and active Q/K/V blocks.
+                _ => (160, 448),
             };
             row_step = std::env::var("ELLM_ATTENTION_BRGEMM_ROW_STEP")
                 .ok()
@@ -180,6 +188,7 @@ where
                 crate::kernel::x86_64::f16_512::brgemm_attention::SharedCache::default(),
             ),
             thread_num,
+            rotate_head_assignment,
             scratch: AttentionScratch::new(thread_num, row_step, col_step),
         }
     }
@@ -847,7 +856,12 @@ where
             };
             let task_weight = (row_end - row_begin) as u128 * key_end as u128;
 
-            for attention_head in 0..self.attention_head_num {
+            for head_slot in 0..self.attention_head_num {
+                let attention_head = if self.rotate_head_assignment {
+                    (head_slot + row_block) % self.attention_head_num
+                } else {
+                    head_slot
+                };
                 let mut owner = 0;
                 for candidate in 1..thread_num {
                     if thread_loads[candidate] < thread_loads[owner] {

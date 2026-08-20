@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::f16;
 use std::ffi::{c_char, c_void, CString};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 type BrgemmFn = unsafe extern "C" fn(
@@ -43,21 +44,67 @@ const DEFAULT_LIBTORCH_CPU: &str =
 
 static BRGEMM: OnceLock<Option<BrgemmFn>> = OnceLock::new();
 
+fn python_libtorch_candidates(root: &Path, candidates: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut python_dirs = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("python"))
+        })
+        .collect::<Vec<_>>();
+    python_dirs.sort();
+
+    for python_dir in python_dirs.into_iter().rev() {
+        for packages_dir in ["site-packages", "dist-packages"] {
+            let candidate = python_dir
+                .join(packages_dir)
+                .join("torch/lib/libtorch_cpu.so");
+            if candidate.is_file() {
+                candidates.push(candidate);
+            }
+        }
+    }
+}
+
+fn libtorch_candidates() -> Vec<PathBuf> {
+    if let Some(path) = std::env::var_os("ELLM_LIBTORCH_CPU_PATH") {
+        return vec![PathBuf::from(path)];
+    }
+
+    let mut candidates = vec![PathBuf::from(DEFAULT_LIBTORCH_CPU)];
+    if let Some(home_dir) = std::env::var_os("HOME") {
+        python_libtorch_candidates(&PathBuf::from(home_dir).join(".local/lib"), &mut candidates);
+    }
+    for root in ["/usr/local/lib", "/usr/lib", "/opt"] {
+        python_libtorch_candidates(Path::new(root), &mut candidates);
+    }
+    candidates.push(PathBuf::from("libtorch_cpu.so"));
+    candidates.dedup();
+    candidates
+}
+
 fn load_brgemm() -> Option<BrgemmFn> {
     *BRGEMM.get_or_init(|| unsafe {
-        let path = std::env::var("ELLM_LIBTORCH_CPU_PATH")
-            .unwrap_or_else(|_| DEFAULT_LIBTORCH_CPU.to_owned());
-        let path = CString::new(path).ok()?;
-        let handle = dlopen(path.as_ptr(), RTLD_NOW);
-        if handle.is_null() {
-            return None;
-        }
         let symbol = CString::new(BRGEMM_SYMBOL).unwrap();
-        let address = dlsym(handle, symbol.as_ptr());
-        if address.is_null() {
-            return None;
+        for path in libtorch_candidates() {
+            let Ok(path) = CString::new(path.as_os_str().as_encoded_bytes()) else {
+                continue;
+            };
+            let handle = dlopen(path.as_ptr(), RTLD_NOW);
+            if handle.is_null() {
+                continue;
+            }
+            let address = dlsym(handle, symbol.as_ptr());
+            if !address.is_null() {
+                return Some(std::mem::transmute::<*mut c_void, BrgemmFn>(address));
+            }
         }
-        Some(std::mem::transmute::<*mut c_void, BrgemmFn>(address))
+        None
     })
 }
 

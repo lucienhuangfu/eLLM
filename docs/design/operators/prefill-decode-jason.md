@@ -100,7 +100,7 @@ SGLang `num_keys = min(m + m_size, seqlen_k)` 的边界一致；block 内仍由�
 | `<= 256` | 32 | 64 |
 | `257..=1024` | 128 | 256 |
 | `1025..=4096` | 256 | 768 |
-| `> 4096` | **160** | **384** |
+| `> 4096` | **160** | **448** |
 
 长 prefill 的新分块按每线程 L2 工作集调优。SGLang 的推导可概括为
 `MB × (1 + 1 + NB + Kv)`；eLLM 需要按实际类型展开，因为 score 和 probability
@@ -115,15 +115,15 @@ workspace_bytes
 ```
 
 本机每个物理核有 2 MiB L2，25% 约为 512 KiB，`Kv=128`。原 `512×768`
-需要约 2.50 MiB/线程，单个 workspace 已超过 L2；新 `160×384` 为约
-441 KiB/线程，占 L2 约 21.5%。没有强行用满25%，是为了给同一物理核上的两个
-SMT sibling、活跃 Q block 和当前 packed K/V block 留出空间。
+需要约 2.50 MiB/线程，单个 workspace 已超过 L2；新机器最终采用的 `160×448`
+约为 501 KiB/线程，接近 L2 的 25%，同时为同一物理核上的两个 SMT sibling、
+活跃 Q block 和当前 packed K/V block 留出空间。
 
 环境变量可用于重新测试，不影响未设置变量的默认路径：
 
 ```bash
 ELLM_ATTENTION_BRGEMM_ROW_STEP=160
-ELLM_ATTENTION_BRGEMM_COL_STEP=384
+ELLM_ATTENTION_BRGEMM_COL_STEP=448
 ```
 
 BRGEMM 只处理 `row_count > 1`。当 `row_count == 1` 时切回原生 Attention，并强制
@@ -231,11 +231,63 @@ Attention wall time 为主：
 的共享 map mutex。5k 结果退化为 TTFT 15.363s、Attention wall 1.928098s，相比
 15.299s / 1.751839s 没有收益，已回退。不要再默认增加线程本地 HashMap。
 
+### 32 核 / 64 线程机器最终复测（2026-08）
+
+新机器为单路 Intel Xeon 6982P-C，32 个物理核、64 个逻辑线程，每核 2 MiB L2，
+单 NUMA 节点。长 prefill 使用全部 64 个逻辑线程。针对本机重新筛选后，默认长序列
+block 从旧机器的 `160×384` 调整为 `160×448`。
+
+另外保留静态 head-order rotation：同一个 row block 内仍按静态 LPT 分配任务，
+不同 row block 使用旋转后的 Q-head 顺序，避免固定 worker 长期只处理少数 Q/KV
+heads。BRGEMM 默认启用，可用 `ELLM_ATTENTION_ROTATE_HEADS=0` 做回归定位。
+
+20k / 64线程 Attention 结果：
+
+| 配置 | Attention run | barrier | run+barrier |
+| --- | ---: | ---: | ---: |
+| 原始静态 LPT | 14.309787s | 1.526420s | 15.836207s |
+| `160×448` + head rotation | **14.012756s** | **0.906817s** | **14.919573s** |
+| `128×448` | 14.700790s | 0.865042s | 15.565832s |
+| `160×384` | 14.787180s | 0.937269s | 15.724449s |
+
+30k 三次旧基线平均约 `30.478081s run + 5.010148s barrier = 35.488229s`；
+head rotation 后为 `29.738361s + 4.138841s = 33.877202s`，改善约 4.54%。
+
+最终只保留：
+
+- `160×448` 长序列分块。
+- row-block 间 Q-head 顺序旋转。
+- LibTorch CPU 动态库自动发现，同时保留 `ELLM_LIBTORCH_CPU_PATH` 显式覆盖。
+
+下列实验没有收益，代码已经完全回退，不属于当前实现：
+
+- 两个共享 KV 的 Q heads 合并为一个串行任务：20k 为 28.573757s，任务并行度减半。
+- 每个 Q head 固定到一个物理核及其 SMT sibling：20k 为 15.241747s，负载尾部抵消 L2 复用。
+- KV-affine、SMT capacity 权重、row-task packed handle、score/probability alias。
+- 从全局 packed K 再复制紧凑 tile：20k 为 16.306520s。
+- 从原始 K 使用 AVX-512/VNNI 做局部 tile pack：20k 为 16.705130s。
+
+临时算子内 profile 显示，20k Attention 的线程累计时间大致为：PV BRGEMM 约 42%、
+QK BRGEMM 约 35%、online softmax 约 20%、packed KV/cache 约 3%，最终输出转换低于
+0.5%。SGLang 的局部紧凑 pack 与其“不做完整 span prepack”的内存模型相互配套；
+在 eLLM 已共享完整 packed K/V 的路径上叠加局部 pack 会重复读取和打包，因此变慢。
+
+同一轮 64线程、batch=1、100 output、关闭 operator profile 的压力测试：
+
+| input tokens | TTFT | decode 100 tokens | generate | decode throughput |
+| ---: | ---: | ---: | ---: | ---: |
+| 10001 | 28.679s | 14.656s | 43.335s | 6.82 token/s |
+| 20001 | 64.706s | 22.348s | 87.054s | 4.47 token/s |
+| 30001 | 108.744s | 30.233s | 138.977s | 3.31 token/s |
+| 40001 | 161.408s | 37.588s | 198.996s | 2.66 token/s |
+| 50001 | 212.098s | 48.941s | 261.039s | 2.04 token/s |
+
+这里 `decode = generate - TTFT`。60k 测试被 OOM killer 终止，没有有效时延数据。
+
 ### 10k input / 100 output 的 decode 全量 operator profile
 
-仓库根目录提供了一键复现脚本
-[`benchmark_qwen3_coder_10k_100.sh`](../../../benchmark_qwen3_coder_10k_100.sh)。
-新拉取仓库并准备好 `models/Qwen3-Coder-30B-A3B-Instruct` 后，可以直接运行：
+本机根目录保留一份不提交 Git 的复现脚本 `benchmark_qwen3_coder_10k_100.sh`。
+准备好 `models/Qwen3-Coder-30B-A3B-Instruct` 后，可以直接运行：
 
 ```bash
 # 关闭 profile，测 TTFT 和首 token 后 100-token 输出时间
