@@ -70,6 +70,11 @@ impl<T> ExpertRouting<T> {
     pub fn topk_offset(&self, token_id: usize, slot: usize) -> usize {
         token_id * self.num_topk + slot
     }
+
+    #[inline(always)]
+    pub fn total_route_capacity(&self) -> usize {
+        self.num_tokens * self.num_topk
+    }
 }
 
 #[cfg(test)]

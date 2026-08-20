@@ -78,14 +78,12 @@ pub struct ExpertMatMulDown<T> {
     idx_buf_pool: Box<[usize]>,
     idx_stride: usize, // token_block_rows
 
-    // Task-space buffers, one slice per thread. run() reuses them without allocation.
-    // task 空间缓存，每个线程一份；run() 中只复用，不动态分配。
     task_meta_pool: Box<[ExpertTaskMeta]>,
-    task_meta_stride: usize, // num_experts
-    routed_tokens_pool: Box<[usize]>,
-    routed_slots_pool: Box<[usize]>,
+    task_meta_stride: usize,
+    routed_tokens_pool: Box<[u32]>,
+    routed_slots_pool: Box<[u8]>,
     routed_scores_pool: Box<[T]>,
-    routed_stride: usize, // total routing assignments: num_tokens * num_topk
+    routed_stride: usize,
 }
 
 impl<T> ExpertMatMulDown<T>
@@ -150,14 +148,16 @@ where
         let acc_pool = vec![T::default(); threads * acc_stride].into_boxed_slice();
         let idx_buf_pool = vec![0usize; threads * idx_stride].into_boxed_slice();
         let task_meta_stride = num_experts;
-        // `capacity_per_expert` is already num_tokens * num_topk, which is
-        // also the maximum size of the global compact routing list. Multiplying
-        // by num_experts again over-reserved this per-thread scratch by E×.
-        let routed_stride = routing.capacity_per_expert;
+        let routed_stride = routing.total_route_capacity();
         let task_meta_pool =
             vec![ExpertTaskMeta::default(); threads * task_meta_stride].into_boxed_slice();
-        let routed_tokens_pool = vec![0usize; threads * routed_stride].into_boxed_slice();
-        let routed_slots_pool = vec![0usize; threads * routed_stride].into_boxed_slice();
+        assert!(
+            num_token <= u32::MAX as usize,
+            "MoE token count exceeds u32"
+        );
+        assert!(num_topk <= u8::MAX as usize, "MoE top-k exceeds u8");
+        let routed_tokens_pool = vec![0u32; threads * routed_stride].into_boxed_slice();
+        let routed_slots_pool = vec![0u8; threads * routed_stride].into_boxed_slice();
         let routed_scores_pool = vec![T::default(); threads * routed_stride].into_boxed_slice();
 
         Self {
@@ -321,7 +321,7 @@ where
         batch_size: usize,
         token_block_rows: usize,
         output_column_tile_count: usize,
-    ) -> (&[ExpertTaskMeta], &[usize], &[usize], &[T], usize) {
+    ) -> (&[ExpertTaskMeta], &[u32], &[u8], &[T], usize) {
         let expert_tasks_ptr =
             self.task_meta_pool
                 .as_ptr()
@@ -329,11 +329,11 @@ where
         let routed_tokens_ptr =
             self.routed_tokens_pool
                 .as_ptr()
-                .wrapping_add(thread_id * self.routed_stride) as *mut usize;
-        let routed_slots_ptr =
-            self.routed_slots_pool
-                .as_ptr()
-                .wrapping_add(thread_id * self.routed_stride) as *mut usize;
+                .wrapping_add(thread_id * self.routed_stride) as *mut u32;
+        let routed_slots_ptr = self
+            .routed_slots_pool
+            .as_ptr()
+            .wrapping_add(thread_id * self.routed_stride) as *mut u8;
         let routed_scores_ptr = self
             .routed_scores_pool
             .as_ptr()
@@ -364,9 +364,8 @@ where
                             break;
                         }
                     }
-
-                    *routed_tokens_ptr.add(routed_count) = token_id;
-                    *routed_slots_ptr.add(routed_count) = topk_slot;
+                    *routed_tokens_ptr.add(routed_count) = token_id as u32;
+                    *routed_slots_ptr.add(routed_count) = topk_slot as u8;
                     *routed_scores_ptr.add(routed_count) =
                         *self.routing.score_tensor.ptr.add(route_offset);
                     routed_count += 1;
@@ -439,6 +438,7 @@ where
             if thread_num == 0 || thread_id >= thread_num {
                 return;
             }
+
             let mut task_meta_index = 0usize;
             for task_id in (thread_id..total_tasks).step_by(thread_num) {
                 while task_meta_index < expert_tasks.len()
@@ -470,7 +470,7 @@ where
                     *idx_buf.add(token_offset) = if self.compact_input {
                         routed_token_begin + token_offset
                     } else {
-                        routed_tokens[routed_token_begin + token_offset]
+                        routed_tokens[routed_token_begin + token_offset] as usize
                     };
                 }
 
@@ -568,12 +568,11 @@ where
                         // Scatter each valid row back to token-major output with route weight.
                         // 将每个有效行乘以路由权重后写回 token-major 输出。
                         for row_in_tile in 0..valid_rows {
-                            let token_id = routed_tokens
-                                [routed_token_begin + token_offset_in_block + row_in_tile];
-                            let route_weight = routed_scores
-                                [routed_token_begin + token_offset_in_block + row_in_tile];
-                            let topk_slot = routed_slots
-                                [routed_token_begin + token_offset_in_block + row_in_tile];
+                            let route_index =
+                                routed_token_begin + token_offset_in_block + row_in_tile;
+                            let token_id = routed_tokens[route_index] as usize;
+                            let route_weight = routed_scores[route_index];
+                            let topk_slot = routed_slots[route_index] as usize;
 
                             let out_row = self.output_ptr.ptr.add(
                                 token_id * (self.num_topk * output_cols)

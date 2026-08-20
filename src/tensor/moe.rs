@@ -274,6 +274,9 @@ where
             std::ptr::write(expert_counts.add(e), AtomicUsize::new(0));
         }
 
+        // Keep B*K capacity because the current Top-K implementation may emit
+        // repeated expert ids for a token. Reducing this to B corrupts the
+        // adjacent routing buffers on real model output.
         let capacity_per_expert = num_tokens * num_topk;
         let mut index_tensor = AlignedBox::allocate_zero(num_experts * capacity_per_expert);
         let index_tensor = {
