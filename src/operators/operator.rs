@@ -1,5 +1,6 @@
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, FromNumber, Sigmoid, Sqrt};
+use crate::operators::conv::CausalConv1dSilu;
 use crate::operators::fake_echo::FakeEcho;
 use crate::runtime::SequenceSlice;
 use crate::runtime::SlotState;
@@ -12,7 +13,7 @@ use crate::operators::transform::LookupRMSMap;
 
 use crate::operators::routing::TopKSoftmax;
 // Add missing imports for zip map operations
-use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
+use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd, MatMulProj};
 // use super::mul::matmul_silu_mul_matmul::MatMulSilu;
 use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
 use crate::operators::movement::LiftVector;
@@ -36,6 +37,7 @@ pub enum Operator<T>
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
     Attention(Attention<T>),
+    CausalConv1dSilu(CausalConv1dSilu<T>),
     // ComplexZipMap(ComplexZipMap<T>),
     ExpertsMatMulDown(ExpertsMatMulDown<T>),
     ExpertsMatMulSilu(ExpertsMatMulSilu<T>),
@@ -48,6 +50,7 @@ pub enum Operator<T>
     MatMul(MatMul<T>),
     MatMul3(MatMul3<T>),
     MatMulAdd(MatMulAdd<T>),
+    MatMulProj(MatMulProj<T>),
     // MatMulSiluMulMatMul(MatMulSilu<T>),
     MatMulTopK(MatMulTopK<T>),
     RMSMap(RMSMap<T>),
@@ -102,6 +105,10 @@ where
             }
             Self::Attention(operator) => {
                 operator.run(total_size, computing_slices, cpu_num, thread_id);
+            }
+
+            Self::CausalConv1dSilu(operator) => {
+                run_simple!(operator);
             }
 
             Self::ExpertsMatMulDown(operator) => {
@@ -181,6 +188,9 @@ where
                     thread_id,
                 );
             }
+            Self::MatMulProj(operator) => {
+                run_simple!(operator);
+            }
             /*
             Self::MatMulSiluMulMatMul(operator) => {
                 operator.run(
@@ -237,6 +247,7 @@ where
             Self::AddRMSZipMap(_) => "AddRMSZipMap",
             Self::AddZipMap(_) => "AddZipMap",
             Self::Attention(_) => "Attention",
+            Self::CausalConv1dSilu(_) => "CausalConv1dSilu",
             Self::ExpertsMatMulDown(_) => "ExpertsMatMulDown",
             Self::ExpertsMatMulSilu(_) => "ExpertsMatMulSilu",
             Self::ExpertsMergeAdd(_) => "ExpertsMergeAdd",
@@ -248,6 +259,7 @@ where
             Self::MatMul(_) => "MatMul",
             Self::MatMul3(_) => "MatMul3",
             Self::MatMulAdd(_) => "MatMulAdd",
+            Self::MatMulProj(_) => "MatMulProj",
             Self::MatMulTopK(_) => "MatMulTopK",
             Self::RMSMap(_) => "RMSMap",
             Self::SigmoidMap(_) => "SigmoidMap",

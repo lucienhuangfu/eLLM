@@ -5,6 +5,12 @@ pub mod operator;
 pub mod send_sync_ptr;
 pub use operator::Operator;
 
+pub mod conv {
+    pub mod causal_conv1d_silu;
+
+    pub use causal_conv1d_silu::CausalConv1dSilu;
+}
+
 pub mod elementwise {
     pub mod add_zip;
     pub mod complex_zip;
@@ -43,6 +49,7 @@ pub mod linear {
     pub use super::matmul::matmul::MatMul;
     pub use super::matmul::matmul3::MatMul3;
     pub use super::matmul::matmul_add::MatMulAdd;
+    pub use super::matmul::matmul_proj::MatMulProj;
     pub use super::matmul::matmul_sigmoid::MatMulSigmoid;
 }
 
@@ -50,6 +57,7 @@ pub mod matmul {
     pub mod matmul;
     pub mod matmul3;
     pub mod matmul_add;
+    pub mod matmul_proj;
     pub mod matmul_sigmoid;
     pub mod matmul_topk;
 }
@@ -94,11 +102,13 @@ pub mod transform {
     pub use super::normalization::rms_map::RMSMap;
 }
 pub mod traits {
+    pub mod conv;
     pub mod expert;
     pub mod linear;
     pub mod map;
     pub mod softmax;
 
+    pub use conv::CausalConvTrait;
     pub use expert::{ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait};
     pub use linear::{
         AttentionTrait, MatMulAddTrait, MatMulSigmoidTrait, MatMulTrait, MatMulkqvTrait,
