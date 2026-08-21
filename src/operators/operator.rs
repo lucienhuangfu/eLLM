@@ -19,6 +19,7 @@ use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMerg
 use crate::operators::movement::LiftVector;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddZipMap;
+use crate::operators::transform::RMSGatedZipMap;
 use crate::operators::transform::SigmoidMap;
 use crate::operators::transform::SiluMulZipMap;
 use crate::operators::transform::{AddRMSZipMap, RMSMap};
@@ -53,6 +54,7 @@ pub enum Operator<T>
     MatMulProj(MatMulProj<T>),
     // MatMulSiluMulMatMul(MatMulSilu<T>),
     MatMulTopK(MatMulTopK<T>),
+    RMSGatedZipMap(RMSGatedZipMap<T>),
     RMSMap(RMSMap<T>),
     SigmoidMap(SigmoidMap<T>),
     FakeEcho(FakeEcho),
@@ -205,6 +207,10 @@ where
                 run_simple!(operator);
             }
 
+            Self::RMSGatedZipMap(operator) => {
+                run_simple!(operator);
+            }
+
             Self::TopKSoftmax(operator) => {
                 operator.run(
                     prefill_size,
@@ -261,6 +267,7 @@ where
             Self::MatMulAdd(_) => "MatMulAdd",
             Self::MatMulProj(_) => "MatMulProj",
             Self::MatMulTopK(_) => "MatMulTopK",
+            Self::RMSGatedZipMap(_) => "RMSGatedZipMap",
             Self::RMSMap(_) => "RMSMap",
             Self::SigmoidMap(_) => "SigmoidMap",
             Self::FakeEcho(_) => "FakeEcho",

@@ -73,6 +73,7 @@ pub mod testing {
 pub mod normalization {
     pub mod add_rms_zip;
     pub mod lookup_rms_map;
+    pub mod rms_gated_zip;
     pub mod rms_map;
 }
 
@@ -99,6 +100,7 @@ pub mod transform {
     pub use super::elementwise::silu_mul_zip::SiluMulZipMap;
     pub use super::normalization::add_rms_zip::AddRMSZipMap;
     pub use super::normalization::lookup_rms_map::LookupRMSMap;
+    pub use super::normalization::rms_gated_zip::RMSGatedZipMap;
     pub use super::normalization::rms_map::RMSMap;
 }
 pub mod traits {
