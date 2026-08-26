@@ -1,10 +1,10 @@
-# eLLM：让 CPU 在长程推理任务中快过 GPU
-eLLM 是一款面向纯 CPU 服务器的大模型推理框架。它采用“以存换算”策略，利用 CPU 大容量 DDR 内存，弥补其与 GPU HBM 之间的带宽差距，从而在长程任务推理场景下实现超越 GPU 的性能。
+# eLLM：让 CPU 在长程推理中快过 GPU
+eLLM 是一款面向 CPU 服务器的大模型推理框架。它采用“以存换算”策略，利用 CPU 大容量 DDR 内存，弥补其与 GPU HBM 之间的带宽差距，从而在长程任务推理场景下实现超越 GPU 的性能。
 
 - **Prefill**：相较现有 CPU 推理框架可实现约**两个数量级**的性能提升
   - 长文本一次性整段 Prefill，
   - 多轮交互仅对新增输入做增量 Prefill；
-- **Decode**：以更小的 batch 运行，不仅激活的参数更少，单个 request 可分得的内存带宽也更高，因此推理速度同样可以超过 GPU baseline。
+- **Decode**：以更小的 batch 运行，不仅激活的参数更少，单个 request 可分得的内存带宽也更高，因此推理速度同样可以超过 GPU。
 
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)  
 📚 文档：[Documentation](docs/index.md)  
@@ -13,7 +13,7 @@ eLLM 是一款面向纯 CPU 服务器的大模型推理框架。它采用“以�
 💼 我们致力于推动开源与 AI 民主化，期待与产业携手合作，联系方式：**lucienhuangfu@outlook.com**
 
 ## 🚀 进展与更新
-- `v0.1.0`（2026-08-10）：发布 Beta 版本，核心功能开发完成，推理结果与 SGLang CPU 完全对齐
+- `v0.1.0`（2026-08-28）：发布 Beta 版本，核心功能开发完成，推理结果与 SGLang CPU 完全对齐
 - `v0.0.2`（2026-04-06）：发布 Alpha 版本
 - `v0.0.1`（2025-12-20）：项目开源
 
@@ -25,14 +25,13 @@ eLLM 是一款面向纯 CPU 服务器的大模型推理框架。它采用“以�
 - 兼容 vLLM API，可直接接入现有生态
 - 推理结果与 GPU 保持一致
 
-
 ## ✨ 优势
 eLLM 在多项关键指标上全面超越 GPU 推理：
 - **低延迟**：通过整段 Prefill 与增量 Prefill，显著降低首 token 延迟（TTFT）
 - **高吞吐**：单实例并发度虽低于 GPU 方案，但端到端延迟更小，**实际 QPS 反而更高**
 - **长上下文**：TB 级大内存支撑百万 token 级、近乎无限长度的上下文窗口
 - **低能耗**：Prefill 阶段参数仅需加载一次，大幅减少重复访存带来的能耗
-- **低成本**：无需水冷散热与大功率供电，硬件成本与单用户推理成本远低于 GPU 方案
+- **低成本**：无需水冷散热与大功率供电，直接复用现有 CPU 机器与机房
 
 ## 🎯 应用场景
 eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中持续保持目标、状态与推理一致性的 Agent 工作流：
@@ -67,8 +66,6 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 - ✅ Qwen3 系列
 - ⏳ Qwen3.8 系列 （开发中）
 - ⏳ MiniMax M2.7 （开发中）
-
-
 
 ## ⚡ 快速开始
 eLLM 兼容 vLLM API，从构建到上线只需四步：
@@ -111,9 +108,9 @@ eLLM 兼容 vLLM API，从构建到上线只需四步：
 更详细的安装、配置与采样参数说明见：[安装指南](docs/getting_started/installation.md) 与 [Quickstart](docs/getting_started/quickstart.md)。
 
 ## 📊 Benchmark
-性能对比显示，eLLM 在 Prefill 阶段具备显著优势，长文本场景下甚至超过 GPU baseline：
-- **Prefill（TTFT, ms）**：相比 CPU baseline 提升约 **20% ~ 10000%**（最高约两个数量级），40K tokens 后超过 GPU baseline
-- **Decode（TPOT, ms/token）**：相比 CPU baseline 稳定提升约 **20%**
+实验结果表明，eLLM 在 Prefill 阶段具备显著优势，长文本场景下可以超过 GPU baseline：
+- **Prefill（TTFT, ms）**：相比 CPU baseline 提升约 20%～10000%，且优势随输入长度增加大幅扩大
+- **Decode（TPOT, ms/token）**：相比 CPU baseline 稳定提速约 **1.6×**，且增长斜率更低
 
 详细 benchmark 结果见：[benchmark.zh-CN.md](benchmark.zh-CN.md)。
 

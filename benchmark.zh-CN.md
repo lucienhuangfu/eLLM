@@ -2,26 +2,18 @@
 
 ## 🧪 实验
 
-eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推理方案的正确性与可行性。详细实现过程参见 `alignment skill` 及 `align` 文件夹。
-
-当前 Beta 版本已发布，核心功能已具备可用性，欢迎体验和测试。由于系统仍在持续优化中，暂不建议部署于生产环境。
-
-### 实验结论
+eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推理方案的正确性与可行性。详细实现过程参见 `alignment skill` 及 `align` 文件夹。当前 Beta 版本已发布，核心功能已具备可用性，欢迎体验和测试。由于系统仍在持续优化中，暂不建议部署于生产环境。
 
 为验证 eLLM 在不同推理场景下的性能，我们设计了**短程任务**（单轮交互）和**长程任务**（多轮交互）两类实验。
-
 目前实验结果表明：
-* **大幅领先 CPU baseline**：在所有测试场景中，eLLM 均显著优于 SGLang CPU backend。
 * **长上下文优势显著**：随着上下文长度的增加，eLLM 的优势持续扩大，Prefill 和 Decode 或可快过 GPU baseline。
 * **长程任务整体更快**：在多轮交互场景中，eLLM 的整体任务完成时间（TTC）预计优于 GPU baseline。
 
 ### 实验环境
-
 实验包含三个对比对象：
-
 * **eLLM**：运行于 CPU 服务器
 * **CPU baseline**：SGLang CPU backend
-* **GPU baseline**：公有云模型 API
+* **GPU baseline**：公有云模型 API 
 
 受实验条件限制，GPU baseline 未在独占 GPU 服务器上部署模型，而是直接调用公有云模型 API。因此 GPU 数据仅用于趋势分析和定性比较，不作为严格硬件对等测试。受条件限制，我们租用的是公有云的 CPU 虚拟机，相比裸机性能略差。
 
@@ -37,7 +29,7 @@ eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推�
 
 > 注：GPU 服务器仅作为示例，不是真实运行的机器
 
-### 短程任务实验（已完成）
+### 短程任务实验
 
 #### 实验设置
 
@@ -45,15 +37,24 @@ eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推�
 
 * **模型**：Qwen3-Coder-30B-A3B-Instruct（FP16）
 * **Kernel**：当前使用 AVX-512，AMX Kernel 正在开发中
-* **Batch Size**：1
 * **输入**：`batch = 1`, sequence 从短到长
-* **chunking**：`ellm chunk size = 1,000,000`, `CPU baseline 关闭 Chunking`
+* **chunking**：
+  * `ellm chunk size = 1,000,000`, 
+  * `CPU baseline chunk size = 23000 (默认)`
+  * `CPU baseline chunk size = ♾️ (强制不chunk)`
 * **Prefill 指标**：TTFT（Time To First Token, ms）
 * **Decode 指标**：TPOT（Time Per Output Token，ms/token）
 
-对比对象说明：由于短文本场景下，所有 CPU 推理框架在 Decode 性能上通常都明显落后于 GPU，因此本组实验不再单独加入 GPU 对比。
+实验结果表明，eLLM 在 Prefill 阶段具备显著优势，长文本场景下可以超过 GPU baseline：
+- **Prefill（TTFT, ms）**：相比 CPU baseline 提升约 20%～10000%，且优势随输入长度增加大幅扩大
+- **Decode（TPOT, ms/token）**：相比 CPU baseline 稳定提速约 **1.6×**，且增长斜率更低
+
 
 #### Prefill
+
+  - CPU chunked basedline: 是一个阶梯函数，每个一段出长度，耗时明显抬升
+  - CPU unchunked baseline:
+
 
 随着上下文长度增加，eLLM 的优势不断扩大：
 
@@ -66,7 +67,6 @@ eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推�
 Decode 阶段，eLLM 在所有测试长度下均稳定优于 CPU baseline：
 
 * 综合性能提升约 **1.6×**
-* 延迟下降约 **38%**
 * 随着上下文长度增加，两者 TPOT 均近似线性增长，但 eLLM 的增长斜率更低，说明其具有更好的可扩展性。
 
 ```mermaid
