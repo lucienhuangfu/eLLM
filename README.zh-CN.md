@@ -1,10 +1,8 @@
 # eLLM：让 CPU 在长程推理中快过 GPU
 eLLM 是一款面向 CPU 服务器的大模型推理框架。它采用“以存换算”策略，利用 CPU 大容量 DDR 内存，弥补其与 GPU HBM 之间的带宽差距，从而在长程任务推理场景下实现超越 GPU 的性能。
 
-- **Prefill**：相较现有 CPU 推理框架可实现约**两个数量级**的性能提升
-  - 长文本一次性整段 Prefill，
-  - 多轮交互仅对新增输入做增量 Prefill；
-- **Decode**：以更小的 batch 运行，不仅激活的参数更少，单个 request 可分得的内存带宽也更高，因此推理速度同样可以超过 GPU。
+- **Prefill**：长文本一次性整段 Prefill，随输入长度增加优势持续扩大——相比 chunked CPU baseline 快 **12%～73%**，对 unchunked baseline 亦整体占优；
+- **Decode**：以更小的 batch 运行，不仅激活的参数更少，单个 request 可分得的内存带宽也更高，相比 CPU baseline 稳定快 **1.5×～1.6×**。
 
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)  
 📚 文档：[Documentation](docs/index.md)  
@@ -108,11 +106,12 @@ eLLM 兼容 vLLM API，从构建到上线只需四步：
 更详细的安装、配置与采样参数说明见：[安装指南](docs/getting_started/installation.md) 与 [Quickstart](docs/getting_started/quickstart.md)。
 
 ## 📊 Benchmark
-实验结果表明，eLLM 在 Prefill 阶段具备显著优势，长文本场景下可以超过 GPU baseline：
-- **Prefill（TTFT, ms）**：相比 CPU baseline 提升约 20%～10000%，且优势随输入长度增加大幅扩大
-- **Decode（TPOT, ms/token）**：相比 CPU baseline 稳定提速约 **1.6×**，且增长斜率更低
+实验结果表明，eLLM 在短程任务（单轮交互）中对 CPU baseline（SGLang CPU backend）全面领先，且优势随输入长度增加持续扩大：
+- **Prefill（TTFT, s）**：整段连续执行、无分段跳变，相比 chunked CPU baseline 快 **12%～73%**，对 unchunked baseline 亦整体占优（最大差距约 12%）
+- **Decode（TPOT, s/token）**：相比 CPU baseline 稳定提速约 **1.5×～1.6×**，且增长斜率全程最低
 
-详细 benchmark 结果见：[benchmark.zh-CN.md](benchmark.zh-CN.md)。
+随着上下文继续增长，Prefill 与 Decode 有望快过 GPU；长程任务（多轮交互）实验进行中。
+详细实验设置与数据见：[benchmark.zh-CN.md](benchmark.zh-CN.md)。
 
 ## 📄 论文
 如果你对 eLLM 的底层设计与技术细节感兴趣，欢迎阅读我们的[论文](ellm.pdf)并引用。需要说明的是，当前公开版本为**早期论文**，其中部分实现细节尚未完全反映 eLLM 的最新进展，我们正在持续更新中，敬请理解。
