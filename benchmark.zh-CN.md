@@ -35,45 +35,74 @@ eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推�
 * **Kernel**：当前使用 AVX-512，AMX Kernel 正在开发中
 * **输入**：`batch = 1`, sequence 从短到长
 * **chunking**：
-  * `ellm chunk size = 1,000,000`, 
+  * `ellm chunk size = 200,000`, 
   * `CPU baseline chunk size = 23000 (默认)`
   * `CPU baseline chunk size = ♾️ (强制不chunk)`
-* **Prefill 指标**：TTFT（Time To First Token, ms）
+* **Prefill 指标**：TTFT（Time To First Token，s）
 * **Decode 指标**：TPOT（Time Per Output Token，ms/token）
 
 
 #### Prefill
 
-**Prefill（TTFT, ms）**：相比 CPU baseline 提升约 20%～10000%，且优势随输入长度增加大幅扩大
-  - eLLM：随着长度线性增加
-  - CPU chunked basedline: 是一个阶梯函数，每个一段出长度，耗时明显抬升
-  - CPU unchunked baseline: 随着长度线性增加 
+
 
 ```mermaid
+---
+config:
+  themeVariables:
+    xyChart:
+      plotColorPalette: "#1f77b4, #ff7f0e, #2ca02c"
+---
 xychart-beta
-    title "TPOT Comparison (ms/token, Lower is Better)"
-    x-axis [128, 256, 512]
-    y-axis 0 --> 60
-    line "eLLM (CPU end)" [32.94, 33.01, 33.13]
-    line "SgLang (CPU end)" [52.5, 52.47, 52.71]
+    title "TTFT Comparison(Lower is better)"
+    x-axis "Sequence Number" [10000, 20000, 30000, 40000, 50000]
+    y-axis "TTFT (ms)" 0 --> 450
+
+    line "eLLM" [30.438, 71.072, 118.110, 184.809, 249.337]
+    line "Chunked CPU Baseline" [34.250, 90.689, 139.259, 251.849, 430.946]
+    line "Unchunked CPU Baseline" [34.114, 75.433, 123.519, 182.629, 255.085]
 ```
 
+> **图例**：
+> - <span style="color:#1f77b4">■</span> eLLM
+> - <span style="color:#ff7f0e">■</span> Chunked CPU Baseline
+> - <span style="color:#2ca02c">■</span> Unchunked CPU Baseline
+
+**结果**：eLLM 随长度近似线性增长、无分段跳变；相对 chunked baseline 快 **12%～73%**，且优势随长度持续扩大；与 unchunked baseline 相比，后者整体仍慢于 eLLM，差距最高约 11%。
+1. **eLLM：全程流水，线性无台阶。** 10,000→50,000 tokens，TTFT 由 30 s 线性升至 249 s，全程一次通过，不存在分段边界。
+2. **Chunked CPU baseline：阶梯跳变，逢段陡增。** 长度每跨过一段（默认 `chunk size = 23,000`），TTFT 便陡增一次：20,000 进入第二段，40,000 进入第三段（30,000→40,000 由 139 s 跳至 252 s）；50,000 tokens 时达 431 s，为 eLLM 的 1.7×。
+3. **Unchunked CPU baseline：线性，但全程仍慢于 eLLM。** 取消分段后，baseline 的 TTFT 同样随长度近似线性上升，但除 40,000 tokens 处略胜约 1% 外，全程落后于 eLLM——10,000 tokens 时慢约 11%，50,000 tokens 时仍慢约 2%。
 
 #### Decode
 
-**Decode（TPOT, ms/token）**：相比 CPU baseline 稳定提速约 **1.6×**，且增长斜率更低
-三者都随着长度增加
-
 
 
 ```mermaid
+---
+config:
+  themeVariables:
+    xyChart:
+      plotColorPalette: "#1f77b4, #ff7f0e, #2ca02c"
+---
 xychart-beta
-    title "TPOT Comparison (ms/token, Lower is Better)"
-    x-axis [128, 256, 512]
-    y-axis 0 --> 60
-    line "eLLM (CPU end)" [32.94, 33.01, 33.13]
-    line "SgLang (CPU end)" [52.5, 52.47, 52.71]
+    title "Decode Time Comparison(Lower is better)"
+    x-axis "Sequence Number" [10000, 20000, 30000, 40000, 50000]
+    y-axis "TPOT (ms/token)" 0 --> 60
+
+    line "eLLM" [11.902, 18.249, 24.603, 30.179, 36.899]
+    line "Chunked CPU Baseline" [19.561, 28.202, 37.341, 45.417, 55.364]
+    line "Unchunked CPU Baseline" [19.918, 28.720, 37.873, 46.234, 55.376]
 ```
+
+> **图例**：
+> - <span style="color:#1f77b4">■</span> eLLM
+> - <span style="color:#ff7f0e">■</span> Chunked CPU Baseline
+> - <span style="color:#2ca02c">■</span> Unchunked CPU Baseline
+
+**结果**：eLLM 相比两个 baseline 稳定提速约 **1.5×～1.6×**，且增长斜率更低；三者耗时均随长度增加近似线性上升。
+1. **eLLM：斜率最低。** 10,000→50,000 tokens，decode 100 tokens 耗时由 11.9 s 线性升至 36.9 s。
+2. **Chunked CPU baseline**：由 19.6 s 升至 55.4 s，全程慢于 eLLM 约 1.5×～1.6×。
+3. **Unchunked CPU baseline**：曲线与 chunked 几乎重合（略慢 2%～4%），说明 chunk 切分对 Decode 阶段影响很小。
 
 
 ### 长程任务实验（计划中）
