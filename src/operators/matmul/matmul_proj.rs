@@ -3,7 +3,7 @@ use std::ops::{Add, Mul};
 
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::MatMulTrait;
+use crate::operators::traits::MatMulProjTrait;
 
 // Fused input projection GEMM for GatedDeltaNet-style linear attention layers.
 // It replaces the four separate projections (in_proj_qkv / in_proj_z /
@@ -95,7 +95,9 @@ where
         _total_size: usize,
         thread_num: usize,
         thread_id: usize,
-    ) {
+    ) where
+        Self: MatMulProjTrait<T>,
+    {
         let active_input_rows = if prefill_size == 0 {
             decode_size
         } else {
@@ -121,11 +123,42 @@ where
     }
 }
 
-impl<T> MatMulTrait<T> for MatMulProj<T>
+impl<T> MatMulProjTrait<T> for MatMulProj<T>
 where
     T: Copy + Add<Output = T> + Mul<Output = T>,
 {
+    // Plain GEMM: C[row, :] = A[row, :] @ B_nt^T over all qkv | z | b | a columns.
+    // 纯乘法：对 qkv | z | b | a 全部列做一次 GEMM。
+    #[inline]
     default fn compute(&self, _input_ptr1: *const T, _input_ptr2: *const T, _output_ptr: *mut T) {
+        // TODO: compute logic, filled in later
+    }
+
+    // GEMM with the b-segment epilogue fused in place (see the file header):
+    //   beta[h] = sigmoid(b[row, h])
+    // 乘法混合 sigmoid，作用于 B 矩阵（b 段），原地得到 beta：
+    //   beta[h] = sigmoid(b[row, h])
+    #[inline]
+    default fn compute_sigmoid_b(
+        &self,
+        _input_ptr1: *const T,
+        _input_ptr2: *const T,
+        _output_ptr: *mut T,
+    ) {
+        // TODO: compute logic, filled in later
+    }
+
+    // GEMM with the a-segment epilogue fused in place (see the file header):
+    //   g[row, h] = -exp(A_log[h]) * softplus(a[row, h] + dt_bias[h])
+    // 乘法混合门控，作用于 A 矩阵（a 段），原地得到 g：
+    //   g[row, h] = -exp(A_log[h]) * softplus(a[row, h] + dt_bias[h])
+    #[inline]
+    default fn compute_sigmoid_a(
+        &self,
+        _input_ptr1: *const T,
+        _input_ptr2: *const T,
+        _output_ptr: *mut T,
+    ) {
         // TODO: compute logic, filled in later
     }
 }

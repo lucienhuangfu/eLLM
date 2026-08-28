@@ -113,7 +113,8 @@ pub mod traits {
     pub use conv::CausalConvTrait;
     pub use expert::{ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait};
     pub use linear::{
-        AttentionTrait, MatMulAddTrait, MatMulSigmoidTrait, MatMulTrait, MatMulkqvTrait,
+        AttentionTrait, MatMulAddTrait, MatMulProjTrait, MatMulSigmoidTrait, MatMulTrait,
+        MatMulkqvTrait,
     };
     pub use map::{MapTrait, ZipMapTrait};
     pub use softmax::{ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
