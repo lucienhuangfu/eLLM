@@ -1,14 +1,14 @@
 # eLLM：让 CPU 在长程推理中快过 GPU
-eLLM 是一款面向 CPU 服务器的大模型推理框架。它采用“以存换算”策略，利用 CPU 大容量 DDR 内存，弥补其与 GPU HBM 之间的带宽差距，从而在长程任务推理场景下实现超越 GPU 的性能。
+eLLM 是一款面向 CPU 服务器的大模型推理框架。它采用“以存换算”策略，利用 CPU 大容量 DDR 内存，弥补其与 GPU HBM 一个数量级的带宽差距，从而在长程任务推理场景下实现超越 GPU 的性能。
 - **Prefill**：相较现有 CPU 推理框架可实现约**两个数量级**的性能提升
   - 长文本一次性整段 Prefill，
   - 多轮交互仅对新增输入做增量 Prefill；
-- **Decode**：以更小的 batch 运行，不仅激活的参数更少，单个 request 可分得的内存带宽也更高，因此推理速度同样可以超过 GPU baseline。
+- **Decode**：以更小的 batch 运行，不仅激活的参数更少，单个 request 可分得的内存带宽也更高，因此推理速度同样可以超过 GPU。
 
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)  
 📚 文档：[Documentation](docs/index.md)  
 🎓 目前仅开放 1–2 个 Trainee 名额，欢迎计算机专业在校生报名  
-🛠️ 项目正在紧张开发中，代码会定期推送到 main 分支  
+🛠️ 项目正在紧张开发中，代码会按月推送到 main 分支  
 💼 我们致力于推动开源与 AI 民主化，期待与产业携手合作，联系方式：**lucienhuangfu@outlook.com**
 
 ## 🚀 进展与更新
