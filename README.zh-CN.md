@@ -64,7 +64,6 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 ## 🤖 支持模型
 - ✅ Qwen3 系列
 - ⏳ Qwen3.8 系列 （开发中）
-- ⏳ MiniMax M2.7 （开发中）
 
 ## ⚡ 快速开始
 eLLM 兼容 vLLM API，从构建到上线只需四步：
@@ -107,7 +106,7 @@ eLLM 兼容 vLLM API，从构建到上线只需四步：
 更详细的安装、配置与采样参数说明见：[安装指南](docs/getting_started/installation.md) 与 [Quickstart](docs/getting_started/quickstart.md)。
 
 ## 📊 Benchmark
-实验结果表明，eLLM 在短程任务（单轮交互）中对 CPU baseline（SGLang CPU backend）全面领先，且优势随输入长度增加持续扩大：
+系统目前仅完成初步优化，仍有很大提升空间。但实验表明，在短程任务（单轮交互）中，eLLM 对 CPU baseline（SGLang CPU backend）已全面领先，且优势随输入长度增加持续扩大：
 - **Prefill（TTFT, s）**：整段连续执行、无分段跳变，相比 chunked CPU baseline 快 **12%～73%**，对 unchunked baseline 亦整体占优（最大差距约 12%）
 - **Decode（TPOT, s/token）**：相比 CPU baseline 稳定提速约 **1.5×～1.6×**，且增长斜率全程最低
 
