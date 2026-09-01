@@ -3,17 +3,16 @@
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
+use ellm::model_family::config::Config;
+use ellm::model_family::Qwen3_model::Model;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::loader::load_tiktoken;
 use ellm::runtime::loader::ChatTemplate;
 use ellm::runtime::loader::SafeTensorsLoader;
 use ellm::runtime::{
-    ExecutorPool, Phase, ScheduleTask, Scheduler, SessionMode, SlotManager, SlotSequence,
-    SlotState,
+    ExecutorPool, Phase, ScheduleTask, Scheduler, SessionMode, SlotManager, SlotSequence, SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
-use ellm::transformer::config::Config;
-use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -237,8 +236,7 @@ fn main() {
         eos_ids,
     );
     model.set_thread_num(thread_num);
-    let (_indices, _values) =
-        model.forward(sequences_ptr, slot_seq.slot_temperature.as_mut_ptr());
+    let (_indices, _values) = model.forward(sequences_ptr, slot_seq.slot_temperature.as_mut_ptr());
     log_timing("build_graph", program_start);
 
     let slot_list: Vec<SlotState> = written_lengths

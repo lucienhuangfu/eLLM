@@ -4,6 +4,8 @@
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
+use ellm::model_family::config::Config;
+use ellm::model_family::Qwen3_model::Model;
 use ellm::operators::operator::Operator;
 use ellm::runtime::loader::load_tiktoken;
 use ellm::runtime::loader::ChatTemplate;
@@ -11,8 +13,6 @@ use ellm::runtime::loader::SafeTensorsLoader;
 use ellm::runtime::Phase;
 use ellm::runtime::SequenceSlice;
 use ellm::tensor::GlobalOperatorQueue;
-use ellm::transformer::config::Config;
-use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::cell::SyncUnsafeCell;
 use std::f16;

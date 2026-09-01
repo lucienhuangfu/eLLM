@@ -1,5 +1,5 @@
 use crate::config::GenerationConfig;
-use crate::transformer::config::Config;
+use crate::model_family::config::Config;
 
 #[derive(Debug, Clone)]
 pub struct GenerationParameters {

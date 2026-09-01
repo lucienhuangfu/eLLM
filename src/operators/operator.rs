@@ -2,6 +2,7 @@ use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, FromNumber, Sigmoid, Sqrt};
 use crate::operators::conv::CausalConv1dSilu;
 use crate::operators::fake_echo::FakeEcho;
+use crate::operators::linear_attention::RecurrentGatedDeltaRule;
 use crate::runtime::SequenceSlice;
 use crate::runtime::SlotState;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
@@ -19,7 +20,6 @@ use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMerg
 use crate::operators::movement::LiftVector;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddZipMap;
-use crate::operators::transform::RMSGatedZipMap;
 use crate::operators::transform::SigmoidMap;
 use crate::operators::transform::SiluMulZipMap;
 use crate::operators::transform::{AddRMSZipMap, RMSMap};
@@ -54,7 +54,7 @@ pub enum Operator<T>
     MatMulProj(MatMulProj<T>),
     // MatMulSiluMulMatMul(MatMulSilu<T>),
     MatMulTopK(MatMulTopK<T>),
-    RMSGatedZipMap(RMSGatedZipMap<T>),
+    RecurrentGatedDeltaRule(RecurrentGatedDeltaRule<T>),
     RMSMap(RMSMap<T>),
     SigmoidMap(SigmoidMap<T>),
     FakeEcho(FakeEcho),
@@ -110,7 +110,7 @@ where
             }
 
             Self::CausalConv1dSilu(operator) => {
-                run_simple!(operator);
+                operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
 
             Self::ExpertsMatMulDown(operator) => {
@@ -191,7 +191,7 @@ where
                 );
             }
             Self::MatMulProj(operator) => {
-                run_simple!(operator);
+                operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
             /*
             Self::MatMulSiluMulMatMul(operator) => {
@@ -207,8 +207,8 @@ where
                 run_simple!(operator);
             }
 
-            Self::RMSGatedZipMap(operator) => {
-                run_simple!(operator);
+            Self::RecurrentGatedDeltaRule(operator) => {
+                operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
 
             Self::TopKSoftmax(operator) => {
@@ -267,7 +267,7 @@ where
             Self::MatMulAdd(_) => "MatMulAdd",
             Self::MatMulProj(_) => "MatMulProj",
             Self::MatMulTopK(_) => "MatMulTopK",
-            Self::RMSGatedZipMap(_) => "RMSGatedZipMap",
+            Self::RecurrentGatedDeltaRule(_) => "RecurrentGatedDeltaRule",
             Self::RMSMap(_) => "RMSMap",
             Self::SigmoidMap(_) => "SigmoidMap",
             Self::FakeEcho(_) => "FakeEcho",

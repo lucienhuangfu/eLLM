@@ -7,13 +7,13 @@ use super::executor::executor_pool::ExecutorPool;
 use crate::config::{GenerationConfig, ResolvedConfig};
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::model_family::config::Config;
+use crate::model_family::Qwen3_model::Model;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{build_slot_sequence, SlotSequence};
 use crate::runtime::session::{SessionMode, SlotManager, SlotState};
 use crate::tensor::GlobalOperatorQueue;
-use crate::transformer::config::Config;
-use crate::transformer::model::Model;
 use crate::transformer::rope::RotaryEmbedding;
 
 use crate::runtime::loader::SafeTensorsLoader;
@@ -111,7 +111,10 @@ pub fn initialize_runtime(
 
     let (reasoning_parser_enabled, tool_call_parser_enabled) =
         if let Some(serve) = &resolved_config.serve {
-            (serve.reasoning_parser_enabled, serve.tool_call_parser_enabled)
+            (
+                serve.reasoning_parser_enabled,
+                serve.tool_call_parser_enabled,
+            )
         } else {
             (true, true)
         };

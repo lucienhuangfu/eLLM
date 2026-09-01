@@ -1,8 +1,8 @@
 use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::model_family::config::RouterScoringKind;
 use crate::operators::operator::Operator;
 use crate::runtime::SequenceSlice;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
-use crate::transformer::config::RouterScoringKind;
 use crate::transformer::names::SparseMoeTensorNames;
 use std::collections::HashMap;
 

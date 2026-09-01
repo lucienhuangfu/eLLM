@@ -1,6 +1,6 @@
 # eLLM Operator Reference
 
-Lookup material for the `create-operator` skill. The workflow lives in [SKILL.md](../SKILL.md); this file covers catalogs, signatures, and on-request extension patterns.
+Lookup material for the `create_operator` skill. The workflow lives in [SKILL.md](../SKILL.md); this file covers catalogs, signatures, and on-request extension patterns.
 
 ## Operator Catalog
 
@@ -94,7 +94,7 @@ Transformer layers call these with a `scope_name` like `"{layer}.post_attention_
 python alignment/scripts/create_new_operator.py <op_name>   # Windows: py
 ```
 
-Creates `alignment/<op_name>/`: `generate_hf_<op>.py` (reference → `python_<op>_*.npy`), `<op>_alignment_test.rs` (Rust → `rust_<op>_output.npy`, register as `[[bin]]` in Cargo.toml), `test_<op>_alignment.py` (thresholds: `max_abs < 1e-5`, `mean_abs < 1e-6`, `cosine > 0.999999`). Then hand off to the `align-operators` skill.
+Creates `alignment/<op_name>/`: `generate_hf_<op>.py` (reference → `python_<op>_*.npy`), `<op>_alignment_test.rs` (Rust → `rust_<op>_output.npy`, register as `[[bin]]` in Cargo.toml), `test_<op>_alignment.py` (thresholds: `max_abs < 1e-5`, `mean_abs < 1e-6`, `cosine > 0.999999`). Then hand off to the `align_operator` skill.
 
 ## Unit Test Pattern
 

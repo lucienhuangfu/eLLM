@@ -6,8 +6,8 @@ use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-use super::config::Config;
 use super::names::AttentionTensorNames;
+use crate::model_family::config::Config;
 
 // #[derive(Clone)]
 pub struct Attention<T>
@@ -287,7 +287,16 @@ mod test {
         f32::with_operator_queue(|queue| {
             for operator in queue.iter() {
                 for i in 0..thread_num {
-                    operator.run(batch_size, 0, 0, 0, thread_num, i, EMPTY_SLICES, &mut Vec::new());
+                    operator.run(
+                        batch_size,
+                        0,
+                        0,
+                        0,
+                        thread_num,
+                        i,
+                        EMPTY_SLICES,
+                        &mut Vec::new(),
+                    );
                 }
             }
         });
@@ -358,7 +367,16 @@ mod test {
         f16::with_operator_queue(|queue| {
             for operator in queue.iter() {
                 for i in 0..thread_num {
-                    operator.run(batch_size, 0, 0, 0, thread_num, i, EMPTY_SLICES, &mut Vec::new());
+                    operator.run(
+                        batch_size,
+                        0,
+                        0,
+                        0,
+                        thread_num,
+                        i,
+                        EMPTY_SLICES,
+                        &mut Vec::new(),
+                    );
                 }
             }
         });

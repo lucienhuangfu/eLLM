@@ -130,6 +130,103 @@ pub fn assign_kqv_tile(
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SliceChannelTileAssign {
+    pub slice_index: usize, // Which sequence slice owns this thread.
+    pub local_id: usize,    // Thread index inside the slice's thread group.
+    pub local_num: usize,   // Total threads assigned to that slice.
+}
+
+// Proportional thread distribution over slices, generalizing
+// assign_kqv_tile from 3 fixed paths to N slices weighted by row count.
+// Every non-empty slice gets at least one thread, then each remaining
+// thread goes to the slice with the largest marginal gain
+// L/k - L/(k+1) (k = threads already assigned), capped per slice by
+// max_blocks (the maximum number of channel blocks, so each block stays
+// SIMD friendly). Equal gains fall to the earliest slice, which keeps the
+// mapping deterministic for SPMD execution.
+// 按行数为 N 个 slice 比例分配线程（assign_kqv_tile 从 3 条固定路径到
+// N 个 slice 的推广）：每个非空 slice 至少 1 个线程，之后每个剩余线程
+// 都补给边际收益最大的 slice，单 slice 线程数
+// 上限为 max_blocks（通道块数上限，保证每块通道数对 SIMD 友好）。收益相等时归给最靠前的 slice，保证 SPMD 执行下分配确定一致。
+pub fn assign_slice_channel_tile(
+    slice_lengths: &[usize],
+    max_blocks: &[usize],
+    num: usize,
+    id: usize,
+) -> Option<SliceChannelTileAssign> {
+    debug_assert!(num != 0);
+    debug_assert!(id < num);
+    debug_assert_eq!(slice_lengths.len(), max_blocks.len());
+
+    let non_empty: Vec<usize> = (0..slice_lengths.len())
+        .filter(|&i| slice_lengths[i] > 0)
+        .collect();
+    if non_empty.is_empty() {
+        return None;
+    }
+
+    let mut thread_counts = vec![0usize; slice_lengths.len()];
+    let mut remaining_threads = num;
+    for &i in &non_empty {
+        if remaining_threads == 0 {
+            break;
+        }
+        thread_counts[i] = 1;
+        remaining_threads -= 1;
+    }
+
+    while remaining_threads > 0 {
+        // Marginal gain of one more thread on slice i with k threads is
+        // L/k - L/(k+1) = L / (k * (k + 1)); compare fractions exactly
+        // via cross multiplication to avoid float rounding.
+        // slice i 已有 k 个线程时，再加 1 个线程的边际收益为
+        // L/k - L/(k+1) = L / (k * (k + 1))；用交叉乘法精确比较分数，
+        // 避免浮点舍入。
+        let mut best_idx = None;
+        let mut best_num = 0u64;
+        let mut best_den = 1u64;
+        for &i in &non_empty {
+            let count = thread_counts[i];
+            if count >= max_blocks[i] {
+                continue;
+            }
+            let num = slice_lengths[i] as u64;
+            let den = (count * (count + 1)) as u64;
+            // num / den > best_num / best_den  <=>  num * best_den > best_num * den
+            if best_idx.is_none() || num * best_den > best_num * den {
+                best_idx = Some(i);
+                best_num = num;
+                best_den = den;
+            }
+        }
+
+        let Some(i) = best_idx else {
+            break;
+        };
+        thread_counts[i] += 1;
+        remaining_threads -= 1;
+    }
+
+    let mut thread_base = 0usize;
+    for i in 0..slice_lengths.len() {
+        let count = thread_counts[i];
+        if count == 0 {
+            continue;
+        }
+        if id < thread_base + count {
+            return Some(SliceChannelTileAssign {
+                slice_index: i,
+                local_id: id - thread_base,
+                local_num: count,
+            });
+        }
+        thread_base += count;
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod test {
     // use std::result;
@@ -252,6 +349,118 @@ mod test {
                 begin: 4,
                 end: 8
             })
+        );
+    }
+
+    #[test]
+    fn test_assign_slice_channel_tile_proportional() {
+        // One long prefill slice + two decode slices, 4 threads:
+        // the long slice should take 2 threads, the short ones 1 each.
+        // 一个长 prefill slice + 两个 decode slice，共 4 线程：
+        // 长 slice 应分到 2 个线程，两个短 slice 各 1 个。
+        let lengths = [128, 1, 1];
+        let max_blocks = [32, 32, 32];
+        assert_eq!(
+            assign_slice_channel_tile(&lengths, &max_blocks, 4, 0),
+            Some(SliceChannelTileAssign {
+                slice_index: 0,
+                local_id: 0,
+                local_num: 2
+            })
+        );
+        assert_eq!(
+            assign_slice_channel_tile(&lengths, &max_blocks, 4, 1),
+            Some(SliceChannelTileAssign {
+                slice_index: 0,
+                local_id: 1,
+                local_num: 2
+            })
+        );
+        assert_eq!(
+            assign_slice_channel_tile(&lengths, &max_blocks, 4, 2),
+            Some(SliceChannelTileAssign {
+                slice_index: 1,
+                local_id: 0,
+                local_num: 1
+            })
+        );
+        assert_eq!(
+            assign_slice_channel_tile(&lengths, &max_blocks, 4, 3),
+            Some(SliceChannelTileAssign {
+                slice_index: 2,
+                local_id: 0,
+                local_num: 1
+            })
+        );
+    }
+
+    #[test]
+    fn test_assign_slice_channel_tile_caps_and_overflow() {
+        // Two decode slices with cap 1: the 3rd thread idles, no slice left.
+        // 两个 decode slice、单 slice 上限 1：第 3 个线程无 slice 可分。
+        let lengths = [1, 1];
+        let max_blocks = [1, 1];
+        assert_eq!(
+            assign_slice_channel_tile(&lengths, &max_blocks, 4, 0),
+            Some(SliceChannelTileAssign {
+                slice_index: 0,
+                local_id: 0,
+                local_num: 1
+            })
+        );
+        assert_eq!(
+            assign_slice_channel_tile(&lengths, &max_blocks, 4, 1),
+            Some(SliceChannelTileAssign {
+                slice_index: 1,
+                local_id: 0,
+                local_num: 1
+            })
+        );
+        assert_eq!(assign_slice_channel_tile(&lengths, &max_blocks, 4, 2), None);
+
+        // All slices empty: nothing to schedule.
+        // 所有 slice 为空：无可调度任务。
+        assert_eq!(assign_slice_channel_tile(&[0, 0], &[32, 32], 2, 0), None);
+    }
+
+    #[test]
+    fn test_assign_slice_channel_tile_pure_decode() {
+        // Pure decode: 4 single-token slices, 8 threads. Equal marginal
+        // gains rotate the threads across slices, ending with 2 threads
+        // per slice splitting the channel dimension.
+        // 纯 decode：4 个单 token slice、8 线程。边际收益相等时线程在各
+        // slice 间轮流补给，最终每 slice 2 个线程切分通道。
+        let lengths = [1, 1, 1, 1];
+        let max_blocks = [4, 4, 4, 4];
+        for id in 0..8 {
+            let tile = assign_slice_channel_tile(&lengths, &max_blocks, 8, id).unwrap();
+            assert_eq!(tile.slice_index, id / 2);
+            assert_eq!(tile.local_id, id % 2);
+            assert_eq!(tile.local_num, 2);
+        }
+    }
+
+    #[test]
+    fn test_assign_slice_channel_tile_single_long_prefill() {
+        // batch=1 long prefill: all threads share the single slice's
+        // channels; work ≈ length / thread_num per thread.
+        // batch=1 长 prefill：全部线程切分唯一 slice 的通道，
+        // 每线程工作量 ≈ length / 线程数。
+        let lengths = [256];
+        let max_blocks = [8];
+        for id in 0..8 {
+            assert_eq!(
+                assign_slice_channel_tile(&lengths, &max_blocks, 16, id),
+                Some(SliceChannelTileAssign {
+                    slice_index: 0,
+                    local_id: id,
+                    local_num: 8
+                })
+            );
+        }
+        assert_eq!(
+            assign_slice_channel_tile(&lengths, &max_blocks, 16, 8),
+            None
         );
     }
 }

@@ -1,4 +1,4 @@
-use super::config::{Config, FfnKind, ModelFamily};
+use crate::model_family::config::{Config, FfnKind, ModelFamily};
 
 #[derive(Debug, Clone)]
 pub struct ModelTensorNames {
@@ -36,6 +36,20 @@ pub struct SparseMoeTensorNames {
     pub experts_gate_proj: String,
     pub experts_up_proj: String,
     pub experts_down_proj: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GatedDeltaAttentionTensorNames {
+    pub scope: String,
+    pub in_proj_qkv: String,
+    pub in_proj_z: String,
+    pub in_proj_b: String,
+    pub in_proj_a: String,
+    pub dt_bias: String,
+    pub a_log: String,
+    pub conv1d: String,
+    pub norm: String,
+    pub out_proj: String,
 }
 
 #[derive(Debug, Clone)]

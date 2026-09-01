@@ -3,14 +3,14 @@
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
+use ellm::model_family::config::Config;
+use ellm::model_family::Qwen3_model::Model;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
     ExecutorPool, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SessionMode, SlotManager,
     SlotSequence, SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
-use ellm::transformer::config::Config;
-use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::sync::Arc;
 use std::time::Duration;
@@ -225,7 +225,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     slot_list_arc.with(|list| {
         slot_seq_arc.with(|batch_seq| {
             for (slot, record) in list.iter().enumerate() {
-                let text = batch_seq.decode_token_span(slot, record.prompt_length, record.next_sequence_index);
+                let text = batch_seq.decode_token_span(
+                    slot,
+                    record.prompt_length,
+                    record.next_sequence_index,
+                );
                 if !text.is_empty() {
                     println!("Slot {}: {}", slot, text);
                 }

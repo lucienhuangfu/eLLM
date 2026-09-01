@@ -117,7 +117,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use crate::transformer::config::{Config, HfConfig};
+    use crate::model_family::config::{Config, HfConfig};
 
     #[test]
     fn test_from_file() {

@@ -1,5 +1,5 @@
 ---
-name: create-operator
+name: create_operator
 description: Create a new Rust operator in the eLLM inference engine under src/operators. Use when adding a new computation operator (map, zip-map, matmul, attention, softmax, routing, or expert/MoE operator). Default scope is the operator skeleton with an empty compute method (TODO); compute logic, crate::kernel extraction, Tensor API wiring, and alignment scaffolding are added only when the user explicitly requests them.
 ---
 

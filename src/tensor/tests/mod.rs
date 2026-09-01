@@ -19,6 +19,7 @@ pub(super) use tokio::sync::Notify;
 
 mod common;
 mod expert;
+mod linear_attention;
 mod matmul;
 mod performance;
 mod topk_softmax;

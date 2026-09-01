@@ -7,22 +7,22 @@ use std::rc::Rc;
 // use serde::{Deserialize, Serialize};
 
 use super::config::Config;
-use super::names::model_tensor_names;
 use crate::num_traits::FromNumber;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
+use crate::transformer::names::model_tensor_names;
 
 // use super::super::operators::map::rms_map::RMSMap;
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
-use super::decoder_layer::DecoderLayer;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
+use crate::transformer::decoder_layer::DecoderLayer;
 // use crate::runtime::inference::state::TokenRecord;
 
 #[cfg(test)]
-use super::rope::RotaryEmbedding;
+use crate::transformer::rope::RotaryEmbedding;
 
 // #[derive(Clone)]
 pub struct Model<T>

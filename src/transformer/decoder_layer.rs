@@ -7,10 +7,10 @@ use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
 
 use super::attention::Attention;
-use super::config::{AttentionKind, Config, FfnKind};
 use super::dense_mlp::DenseMlp;
 use super::names::{layer_tensor_names, FfnTensorNames};
 use super::sparse_moe::SparseMoe;
+use crate::model_family::config::{AttentionKind, Config, FfnKind};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
 pub enum AttentionBlock<T>
@@ -307,7 +307,16 @@ mod test {
             for (index, operator) in queue.iter().enumerate() {
                 println!("operator {} in queue", index);
                 for i in 0..thread_num {
-                    operator.run(batch_size, 0, 0, batch_size, thread_num, i, EMPTY_SLICES, &mut Vec::new());
+                    operator.run(
+                        batch_size,
+                        0,
+                        0,
+                        batch_size,
+                        thread_num,
+                        i,
+                        EMPTY_SLICES,
+                        &mut Vec::new(),
+                    );
                 }
             }
         });

@@ -66,6 +66,12 @@ pub mod movement {
     pub use super::lift_vector::LiftVector;
 }
 
+pub mod linear_attention {
+    pub mod recurrent_gated_delta_rule;
+
+    pub use recurrent_gated_delta_rule::RecurrentGatedDeltaRule;
+}
+
 pub mod testing {
     pub use super::fake_echo::FakeEcho;
 }
@@ -73,7 +79,6 @@ pub mod testing {
 pub mod normalization {
     pub mod add_rms_zip;
     pub mod lookup_rms_map;
-    pub mod rms_gated_zip;
     pub mod rms_map;
 }
 
@@ -100,13 +105,13 @@ pub mod transform {
     pub use super::elementwise::silu_mul_zip::SiluMulZipMap;
     pub use super::normalization::add_rms_zip::AddRMSZipMap;
     pub use super::normalization::lookup_rms_map::LookupRMSMap;
-    pub use super::normalization::rms_gated_zip::RMSGatedZipMap;
     pub use super::normalization::rms_map::RMSMap;
 }
 pub mod traits {
     pub mod conv;
     pub mod expert;
     pub mod linear;
+    pub mod linear_attention;
     pub mod map;
     pub mod softmax;
 
@@ -116,6 +121,7 @@ pub mod traits {
         AttentionTrait, MatMulAddTrait, MatMulProjTrait, MatMulSigmoidTrait, MatMulTrait,
         MatMulkqvTrait,
     };
+    pub use linear_attention::RecurrentGatedDeltaRuleTrait;
     pub use map::{MapTrait, ZipMapTrait};
     pub use softmax::{ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
 }

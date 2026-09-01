@@ -1,3 +1,4 @@
+mod linear_attention;
 mod matmul;
 mod moe;
 mod ops;
