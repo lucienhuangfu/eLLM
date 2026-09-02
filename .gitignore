@@ -4,7 +4,6 @@ debug
 target
 Cargo.lock
 models/
-scripts/
 third_party/transformers/
 
 # Local experiment outputs
