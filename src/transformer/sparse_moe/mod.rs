@@ -1,4 +1,5 @@
 mod layer;
+mod router;
 mod router_sigmoid;
 mod router_softmax;
 

@@ -1,5 +1,4 @@
 pub mod assign;
-pub mod attention;
 pub mod fake_echo;
 pub mod operator;
 pub mod send_sync_ptr;
@@ -42,10 +41,14 @@ pub mod expert_imports {
     pub use super::expert::expert_merge_add::ExpertMergeAdd as ExpertsMergeAdd;
 }
 
+pub mod full_attention {
+    pub mod attention;
+}
+
 pub mod lift_vector;
 
 pub mod linear {
-    pub use super::attention::Attention;
+    pub use super::full_attention::attention::Attention;
     pub use super::matmul::matmul::MatMul;
     pub use super::matmul::matmul3::MatMul3;
     pub use super::matmul::matmul_add::MatMulAdd;
