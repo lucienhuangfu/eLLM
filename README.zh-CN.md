@@ -63,6 +63,45 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 - ✅ Qwen3 系列
 - ⏳ MiniMax M2.7
 - ⏳ GLM 5.2
+
+## 🚀 快速部署：完成一次对话
+
+当前可直接运行的服务固定使用
+`models/Qwen3-Coder-30B-A3B-Instruct`。先下载完整模型，再编译并启动：
+
+```bash
+python3 -m pip install --upgrade huggingface_hub
+hf download Qwen/Qwen3-Coder-30B-A3B-Instruct \
+  --local-dir models/Qwen3-Coder-30B-A3B-Instruct
+
+cargo build --release --bin main
+./target/release/main
+```
+
+服务完成权重加载和计算图初始化后监听 `0.0.0.0:8000`。在另一个终端发送非流式请求：
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Qwen3-Coder-30B-A3B-Instruct",
+    "messages": [{"role": "user", "content": "What is your name?"}],
+    "stream": false,
+    "max_tokens": 100
+  }'
+```
+
+希望在终端直接看到逐 token 输出时运行：
+
+```bash
+python3 scripts/chat.py "What's your name?"
+```
+
+默认配置为：`batch=1`、sequence/chunk 容量为 50,100 tokens、16 个权重加载线程、
+优先使用 BRGEMM attention，并使用当前进程可见的全部 CPU。详细依赖、硬件要求和调优方式见
+[安装文档](docs/getting_started/installation.md)、[快速开始](docs/getting_started/quickstart.md)
+和[环境变量](docs/configuration/env_vars.md)。
+
 ## 📊 Benchmark
 
 eLLM 推理结果已与 SGLang CPU backend 完全对齐，核心功能已可用，欢迎试用。当前版本仍在持续优化中，暂不建议用于生产环境部署。

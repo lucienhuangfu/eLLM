@@ -101,7 +101,7 @@ where
         let requested_brgemm = std::env::var("ELLM_ATTENTION_BACKEND")
             .ok()
             .map(|value| value.eq_ignore_ascii_case("brgemm"))
-            .unwrap_or(false);
+            .unwrap_or(true);
         let head_row_split = std::env::var("ELLM_ATTENTION_HEAD_ROW_SPLIT")
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))

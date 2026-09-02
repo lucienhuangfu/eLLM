@@ -2,9 +2,11 @@
 # will have compiled files and executables
 debug
 target
+site/
 Cargo.lock
 models/
-scripts/
+scripts/*
+!scripts/chat.py
 third_party/transformers/
 third_party/sglang
 

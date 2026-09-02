@@ -17,6 +17,7 @@ pub struct TokenCounter {
     last_schedule_time: Mutex<Instant>,
     next_task_id: AtomicU64,
     task_in_flight: Arc<AtomicBool>,
+    thread_count: usize,
 }
 
 impl TokenCounter {
@@ -36,7 +37,13 @@ impl TokenCounter {
             last_schedule_time: Mutex::new(Instant::now()),
             next_task_id: AtomicU64::new(1),
             task_in_flight: Arc::new(AtomicBool::new(false)),
+            thread_count: 1,
         }
+    }
+
+    pub fn with_thread_count(mut self, thread_count: usize) -> Self {
+        self.thread_count = thread_count.max(1);
+        self
     }
 
     pub fn task_in_flight(&self) -> Arc<AtomicBool> {
@@ -106,7 +113,8 @@ impl TokenCounter {
             scheduler.prefill_list.clone(),
             scheduler.decode_list.clone(),
             self.next_task_id.fetch_add(1, Ordering::Relaxed),
-        );
+        )
+        .with_thread_count(self.thread_count);
 
         if self.broadcast_sender.send(task).is_ok() {
             if let Ok(mut last_schedule_time) = self.last_schedule_time.lock() {

@@ -218,14 +218,16 @@ where
             format!("{}.norm_hidden", self.scope_name),
         );
 
-        // The last attention layer has already compacted each sequence's last
-        // token into the leading decode rows. The remaining row-wise operators
-        // preserve that layout, and lm_head reads those decode rows directly.
+        // Prefill produces one row per input token. Compact the last token of
+        // each sequence into the leading batch rows before scoring the LM head.
+        // Decode already uses one leading row per active sequence, so this is
+        // also a no-op copy in the decode path.
+        norm_state.lift_vector();
 
         if trace_alignment {
             eprintln!("building lm_head/topk");
         }
-        let (indices_ptr, values_tensor) = norm_state.matmul_local_topk_decode_rows(
+        let (indices_ptr, values_tensor) = norm_state.matmul_local_topk(
             &self.lm_head_weight,
             MatMulParams {
                 a_row_step_macro: 3,

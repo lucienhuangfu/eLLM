@@ -30,9 +30,9 @@ Q heads, then reused across all column blocks instead of repacking each block
 for QK and P×V.
 
 The reference source is available through the local
-[`third_party/sglang`](../../../third_party/sglang) link, primarily
-[`flash_attn.h`](../../../third_party/sglang/sgl-kernel/csrc/cpu/flash_attn.h)
-and [`extend.cpp`](../../../third_party/sglang/sgl-kernel/csrc/cpu/extend.cpp).
+[`third_party/sglang`](https://github.com/lucienhuangfu/eLLM/tree/main/third_party/sglang) link, primarily
+[`flash_attn.h`](https://github.com/lucienhuangfu/eLLM/blob/main/third_party/sglang/sgl-kernel/csrc/cpu/flash_attn.h)
+and [`extend.cpp`](https://github.com/lucienhuangfu/eLLM/blob/main/third_party/sglang/sgl-kernel/csrc/cpu/extend.cpp).
 The row/column block sizes follow SGLang's CPU extend-attention choices. The
 default remains eLLM's native kernel, including its fused GQA8 path. The BRGEMM
 backend requires AMX-FP16 and `libtorch_cpu.so`; otherwise it falls back to

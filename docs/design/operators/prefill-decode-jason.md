@@ -144,10 +144,10 @@ ELLM_ATTENTION_CAUSAL_COL_PRUNE=0
 
 参考源码：
 
-- [`extend.cpp`](../../../third_party/sglang/sgl-kernel/csrc/cpu/extend.cpp)
-- [`flash_attn.h`](../../../third_party/sglang/sgl-kernel/csrc/cpu/flash_attn.h)
-- [`vec_pack.h`](../../../third_party/sglang/sgl-kernel/csrc/cpu/vec_pack.h)
-- [`vec.h`](../../../third_party/sglang/sgl-kernel/csrc/cpu/vec.h)
+- [`extend.cpp`](https://github.com/lucienhuangfu/eLLM/blob/main/third_party/sglang/sgl-kernel/csrc/cpu/extend.cpp)
+- [`flash_attn.h`](https://github.com/lucienhuangfu/eLLM/blob/main/third_party/sglang/sgl-kernel/csrc/cpu/flash_attn.h)
+- [`vec_pack.h`](https://github.com/lucienhuangfu/eLLM/blob/main/third_party/sglang/sgl-kernel/csrc/cpu/vec_pack.h)
+- [`vec.h`](https://github.com/lucienhuangfu/eLLM/blob/main/third_party/sglang/sgl-kernel/csrc/cpu/vec.h)
 
 | 部分 | 与 SGLang 的关系 |
 | --- | --- |
@@ -749,15 +749,15 @@ decode 的核心矛盾是：
 延续 §5.3 的 3-row gather 思路。Down 的 2-row partial tile 从 `pack_a_tile + compute1_rows` 改为直接 `compute1_gather_2rows`（AVX-512 broadcast+FMA）。
 
 **改动文件**：
-- [expert_matmul_mul.rs](src/operators/expert/expert_matmul_mul.rs)：`run()` 中 2-row 路径
-- [expert.rs](src/operators/traits/expert.rs)：`ExpertsDownTrait` 新增 `compute1_gather_2rows`
+- [expert_matmul_mul.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/expert/expert_matmul_mul.rs)：`run()` 中 2-row 路径
+- [expert.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/traits/expert.rs)：`ExpertsDownTrait` 新增 `compute1_gather_2rows`
 - 9 个单测通过
 
 ### 9.2 MatMulAdd compute_rows 3-row unroll（✅ 保留）
 
 `compute_rows` 和 `compute_rows_init`（f16 AVX-512）从 2-row 补齐为 3-row unroll（acc0/acc1/acc2），与 `compute_init` 保持一致。当前 workload 下实际只命中 1-2 row（tail），但代码更完整。
 
-**改动文件**：[matmul_add.rs](src/operators/matmul/matmul_add.rs) — 8 个单测通过
+**改动文件**：[matmul_add.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/matmul/matmul_add.rs) — 8 个单测通过
 
 ### 9.3 ExpertsMatMulSilu 2-row gather（❌ 已回退）
 
@@ -772,10 +772,10 @@ decode 的核心矛盾是：
 **方案**：新增 `matmul_update_inplace_3x32_first` kernel（累加器从 `_mm512_set1_ph(0.0)` 开始，不从 C load），通过 trait `compute1_init` → f16 specialization dispatch。首个 reduction panel 用 `compute1_init`，后续用 `compute1`，zero-init pass 完全消除。
 
 **改动文件**：
-- [matmul_rms_complex.rs](src/kernel/x86_64/f16_512/matmul_rms_complex.rs)：新增 `matmul_update_inplace_3x32_first`
-- [linear.rs](src/operators/traits/linear.rs)：`MatMulkqvTrait` 新增 `compute1_init`
-- [matmul3.rs](src/operators/matmul/matmul3.rs)：`compute1_init` trait dispatch + `compute_head_tile_from_packed` 零写消除
-- [matmul3.rs](src/operators/matmul/matmul3.rs)：`compute_head_from_packed` 冗余 zero-init 移除（`compute_head_gemv` 内部用 `_mm512_setzero_ph` 开始）
+- [matmul_rms_complex.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/kernel/x86_64/f16_512/matmul_rms_complex.rs)：新增 `matmul_update_inplace_3x32_first`
+- [linear.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/traits/linear.rs)：`MatMulkqvTrait` 新增 `compute1_init`
+- [matmul3.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/matmul/matmul3.rs)：`compute1_init` trait dispatch + `compute_head_tile_from_packed` 零写消除
+- [matmul3.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/matmul/matmul3.rs)：`compute_head_from_packed` 冗余 zero-init 移除（`compute_head_gemv` 内部用 `_mm512_setzero_ph` 开始）
 
 **MatMul3 wall clock**：Baseline 2.829s → 2.750s（-2.8%），多轮 profile 一致。
 
@@ -784,8 +784,8 @@ decode 的核心矛盾是：
 原 `rotate_half_rope` 每次调用分配 128 元素 Vec + 标量循环。替换为 AVX-512 in-place 版本，使用 `_mm512_fmul_pch`（complex multiply）处理。
 
 **改动文件**：
-- [rope.rs](src/kernel/x86_64/f16_512/rope.rs)：新增 `rotate_half_rope_avx512`
-- [matmul3.rs](src/operators/matmul/matmul3.rs)：`compute_norm_rope` f16 路径调用 AVX-512 版本
+- [rope.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/kernel/x86_64/f16_512/rope.rs)：新增 `rotate_half_rope_avx512`
+- [matmul3.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/matmul/matmul3.rs)：`compute_norm_rope` f16 路径调用 AVX-512 版本
 - 2 个单测通过
 
 **prefill 影响**：`compute_norm_rope` 在 prefill fast path 中仅命中 1-row tail tile（~40 次调用），影响可忽略。对 decode 路径（逐行 GEMV）帮助更大。
@@ -1174,7 +1174,7 @@ attention 路径是否已经接近其数量级。
 新增实验后端通过 `ELLM_ATTENTION_BACKEND=brgemm` 开启。它不是直接调用
 SGLang：tensor 寻址、causal mask、online softmax、VNNI packing 和调度仍由 eLLM
 实现，只动态使用 LibTorch 的底层 FP16 BRGEMM microkernel。参考源码通过
-[`third_party/sglang`](../../../third_party/sglang) 查看。
+[`third_party/sglang`](https://github.com/lucienhuangfu/eLLM/tree/main/third_party/sglang) 查看。
 
 数据类型保持为：
 

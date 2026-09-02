@@ -36,6 +36,14 @@ fn parse_env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn system_thread_count() -> usize {
+    core_affinity::get_core_ids()
+        .map(|core_ids| core_ids.len())
+        .filter(|count| *count > 0)
+        .or_else(|| std::thread::available_parallelism().ok().map(usize::from))
+        .unwrap_or(1)
+}
+
 fn unix_timestamp_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -169,8 +177,9 @@ fn main() {
     };
 
     let batch_size = parse_env_usize("ELLM_BATCH", 1);
-    let max_output_tokens: usize = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 512);
-    let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
+    let max_output_tokens: usize = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 100);
+    let model_dir = env::var("ELLM_MODEL_DIR")
+        .unwrap_or_else(|_| "models/Qwen3-Coder-30B-A3B-Instruct".to_string());
     let program_start = Instant::now();
 
     let config = Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
@@ -186,12 +195,7 @@ fn main() {
         .unwrap();
     let tokenizer = load_tiktoken(&tokenizer_path, &tokenizer_config_path).unwrap();
 
-    let default_prompts = [
-        "Write a Rust function that implements a thread-safe LRU cache.",
-        "Explain how to implement a zero-copy parser in Rust using slices and references.",
-        "Write a Python async function that fetches data from multiple APIs concurrently with rate limiting.",
-    ];
-    let env_prompt = if let Ok(prompt_file) = env::var("ELLM_PROMPT_FILE") {
+    let prompt = if let Ok(prompt_file) = env::var("ELLM_PROMPT_FILE") {
         Some(std::fs::read_to_string(prompt_file).expect("failed to read ELLM_PROMPT_FILE"))
     } else if let Some(repeat) = env::var("ELLM_PROMPT_REPEAT")
         .ok()
@@ -200,14 +204,11 @@ fn main() {
         Some("hello ".repeat(repeat))
     } else {
         env::var("ELLM_PROMPT").ok()
-    };
+    }
+    .unwrap_or_else(|| "hello ".repeat(49_992));
     let mut prompts = Vec::with_capacity(batch_size);
-    for slot in 0..batch_size {
-        if let Some(prompt) = env_prompt.as_deref() {
-            prompts.push(prompt.to_string());
-        } else {
-            prompts.push(default_prompts[slot % default_prompts.len()].to_string());
-        }
+    for _ in 0..batch_size {
+        prompts.push(prompt.clone());
     }
 
     let mut all_input_lens = Vec::new();
@@ -224,7 +225,7 @@ fn main() {
     let sequence_length = max_input + max_output_tokens;
     let chunk_size = total_input + batch_size * max_output_tokens;
 
-    let params = SafeTensorsLoader::new(model_dir)
+    let params = SafeTensorsLoader::new(&model_dir)
         .unwrap()
         .load_all_weights_f16_aligned_parallel()
         .unwrap();
@@ -240,8 +241,12 @@ fn main() {
     )
     .forward::<f16>();
 
-    // Force continue to max_output_tokens — disable EOS stopping.
-    let eos_ids: Vec<usize> = vec![];
+    let eos_ids = gen_cfg
+        .as_ref()
+        .and_then(|g| g.eos_token_id_list.clone())
+        .filter(|ids| !ids.is_empty())
+        .unwrap_or_else(|| config.eos_token_ids.clone());
+    let temperature = gen_cfg.as_ref().and_then(|g| g.temperature).unwrap_or(1.0) as f32;
 
     let sequences_capacity = sequence_length * batch_size;
     let sequences_box = AlignedBox::allocate_init(sequences_capacity, 0usize);
@@ -260,7 +265,7 @@ fn main() {
     let mut written_lengths = Vec::new();
     for (slot, prompt) in prompts.iter().enumerate().take(batch_size) {
         let write_len = batch_seq
-            .write_prompts(slot, &[("user", prompt.as_str())], 1.0)
+            .write_prompts(slot, &[("user", prompt.as_str())], temperature)
             .unwrap();
         written_lengths.push(write_len);
     }
@@ -273,7 +278,7 @@ fn main() {
     let top_p = gen_cfg.as_ref().and_then(|g| g.top_p).unwrap_or(1.0) as f32;
     let min_p: f32 = 0.0;
     let do_sample = gen_cfg.as_ref().and_then(|g| g.do_sample).unwrap_or(false);
-    let requested_thread_num = parse_env_usize("ELLM_THREAD_NUM", 48);
+    let requested_thread_num = parse_env_usize("ELLM_THREAD_NUM", system_thread_count());
     let allow_logical_threads = parse_env_bool("ELLM_ALLOW_LOGICAL_THREADS", true);
     let thread_num = if allow_logical_threads {
         requested_thread_num.max(1)
@@ -445,14 +450,12 @@ fn main() {
     let _ = runner_handle.join();
     let elapsed = start.elapsed();
 
-    // Force-cut each sequence to exactly max_output_tokens generated tokens
     batch_list_ref.with(|list| {
-        for slot in 0..list.len() {
+        for (slot, record) in list.iter().enumerate() {
             let input_len = written_lengths[slot];
-            // Hard cutoff: only show the first max_output_tokens generated ids
-            let cut_end = (input_len + max_output_tokens_u).min(sequence_length_u);
-            let gen_len = cut_end.saturating_sub(input_len);
-            let ids: Vec<u32> = (input_len..cut_end)
+            let gen_end = record.kv_index.min(sequence_length_u);
+            let gen_len = gen_end.saturating_sub(input_len);
+            let ids: Vec<u32> = (input_len..gen_end)
                 .map(|i| unsafe { *sequences_ptr_u.add(slot * sequence_length_u + i) as u32 })
                 .collect();
             let text: String = ids
