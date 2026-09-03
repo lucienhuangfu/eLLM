@@ -16,7 +16,10 @@ use crate::operators::routing::TopKSoftmax;
 // Add missing imports for zip map operations
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd, MatMulProj};
 // use super::mul::matmul_silu_mul_matmul::MatMulSilu;
-use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
+use crate::operators::expert::{
+    ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd, SharedExpertsMatMulDown,
+    SharedExpertsMatMulSilu, SharedExpertsMergeAdd,
+};
 use crate::operators::movement::LiftVector;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddZipMap;
@@ -43,6 +46,9 @@ pub enum Operator<T>
     ExpertsMatMulDown(ExpertsMatMulDown<T>),
     ExpertsMatMulSilu(ExpertsMatMulSilu<T>),
     ExpertsMergeAdd(ExpertsMergeAdd<T>),
+    SharedExpertsMatMulDown(SharedExpertsMatMulDown<T>),
+    SharedExpertsMatMulSilu(SharedExpertsMatMulSilu<T>),
+    SharedExpertsMergeAdd(SharedExpertsMergeAdd<T>),
     MatMulSigmoid(MatMulSigmoid<T>),
     ExpertsSoftmaxNorm(ExpertsSoftmaxNorm<T>),
     ExpertsTopkNorm(ExpertsTopkNorm<T>),
@@ -135,6 +141,36 @@ where
                 );
             }
             Self::ExpertsMergeAdd(operator) => {
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    total_size,
+                    lift_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::SharedExpertsMatMulDown(operator) => {
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    total_size,
+                    lift_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::SharedExpertsMatMulSilu(operator) => {
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    total_size,
+                    lift_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::SharedExpertsMergeAdd(operator) => {
                 operator.run(
                     prefill_size,
                     decode_size,
@@ -257,6 +293,9 @@ where
             Self::ExpertsMatMulDown(_) => "ExpertsMatMulDown",
             Self::ExpertsMatMulSilu(_) => "ExpertsMatMulSilu",
             Self::ExpertsMergeAdd(_) => "ExpertsMergeAdd",
+            Self::SharedExpertsMatMulDown(_) => "SharedExpertsMatMulDown",
+            Self::SharedExpertsMatMulSilu(_) => "SharedExpertsMatMulSilu",
+            Self::SharedExpertsMergeAdd(_) => "SharedExpertsMergeAdd",
             Self::MatMulSigmoid(_) => "MatMulSigmoid",
             Self::ExpertsSoftmaxNorm(_) => "ExpertsSoftmaxNorm",
             Self::ExpertsTopkNorm(_) => "ExpertsTopkNorm",

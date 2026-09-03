@@ -18,27 +18,51 @@ pub mod elementwise {
 }
 
 pub mod expert {
-    pub mod expert_matmul_mul;
-    pub mod expert_matmul_silu_mul_matmul;
-    pub mod expert_merge_add;
+    pub mod sparse_expert {
+        pub mod expert_matmul_mul;
+        pub mod expert_matmul_silu_mul_matmul;
+        pub mod expert_merge_add;
+
+        pub use expert_matmul_mul::ExpertMatMulDown;
+        pub use expert_matmul_silu_mul_matmul::ExpertMatMulSilu;
+        pub use expert_merge_add::ExpertMergeAdd;
+    }
+
+    pub mod shared_expert {
+        pub mod shared_expert_matmul_mul;
+        pub mod shared_expert_matmul_silu_mul_matmul;
+        pub mod shared_expert_merge_add;
+
+        pub use shared_expert_matmul_mul::SharedExpertMatMulDown;
+        pub use shared_expert_matmul_silu_mul_matmul::SharedExpertMatMulSilu;
+        pub use shared_expert_merge_add::SharedExpertMergeAdd;
+    }
+
     pub mod expert_routing;
     pub mod expert_topk_norm;
 
     #[allow(non_snake_case)]
-    pub use expert_matmul_mul::ExpertMatMulDown as ExpertsMatMulDown;
+    pub use sparse_expert::ExpertMatMulDown as ExpertsMatMulDown;
     #[allow(non_snake_case)]
-    pub use expert_matmul_silu_mul_matmul::ExpertMatMulSilu as ExpertsMatMulSilu;
+    pub use sparse_expert::ExpertMatMulSilu as ExpertsMatMulSilu;
     #[allow(non_snake_case)]
-    pub use expert_merge_add::ExpertMergeAdd as ExpertsMergeAdd;
+    pub use sparse_expert::ExpertMergeAdd as ExpertsMergeAdd;
+
+    #[allow(non_snake_case)]
+    pub use shared_expert::SharedExpertMatMulDown as SharedExpertsMatMulDown;
+    #[allow(non_snake_case)]
+    pub use shared_expert::SharedExpertMatMulSilu as SharedExpertsMatMulSilu;
+    #[allow(non_snake_case)]
+    pub use shared_expert::SharedExpertMergeAdd as SharedExpertsMergeAdd;
 }
 
 pub mod expert_imports {
     #[allow(non_snake_case)]
-    pub use super::expert::expert_matmul_mul::ExpertMatMulDown as ExpertsMatMulDown;
+    pub use super::expert::sparse_expert::ExpertMatMulDown as ExpertsMatMulDown;
     #[allow(non_snake_case)]
-    pub use super::expert::expert_matmul_silu_mul_matmul::ExpertMatMulSilu as ExpertsMatMulSilu;
+    pub use super::expert::sparse_expert::ExpertMatMulSilu as ExpertsMatMulSilu;
     #[allow(non_snake_case)]
-    pub use super::expert::expert_merge_add::ExpertMergeAdd as ExpertsMergeAdd;
+    pub use super::expert::sparse_expert::ExpertMergeAdd as ExpertsMergeAdd;
 }
 
 pub mod full_attention {
@@ -119,7 +143,10 @@ pub mod traits {
     pub mod softmax;
 
     pub use conv::CausalConvTrait;
-    pub use expert::{ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait};
+    pub use expert::{
+        ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait, SharedExpertsDownTrait,
+        SharedExpertsSiluTrait, SharedMergeAddTrait,
+    };
     pub use linear::{
         AttentionTrait, MatMulAddTrait, MatMulProjTrait, MatMulSigmoidTrait, MatMulTrait,
         MatMulkqvTrait,
