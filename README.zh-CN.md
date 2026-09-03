@@ -12,7 +12,7 @@ eLLM 是一款面向 CPU 服务器的大模型推理框架。它采用“以存�
 💼 我们致力于推动开源与 AI 民主化，期待与产业携手合作，联系方式：**lucienhuangfu@outlook.com**
 
 ## 🚀 进展与更新
-- `v0.1.0`（2026-08-28）：发布 Beta 版本，核心功能开发完成，推理结果与 SGLang CPU 完全对齐
+- `v0.1.0`（2026-09-05）：发布 Beta 版本，核心功能开发完成，推理结果与 SGLang CPU 完全对齐
 - `v0.0.2`（2026-04-06）：发布 Alpha 版本
 - `v0.0.1`（2025-12-20）：项目开源
 
@@ -63,8 +63,7 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 
 ## 🤖 支持模型
 - ✅ Qwen3 系列
-- ⏳ MiniMax M2.7
-- ⏳ GLM 5.2
+- ⏳ Qwen3.8
 
 ## 🚀 快速部署：完成一次对话
 
@@ -93,16 +92,10 @@ curl http://localhost:8000/v1/chat/completions \
   }'
 ```
 
-希望在终端直接看到逐 token 输出时运行：
-
-```bash
-python3 scripts/chat.py "What's your name?"
-```
-
 默认配置为：`batch=1`、sequence/chunk 容量为 50,100 tokens、16 个权重加载线程、
-优先使用 BRGEMM attention，并使用当前进程可见的全部 CPU。详细依赖、硬件要求和调优方式见
-[安装文档](docs/getting_started/installation.md)、[快速开始](docs/getting_started/quickstart.md)
-和[环境变量](docs/configuration/env_vars.md)。
+优先使用 BRGEMM attention，并使用当前进程可见的全部 CPU。
+
+详细依赖、硬件要求和调优方式见 [安装文档](docs/getting_started/installation.md)
 
 ## 📊 Benchmark
 系统目前仅完成初步优化，仍有很大提升空间。但实验表明，在短程任务（单轮交互）中，eLLM 对 CPU baseline（SGLang CPU backend）已全面领先，且优势随输入长度增加持续扩大：
