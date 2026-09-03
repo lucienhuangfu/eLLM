@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stream plain text from the local eLLM chat-completions endpoint."""
+"""Stream independent chat requests from the local eLLM endpoint."""
 
 import argparse
 import json
@@ -7,25 +7,13 @@ import subprocess
 import sys
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Stream a response from eLLM")
-    parser.add_argument("prompt", nargs="*", help="question; read interactively when omitted")
-    parser.add_argument("--max-tokens", type=int, default=100)
-    parser.add_argument("--url", default="http://localhost:8000/v1/chat/completions")
-    args = parser.parse_args()
-
-    prompt = " ".join(args.prompt).strip()
-    if not prompt:
-        prompt = input("You: ").strip()
-    if not prompt:
-        parser.error("prompt must not be empty")
-
+def stream_response(prompt: str, max_tokens: int, url: str) -> int:
     payload = json.dumps(
         {
             "model": "Qwen3-Coder-30B-A3B-Instruct",
             "messages": [{"role": "user", "content": prompt}],
             "stream": True,
-            "max_tokens": max(args.max_tokens, 1),
+            "max_tokens": max(max_tokens, 1),
         },
         ensure_ascii=False,
     )
@@ -36,7 +24,7 @@ def main() -> int:
                 "curl",
                 "-sS",
                 "-N",
-                args.url,
+                url,
                 "-H",
                 "Content-Type: application/json",
                 "-d",
@@ -78,6 +66,37 @@ def main() -> int:
     if return_code != 0:
         print(f"curl exited with status {return_code}", file=sys.stderr)
     return return_code
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Stream responses from eLLM")
+    parser.add_argument(
+        "prompt", nargs="*", help="send one question; omit for interactive mode"
+    )
+    parser.add_argument("--max-tokens", type=int, default=20_000)
+    parser.add_argument("--url", default="http://localhost:8000/v1/chat/completions")
+    args = parser.parse_args()
+
+    prompt = " ".join(args.prompt).strip()
+    if prompt:
+        return stream_response(prompt, args.max_tokens, args.url)
+
+    print("Enter a question. Type 'exit' or 'quit' to stop.")
+    while True:
+        try:
+            prompt = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+
+        if prompt.lower() in {"exit", "quit"}:
+            return 0
+        if not prompt:
+            continue
+
+        return_code = stream_response(prompt, args.max_tokens, args.url)
+        if return_code != 0:
+            return return_code
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@
 ## eLLM Makes CPUs (Xeon/EPYC) the Best Inference AI Chips
 👉 Project home: [https://github.com/lucienhuangfu/eLLM](https://github.com/lucienhuangfu/eLLM)  
 🌐 Languages: [English](README.md) | [简体中文](README.zh-CN.md)  
-📚 Docs: [Documentation](docs/index.md)  
 🎓 We currently have 1-2 trainee openings and welcome applications from computer science students  
 💼 We are committed to open source and AI democratization, and welcome collaboration with industry partners  
 📧 Contact: **lucienhuangfu@outlook.com**
@@ -17,9 +16,11 @@
 - **vLLM API compatible**: Works smoothly with the existing ecosystem
 - **GPU-consistent behavior**: Targets the same numerical results and runtime behavior as GPU inference
 
-## Hardware Requirements (No GPU/NPU Required)
-- **CPU**: Intel Xeon 4th Gen or newer, with AMX support
-- **Memory**: Enough DDR5 capacity; no HBM required
+## Requirements
+
+- CPU with AVX-512 support
+- At least 128 GiB RAM and 80 GB free disk space
+- Rust and Python 3
 
 ## ✨ Advantages
 eLLM is designed to exploit the **architectural strengths of CPUs for inference**, and can outperform GPU-based inference on several key metrics:
@@ -60,51 +61,42 @@ Based on the CPU server profile of "large memory, large cache, modest compute," 
 - ✅ Qwen3 series
 - ✅ MiniMax M2.5
 
-## Quick Start: One Chat Request
+## Quick Start
 
-The current runnable server target is fixed to
-`models/Qwen3-Coder-30B-A3B-Instruct`. Download the complete model snapshot,
-then build and start the service from the repository root:
+Download or copy the complete Qwen3-Coder-30B-A3B-Instruct model into the
+following recommended directory inside the repository:
+
+```text
+models/Qwen3-Coder-30B-A3B-Instruct
+```
+
+This directory must contain the model configuration, tokenizer, and weight
+files. From the repository root, build eLLM and start the server with a roughly
+20K-token capacity and one request slot:
 
 ```bash
-python3 -m pip install --upgrade huggingface_hub
-hf download Qwen/Qwen3-Coder-30B-A3B-Instruct \
-  --local-dir models/Qwen3-Coder-30B-A3B-Instruct
-
 cargo build --release --bin main
-./target/release/main
+./target/release/main \
+  --model-path models/Qwen3-Coder-30B-A3B-Instruct \
+  --chunk-size 20000 \
+  --sequence-length 20000 \
+  --batch-size 1
 ```
 
 The process loads the model once and exposes an OpenAI-compatible endpoint on
-port 8000. In another terminal, send one conversation request:
+port 8000. In another terminal, start the streaming chat client:
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "Qwen3-Coder-30B-A3B-Instruct",
-    "messages": [
-      {"role": "user", "content": "Write a Rust function that computes Fibonacci numbers."}
-    ],
-    "stream": false,
-    "max_tokens": 100
-  }'
+python3 scripts/chat.py
 ```
 
-Defaults are `batch=1`, a 50,100-token sequence/chunk capacity, 16 parallel
-weight-loading threads, BRGEMM attention when supported, and all CPU threads
-available to the process. These can still be tuned with the corresponding
-`ELLM_*` environment variables.
+Type `exit` or `quit` to end the chat.
 
-For readable token-by-token output instead of raw SSE JSON:
+The server options are:
 
 ```bash
-python3 scripts/chat.py "What's your name?"
+./target/release/main --help
 ```
-
-See the [installation guide](docs/getting_started/installation.md) for hardware
-and BRGEMM prerequisites, or follow the complete
-[quickstart](docs/getting_started/quickstart.md).
 
 ## Experiments
 The minimum viable prototype of eLLM is now complete. To validate its performance potential, we designed both short-context and long-context experiments, evaluated Prefill and Decode separately, and compared a single CPU server with an inference node built from 8 GPUs. In short-context inference, CPUs are clearly behind GPUs. In long-context inference, eLLM may pull ahead by leveraging CPU memory capacity.
