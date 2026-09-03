@@ -89,6 +89,7 @@ impl<T> MemoryBlock<T> {
 pub struct MemPool<T> {
     blocks: HashMap<String, MemoryBlock<T>>,
     parameters: HashMap<String, Vec<T>>,
+    aligned_parameters: HashMap<String, AlignedBox<T>>,
     strict_weights: bool,
 }
 
@@ -113,6 +114,9 @@ pub trait GlobalMemPool {
     where
         Self: Sized + Default + Copy;
     fn init_global_strict(parameters: HashMap<String, Vec<Self>>)
+    where
+        Self: Sized + Default + Copy;
+    fn init_global_strict_aligned(parameters: HashMap<String, AlignedBox<Self>>)
     where
         Self: Sized + Default + Copy;
     fn with_global<F, R>(f: F) -> R
@@ -142,6 +146,13 @@ impl GlobalMemPool for f32 {
         *pool = Some(MemPool::new_strict(parameters));
     }
 
+    fn init_global_strict_aligned(parameters: HashMap<String, AlignedBox<f32>>) {
+        let mut pool = GLOBAL_MEM_POOL_F32
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *pool = Some(MemPool::new_strict_aligned(parameters));
+    }
+
     fn with_global<F, R>(f: F) -> R
     where
         F: FnOnce(&mut MemPool<f32>) -> R,
@@ -169,6 +180,13 @@ impl GlobalMemPool for f16 {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *pool = Some(MemPool::new_strict(parameters));
+    }
+
+    fn init_global_strict_aligned(parameters: HashMap<String, AlignedBox<f16>>) {
+        let mut pool = GLOBAL_MEM_POOL_F16
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *pool = Some(MemPool::new_strict_aligned(parameters));
     }
 
     fn with_global<F, R>(f: F) -> R
@@ -250,11 +268,28 @@ where
         let mut pool = Self {
             blocks: HashMap::new(),
             parameters,
+            aligned_parameters: HashMap::new(),
             strict_weights,
         };
 
+        pool.merge_expert_parameters();
+        pool
+    }
+
+    pub fn new_strict_aligned(parameters: HashMap<String, AlignedBox<T>>) -> Self {
+        let mut pool = Self {
+            blocks: HashMap::new(),
+            parameters: HashMap::new(),
+            aligned_parameters: parameters,
+            strict_weights: true,
+        };
+        pool.merge_expert_parameters();
+        pool
+    }
+
+    fn merge_expert_parameters(&mut self) {
         let mut expert_groups: HashMap<String, Vec<(usize, String)>> = HashMap::new();
-        for key in pool.parameters.keys() {
+        for key in self.parameters.keys().chain(self.aligned_parameters.keys()) {
             if key.contains("experts.") && key.ends_with("proj.weight") {
                 if let Some((before_experts, after_experts)) = key.split_once("experts.") {
                     if let Some((idx_str, suffix)) = after_experts.split_once('.') {
@@ -272,26 +307,53 @@ where
 
         for (base_key, mut experts) in expert_groups {
             experts.sort_by_key(|(idx, _)| *idx);
-            let mut all_expert_data = Vec::new();
-            let mut expert_sizes = Vec::new();
+            // Copy each expert's data directly into the AlignedBox, skipping
+            // the intermediate Vec to avoid an extra copy.
+            // 直接将每个 expert 的数据拷贝到 AlignedBox，省去中间 Vec 的额外拷贝。
+            let total_len: usize = experts
+                .iter()
+                .filter_map(|(_, key)| {
+                    self.parameters
+                        .get(key)
+                        .map(|v| v.len())
+                        .or_else(|| self.aligned_parameters.get(key).map(|v| v.len()))
+                })
+                .sum();
+            let mut base_box = AlignedBox::<T>::allocate(total_len);
+            let mut expert_sizes = Vec::with_capacity(experts.len());
+            let mut offset = 0usize;
             for (_, key) in &experts {
-                if let Some(data) = pool.parameters.remove(key) {
+                if let Some(data) = self.parameters.remove(key) {
                     expert_sizes.push(data.len());
-                    all_expert_data.extend(data);
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            data.as_ptr(),
+                            base_box.as_mut_ptr().add(offset),
+                            data.len(),
+                        );
+                    }
+                    offset += data.len();
+                } else if let Some(data) = self.aligned_parameters.remove(key) {
+                    expert_sizes.push(data.len());
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            data.as_ptr(),
+                            base_box.as_mut_ptr().add(offset),
+                            data.len(),
+                        );
+                    }
+                    offset += data.len();
                 }
             }
-
-            let total_len = all_expert_data.len();
-            let mut base_box = AlignedBox::allocate(total_len);
-            base_box.as_mut_slice().copy_from_slice(&all_expert_data);
+            debug_assert_eq!(offset, total_len);
             let parent_arc = Arc::new(base_box);
 
-            pool.blocks
+            self.blocks
                 .insert(base_key.clone(), MemoryBlock::Full(parent_arc.clone()));
 
             let mut offset = 0usize;
             for ((_, key), &size) in experts.iter().zip(expert_sizes.iter()) {
-                pool.blocks.insert(
+                self.blocks.insert(
                     key.clone(),
                     MemoryBlock::Sub {
                         parent: parent_arc.clone(),
@@ -302,8 +364,6 @@ where
                 offset += size;
             }
         }
-
-        pool
     }
 
     pub fn get(&mut self, name: &str, shape: &[usize]) -> *mut T {
@@ -345,6 +405,39 @@ where
         self.blocks.get_mut(name).unwrap()
     }
 
+    /// Replace a weight entry with a pre-packed `AlignedBox`, freeing the
+    /// original. Returns a pointer to the packed data (valid for the pool's
+    /// lifetime). This eliminates the duplicate between the operator's
+    /// Box<[T]> and the pool's original weight.
+    /// 用预打包的 AlignedBox 替换权重条目，释放原始数据，消除双份存储。
+    pub fn replace_weight(&mut self, name: &str, packed: AlignedBox<T>) -> *const T {
+        let ptr = packed.as_ptr();
+        self.blocks
+            .insert(name.to_string(), MemoryBlock::Full(Arc::new(packed)));
+        ptr
+    }
+
+    /// Remove a weight entry from the pool, freeing its memory.
+    /// Use after packing: the operator's `Box<[T]>` holds the only copy.
+    /// 从池中移除权重条目并释放内存。用于 pack 后消除双份存储。
+    pub fn remove(&mut self, name: &str) {
+        // Expert shards are represented as Sub blocks that share the same
+        // parent allocation as the combined weight. Removing only the Full
+        // entry leaves every shard's Arc alive and retains the entire original
+        // tensor after an operator has produced its packed copy.
+        let parent = match self.blocks.get(name) {
+            Some(MemoryBlock::Full(parent)) => Some(Arc::clone(parent)),
+            _ => None,
+        };
+        self.blocks.remove(name);
+        if let Some(parent) = parent {
+            self.blocks.retain(|_, block| {
+                !matches!(block, MemoryBlock::Sub { parent: child_parent, .. }
+                    if Arc::ptr_eq(child_parent, &parent))
+            });
+        }
+    }
+
     fn get_or_allocate_full(
         &mut self,
         name: &str,
@@ -357,7 +450,12 @@ where
         );
 
         if self.get_existing_if_valid(name, size).is_none() {
-            let boxed = AlignedBox::allocate_init(size, init.unwrap_or_default());
+            // Use allocate_zero (write_bytes) instead of allocate_init
+            // (scalar loop) for the common zero-init path.
+            let boxed = match init {
+                Some(value) => AlignedBox::allocate_init(size, value),
+                None => AlignedBox::allocate_zero(size),
+            };
             self.blocks
                 .insert(name.to_string(), MemoryBlock::Full(Arc::new(boxed)));
         } else if let Some(value) = init {
@@ -384,7 +482,14 @@ where
                         return self.blocks.get_mut(name).unwrap();
                     }
 
-                    if let Some(data) = self.parameters.remove(name) {
+                    if let Some(data) = self.aligned_parameters.remove(name) {
+                        if self.strict_weights {
+                            assert_eq!(data.len(), size, "Strict weight shape mismatch for {name}");
+                        }
+                        self.blocks
+                            .insert(name.to_string(), MemoryBlock::Full(Arc::new(data)));
+                        return self.blocks.get_mut(name).unwrap();
+                    } else if let Some(data) = self.parameters.remove(name) {
                         if self.strict_weights {
                             assert_eq!(
                                 data.len(),

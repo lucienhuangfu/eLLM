@@ -6,5 +6,5 @@ for offline inference.
 ## Pages
 
 - [Offline inference](offline_inference.md)
+- [Online serving](online_serving.md)
 - [OpenAI compatible server](openai_compatible_server.md)
-- [Serving integrations](integrations/index.md)

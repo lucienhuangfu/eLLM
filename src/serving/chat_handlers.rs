@@ -32,6 +32,7 @@ pub(super) async fn chat_completions(
             .as_nanos()
     );
     let is_stream = request.stream.unwrap_or(false);
+    let max_tokens = request.max_tokens.unwrap_or(100).max(1);
     let model = request.model;
 
     let (slot_index, notifier) =
@@ -46,16 +47,29 @@ pub(super) async fn chat_completions(
         .as_secs();
 
     if is_stream {
-        build_stream_response(state, slot_index, notifier, request_id, model, created)
+        build_stream_response(
+            state, slot_index, notifier, request_id, model, created, max_tokens,
+        )
     } else {
         // Non-streaming: keep scheduling decode work until EOS, then decode all
         // generated tokens at once.
+        let mut generated_tokens = 0usize;
+        let mut stopped_on_eos = false;
         loop {
             notifier.notified().await;
 
-            let is_eos = state.batch_states.with(|batch_list| {
-                let record = &batch_list[slot_index];
-                matches!(record.phase, Phase::Eos)
+            generated_tokens += 1;
+            let is_eos = state.batch_states.with_mut(|batch_list| {
+                let record = &mut batch_list[slot_index];
+                if matches!(record.phase, Phase::Eos) {
+                    stopped_on_eos = true;
+                    true
+                } else if generated_tokens >= max_tokens {
+                    record.phase = Phase::Eos;
+                    true
+                } else {
+                    false
+                }
             });
 
             if is_eos {
@@ -67,9 +81,13 @@ pub(super) async fn chat_completions(
 
         let generated_text = state.batch_states.with(|batch_list| {
             let record = &batch_list[slot_index];
-            state
-                .batch_sequences
-                .with(|batch_sequences| batch_sequences.decode_generated_text(slot_index, record))
+            let generation_start = state.generation_starts.with(|starts| starts[slot_index]);
+            let generation_end = record
+                .kv_index
+                .saturating_sub(usize::from(stopped_on_eos));
+            state.batch_sequences.with(|batch_sequences| {
+                batch_sequences.decode_token_span(slot_index, generation_start, generation_end)
+            })
         });
         reclaim_slot(&state, slot_index, true).await;
 
@@ -137,7 +155,7 @@ async fn assign_slot_with_messages(
                 if !matches!(record.phase, Phase::Start | Phase::Eos) {
                     Err("slot is not in Start or Eos phase".to_string())
                 } else {
-                    let temperature = temperature.unwrap_or(1.0);
+                    let temperature = temperature.unwrap_or(0.7);
                     batch_sequences
                         .write_prompts(slot_index, &message_pairs, temperature)
                         .map(|write_len| {
@@ -159,6 +177,10 @@ async fn assign_slot_with_messages(
             )
                 .into_response()
         })?;
+
+    state
+        .generation_starts
+        .with_mut(|starts| starts[slot_index] = write_len);
 
     permit.forget();
     state.token_counter.increment(write_len).await;
@@ -196,28 +218,36 @@ fn build_stream_response(
     request_id: String,
     model: String,
     created: u64,
+    max_tokens: usize,
 ) -> axum::response::Response {
     let mut parser = IncrementalStreamingParser::with_options(state.parser_options);
     let mut role_sent = false;
     let mut tool_call_index = 0u32;
+    let mut generated_tokens = 0usize;
     let stream_body = stream! {
         loop {
             notifier.notified().await;
+            generated_tokens += 1;
 
             // Read the token position and phase written by TopKSoftmax.
-            let (token_index, phase) = state.batch_states.with(|batch_list| {
-                let record = &batch_list[slot_index];
+            let (token_index, phase) = state.batch_states.with_mut(|batch_list| {
+                let record = &mut batch_list[slot_index];
+                if !matches!(record.phase, Phase::Eos) && generated_tokens >= max_tokens {
+                    record.phase = Phase::Eos;
+                }
                 (record.sequence_index, record.phase)
             });
 
-            // Decode the single token at token_index.
-            let text = state.batch_sequences.with(|batch_sequences| {
-                batch_sequences
-                    .decode_single_token(slot_index, token_index)
-                    .unwrap_or_default()
-            });
-
             let is_eos = matches!(phase, Phase::Eos);
+            let text = if is_eos {
+                String::new()
+            } else {
+                state.batch_sequences.with(|batch_sequences| {
+                    batch_sequences
+                        .decode_single_token(slot_index, token_index)
+                        .unwrap_or_default()
+                })
+            };
             if !is_eos {
                 state.token_counter.increment(1).await;
             }

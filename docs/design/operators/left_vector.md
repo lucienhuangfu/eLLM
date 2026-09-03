@@ -1,8 +1,8 @@
 # LiftVector: Copy the Last Token Vector into a Compact Decode Buffer
 
-This document explains the `LiftVector` operator implemented in [`src/operators/left_vector.rs`](../../../src/operators/left_vector.rs).
+This document explains the `LiftVector` operator implemented in [`src/operators/left_vector.rs`](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/left_vector.rs).
 
-In the codebase, it is exposed through [`Tensor::lift_vector()`](../../../src/runtime/tensor.rs) and is usually triggered from the attention forward path when `decode_only_flag` is enabled.
+In the codebase, it is exposed through [`Tensor::lift_vector()`](https://github.com/lucienhuangfu/eLLM/blob/main/src/tensor/ops.rs) and is usually triggered from the attention forward path when `decode_only_flag` is enabled.
 
 ---
 
@@ -165,7 +165,7 @@ This is why the operator is best thought of as a carefully controlled buffer rea
 
 # 6. Relationship to Attention
 
-In [`src/transformer/attention.rs`](../../../src/transformer/attention.rs), the operator is called only when `decode_only_flag` is enabled:
+In [`src/transformer/attention.rs`](https://github.com/lucienhuangfu/eLLM/blob/main/src/transformer/attention.rs), the operator is called only when `decode_only_flag` is enabled:
 
 ```rust
 if decode_only_flag {
@@ -185,7 +185,7 @@ The practical implication is:
 
 # 7. Example From the Tests
 
-The unit test in [`src/operators/left_vector.rs`](../../../src/operators/left_vector.rs) shows the expected behavior clearly:
+The unit test in [`src/operators/left_vector.rs`](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/left_vector.rs) shows the expected behavior clearly:
 
 * Three slices are provided
 * Each slice has `last_token_flag = true`

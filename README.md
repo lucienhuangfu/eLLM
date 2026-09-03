@@ -60,6 +60,52 @@ Based on the CPU server profile of "large memory, large cache, modest compute," 
 - ✅ Qwen3 series
 - ✅ MiniMax M2.5
 
+## Quick Start: One Chat Request
+
+The current runnable server target is fixed to
+`models/Qwen3-Coder-30B-A3B-Instruct`. Download the complete model snapshot,
+then build and start the service from the repository root:
+
+```bash
+python3 -m pip install --upgrade huggingface_hub
+hf download Qwen/Qwen3-Coder-30B-A3B-Instruct \
+  --local-dir models/Qwen3-Coder-30B-A3B-Instruct
+
+cargo build --release --bin main
+./target/release/main
+```
+
+The process loads the model once and exposes an OpenAI-compatible endpoint on
+port 8000. In another terminal, send one conversation request:
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Qwen3-Coder-30B-A3B-Instruct",
+    "messages": [
+      {"role": "user", "content": "Write a Rust function that computes Fibonacci numbers."}
+    ],
+    "stream": false,
+    "max_tokens": 100
+  }'
+```
+
+Defaults are `batch=1`, a 50,100-token sequence/chunk capacity, 16 parallel
+weight-loading threads, BRGEMM attention when supported, and all CPU threads
+available to the process. These can still be tuned with the corresponding
+`ELLM_*` environment variables.
+
+For readable token-by-token output instead of raw SSE JSON:
+
+```bash
+python3 scripts/chat.py "What's your name?"
+```
+
+See the [installation guide](docs/getting_started/installation.md) for hardware
+and BRGEMM prerequisites, or follow the complete
+[quickstart](docs/getting_started/quickstart.md).
+
 ## Experiments
 The minimum viable prototype of eLLM is now complete. To validate its performance potential, we designed both short-context and long-context experiments, evaluated Prefill and Decode separately, and compared a single CPU server with an inference node built from 8 GPUs. In short-context inference, CPUs are clearly behind GPUs. In long-context inference, eLLM may pull ahead by leveraging CPU memory capacity.
 

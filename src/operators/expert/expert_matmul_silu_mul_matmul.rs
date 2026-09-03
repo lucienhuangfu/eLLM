@@ -51,6 +51,7 @@ pub struct ExpertMatMulSilu<T> {
     pub hidden: usize,      // Hidden size. hidden 大小。
     pub num_experts: usize, // Expert count. expert 数量。
     pub decode_only_flag: bool,
+    pub compact_output: bool,
 
     // === strides ===
     // === stride 参数 ===
@@ -107,7 +108,10 @@ where
         a_row_step_micro: usize,  // micro tile rows. 微内核行数。
         b_row_step_micro: usize,  // micro tile cols. 微内核列数。
         decode_only_flag: bool,
-    ) -> Self {
+    ) -> Self
+    where
+        T: Send + 'static,
+    {
         let token_block_rows = a_row_step_macro.max(1);
         let reduction_block_cols = column_step_macro.max(1);
         let micro_tile_rows = a_row_step_micro.max(1);
@@ -117,22 +121,27 @@ where
         let acc_stride = micro_tile_rows * micro_tile_cols;
         let a_tile_stride = micro_tile_rows * reduction_block_cols;
 
-        let packed_gate = Self::pack_expert_b_panels(
-            gate_nt_ptr,
-            num_experts,
-            inter,
-            hidden,
-            reduction_block_cols,
-            micro_tile_cols,
-        );
-        let packed_up = Self::pack_expert_b_panels(
-            up_nt_ptr,
-            num_experts,
-            inter,
-            hidden,
-            reduction_block_cols,
-            micro_tile_cols,
-        );
+        // Pack gate/up expert weight panels in parallel.
+        // gate/up 专家权重 panel 并行打包。
+        struct SendFn<T>(Box<dyn FnOnce() -> Box<[T]>>);
+        unsafe impl<T> Send for SendFn<T> {}
+        impl<T> SendFn<T> { fn call(self) -> Box<[T]> { (self.0)() } }
+        struct SendBox<T>(T);
+        unsafe impl<T> Send for SendBox<T> {}
+
+        let g_addr = gate_nt_ptr;
+        let u_addr = up_nt_ptr;
+        let n_exp = num_experts;
+        let n_inter = inter;
+        let n_hidden = hidden;
+        let kc = reduction_block_cols;
+        let nr = micro_tile_cols;
+
+        let task_g = SendFn(Box::new(move || Self::pack_expert_b_panels(g_addr, n_exp, n_inter, n_hidden, kc, nr)));
+        let gh = std::thread::spawn(move || SendBox(task_g.call()));
+        // Pack up on the current thread while gate runs in parallel.
+        let packed_up = Self::pack_expert_b_panels(u_addr, n_exp, n_inter, n_hidden, kc, nr);
+        let packed_gate = gh.join().unwrap().0;
 
         // Detect thread count once and allocate all per-thread scratch in new().
         // 线程数只在 new() 中探测一次，并在这里分配所有每线程 scratch。
@@ -171,6 +180,7 @@ where
             hidden,
             num_experts,
             decode_only_flag,
+            compact_output: crate::operators::expert::expert_routing::compact_moe_enabled(),
 
             packed_panel_stride,
             acc_stride,
@@ -217,7 +227,8 @@ where
         let output_panel_count = output_cols.div_ceil(micro_tile_cols);
         let panel_stride = reduction_block_cols * micro_tile_cols;
         let expert_stride = reduction_panel_count * output_panel_count * panel_stride;
-        let mut packed = vec![T::default(); expert_count * expert_stride];
+        let total_size = expert_count * expert_stride;
+        let mut packed = crate::mem_mgr::allocator::alloc_zeroed_box::<T>(total_size);
 
         unsafe {
             for expert_id in 0..expert_count {
@@ -248,7 +259,7 @@ where
             }
         }
 
-        packed.into_boxed_slice()
+        packed
     }
 
     #[inline(always)]
@@ -316,6 +327,7 @@ where
                 .as_ptr()
                 .wrapping_add(thread_id * self.task_meta_stride) as *mut ExpertTaskMeta;
         let mut expert_task_count = 0usize;
+        let mut routed_row_count = 0usize;
         let mut total_tasks = 0usize;
 
         unsafe {
@@ -331,12 +343,13 @@ where
                 let task_count = token_tile_count * output_column_tile_count;
                 *expert_tasks_ptr.add(expert_task_count) = ExpertTaskMeta {
                     expert_id,
-                    token_begin: 0,
+                    token_begin: routed_row_count,
                     token_count: routed_token_count,
                     task_begin: total_tasks,
                     task_end: total_tasks + task_count,
                 };
                 expert_task_count += 1;
+                routed_row_count += routed_token_count;
                 total_tasks += task_count;
             }
 
@@ -376,8 +389,6 @@ where
             let input_row_stride = self.hidden;
 
             let output_base = self.output_ptr.ptr;
-            let output_expert_stride = self.batch * self.inter;
-
             let (gate_acc, up_acc, a_tile, idx_buf) = self.thread_slices(thread_id);
 
             let output_column_tile_count = output_cols.div_ceil(output_block_cols);
@@ -517,9 +528,16 @@ where
                         // 对每个 routed token 行计算 SiLU(gate) * up 并写回。
                         for row_in_tile in 0..valid_rows {
                             let token_id = *idx_buf.add(token_offset_in_block + row_in_tile);
+                            let output_row_index = if self.compact_output {
+                                task_meta.token_begin
+                                    + token_block_start
+                                    + token_offset_in_block
+                                    + row_in_tile
+                            } else {
+                                expert_id * self.batch + token_id
+                            };
                             let output_row = output_base
-                                .add(expert_id * output_expert_stride)
-                                .add(token_id * self.inter)
+                                .add(output_row_index * self.inter)
                                 .add(output_col_start + output_col_offset);
 
                             let gate_row = gate_acc.add(row_in_tile * micro_tile_cols);

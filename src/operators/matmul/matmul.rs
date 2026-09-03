@@ -117,8 +117,12 @@ where
         let reduction_panel_count = reduction_cols.div_ceil(reduction_block_cols);
         let output_panel_count = output_cols.div_ceil(micro_tile_cols);
         let panel_stride = reduction_block_cols * micro_tile_cols;
-        let mut packed =
-            vec![T::default(); reduction_panel_count * output_panel_count * panel_stride];
+        let total_size = reduction_panel_count * output_panel_count * panel_stride;
+        // alloc_zeroed_box uses calloc-style zeroing (fast OS zero-pages),
+        // needed because micro-kernel blindly reads partial-panel tails.
+        // 用 alloc_zeroed_box（calloc 风格，OS 快速零页），
+        // 因为 micro-kernel 会盲读面板尾部的未填满区域。
+        let mut packed = crate::mem_mgr::allocator::alloc_zeroed_box::<T>(total_size);
 
         unsafe {
             for reduction_panel_index in 0..reduction_panel_count {
@@ -145,7 +149,7 @@ where
             }
         }
 
-        packed.into_boxed_slice()
+        packed
     }
 
     #[inline(always)]

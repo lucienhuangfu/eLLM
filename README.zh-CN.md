@@ -63,47 +63,46 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 
 ## 🤖 支持模型
 - ✅ Qwen3 系列
-- ⏳ Qwen3.8 系列 （开发中）
+- ⏳ MiniMax M2.7
+- ⏳ GLM 5.2
 
-## ⚡ 快速开始
-eLLM 兼容 vLLM API，从构建到上线只需四步：
+## 🚀 快速部署：完成一次对话
 
-1. **构建**：需要 Rust nightly 工具链（rustup 会根据 `rust-toolchain.toml` 自动安装）
+当前可直接运行的服务固定使用
+`models/Qwen3-Coder-30B-A3B-Instruct`。先下载完整模型，再编译并启动：
 
-   ```bash
-   git clone https://github.com/lucienhuangfu/eLLM.git
-   cd eLLM
-   cargo build --release
-   ```
+```bash
+python3 -m pip install --upgrade huggingface_hub
+hf download Qwen/Qwen3-Coder-30B-A3B-Instruct \
+  --local-dir models/Qwen3-Coder-30B-A3B-Instruct
 
-2. **准备模型**：将 HuggingFace 格式的模型目录放到 `models/` 下，至少包含：
+cargo build --release --bin main
+./target/release/main
+```
 
-   ```
-   models/Qwen3-0.6B/
-   ├── config.json
-   ├── generation_config.json
-   ├── model.safetensors
-   └── tokenizer.json
-   ```
+服务完成权重加载和计算图初始化后监听 `0.0.0.0:8000`。在另一个终端发送非流式请求：
 
-3. **启动服务**：默认监听 `0.0.0.0:8000`
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Qwen3-Coder-30B-A3B-Instruct",
+    "messages": [{"role": "user", "content": "What is your name?"}],
+    "stream": false,
+    "max_tokens": 100
+  }'
+```
 
-   ```bash
-   cargo run --release --bin main -- models/Qwen3-0.6B
-   ```
+希望在终端直接看到逐 token 输出时运行：
 
-4. **发起请求**：请求体中加上 `"stream": true` 即可获得逐 token 的 SSE 流式输出
+```bash
+python3 scripts/chat.py "What's your name?"
+```
 
-   ```bash
-   curl http://localhost:8000/v1/chat/completions \
-     -H "Content-Type: application/json" \
-     -d '{
-       "model": "Qwen3-0.6B",
-       "messages": [{"role": "user", "content": "你好，介绍一下你自己"}]
-     }'
-   ```
-
-更详细的安装、配置与采样参数说明见：[安装指南](docs/getting_started/installation.md) 与 [Quickstart](docs/getting_started/quickstart.md)。
+默认配置为：`batch=1`、sequence/chunk 容量为 50,100 tokens、16 个权重加载线程、
+优先使用 BRGEMM attention，并使用当前进程可见的全部 CPU。详细依赖、硬件要求和调优方式见
+[安装文档](docs/getting_started/installation.md)、[快速开始](docs/getting_started/quickstart.md)
+和[环境变量](docs/configuration/env_vars.md)。
 
 ## 📊 Benchmark
 系统目前仅完成初步优化，仍有很大提升空间。但实验表明，在短程任务（单轮交互）中，eLLM 对 CPU baseline（SGLang CPU backend）已全面领先，且优势随输入长度增加持续扩大：

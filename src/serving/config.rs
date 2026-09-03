@@ -14,9 +14,9 @@ impl ServingConfig {
     pub fn new(model_dir: String) -> Self {
         Self {
             model_dir,
-            batch_size: parse_env_usize("ELLM_BATCH_SIZE", 3),
-            sequence_length: parse_env_usize("ELLM_SEQUENCE_LENGTH", 128),
-            chunk_size: parse_env_usize("ELLM_CHUNK_SIZE", 64),
+            batch_size: parse_env_usize("ELLM_BATCH", 1),
+            sequence_length: parse_env_usize("ELLM_SEQUENCE_LENGTH", 50_100),
+            chunk_size: parse_env_usize("ELLM_CHUNK_SIZE", 50_100),
             schedule_timeout_ms: parse_env_usize("ELLM_SCHEDULE_TIMEOUT_MS", 10),
             reasoning_parser_enabled: true,
             tool_call_parser_enabled: true,

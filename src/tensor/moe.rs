@@ -5,7 +5,7 @@ use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
-use crate::operators::expert::expert_routing::ExpertRouting;
+use crate::operators::expert::expert_routing::{compact_moe_enabled, ExpertRouting};
 use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
 use crate::operators::operator::Operator;
 use crate::operators::routing::{ExpertsSoftmaxNorm, ExpertsTopkNorm, MatMulSigmoid, TopKSoftmax};
@@ -67,7 +67,7 @@ where
     ) -> Self {
         // down_weights [num_experts, hidden_size, intermediate_size]
         // output [batch_size, num_experts_per_token, hidden_size]
-        let token_count = self.shape[1];
+        let token_count = routing.num_tokens;
         let output_shape = vec![token_count, num_experts_per_tok, down_weights.shape[1]];
 
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
@@ -88,6 +88,8 @@ where
             )
         });
 
+        T::with_global(|pool| pool.remove(&down_weights.tensor_name));
+
         Self::enqueue(operator);
         output_tensor
     }
@@ -100,12 +102,21 @@ where
         params: MatMulParams,
         decode_only_flag: bool,
         scope_name: String,
-    ) -> Self {
+    ) -> Self
+    where
+        T: Send + 'static,
+    {
         // gate_weights [num_experts, intermediate_size, hidden_size]
-        // output [num_experts, batch_size, intermediate_size]
+        // Fixed layout: [num_experts, batch_size, intermediate_size].
+        // Compact layout: [batch_size * top_k, intermediate_size].
         let token_count = self.row_count();
         let hidden_size = self.last_dim();
-        let output_shape = vec![gate_weights.shape[0], token_count, gate_weights.shape[1]];
+        let compact_moe = compact_moe_enabled();
+        let output_shape = if compact_moe {
+            vec![token_count * routing.num_topk, gate_weights.shape[1]]
+        } else {
+            vec![gate_weights.shape[0], token_count, gate_weights.shape[1]]
+        };
 
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
 
@@ -127,6 +138,12 @@ where
                 params.b_row_step_micro,
                 decode_only_flag,
             )
+        });
+
+        // Packed copies live in ExpertMatMulSilu; free originals.
+        T::with_global(|pool| {
+            pool.remove(&gate_weights.tensor_name);
+            pool.remove(&up_weights.tensor_name);
         });
 
         Self::enqueue(operator);
@@ -214,8 +231,10 @@ where
                 hidden_size,
                 bias_tensor.is_some(),
                 decode_only_flag,
+                gate_weight.tensor_name.clone(),
             )
         });
+
         Self::enqueue(operator);
         output_tensor
     }
@@ -255,21 +274,24 @@ where
             std::ptr::write(expert_counts.add(e), AtomicUsize::new(0));
         }
 
+        // Keep B*K capacity because the current Top-K implementation may emit
+        // repeated expert ids for a token. Reducing this to B corrupts the
+        // adjacent routing buffers on real model output.
         let capacity_per_expert = num_tokens * num_topk;
-        let mut index_tensor = AlignedBox::allocate_init(num_experts * capacity_per_expert, 0usize);
+        let mut index_tensor = AlignedBox::allocate_zero(num_experts * capacity_per_expert);
         let index_tensor = {
             let ptr = index_tensor.as_mut_ptr();
             std::mem::forget(index_tensor);
             ptr
         };
         let mut score_tensor =
-            AlignedBox::allocate_init(num_experts * capacity_per_expert, T::default());
+            AlignedBox::allocate_zero(num_experts * capacity_per_expert);
         let score_tensor = {
             let ptr = score_tensor.as_mut_ptr();
             std::mem::forget(score_tensor);
             ptr
         };
-        let mut topk_indices = AlignedBox::allocate_init(num_tokens * num_topk, 0usize);
+        let mut topk_indices = AlignedBox::allocate_zero(num_tokens * num_topk);
         let topk_indices = {
             let ptr = topk_indices.as_mut_ptr();
             std::mem::forget(topk_indices);

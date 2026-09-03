@@ -1,9 +1,19 @@
-# `chat`
+# Streaming Chat Client
 
-这里是 `chat` 命令的入口页。
+The repository does not currently provide an interactive `chat` binary. It
+includes a minimal streaming client for one prompt:
 
-## 这里建议包含
+```bash
+python3 scripts/chat.py "What's your name?"
+```
 
-- 交互式聊天模式
-- 模板与参数
-- 终端体验说明
+If the prompt argument is omitted, the script asks for one line of input. Useful
+options are:
+
+```bash
+python3 scripts/chat.py --max-tokens 200 "Explain ownership in Rust."
+python3 scripts/chat.py --url http://server:8000/v1/chat/completions "Hello"
+```
+
+The script requires `curl`, requests SSE streaming, removes the JSON envelope,
+and prints each text delta immediately.

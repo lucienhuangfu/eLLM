@@ -23,7 +23,7 @@ The component that scans `batch_list` and produces a `ScheduleTask` (prefill and
 Holds the tokenizer and the token sequence buffer for all batch slots. Exposes `write_prompts()` and `decode_*()` methods.
 
 **batch_size**  
-The maximum number of concurrent in-flight requests. Controlled by `ELLM_BATCH_SIZE`.
+The maximum number of concurrent in-flight requests. Controlled by `ELLM_BATCH`.
 
 ---
 

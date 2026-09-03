@@ -1,125 +1,89 @@
 # Quickstart
 
-This guide assumes you have already built eLLM and downloaded a model.
-See [Installation](./installation.md) if you have not done that yet.
+This is the shortest supported path from a model snapshot to one chat request.
+Complete [Installation](installation.md) first.
 
----
-
-## 1. Start the Server
+## 1. Check the fixed model path
 
 ```bash
-cargo run --release --bin main -- --model models/Qwen3-0.6B
+test -f models/Qwen3-Coder-30B-A3B-Instruct/config.json
+test -f models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json
 ```
 
-You should see the server bind to `0.0.0.0:8000`. Confirm it is alive:
+The `main` binary currently serves only
+`Qwen3-Coder-30B-A3B-Instruct` from this directory. It has no `--model`
+argument.
+
+## 2. Build and start the service
+
+```bash
+cargo build --release --bin main
+./target/release/main
+```
+
+Model loading and initial graph construction happen once at startup and can
+take some time. Keep this terminal open. The service listens on
+`0.0.0.0:8000`.
+
+From a second terminal, check readiness:
 
 ```bash
 curl http://localhost:8000/status
 ```
 
-Expected response:
-
 ```json
-{
-  "status": "running",
-  "mode": "single_threaded_background_processing",
-  "info": "Inference and HTTP server run on a single OS thread using current_thread runtime"
-}
+{"status":"running","model":"Qwen3-Coder-30B-A3B-Instruct","mode":"single_request"}
 ```
 
----
-
-## 2. Send a Chat Completion Request
+## 3. Send a non-streaming request
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
+  -H 'Content-Type: application/json' \
   -d '{
-    "model": "Qwen3-0.6B",
+    "model": "Qwen3-Coder-30B-A3B-Instruct",
     "messages": [
-      {"role": "user", "content": "What is 2 + 2?"}
-    ]
-  }'
-```
-
-Example response:
-
-```json
-{
-  "id": "chatcmpl-1749500000000000",
-  "object": "chat.completion",
-  "created": 1749500000,
-  "model": "Qwen3-0.6B",
-  "choices": [
-    {
-      "message": {
-        "role": "assistant",
-        "content": "2 + 2 = 4."
-      },
-      "finish_reason": "stop"
-    }
-  ]
-}
-```
-
----
-
-## 3. Streaming
-
-Add `"stream": true` to receive Server-Sent Events with one chunk per token:
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen3-0.6B",
-    "messages": [{"role": "user", "content": "Count to 5."}],
-    "stream": true
-  }'
-```
-
-Each chunk is a `chat.completion.chunk` SSE event. The final chunk carries
-`"finish_reason": "stop"`.
-
----
-
-## 4. Sampling Parameters
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `temperature` | float | 1.0 | Sampling temperature |
-| `top_p` | float | 1.0 | Nucleus sampling probability |
-| `max_tokens` | int | — | Max tokens to generate |
-| `stream` | bool | false | Enable SSE streaming |
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen3-0.6B",
-    "messages": [{"role": "user", "content": "Tell me a joke."}],
-    "temperature": 0.7,
+      {"role": "user", "content": "What is your name?"}
+    ],
+    "stream": false,
     "max_tokens": 100
   }'
 ```
 
----
+The generated text is in `choices[0].message.content`.
 
-## 5. Using the Fake Server (No Model Weights)
+## 4. Stream readable text
 
-For integration testing without real weights, use `fake_server`:
+The included client hides the SSE JSON envelope and prints text as tokens
+arrive:
 
 ```bash
-cargo run --release --bin fake_server
+python3 scripts/chat.py "Write a Rust Fibonacci function."
 ```
 
-It uses the `FakeEcho` operator, which completes requests immediately without
-running any model computation. See [FakeEcho](../design/operators/fake_echo.md).
+To inspect the raw SSE protocol instead:
 
----
+```bash
+curl -N http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Qwen3-Coder-30B-A3B-Instruct",
+    "messages": [{"role": "user", "content": "Count to five."}],
+    "stream": true,
+    "max_tokens": 100
+  }'
+```
 
-## Next Steps
+Each `data:` event contains one generated-token delta. The last event has an
+empty delta and `finish_reason: "stop"`.
 
-- [Serving Overview](../serving/index.md) — understand the full request lifecycle
-- [Runtime Overview](../design/runtime/overview.md) — how scheduling and execution work
-- [Configuration](../configuration/index.md) — tuning parameters
+## Request defaults
+
+| Field | Default | Notes |
+|---|---:|---|
+| `stream` | `false` | Set to `true` for SSE |
+| `temperature` | `0.7` | Applied per request |
+| `max_tokens` | `100` | Applied per request |
+
+See [Environment Variables](../configuration/env_vars.md) for server capacity,
+threading, and backend settings.

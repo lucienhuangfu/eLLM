@@ -60,6 +60,7 @@ pub fn extract_generation_params(
     let eos_token_id_list = generation_config
         .as_ref()
         .and_then(|cfg| cfg.eos_token_id_list.clone())
+        .filter(|ids| !ids.is_empty())
         .unwrap_or_else(|| config.eos_token_ids.clone());
 
     GenerationParameters {
@@ -74,42 +75,30 @@ pub fn extract_generation_params(
 
 pub fn load_model_parameters(model_dir: &str) -> Result<(), String> {
     let params = crate::runtime::SafeTensorsLoader::new(model_dir)
-        .and_then(|loader| loader.load_all_weights_f16())
+        .and_then(|loader| loader.load_all_weights_f16_aligned_parallel())
         .map_err(|e| format!("failed to load model parameters: {}", e))?;
 
     println!("Loaded {} parameter tensors", params.len());
-    f16::init_global_strict(params);
+    f16::init_global_strict_aligned(params);
     Ok(())
 }
 
-pub fn determine_thread_config(generation_config: &Option<GenerationConfig>) -> ThreadingConfig {
-    let requested_thread_num = generation_config
-        .as_ref()
-        .map_or_else(
-            || {
-                std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(1)
-            },
-            |cfg| cfg.thread_num(),
-        )
-        .max(1);
-
+pub fn determine_thread_config(_generation_config: &Option<GenerationConfig>) -> ThreadingConfig {
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    // Use only physical cores (even indices) to avoid hyperthreading overhead
-    let physical_cores = if core_ids.is_empty() {
-        requested_thread_num
+    let system_threads = if core_ids.is_empty() {
+        std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
     } else {
-        let physical_count = core_ids
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| i % 2 == 0)
-            .count();
-        physical_count.max(1).min(requested_thread_num)
+        core_ids.len()
     };
-    let total_threads = physical_cores;
+    let total_threads = std::env::var("ELLM_THREAD_NUM")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(system_threads);
     let async_threads = 2;
-    let worker_threads = (total_threads - async_threads).max(1);
+    let worker_threads = total_threads.max(1);
 
     println!(
         "Total threads: {}, async threads: {}, worker threads: {}",

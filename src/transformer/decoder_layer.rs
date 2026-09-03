@@ -155,7 +155,10 @@ where
         input_sequences: *mut usize,
         decode_only_flag: bool,
         _tensor_name: String,
-    ) -> Tensor<T> {
+    ) -> Tensor<T>
+    where
+        T: Send + 'static,
+    {
         // # Attention 层
         let (hidden_states_owned, norm_hidden) = if self.layer_idx != 0 {
             let norm_hidden = hidden_states.rms(

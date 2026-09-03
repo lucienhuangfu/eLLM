@@ -1,9 +1,8 @@
-# 在线服务
+# Online Serving
 
-这里保留在线推理与服务接口说明。
+The supported online interface is `POST /v1/chat/completions` on port 8000.
+Both a complete JSON response and incremental SSE output are supported.
 
-## 建议包含
-
-- OpenAI 兼容接口
-- 其他协议适配
-- 请求与响应示例
+Start with the [Quickstart](../getting_started/quickstart.md), then consult the
+[OpenAI-Compatible Chat Server](openai_compatible_server.md) for response and
+scheduling details.

@@ -11,55 +11,33 @@ theme:
 
 nav:
   - Home: index.md
-  - User Guide:
-      - Overview: usage/index.md
-      - v1 Guide: usage/v1_guide.md
   - Getting Started:
       - Quickstart: getting_started/quickstart.md
       - Installation: getting_started/installation.md
-  - Examples: examples/index.md
   - Inference and Serving:
       - Offline Inference: serving/offline_inference.md
+      - Online Serving: serving/online_serving.md
       - OpenAI Compatible Server: serving/openai_compatible_server.md
       - Serving Overview: serving/index.md
-      - Integrations: serving/integrations/index.md
   - Deployment:
       - Overview: deployment/index.md
-      - Frameworks: deployment/frameworks/index.md
-      - Integrations: deployment/integrations/index.md
-  - Training: training/index.md
   - Configuration:
       - Overview: configuration/index.md
+      - Environment Variables: configuration/env_vars.md
       - Optimization: configuration/optimization.md
-  - Models:
-      - Supported Models: models/supported_models.md
-      - Generative Models: models/generative_models.md
-      - Pooling Models: models/pooling_models/index.md
-      - Extensions: models/extensions/index.md
-      - Hardware Supported Models: models/hardware_supported_models/index.md
   - Features: features/index.md
   - Developer Guide:
-      - Overview: contributing/README.md
-      - General: contributing/index.md
-      - Model Implementation:
-          - Overview: contributing/model/README.md
-          - Basic: contributing/model/basic.md
-          - Registration: contributing/model/registration.md
-          - Tests: contributing/model/tests.md
-          - Multimodal: contributing/model/multimodal.md
-          - Transcription: contributing/model/transcription.md
+      - Overview: contributing/index.md
+      - Model Implementation: contributing/model/basic.md
+      - New Operator: contributing/new_operator.md
+      - Hugging Face Alignment: contributing/hf_alignment.md
       - CI: contributing/ci/index.md
   - Design Documents: design/index.md
-  - Benchmarking:
-      - Overview: benchmarking/README.md
-      - CLI: benchmarking/cli.md
-      - Sweeps: benchmarking/sweeps.md
-      - Dashboard: benchmarking/dashboard.md
-  - API Reference:
-      - Overview: api/README.md
-      - vLLM: api/vllm/index.md
-  - CLI Reference: cli/index.md
-  - Community: community/index.md
+  - CLI Reference:
+      - Overview: cli/index.md
+      - Serve: cli/serve.md
+      - Streaming Chat: cli/chat.md
+  - Glossary: reference/glossary.md
   - Governance: governance/index.md
 
 markdown_extensions:
@@ -69,4 +47,3 @@ markdown_extensions:
   - tables
   - fenced_code
   - attr_list
-

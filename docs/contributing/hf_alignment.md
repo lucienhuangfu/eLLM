@@ -16,8 +16,8 @@ Recommended order:
 
 ## Current RoPE reference
 
-The current Rust implementation lives in [`src/transformer/rope.rs`](../../../src/transformer/rope.rs).
-The Python oracle in [`tests/reference/hf/rope.py`](../../../tests/reference/hf/rope.py) mirrors the same behavior:
+The current Rust implementation lives in [`src/transformer/rope.rs`](https://github.com/lucienhuangfu/eLLM/blob/main/src/transformer/rope.rs).
+An external Python oracle can mirror the same behavior for comparison:
 
 - base RoPE frequency generation
 - partial rotary tails that stay as `1, 0`
@@ -38,16 +38,6 @@ The `values` array is flattened in the same order as the Rust implementation:
 for each position, emit interleaved `cos, sin` pairs, then any identity tail
 channels as `1, 0`.
 
-## Generate a golden file
-
-On Windows PowerShell:
-
-```powershell
-.\tests\reference\hf\run_rope_reference.ps1
-```
-
-Or directly:
-
-```powershell
-py -3 .\tests\reference\hf\rope.py --case .\tests\reference\hf\cases\rope_case_min.json --output .\tests\reference\hf\golden\rope_case_min.json
-```
+The reference generator is not included in the current repository snapshot;
+add it together with its cases and goldens when introducing a new alignment
+test.

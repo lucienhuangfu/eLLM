@@ -3,15 +3,9 @@
 This section gathers the knobs that affect runtime behavior, performance, and
 deployment shape.
 
-## What belongs here
-
-- Model and engine configuration
-- Performance tuning
-- Memory and batching behavior
-- Environment variables and deployment settings
-
 ## Key pages
 
+- [Environment variables](env_vars.md)
 - [Optimization](optimization.md)
 
 If you are looking for a feature-specific explanation, check the related

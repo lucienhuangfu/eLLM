@@ -41,12 +41,15 @@ pub fn create_scheduling_components(
     let (task_sender, _): (tokio::sync::broadcast::Sender<ScheduleTask>, _) =
         tokio::sync::broadcast::channel(broadcast_capacity);
 
-    let token_counter = Arc::new(TokenCounter::new(
-        config.chunk_size,
-        Duration::from_millis(config.schedule_timeout_ms as u64),
-        Arc::clone(&batch_scheduler),
-        task_sender.clone(),
-    ));
+    let token_counter = Arc::new(
+        TokenCounter::new(
+            config.chunk_size,
+            Duration::from_millis(config.schedule_timeout_ms as u64),
+            Arc::clone(&batch_scheduler),
+            task_sender.clone(),
+        )
+        .with_thread_count(thread_config.worker_threads),
+    );
 
     (token_counter, task_sender)
 }

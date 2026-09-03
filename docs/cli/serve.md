@@ -1,9 +1,15 @@
-# `serve`
+# Serve
 
-这里是 `serve` 命令的入口页。
+Build and run the fixed-model HTTP service:
 
-## 这里建议包含
+```bash
+cargo build --release --bin main
+./target/release/main
+```
 
-- 基础用法
-- 常用参数
-- OpenAI 兼容服务说明
+There is currently no `serve` subcommand and no `--model` option. The model is
+loaded from `models/Qwen3-Coder-30B-A3B-Instruct`, and the listener is
+`0.0.0.0:8000`.
+
+Use [Environment Variables](../configuration/env_vars.md) to tune capacity,
+threads, loading, and the attention backend.

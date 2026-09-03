@@ -109,6 +109,7 @@ struct ApiState {
     parser_options: ParserOptions,
     free_slots: Arc<Mutex<VecDeque<usize>>>,
     available_slots: Arc<Semaphore>,
+    generation_starts: Arc<SharedMut<Vec<usize>>>,
 }
 
 fn build_api_state(
@@ -133,6 +134,7 @@ fn build_api_state(
         parser_options,
         free_slots: Arc::new(Mutex::new(initial_free_slots)),
         available_slots: Arc::new(Semaphore::new(initial_permits)),
+        generation_starts: Arc::new(SharedMut::new(vec![0; initial_permits])),
     }
 }
 
@@ -158,8 +160,8 @@ pub async fn run(
             axum::routing::get(|| async {
                 Json(serde_json::json!({
                     "status": "running",
-                    "mode": "single_threaded_background_processing",
-                    "info": "Inference and HTTP server run on a single OS thread using current_thread runtime"
+                    "model": "Qwen3-Coder-30B-A3B-Instruct",
+                    "mode": "single_request"
                 }))
             }),
         )
