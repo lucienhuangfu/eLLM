@@ -59,4 +59,4 @@ eLLM 预计会显著快于 GPU baseline。在超长 Prompt 的 Prefill 阶段，
   - eLLM 优势：eLLM 在 CPU 上以函数调用方式执行，无需 kernel 启动开销，在小 batch 和低并行度场景下具有更稳定的执行效率。
 
 
-CPU 具备更大的 Cache 空间，配合逐 head 计算 attention 的执行方式，可以显著提升数据驻留与复用效率，使 Prefill 阶段获得更低的整体延迟。
+
