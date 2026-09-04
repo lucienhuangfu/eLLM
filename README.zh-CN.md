@@ -78,7 +78,7 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 ```text
 models/Qwen3-Coder-30B-A3B-Instruct
 ```
-随后编译 eLLM，并以约 20K token 容量和单请求槽位启动服务：
+随后编译 eLLM，并以约 200K token 容量和单请求槽位启动服务：
 
 ```bash
 git clone https://github.com/lucienhuangfu/eLLM.git
@@ -87,8 +87,8 @@ cd eLLM
 cargo build --release --bin main
 ./target/release/main \
   --model-path models/Qwen3-Coder-30B-A3B-Instruct \
-  --chunk-size 20000 \
-  --sequence-length 20000 \
+  --chunk-size 200000 \
+  --sequence-length 200000 \
   --batch-size 1
 ```
 

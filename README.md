@@ -64,36 +64,43 @@ To better support **long-horizon tasks**, eLLM targets the Agent scenario of "mu
 - ✅ Qwen3 series
 - ⏳ Qwen3.8 (in development)
 
-## 🚀 Quick Start: One Chat Request
+## 🚀 Quick Install and Chat
 
-The current runnable server is fixed to
-`models/Qwen3-Coder-30B-A3B-Instruct`. Download the complete model, then build and start:
+**Hardware requirements**
+- CPU: AVX-512 FP16 support
+- Memory: 128 GB+
+
+**Software requirements**
+- OS: Linux (x86-64)
+- Rust: install with rustup; `rust-toolchain.toml` already pins nightly
+- Python 3 and curl: used to run the chat client
+
+We recommend first downloading the complete Qwen3-Coder-30B-A3B-Instruct model from Hugging Face.
+After cloning the repository and entering its root directory, copy the model to the following path:
+```text
+models/Qwen3-Coder-30B-A3B-Instruct
+```
+Then build eLLM and start the service with roughly 200K token capacity and a single request slot:
 
 ```bash
+git clone https://github.com/lucienhuangfu/eLLM.git
+cd eLLM
+# Copy the downloaded model to models/Qwen3-Coder-30B-A3B-Instruct
 cargo build --release --bin main
 ./target/release/main \
   --model-path models/Qwen3-Coder-30B-A3B-Instruct \
-  --chunk-size 20000 \
-  --sequence-length 20000 \
+  --chunk-size 200000 \
+  --sequence-length 200000 \
   --batch-size 1
 ```
 
-After loading weights and initializing the computation graph, the service listens on `0.0.0.0:8000`. In another terminal, send a non-streaming request:
+After loading weights and initializing the computation graph, the service listens on `0.0.0.0:8000`. In another terminal, run the streaming chat client:
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "Qwen3-Coder-30B-A3B-Instruct",
-    "messages": [{"role": "user", "content": "What is your name?"}],
-    "stream": false,
-    "max_tokens": 100
-  }'
+python3 scripts/chat.py
 ```
 
-Default configuration: `batch=1`, a 50,100-token sequence/chunk capacity, 16 weight-loading threads, BRGEMM attention preferred, and all CPUs visible to the current process.
-
-For detailed dependencies, hardware requirements, and tuning, see the [installation guide](docs/getting_started/installation.md).
+Type `exit` or `quit` to end the conversation.
 
 ## 📊 Benchmark
 The system has only been preliminarily optimized so far and still has a lot of headroom. But experiments show that in short-horizon tasks (single-turn interaction), eLLM already leads the CPU baseline (SGLang CPU backend) across the board, and the advantage keeps widening as input length grows:
