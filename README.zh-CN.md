@@ -73,12 +73,13 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 - Rust：用 rustup 安装即可，`rust-toolchain.toml` 已指定 nightly
 - Python 3 与 curl：用于运行对话客户端
 
+
 建议先从 Hugging Face 下载完整的 Qwen3-Coder-30B-A3B-Instruct 模型。
 克隆仓库并进入根目录后，将模型复制到以下路径：
 ```text
 models/Qwen3-Coder-30B-A3B-Instruct
 ```
-随后编译 eLLM，并以约 200K token 容量和单请求槽位启动服务：
+随后编译 eLLM，并以约 50K token 容量和单请求槽位启动服务：
 
 ```bash
 git clone https://github.com/lucienhuangfu/eLLM.git
@@ -87,8 +88,8 @@ cd eLLM
 cargo build --release --bin main
 ./target/release/main \
   --model-path models/Qwen3-Coder-30B-A3B-Instruct \
-  --chunk-size 200000 \
-  --sequence-length 200000 \
+  --chunk-size 50000 \
+  --sequence-length 50000 \
   --batch-size 1
 ```
 
