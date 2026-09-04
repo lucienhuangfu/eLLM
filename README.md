@@ -124,4 +124,4 @@ If you are interested in the underlying design and technical details of eLLM, pl
 ```
 
 ## 📜 License
-This project is licensed under the [Apache 2.0 License](LICENSE).
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
