@@ -48,7 +48,7 @@ eLLM is a strong fit for **long-horizon tasks**—Agent workflows that must keep
   - Suited to research tasks lasting hours or even days, not just single-shot long-context inference
 
 ## ⚙️ Approach
-To better support **long-horizon tasks**, eLLM targets the Agent scenario of "multi-round execution + long-term state maintenance + low-latency interaction." Based on the CPU architecture profile (large memory, large cache, relatively weak compute), it proposes an overall "trade storage for computation" design philosophy. It restructures inference into a **reusable, continuously growing, locally incrementally updatable execution pipeline**, reducing repeated computation and state-rebuilding overhead in long tasks.
+To better support **long-horizon tasks**, eLLM targets the Agent scenario of "multi-round execution + long-term state maintenance + low-latency interaction." Based on the CPU architecture profile (large memory, relatively weak compute), it proposes an overall "trade storage for computation" design philosophy. It restructures inference into a **reusable, continuously growing, locally incrementally updatable execution pipeline**, reducing repeated computation and state-rebuilding overhead in long tasks.
 
 - 🧩 **Elastic static computation graph**
   Build a globally unique static computation graph and access tensors with a **dimension-first** layout, so that elements at the same logical coordinates map stably to the same memory location. This lets the same execution graph support different input lengths without rebuilding the graph.
