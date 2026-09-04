@@ -22,6 +22,7 @@ Due to experimental constraints, the GPU baseline is not deployed on a dedicated
 | FP16 matrix throughput (TFLOPS) |          250 | 296 |
 | Cache             |    504 MB L3 | 60 MB L2 |
 | Max memory capacity            | 3 TB | 0.096 TB  |
+| Actual memory capacity            | 0.192 TB | 0.096 TB  |
 
 > Note: the GPU server is listed as a specification reference only, not the machine actually used in the runs.
 
