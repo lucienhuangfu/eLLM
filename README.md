@@ -94,6 +94,7 @@ cargo build --release --bin main
   --batch-size 1
 ```
 
+The first startup may take longer while the model weights and computation graph are initialized.
 After loading weights and initializing the computation graph, the service listens on `0.0.0.0:8000`. In another terminal, run the streaming chat client:
 
 ```bash
