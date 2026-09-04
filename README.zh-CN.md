@@ -123,4 +123,4 @@ python3 scripts/chat.py
 ```
 
 ## 📜 开源协议
-这个项目使用 [Apache 2.0 License](LICENSE)。
+本项目基于 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0）开源。
