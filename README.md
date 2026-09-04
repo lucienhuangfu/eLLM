@@ -70,12 +70,12 @@ The current runnable server is fixed to
 `models/Qwen3-Coder-30B-A3B-Instruct`. Download the complete model, then build and start:
 
 ```bash
-python3 -m pip install --upgrade huggingface_hub
-hf download Qwen/Qwen3-Coder-30B-A3B-Instruct \
-  --local-dir models/Qwen3-Coder-30B-A3B-Instruct
-
 cargo build --release --bin main
-./target/release/main
+./target/release/main \
+  --model-path models/Qwen3-Coder-30B-A3B-Instruct \
+  --chunk-size 20000 \
+  --sequence-length 20000 \
+  --batch-size 1
 ```
 
 After loading weights and initializing the computation graph, the service listens on `0.0.0.0:8000`. In another terminal, send a non-streaming request:

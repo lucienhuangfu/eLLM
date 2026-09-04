@@ -6,7 +6,6 @@ eLLM 是一款面向 CPU 服务器的大模型推理框架。它采用“以存�
 - **Decode**：以更小的 batch 运行，不仅激活的参数更少，单个 request 可分得的内存带宽也更高，因此推理速度同样可以超过 GPU。
 
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)  
-📚 文档：[Documentation](docs/index.md)  
 🎓 目前仅开放 1–2 个 Trainee 名额，欢迎计算机专业在校生报名  
 🛠️ 项目正在紧张开发中，代码会按月推送到 main 分支  
 💼 我们致力于推动开源与 AI 民主化，期待与产业携手合作，联系方式：**lucienhuangfu@outlook.com**
@@ -63,37 +62,44 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 - ✅ Qwen3 系列
 - ⏳ Qwen3.8（开发中）
 
-## 🚀 快速部署：完成一次对话
+## 设备与软件要求
 
-当前可直接运行的服务固定使用
-`models/Qwen3-Coder-30B-A3B-Instruct`。先下载完整模型，再编译并启动：
+- 支持 AVX-512 的 CPU
+- 至少 128 GiB 内存和 80 GB 可用磁盘空间
+- Rust 和 Python 3
+
+## 🚀 快速安装与对话
+
+建议将完整的 Qwen3-Coder-30B-A3B-Instruct 模型下载或复制到仓库内的以下目录：
+
+```text
+models/Qwen3-Coder-30B-A3B-Instruct
+```
+
+该目录需包含模型配置、tokenizer 和权重文件。然后在仓库根目录编译 eLLM，
+并以约 20K token 容量和单请求槽位启动服务：
 
 ```bash
-python3 -m pip install --upgrade huggingface_hub
-hf download Qwen/Qwen3-Coder-30B-A3B-Instruct \
-  --local-dir models/Qwen3-Coder-30B-A3B-Instruct
-
 cargo build --release --bin main
-./target/release/main
+./target/release/main \
+  --model-path models/Qwen3-Coder-30B-A3B-Instruct \
+  --chunk-size 20000 \
+  --sequence-length 20000 \
+  --batch-size 1
 ```
 
-服务完成权重加载和计算图初始化后监听 `0.0.0.0:8000`。在另一个终端发送非流式请求：
+服务完成权重加载和计算图初始化后监听 `0.0.0.0:8000`。在另一个终端运行流式对话客户端：
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "Qwen3-Coder-30B-A3B-Instruct",
-    "messages": [{"role": "user", "content": "What is your name?"}],
-    "stream": false,
-    "max_tokens": 100
-  }'
+python3 scripts/chat.py
 ```
 
-默认配置为：`batch=1`、sequence/chunk 容量为 50,100 tokens、16 个权重加载线程、
-优先使用 BRGEMM attention，并使用当前进程可见的全部 CPU。
+输入 `exit` 或 `quit` 结束对话。
+服务端参数可通过以下命令查看：
 
-详细依赖、硬件要求和调优方式见 [安装文档](docs/getting_started/installation.md)
+```bash
+./target/release/main --help
+```
 
 ## 📊 Benchmark
 系统目前仅完成初步优化，仍有很大提升空间。但实验表明，在短程任务（单轮交互）中，eLLM 对 CPU baseline（SGLang CPU backend）已全面领先，且优势随输入长度增加持续扩大：
