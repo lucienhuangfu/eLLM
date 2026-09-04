@@ -62,24 +62,28 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 - ✅ Qwen3 系列
 - ⏳ Qwen3.8（开发中）
 
-## 设备与软件要求
-
-- 支持 AVX-512 的 CPU
-- 至少 128 GiB 内存和 80 GB 可用磁盘空间
-- Rust 和 Python 3
-
 ## 🚀 快速安装与对话
 
-建议将完整的 Qwen3-Coder-30B-A3B-Instruct 模型下载或复制到仓库内的以下目录：
+**硬件要求**
+- CPU：支持 AVX-512 FP16
+- 内存：128 GB+
 
+**软件要求**
+- 操作系统：Linux（x86-64）
+- Rust：用 rustup 安装即可，`rust-toolchain.toml` 已指定 nightly
+- Python 3 与 curl：用于运行对话客户端
+
+建议先从 Hugging Face 下载完整的 Qwen3-Coder-30B-A3B-Instruct 模型。
+克隆仓库并进入根目录后，将模型复制到以下路径：
 ```text
 models/Qwen3-Coder-30B-A3B-Instruct
 ```
-
-该目录需包含模型配置、tokenizer 和权重文件。然后在仓库根目录编译 eLLM，
-并以约 20K token 容量和单请求槽位启动服务：
+随后编译 eLLM，并以约 20K token 容量和单请求槽位启动服务：
 
 ```bash
+git clone https://github.com/lucienhuangfu/eLLM.git
+cd eLLM
+# 将下载好的模型复制到 models/Qwen3-Coder-30B-A3B-Instruct
 cargo build --release --bin main
 ./target/release/main \
   --model-path models/Qwen3-Coder-30B-A3B-Instruct \
@@ -95,11 +99,7 @@ python3 scripts/chat.py
 ```
 
 输入 `exit` 或 `quit` 结束对话。
-服务端参数可通过以下命令查看：
 
-```bash
-./target/release/main --help
-```
 
 ## 📊 Benchmark
 系统目前仅完成初步优化，仍有很大提升空间。但实验表明，在短程任务（单轮交互）中，eLLM 对 CPU baseline（SGLang CPU backend）已全面领先，且优势随输入长度增加持续扩大：
