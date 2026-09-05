@@ -1,8 +1,8 @@
 # eLLM: Run Long-Horizon Inference Faster on CPUs Than on GPUs
 eLLM is an LLM inference framework for CPU servers. It adopts a "trade storage for computation" strategy, leveraging the CPU's large-capacity DDR memory to close the order-of-magnitude bandwidth gap against GPU HBM, and thereby delivers performance that surpasses GPUs in long-horizon inference.
 - **Prefill**: achieves roughly **two orders of magnitude** of performance improvement over existing CPU inference frameworks
-  - full single-pass Prefill for long text;
-  - incremental Prefill on only the newly added input in multi-turn interactions;
+  - full single-pass Prefill over the entire long prompt—no chunking, no repeated parameter loading;
+  - incremental Prefill on only the new input in multi-turn interactions—no redundant KV computation;
 - **Decode**: runs with a smaller batch, which not only activates fewer parameters but also gives each request a larger share of memory bandwidth, so inference speed can likewise exceed GPUs.
 
 🌐 Languages: [English](README.md) | [简体中文](README.zh-CN.md)  

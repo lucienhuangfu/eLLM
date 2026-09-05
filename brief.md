@@ -17,8 +17,8 @@ eLLM is a Rust-based LLM inference framework for CPU-only servers. It adopts a "
 - **Prefill**: achieves roughly **two orders of magnitude** of performance improvement over existing CPU inference frameworks
   - full single-pass Prefill for long text;
   - incremental Prefill on only the newly added input in multi-turn interactions;
-- **Decode**: runs with a smaller batch, which not only activates fewer parameters but also gives each request a larger share of memory bandwidth, so inference speed can likewise exceed GPUs.
-👉 GitHub: https://github.com/lucienhuangfu/eLLM
+- **Decode**: runs with a smaller batch, which not only activates fewer parameters but also gives each request a larger share of memory bandwidth, so inference speed can likewise exceed GPUs.  
+👉 GitHub: [https://github.com/lucienhuangfu/eLLM](https://github.com/lucienhuangfu/eLLM)
 
 
 Rethinking AI infrastructure beyond the GPU.
