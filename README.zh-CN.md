@@ -1,8 +1,8 @@
 # eLLM：让 CPU 在长程推理中快过 GPU
 eLLM 是一款面向 CPU 服务器的大模型推理框架。它采用“以存换算”策略，利用 CPU 大容量 DDR 内存，弥补其与 GPU HBM 一个数量级的带宽差距，从而在长程任务推理场景下实现超越 GPU 的性能。
 - **Prefill**：相较现有 CPU 推理框架可实现约**两个数量级**的性能提升
-  - 长文本一次性整段 Prefill，
-  - 多轮交互仅对新增输入做增量 Prefill；
+  - 长文本一次性整段 Prefill——不分块、不重复加载参数；
+  - 多轮交互中保留上下文 KV，仅对新增输入做增量 Prefill——不重复计算历史轮次；
 - **Decode**：以更小的 batch 运行，不仅激活的参数更少，单个 request 可分得的内存带宽也更高，因此推理速度同样可以超过 GPU。
 
 🌐 语言版本：[English](README.md) | [简体中文](README.zh-CN.md)  
@@ -73,12 +73,13 @@ eLLM 适合**长程任务**，即需要在长时间、多步骤执行过程中�
 - Rust：用 rustup 安装即可，`rust-toolchain.toml` 已指定 nightly
 - Python 3 与 curl：用于运行对话客户端
 
+
 建议先从 Hugging Face 下载完整的 Qwen3-Coder-30B-A3B-Instruct 模型。
 克隆仓库并进入根目录后，将模型复制到以下路径：
 ```text
 models/Qwen3-Coder-30B-A3B-Instruct
 ```
-随后编译 eLLM，并以约 200K token 容量和单请求槽位启动服务：
+随后编译 eLLM，并以约 50K token 容量和单请求槽位启动服务：
 
 ```bash
 git clone https://github.com/lucienhuangfu/eLLM.git
@@ -87,11 +88,12 @@ cd eLLM
 cargo build --release --bin main
 ./target/release/main \
   --model-path models/Qwen3-Coder-30B-A3B-Instruct \
-  --chunk-size 200000 \
-  --sequence-length 200000 \
+  --chunk-size 50000 \
+  --sequence-length 50000 \
   --batch-size 1
 ```
 
+首次启动需要初始化模型权重和计算图，耗时可能较长。
 服务完成权重加载和计算图初始化后监听 `0.0.0.0:8000`。在另一个终端运行流式对话客户端：
 
 ```bash

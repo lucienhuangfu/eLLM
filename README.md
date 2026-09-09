@@ -1,8 +1,8 @@
 # eLLM: Run Long-Horizon Inference Faster on CPUs Than on GPUs
 eLLM is an LLM inference framework for CPU servers. It adopts a "trade storage for computation" strategy, leveraging the CPU's large-capacity DDR memory to close the order-of-magnitude bandwidth gap against GPU HBM, and thereby delivers performance that surpasses GPUs in long-horizon inference.
 - **Prefill**: achieves roughly **two orders of magnitude** of performance improvement over existing CPU inference frameworks
-  - full single-pass Prefill for long text;
-  - incremental Prefill on only the newly added input in multi-turn interactions;
+  - run full single-pass Prefill over the entire long prompt—no chunking, no repeated parameter loading;
+  - keep context KV across multi-turn interactions and run incremental Prefill on only the new input—no recomputation for earlier turns;
 - **Decode**: runs with a smaller batch, which not only activates fewer parameters but also gives each request a larger share of memory bandwidth, so inference speed can likewise exceed GPUs.
 
 🌐 Languages: [English](README.md) | [简体中文](README.zh-CN.md)  
@@ -80,7 +80,7 @@ After cloning the repository and entering its root directory, copy the model to 
 ```text
 models/Qwen3-Coder-30B-A3B-Instruct
 ```
-Then build eLLM and start the service with roughly 200K token capacity and a single request slot:
+Then build eLLM and start the service with roughly 50K token capacity and a single request slot:
 
 ```bash
 git clone https://github.com/lucienhuangfu/eLLM.git
@@ -89,11 +89,12 @@ cd eLLM
 cargo build --release --bin main
 ./target/release/main \
   --model-path models/Qwen3-Coder-30B-A3B-Instruct \
-  --chunk-size 200000 \
-  --sequence-length 200000 \
+  --chunk-size 50000 \
+  --sequence-length 50000 \
   --batch-size 1
 ```
 
+The first startup may take longer while the model weights and computation graph are initialized.
 After loading weights and initializing the computation graph, the service listens on `0.0.0.0:8000`. In another terminal, run the streaming chat client:
 
 ```bash

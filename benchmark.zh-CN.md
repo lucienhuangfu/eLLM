@@ -22,6 +22,7 @@ eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推�
 | FP16 矩阵算力（TFLOPS） |          250 | 296 |
 | Cache             |    504 MB L3 | 60 MB L2 |
 | 最大内存容量            | 3 TB | 0.096 TB  |
+| 实际内存容量            | 0.192 TB | 0.096 TB  |
 
 > 注：GPU 服务器仅为规格示例，并非实际运行的机器。
 
