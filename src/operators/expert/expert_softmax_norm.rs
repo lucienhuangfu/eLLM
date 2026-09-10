@@ -12,7 +12,7 @@ use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::SoftmaxTrait;
 
 #[derive(Clone)]
-pub struct ExpertsSoftmaxNorm<T> {
+pub struct ExpertSoftmaxNorm<T> {
     // [prefill_size, num_experts]
     ptr1: ConstPtr<T>,
     pub topk_values_ptr: MutPtr<T>,
@@ -22,7 +22,7 @@ pub struct ExpertsSoftmaxNorm<T> {
     decode_only_flag: bool,
 }
 
-impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
+impl<T: Sqrt + Default> ExpertSoftmaxNorm<T> {
     pub fn new(
         ptr1: *const T,
         routing: ExpertRouting<T>,
@@ -51,7 +51,7 @@ impl<T: Sqrt + Default> ExpertsSoftmaxNorm<T> {
     }
 }
 
-impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftmaxNorm<T> {
+impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertSoftmaxNorm<T> {
     pub fn run(
         &self,
         prefill_size: usize,
@@ -108,7 +108,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertsSoftma
 }
 
 impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<T>
-    for ExpertsSoftmaxNorm<T>
+    for ExpertSoftmaxNorm<T>
 {
     default fn compute(
         &self,
@@ -129,7 +129,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<
     }
 }
 
-impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
+impl SoftmaxTrait<f16> for ExpertSoftmaxNorm<f16> {
     fn compute(
         &self,
         input_ptr: *const f16,
@@ -159,7 +159,7 @@ impl SoftmaxTrait<f16> for ExpertsSoftmaxNorm<f16> {
     }
 }
 
-impl SoftmaxTrait<f32> for ExpertsSoftmaxNorm<f32> {
+impl SoftmaxTrait<f32> for ExpertSoftmaxNorm<f32> {
     fn compute(
         &self,
         input_ptr: *const f32,
@@ -239,7 +239,7 @@ mod test {
 
         let routing = test_routing::<f32>(num_experts, num_tokens, num_topk);
 
-        let operator = ExpertsSoftmaxNorm::<f32>::new(
+        let operator = ExpertSoftmaxNorm::<f32>::new(
             input_data.as_ptr(),
             routing,
             batch_size,
@@ -341,7 +341,7 @@ mod test {
 
         let routing = test_routing::<f16>(num_experts, num_tokens, num_topk);
 
-        let operator = ExpertsSoftmaxNorm::<f16>::new(
+        let operator = ExpertSoftmaxNorm::<f16>::new(
             input_data.as_ptr(),
             routing,
             batch_size,

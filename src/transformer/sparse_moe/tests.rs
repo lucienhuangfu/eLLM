@@ -108,20 +108,20 @@ fn test_sparse_moe_queue_structure() {
             _ => panic!("op[0] should be MatMul"),
         }
         match &q[1] {
-            Operator::ExpertsSoftmaxNorm(_) => {}
-            _ => panic!("op[1] should be ExpertsSoftmaxNorm"),
+            Operator::ExpertSoftmaxNorm(_) => {}
+            _ => panic!("op[1] should be ExpertSoftmaxNorm"),
         }
         match &q[2] {
-            Operator::ExpertsMatMulSilu(_) => {}
-            _ => panic!("op[2] should be ExpertsMatMulSilu"),
+            Operator::ExpertMatMulSilu(_) => {}
+            _ => panic!("op[2] should be ExpertMatMulSilu"),
         }
         match &q[3] {
-            Operator::ExpertsMatMulDown(_) => {}
-            _ => panic!("op[3] should be ExpertsMatMulDown"),
+            Operator::ExpertMatMulDown(_) => {}
+            _ => panic!("op[3] should be ExpertMatMulDown"),
         }
         match &q[4] {
-            Operator::ExpertsMergeAdd(_) => {}
-            _ => panic!("op[4] should be ExpertsMergeAdd"),
+            Operator::ExpertMergeAdd(_) => {}
+            _ => panic!("op[4] should be ExpertMergeAdd"),
         }
     });
 }
@@ -145,20 +145,20 @@ fn test_sparse_moe_sigmoid_queue_structure() {
             _ => panic!("op[0] should be MatMulSigmoid"),
         }
         match &q[1] {
-            Operator::ExpertsTopkNorm(_) => {}
-            _ => panic!("op[1] should be ExpertsTopkNorm"),
+            Operator::ExpertTopkNorm(_) => {}
+            _ => panic!("op[1] should be ExpertTopkNorm"),
         }
         match &q[2] {
-            Operator::ExpertsMatMulSilu(_) => {}
-            _ => panic!("op[2] should be ExpertsMatMulSilu"),
+            Operator::ExpertMatMulSilu(_) => {}
+            _ => panic!("op[2] should be ExpertMatMulSilu"),
         }
         match &q[3] {
-            Operator::ExpertsMatMulDown(_) => {}
-            _ => panic!("op[3] should be ExpertsMatMulDown"),
+            Operator::ExpertMatMulDown(_) => {}
+            _ => panic!("op[3] should be ExpertMatMulDown"),
         }
         match &q[4] {
-            Operator::ExpertsMergeAdd(_) => {}
-            _ => panic!("op[4] should be ExpertsMergeAdd"),
+            Operator::ExpertMergeAdd(_) => {}
+            _ => panic!("op[4] should be ExpertMergeAdd"),
         }
     });
 }

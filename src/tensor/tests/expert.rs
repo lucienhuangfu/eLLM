@@ -1,6 +1,6 @@
 use super::common::*;
 use super::*;
-// ExpertsMatMulSilu / ExpertsMatMulDown / ExpertsMergeAdd
+// ExpertMatMulSilu / ExpertMatMulDown / ExpertMergeAdd
 // weights now NT: [E, I, H] and [E, H, Hmid] respectively
 // ============================================================
 
@@ -205,7 +205,7 @@ fn test_experts_matmul_silu_f16_tensor_api() {
     );
 
     assert_eq!(out.shape, vec![num_experts, batch_size, inter]);
-    let op = take_single_f16_operator(|op| matches!(op, Operator::ExpertsMatMulSilu(_)));
+    let op = take_single_f16_operator(|op| matches!(op, Operator::ExpertMatMulSilu(_)));
 
     let thread_num = avail_threads();
     run_operator_all_threads(&op, b, 0, thread_num);
@@ -385,7 +385,7 @@ fn test_experts_matmul_down_f16_tensor_api() {
     );
 
     assert_eq!(out.shape, vec![batch_size, num_experts_per_tok, hidden]);
-    let op = take_single_f16_operator(|op| matches!(op, Operator::ExpertsMatMulDown(_)));
+    let op = take_single_f16_operator(|op| matches!(op, Operator::ExpertMatMulDown(_)));
 
     // ✅ IMPORTANT: down does out += acc * factor, so zero out first
     let out_len = b * num_experts_per_tok * hidden;
@@ -531,9 +531,9 @@ fn test_experts_merge_add_f16_tensor_api_k2_slot1_zero() {
     );
 
     assert_eq!(out.shape, vec![batch_size, hidden]);
-    let op = take_single_f16_operator(|op| matches!(op, Operator::ExpertsMergeAdd(_)));
+    let op = take_single_f16_operator(|op| matches!(op, Operator::ExpertMergeAdd(_)));
     match &op {
-        Operator::ExpertsMergeAdd(operator) => {
+        Operator::ExpertMergeAdd(operator) => {
             assert_eq!(operator.num_experts, num_experts);
             assert_eq!(operator.batch_size, batch_size);
         }

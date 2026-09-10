@@ -17,23 +17,19 @@ pub mod expert {
     pub mod expert_matmul_silu_mul_matmul;
     pub mod expert_merge_add;
     pub mod expert_routing;
+    pub mod expert_softmax_norm;
     pub mod expert_topk_norm;
 
-    #[allow(non_snake_case)]
-    pub use expert_matmul_mul::ExpertMatMulDown as ExpertsMatMulDown;
-    #[allow(non_snake_case)]
-    pub use expert_matmul_silu_mul_matmul::ExpertMatMulSilu as ExpertsMatMulSilu;
-    #[allow(non_snake_case)]
-    pub use expert_merge_add::ExpertMergeAdd as ExpertsMergeAdd;
+    pub use expert_matmul_mul::ExpertMatMulDown;
+    pub use expert_matmul_silu_mul_matmul::ExpertMatMulSilu;
+    pub use expert_merge_add::ExpertMergeAdd;
+    pub use expert_softmax_norm::ExpertSoftmaxNorm;
 }
 
 pub mod expert_imports {
-    #[allow(non_snake_case)]
-    pub use super::expert::expert_matmul_mul::ExpertMatMulDown as ExpertsMatMulDown;
-    #[allow(non_snake_case)]
-    pub use super::expert::expert_matmul_silu_mul_matmul::ExpertMatMulSilu as ExpertsMatMulSilu;
-    #[allow(non_snake_case)]
-    pub use super::expert::expert_merge_add::ExpertMergeAdd as ExpertsMergeAdd;
+    pub use super::expert::expert_matmul_mul::ExpertMatMulDown;
+    pub use super::expert::expert_matmul_silu_mul_matmul::ExpertMatMulSilu;
+    pub use super::expert::expert_merge_add::ExpertMergeAdd;
 }
 
 pub mod left_vector;
@@ -69,20 +65,14 @@ pub mod normalization {
 }
 
 pub mod routing {
+    pub use super::expert::expert_softmax_norm::ExpertSoftmaxNorm;
     pub use super::expert::expert_topk_norm::ExpertTopkNorm;
     pub use super::matmul::matmul_sigmoid::MatMulSigmoid;
     pub use super::matmul::matmul_topk::MatMulTopK;
-    pub use super::softmax::softmax_norm::ExpertsSoftmaxNorm;
-    pub use super::softmax::topk_softmax::TopKSoftmax;
-
-    #[allow(non_snake_case)]
-    pub use super::expert::expert_topk_norm::ExpertTopkNorm as ExpertsTopkNorm;
+    pub use super::topk_softmax::TopKSoftmax;
 }
 
-pub mod softmax {
-    pub mod softmax_norm;
-    pub mod topk_softmax;
-}
+pub mod topk_softmax;
 
 pub mod transform {
     pub use super::elementwise::add_zip::AddZipMap;

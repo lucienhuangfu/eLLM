@@ -21,12 +21,12 @@ fn operator_name(operator: &Operator<f16>) -> &'static str {
         Operator::AddRMSZipMap(_) => "AddRMSZipMap",
         Operator::AddZipMap(_) => "AddZipMap",
         Operator::Attention(_) => "Attention",
-        Operator::ExpertsMatMulDown(_) => "ExpertsMatMulDown",
-        Operator::ExpertsMatMulSilu(_) => "ExpertsMatMulSilu",
-        Operator::ExpertsMergeAdd(_) => "ExpertsMergeAdd",
+        Operator::ExpertMatMulDown(_) => "ExpertMatMulDown",
+        Operator::ExpertMatMulSilu(_) => "ExpertMatMulSilu",
+        Operator::ExpertMergeAdd(_) => "ExpertMergeAdd",
         Operator::MatMulSigmoid(_) => "MatMulSigmoid",
-        Operator::ExpertsSoftmaxNorm(_) => "ExpertsSoftmaxNorm",
-        Operator::ExpertsTopkNorm(_) => "ExpertsTopkNorm",
+        Operator::ExpertSoftmaxNorm(_) => "ExpertSoftmaxNorm",
+        Operator::ExpertTopkNorm(_) => "ExpertTopkNorm",
         Operator::LiftVector(_) => "LiftVector",
         Operator::LookupRMSMap(_) => "LookupRMSMap",
         Operator::MatMul(_) => "MatMul",
@@ -274,11 +274,11 @@ fn main() -> anyhow::Result<()> {
             let file_name = format!("rust_layer{completed_layers:02}_post_attn_norm.bin");
             dump_pool_tensor(dump_dir, &tensor_name, &file_name, size);
         }
-        // Dump router gate logits: MatMul followed by ExpertsSoftmaxNorm
+        // Dump router gate logits: MatMul followed by ExpertSoftmaxNorm
         else if matches!(operator, Operator::MatMul(_))
             && matches!(
                 operator_queue.get(index + 1),
-                Some(Operator::ExpertsSoftmaxNorm(_))
+                Some(Operator::ExpertSoftmaxNorm(_))
             )
             && completed_layers < config.num_hidden_layers
         {
@@ -287,13 +287,13 @@ fn main() -> anyhow::Result<()> {
             let router_size = token_count * num_experts;
             dump_pool_tensor(dump_dir, &tensor_name, &file_name, router_size);
         }
-        // Dump routing weights and expert indices after ExpertsSoftmaxNorm
+        // Dump routing weights and expert indices after ExpertSoftmaxNorm
         // The topk_values_ptr stores per-token top-k weights (token-major, sorted desc)
         // The routing.topk_indices stores per-token expert indices (token-major, sorted desc)
-        else if matches!(operator, Operator::ExpertsSoftmaxNorm(_))
+        else if matches!(operator, Operator::ExpertSoftmaxNorm(_))
             && completed_layers < config.num_hidden_layers
         {
-            if let Operator::ExpertsSoftmaxNorm(ref softmax_op) = operator {
+            if let Operator::ExpertSoftmaxNorm(ref softmax_op) = operator {
                 let topk_count = token_count * num_experts_per_tok;
                 // Dump per-token routing weights (token-major, sorted by weight desc)
                 let weights_ptr = softmax_op.topk_values_ptr.ptr;
@@ -315,7 +315,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         // Dump per-expert down projection output
-        else if matches!(operator, Operator::ExpertsMatMulDown(_))
+        else if matches!(operator, Operator::ExpertMatMulDown(_))
             && completed_layers < config.num_hidden_layers
         {
             // down_proj output: [token_count, num_experts_per_tok, hidden_size]
@@ -336,7 +336,7 @@ fn main() -> anyhow::Result<()> {
             );
         }
 
-        if matches!(operator, Operator::ExpertsMergeAdd(_))
+        if matches!(operator, Operator::ExpertMergeAdd(_))
             && completed_layers < config.num_hidden_layers
         {
             f16::with_global(|pool| {

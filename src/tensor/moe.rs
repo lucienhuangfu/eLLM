@@ -6,9 +6,9 @@ use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
 use crate::operators::expert::expert_routing::{compact_moe_enabled, ExpertRouting};
-use crate::operators::expert::{ExpertsMatMulDown, ExpertsMatMulSilu, ExpertsMergeAdd};
+use crate::operators::expert::{ExpertMatMulDown, ExpertMatMulSilu, ExpertMergeAdd};
 use crate::operators::operator::Operator;
-use crate::operators::routing::{ExpertsSoftmaxNorm, ExpertsTopkNorm, MatMulSigmoid, TopKSoftmax};
+use crate::operators::routing::{ExpertSoftmaxNorm, ExpertTopkNorm, MatMulSigmoid, TopKSoftmax};
 
 use super::{GlobalOperatorQueue, Tensor};
 
@@ -38,7 +38,7 @@ where
 
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
 
-        let operator = Operator::ExpertsMergeAdd(ExpertsMergeAdd::new(
+        let operator = Operator::ExpertMergeAdd(ExpertMergeAdd::new(
             self.data,
             residual.data,
             routing,
@@ -72,8 +72,8 @@ where
 
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
 
-        let operator = Operator::ExpertsMatMulDown(unsafe {
-            ExpertsMatMulDown::new(
+        let operator = Operator::ExpertMatMulDown(unsafe {
+            ExpertMatMulDown::new(
                 self.data,
                 down_weights.data,
                 routing,
@@ -120,8 +120,8 @@ where
 
         let output_tensor = Self::output_tensor(output_shape, &scope_name);
 
-        let operator = Operator::ExpertsMatMulSilu(unsafe {
-            ExpertsMatMulSilu::new(
+        let operator = Operator::ExpertMatMulSilu(unsafe {
+            ExpertMatMulSilu::new(
                 self.data,
                 gate_weights.data,
                 up_weights.data,
@@ -180,7 +180,7 @@ where
         let routing =
             unsafe { Self::allocate_expert_routing(num_experts, token_count, num_experts_per_tok) };
 
-        let operator = Operator::ExpertsSoftmaxNorm(ExpertsSoftmaxNorm::new(
+        let operator = Operator::ExpertSoftmaxNorm(ExpertSoftmaxNorm::new(
             self.data,
             routing,
             token_count,
@@ -250,7 +250,7 @@ where
         let routing =
             unsafe { Self::allocate_expert_routing(num_experts, token_count, num_experts_per_tok) };
 
-        let operator = Operator::ExpertsTopkNorm(ExpertsTopkNorm::new(
+        let operator = Operator::ExpertTopkNorm(ExpertTopkNorm::new(
             self.data,
             routing,
             token_count,
@@ -284,8 +284,7 @@ where
             std::mem::forget(index_tensor);
             ptr
         };
-        let mut score_tensor =
-            AlignedBox::allocate_zero(num_experts * capacity_per_expert);
+        let mut score_tensor = AlignedBox::allocate_zero(num_experts * capacity_per_expert);
         let score_tensor = {
             let ptr = score_tensor.as_mut_ptr();
             std::mem::forget(score_tensor);
