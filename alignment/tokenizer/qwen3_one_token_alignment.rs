@@ -1,6 +1,7 @@
 #![feature(f16)]
 
 use ellm::runtime::loader::load_tiktoken;
+use ellm::runtime::loader::ChatMessage;
 use ellm::runtime::loader::ChatTemplate;
 use std::f16;
 use std::sync::Arc;
@@ -19,7 +20,7 @@ fn main() -> anyhow::Result<()> {
     let tokenizer =
         load_tiktoken(&tokenizer_path, &tokenizer_config_path).map_err(|e| anyhow::anyhow!(e))?;
 
-    let messages = [("user", "你好，请用一句话介绍 Rust。")];
+    let messages = [ChatMessage::new("user", "你好，请用一句话介绍 Rust。")];
     let prompt = chat_template
         .apply_chat_template(&messages, true)
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;

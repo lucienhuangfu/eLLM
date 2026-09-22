@@ -1,6 +1,7 @@
 #![feature(f16)]
 
 use ellm::runtime::loader::load_tiktoken;
+use ellm::runtime::loader::ChatMessage;
 use ellm::runtime::loader::ChatTemplate;
 
 const DEFAULT_PROMPTS: &[&str] = &[
@@ -24,7 +25,7 @@ fn main() -> anyhow::Result<()> {
         load_tiktoken(&tokenizer_path, &tokenizer_config_path).map_err(|e| anyhow::anyhow!(e))?;
 
     for &prompt in DEFAULT_PROMPTS {
-        let messages = [("user", prompt)];
+        let messages = [ChatMessage::new("user", prompt)];
         let template_prompt = chat_template
             .apply_chat_template(&messages, true)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;

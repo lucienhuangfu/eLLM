@@ -6,6 +6,7 @@ use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::model_family::config::Config;
 use ellm::model_family::Qwen3_model::Model;
 use ellm::operators::send_sync_ptr::SharedMut;
+use ellm::runtime::loader::ChatMessage;
 use ellm::runtime::{
     ExecutorPool, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SessionMode, SlotManager,
     SlotSequence, SlotState,
@@ -108,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Write fixed prompts into each slot using SlotSequence
     let mut written_lengths = Vec::with_capacity(batch_size);
     for (slot, prompt) in fixed_prompts.iter().enumerate().take(batch_size) {
-        let messages: [(&str, &str); 1] = [("user", prompt)];
+        let messages = [ChatMessage::new("user", *prompt)];
         let write_len = slot_seq
             .write_prompts(slot, &messages, 1.0)
             .map_err(|e| format!("failed to write prompt: {}", e))?;

@@ -8,6 +8,7 @@ use ellm::model_family::config::Config;
 use ellm::model_family::Qwen3_model::Model;
 use ellm::operators::operator::Operator;
 use ellm::runtime::loader::load_tiktoken;
+use ellm::runtime::loader::ChatMessage;
 use ellm::runtime::loader::ChatTemplate;
 use ellm::runtime::loader::SafeTensorsLoader;
 use ellm::runtime::Phase;
@@ -30,7 +31,7 @@ fn main() {
         ChatTemplate::from_model_files(&chat_template_path, &tokenizer_config_path).unwrap();
     let tokenizer = load_tiktoken(&tokenizer_path, &tokenizer_config_path).unwrap();
 
-    let messages = [("user", "你好，请用一句话介绍 Rust。")];
+    let messages = [ChatMessage::new("user", "你好，请用一句话介绍 Rust。")];
     let prompt = chat_template.apply_chat_template(&messages, true).unwrap();
     let token_ids = tokenizer.encode_with_special_tokens(&prompt);
 

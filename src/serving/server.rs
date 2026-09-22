@@ -1,11 +1,13 @@
 use async_stream::stream;
 use axum::{
+    body::Bytes,
     extract::State,
     response::sse::Event,
     response::{IntoResponse, Sse},
     routing::post,
     Json, Router,
 };
+use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,6 +28,8 @@ use crate::runtime::{initialize_runtime, RuntimeContext};
 /// Serving 模块的统一错误类型
 #[derive(Debug)]
 pub enum ApiError {
+    BadRequest(String),
+    UnprocessableEntity(String),
     TokenizationError(String),
     SlotUnavailable(String),
     InternalError(String),
@@ -34,6 +38,8 @@ pub enum ApiError {
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ApiError::BadRequest(msg) => write!(f, "Bad request: {}", msg),
+            ApiError::UnprocessableEntity(msg) => write!(f, "Unprocessable entity: {}", msg),
             ApiError::TokenizationError(msg) => write!(f, "Tokenization failed: {}", msg),
             ApiError::SlotUnavailable(msg) => write!(f, "Slot unavailable: {}", msg),
             ApiError::InternalError(msg) => write!(f, "Internal error: {}", msg),
@@ -47,6 +53,20 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let is_slot_unavailable = matches!(self, ApiError::SlotUnavailable(_));
         let (status, message) = match self {
+            ApiError::BadRequest(msg) => {
+                eprintln!("Bad request: {}", msg);
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("Invalid request: {}", msg),
+                )
+            }
+            ApiError::UnprocessableEntity(msg) => {
+                eprintln!("Unprocessable entity: {}", msg);
+                (
+                    axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("Unprocessable entity: {}", msg),
+                )
+            }
             ApiError::TokenizationError(msg) => {
                 eprintln!("Tokenization error: {}", msg);
                 (
@@ -364,11 +384,20 @@ pub(crate) fn build_router(slot_manager: Arc<SlotManager<f16>>) -> Router {
 
 async fn chat_completions(
     State(slot_manager): State<Arc<SlotManager<f16>>>,
-    Json(request): Json<ChatCompletionRequest>,
-) -> impl IntoResponse {
-    let request_id = request
+    body: Bytes,
+) -> axum::response::Response {
+    let request: ChatCompletionRequest<'_> = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        // 区分语法错误(400)与结构错误(422)，与 axum `Json` 提取器行为一致。
+        Err(e) if e.is_data() => {
+            return ApiError::UnprocessableEntity(e.to_string()).into_response()
+        }
+        Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
+    };
+
+    let request_id: Cow<'_, str> = request
         .request_id
-        .unwrap_or_else(|| format!("chatcmpl-{}", uuid::Uuid::new_v4()));
+        .unwrap_or_else(|| Cow::Owned(format!("chatcmpl-{}", uuid::Uuid::new_v4())));
     let is_stream = request.stream.unwrap_or(false);
     let model = request.model;
 
@@ -410,8 +439,8 @@ async fn chat_completions(
             slot_index,
             &session_id,
             notifier,
-            request_id,
-            model,
+            &request_id,
+            &model,
             created,
         )
     } else {
@@ -427,16 +456,13 @@ async fn chat_completions(
 
         Json(ChatCompletionResponse {
             id: request_id,
-            object: "chat.completion".to_string(),
+            object: "chat.completion".into(),
             created,
             model,
             choices: vec![ChatCompletionChoice {
                 index: 0,
-                message: ChatMessage {
-                    role: "assistant".to_string(),
-                    content: generated_text,
-                },
-                finish_reason: Some("stop".to_string()),
+                message: ChatMessage::new("assistant", generated_text),
+                finish_reason: Some("stop".into()),
             }],
         })
         .into_response()
@@ -450,8 +476,8 @@ fn build_stream_response(
     slot_index: usize,
     session_id: &str,
     notifier: Arc<Notify>,
-    request_id: String,
-    model: String,
+    request_id: &str,
+    model: &str,
     created: u64,
 ) -> axum::response::Response {
     let session_id = session_id.to_string();
@@ -461,7 +487,7 @@ fn build_stream_response(
         tool_call_parser: slot_manager.tool_call_parser_enabled,
     };
     let parser = IncrementalStreamingParser::with_options(parser_options);
-    let writer = SseWriter::new(&request_id, created, &model);
+    let writer = SseWriter::new(request_id, created, model);
     let prompt_length = slot_manager.get_prompt_length(slot_index);
     let mut session = StreamSession::new(parser, writer, prompt_length);
     let mut frame_buf = String::with_capacity(4096);

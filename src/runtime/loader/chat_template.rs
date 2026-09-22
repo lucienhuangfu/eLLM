@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::path::Path;
 
@@ -6,11 +7,33 @@ use minijinja::context;
 use minijinja::value::{from_args, Value};
 use minijinja::Environment;
 use minijinja::{Error as MiniJinjaError, ErrorKind, State};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 struct TokenizerConfigTemplate {
     chat_template: String,
+}
+
+/// 规范聊天消息类型，全链路唯一表示。
+/// 请求侧零拷贝借用 body（`Cow::Borrowed`），响应侧持有生成文本（`Cow::Owned`）；
+/// 含转义符的字符串由 serde_json 自动回退 `Owned`。直接由 minijinja 序列化，
+/// 避免经 `serde_json::Value` 中转而拷贝 content。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage<'a> {
+    #[serde(borrow)]
+    pub role: Cow<'a, str>,
+    #[serde(borrow)]
+    pub content: Cow<'a, str>,
+}
+
+impl<'a> ChatMessage<'a> {
+    /// 便捷构造：`&str` 借用为 `Cow::Borrowed`，`String` 转为 `Cow::Owned`。
+    pub fn new<R: Into<Cow<'a, str>>, C: Into<Cow<'a, str>>>(role: R, content: C) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+        }
+    }
 }
 
 pub struct ChatTemplate {
@@ -43,7 +66,9 @@ impl ChatTemplate {
         Self::from_tokenizer_config(tokenizer_config_path)
     }
 
-    pub fn from_template_source(chat_template: String) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn from_template_source(
+        chat_template: String,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut env = Environment::new();
         env.set_unknown_method_callback(
             |_state: &State, value: &Value, method: &str, args: &[Value]| {
@@ -74,19 +99,11 @@ impl ChatTemplate {
 
     pub fn apply_chat_template(
         &self,
-        messages: &[(&str, &str)],
+        messages: &[ChatMessage<'_>],
         add_generation_prompt: bool,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let prompt = self.template.render(context! {
-            messages => messages
-                .iter()
-                .map(|(role, content)| {
-                    serde_json::json!({
-                        "role": role,
-                        "content": content
-                    })
-                })
-                .collect::<Vec<_>>(),
+            messages => messages,
             add_generation_prompt => add_generation_prompt
         })?;
 
@@ -109,8 +126,8 @@ mod tests {
     #[test]
     fn test_chat_template() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let messages = vec![
-            ("system", "You are a helpful assistant."),
-            ("user", "你好，世界！这是一次分词测试。"),
+            ChatMessage::new("system", "You are a helpful assistant."),
+            ChatMessage::new("user", "你好，世界！这是一次分词测试。"),
         ];
 
         let tester = ChatTemplate::new(TEMPLATE_PATH)?;
@@ -122,14 +139,14 @@ mod tests {
     #[test]
     fn test_chat_template_multi_turn() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let messages = vec![
-            ("system", "You are a helpful coding assistant."),
-            ("user", "请帮我写一个 Rust 的快速排序函数。"),
-            (
+            ChatMessage::new("system", "You are a helpful coding assistant."),
+            ChatMessage::new("user", "请帮我写一个 Rust 的快速排序函数。"),
+            ChatMessage::new(
                 "assistant",
                 "当然可以。你希望是 in-place 版本，还是返回新数组的版本？",
             ),
-            ("user", "in-place 版本，并加一个简单测试。"),
-            (
+            ChatMessage::new("user", "in-place 版本，并加一个简单测试。"),
+            ChatMessage::new(
                 "assistant",
                 "好的，我会给出一个泛型 in-place quicksort，并附带单元测试。",
             ),
@@ -143,8 +160,8 @@ mod tests {
     }
 
     #[test]
-    fn test_chat_template_multi_turn_with_tools() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-    {
+    fn test_chat_template_multi_turn_with_tools(
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let tester = ChatTemplate::new(TEMPLATE_PATH)?;
 
         let tools = vec![

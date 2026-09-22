@@ -7,6 +7,7 @@ use ellm::model_family::config::Config;
 use ellm::model_family::Qwen3_model::Model;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::loader::load_tiktoken;
+use ellm::runtime::loader::ChatMessage;
 use ellm::runtime::loader::ChatTemplate;
 use ellm::runtime::loader::SafeTensorsLoader;
 use ellm::runtime::{
@@ -149,7 +150,7 @@ fn main() {
     let mut all_input_lens = Vec::new();
     for prompt in &prompts {
         let rendered = chat_template
-            .apply_chat_template(&[("user", prompt.as_str())], true)
+            .apply_chat_template(&[ChatMessage::new("user", prompt.as_str())], true)
             .unwrap();
         let ids = tokenizer.encode_with_special_tokens(&rendered);
         all_input_lens.push(ids.len());
@@ -196,7 +197,7 @@ fn main() {
     let mut written_lengths = Vec::new();
     for (slot, prompt) in prompts.iter().enumerate().take(batch_size) {
         let write_len = slot_seq
-            .write_prompts(slot, &[("user", prompt.as_str())], 1.0)
+            .write_prompts(slot, &[ChatMessage::new("user", prompt.as_str())], 1.0)
             .unwrap();
         written_lengths.push(write_len);
     }

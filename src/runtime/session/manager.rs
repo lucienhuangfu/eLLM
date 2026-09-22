@@ -10,7 +10,8 @@ use super::sequence::SlotSequence;
 use super::slot::{Phase, SessionHandle, SessionMode, SlotState};
 use crate::num_traits::FromNumber;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::serving::{ApiError, ApiResult, ChatMessage};
+use crate::runtime::loader::ChatMessage;
+use crate::serving::{ApiError, ApiResult};
 
 // ── SlotManager ────────────────────────────────────────────
 
@@ -146,17 +147,12 @@ impl<T: Copy + FromNumber + Send + Sync + 'static> SlotManager<T> {
         &self,
         slot_index: usize,
         session_id: &str,
-        messages: &[ChatMessage],
+        messages: &[ChatMessage<'_>],
         temperature: Option<f32>,
     ) -> ApiResult<(usize, Arc<Notify>)> {
-        let message_pairs: Vec<(&str, &str)> = messages
-            .iter()
-            .map(|m| (m.role.as_str(), m.content.as_str()))
-            .collect();
-
         let new_tokens: Vec<u32> = self
             .slot_sequences
-            .with(|seq| seq.tokenize_messages(&message_pairs))
+            .with(|seq| seq.tokenize_messages(messages))
             .map_err(ApiError::TokenizationError)?;
 
         let prefix_len = if self.mode == SessionMode::Reusable {

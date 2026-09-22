@@ -281,10 +281,7 @@ async fn test_reusable_sequence_prefix_match_direct() {
 
     let session_id = "test-session-direct";
 
-    let messages1 = vec![ChatMessage {
-        role: "user".to_string(),
-        content: "Hello".to_string(),
-    }];
+    let messages1 = vec![ChatMessage::new("user", "Hello")];
 
     let handle1 = manager.acquire_session(session_id).await.unwrap();
     let slot_index = handle1.slot_index;
@@ -328,18 +325,9 @@ async fn test_reusable_sequence_prefix_match_direct() {
     assert_eq!(&tokens_reserved[..prompt_len1], &tokens_after_first[..]);
 
     let messages2 = vec![
-        ChatMessage {
-            role: "user".to_string(),
-            content: "Hello".to_string(),
-        },
-        ChatMessage {
-            role: "assistant".to_string(),
-            content: "Hi there".to_string(),
-        },
-        ChatMessage {
-            role: "user".to_string(),
-            content: "How are you?".to_string(),
-        },
+        ChatMessage::new("user", "Hello"),
+        ChatMessage::new("assistant", "Hi there"),
+        ChatMessage::new("user", "How are you?"),
     ];
 
     let handle2 = manager.acquire_session(session_id).await.unwrap();

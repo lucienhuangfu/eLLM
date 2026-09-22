@@ -5,7 +5,7 @@ use tiktoken_rs::CoreBPE;
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::num_traits::FromNumber;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::loader::{load_tiktoken, ChatTemplate};
+use crate::runtime::loader::{load_tiktoken, ChatMessage, ChatTemplate};
 
 pub struct SlotSequence<T> {
     pub sequences: *mut usize,
@@ -53,7 +53,7 @@ where
     pub fn write_prompts(
         &mut self,
         slot_index: usize,
-        messages: &[(&str, &str)],
+        messages: &[ChatMessage<'_>],
         temperature: f32,
     ) -> Result<usize, String> {
         let prompt = self
@@ -118,7 +118,7 @@ where
         }
     }
 
-    pub fn tokenize_messages(&self, messages: &[(&str, &str)]) -> Result<Vec<u32>, String> {
+    pub fn tokenize_messages(&self, messages: &[ChatMessage<'_>]) -> Result<Vec<u32>, String> {
         let prompt = self
             .chat_template
             .apply_chat_template(messages, true)
