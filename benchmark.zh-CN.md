@@ -1,7 +1,10 @@
 ## 🧪 实验
 eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推理方案的正确性与可行性，详细实现过程参见 `alignment` 文件夹与 alignment skill。当前 Beta 版本已发布，欢迎体验和测试；系统仍在持续优化中，暂不建议部署于生产环境。
 
-为验证 eLLM 在不同推理场景下的性能，我们设计了**短程任务**（单轮交互）与**长程任务**（多轮交互）两类实验。目前实验结果表明：
+为验证 eLLM 在不同推理场景下的性能，我们设计了**短文本任务**（单轮交互），长文本任务和**长程任务**（多轮交互）三类实验。短文本不会触发分段，长文本一定会触发分段，长程任务是多轮的长短任务的混合。
+
+
+目前实验结果表明：
 
 * **Prefill 优势随长度持续扩大**：整段连续执行、无分段跳变，相比 chunked CPU baseline 快 **12%～73%**，对 unchunked baseline 亦整体占优。
 * **Decode 稳定提速**：相比 CPU baseline 稳定快 **1.5×～1.6×**，增长斜率全程最低。
@@ -26,7 +29,7 @@ eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推�
 
 > 注：GPU 服务器仅为规格示例，并非实际运行的机器。
 
-### 短程任务（单轮交互）
+### 短文本（单轮交互）
 
 #### 实验设置
 
@@ -34,30 +37,47 @@ eLLM 已完成与 SGLang CPU backend 的整体输出对齐，验证了 CPU 推�
 
 * **模型**：Qwen3-Coder-30B-A3B-Instruct（FP16）
 * **Kernel**：AVX-512（AMX Kernel 开发中）
-* **输入**：`batch = 1`，
-* **chunking**：
-  * eLLM：`chunk size = 200,000`
+* **输入**：`batch = 1，sequence 长度：0 → 10,000 tokens，步长 1,000`，
+* **对比方案**：
+  * eLLM：`chunk size = 200,000, sequence 长度：0 → 100,000 tokens，步长 10,000`
   * CPU baseline：`chunk size = 23,000`（默认）
   * CPU baseline：`chunk size = ♾️`（强制不分段）
 * **指标**：Prefill 用 TTFT（Time To First Token，s），Decode 用 TPOT（Time Per Output Token，s/token）
 
+
 #### Prefill
+
+
+
+**结果**：
+
+eLLM 的推理速度远远快于现有 CPU 框架。
+
+
 随着 sequence 长度增长，现有 CPU 框架的推理速度远远慢于 GPU，两者难以在同一张图中清晰呈现，因此拆分为短文本、长文本两组实验。
 
-##### 短文本
-* **sequence 长度**：0 → 10,000 tokens，步长 1,000
-* **对比对象**：仅 CPU，不涉及 GPU；包括 eLLM、SGLang CPU chunked、SGLang CPU unchunked
+1. **eLLM：整段连续执行，线性无台阶。** 10,000 → 50,000 tokens，TTFT 由 30 s 线性升至 249 s，全程一次通过，不存在分段边界。
+3. **Unchunked CPU baseline：线性，但整体仍慢于 eLLM。** 取消分段后同样随长度近似线性上升，除 40,000 tokens 处略胜约 1% 外全程落后——10,000 tokens 时慢约 12%，50,000 tokens 时仍慢约 2%。
 
-**结果**：eLLM 的推理速度远远快于现有 CPU 框架。
+#### Decode
 
-##### 长文本
-* **sequence 长度**：0 → 100,000 tokens，步长 10,000
-* **对比对象**：eLLM、SGLang CPU unchunked、SGLang GPU
 
-> 注：GPU HBM 内存有限，未测试 GPU 框架的 chunked 模式；CPU chunked 模式速度过慢，此图不再展示。
 
-**结果**：短文本场景下，由于 CPU DDR 内存带宽远远慢于 GPU HBM，毫无疑问，所有 CPU 方案的推理速度都慢于 GPU。
+### 长文本（单轮交互）
 
+
+* **模型**：Qwen3-Coder-30B-A3B-Instruct（FP16）
+* **Kernel**：AVX-512（AMX Kernel 开发中）
+* **输入**：`batch = 1`，
+* **对比方案**：
+  * eLLM：`chunk size = 200,000, sequence 长度：0 → 100,000 tokens，步长 10,000`
+  * CPU baseline：`chunk size = ♾️`（强制不分段）
+  * GPU baseline：`chunk size = 23,000`（默认）
+* **指标**：Prefill 用 TTFT（Time To First Token，s），Decode 用 TPOT（Time Per Output Token，s/token）
+
+> 注：GPU HBM 内存有限，必须chunked，否则会缩短处理 sequence的长度；CPU chunked 模式速度过慢，此图不再展示。
+
+#### Prefill
 
 ```mermaid
 ---
@@ -82,12 +102,18 @@ xychart-beta
 > - <span style="color:#2ca02c">■</span> Unchunked CPU Baseline
 
 
+**结果**：
 
+
+短文本场景下，由于 CPU DDR 内存带宽远远慢于 GPU HBM，毫无疑问，所有 CPU 方案的推理速度都慢于 GPU。
 
 eLLM 耗时随长度近似线性增长、无分段跳变；相对 chunked baseline 快 **12%～73%**，且优势随长度持续扩大；对 unchunked baseline 亦整体占优，最大差距约 12%。
-1. **eLLM：整段连续执行，线性无台阶。** 10,000 → 50,000 tokens，TTFT 由 30 s 线性升至 249 s，全程一次通过，不存在分段边界。
+
+
+
+
 2. **Chunked CPU baseline：阶梯跳变，逢段陡增。** 长度每跨入新的分段，TTFT 便陡增一次（如 30,000 → 40,000 由 139 s 跳至 252 s）；50,000 tokens 时达 431 s，为 eLLM 的 1.7×。
-3. **Unchunked CPU baseline：线性，但整体仍慢于 eLLM。** 取消分段后同样随长度近似线性上升，除 40,000 tokens 处略胜约 1% 外全程落后——10,000 tokens 时慢约 12%，50,000 tokens 时仍慢约 2%。
+
 
 #### Decode
 
