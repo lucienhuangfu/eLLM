@@ -334,7 +334,7 @@ fn main() {
                 .collect();
             let text: String = ids
                 .iter()
-                .filter_map(|&tid| tokenizer.decode(vec![tid]).ok())
+                .filter_map(|&tid| tokenizer.decode(&[tid]).ok())
                 .collect();
             println!("Slot {slot}: {gen_len} tokens\n{text}\n");
         }

@@ -257,7 +257,7 @@ fn main() {
             // Decode all tokens individually (tiktoken batch decode can fail on special tokens)
             let full_text: String = ids
                 .iter()
-                .filter_map(|&tid| tokenizer.decode(vec![tid]).ok())
+                .filter_map(|&tid| tokenizer.decode(&[tid]).ok())
                 .collect();
             println!(
                     "Slot {slot} [{p}]: {gen_len} displayed tokens, actual_gen_len={actual_gen_len}, phase={phase:?}",

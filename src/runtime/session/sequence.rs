@@ -87,7 +87,7 @@ where
         }
         Some(
             self.tokenizer
-                .decode(ids)
+                .decode(&ids)
                 .unwrap_or_else(|_| String::from("?")),
         )
     }
@@ -99,7 +99,7 @@ where
         }
 
         self.tokenizer
-            .decode(token_ids)
+            .decode(&token_ids)
             .unwrap_or_else(|_| String::from("Decode error"))
     }
 

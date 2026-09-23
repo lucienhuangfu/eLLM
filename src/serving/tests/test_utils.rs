@@ -79,7 +79,15 @@ pub fn create_test_manager_with_mode(
     timeout_ms: u64,
     mode: SessionMode,
 ) -> (Arc<SlotManager<f16>>, Vec<usize>) {
-    build_manager(batch_size, timeout_ms, mode, test_tokenizer(), test_chat_template(), true, true)
+    build_manager(
+        batch_size,
+        timeout_ms,
+        mode,
+        test_tokenizer(),
+        test_chat_template(),
+        true,
+        true,
+    )
 }
 
 pub fn create_qwen3_test_manager_with_mode(
@@ -152,7 +160,9 @@ pub fn create_test_router() -> (Router, Arc<SlotManager<f16>>, Vec<usize>) {
     (router, manager, buffer)
 }
 
-pub fn create_test_router_with_mode(mode: SessionMode) -> (Router, Arc<SlotManager<f16>>, Vec<usize>) {
+pub fn create_test_router_with_mode(
+    mode: SessionMode,
+) -> (Router, Arc<SlotManager<f16>>, Vec<usize>) {
     let (manager, buffer) = create_test_manager_with_mode(4, 1000, mode);
     let router = build_router(Arc::clone(&manager));
     (router, manager, buffer)
@@ -174,12 +184,17 @@ pub fn start_runtime_with_fakeecho(
     thread_num: usize,
     tokens: Vec<usize>,
 ) -> Arc<Scheduler> {
-    let (batch_size, seq_len, sequences_ptr) = manager.slot_sequences.with(|seq| {
-        (seq.slot_count, seq.slot_capacity, seq.sequences)
-    });
+    let (batch_size, seq_len, sequences_ptr) = manager
+        .slot_sequences
+        .with(|seq| (seq.slot_count, seq.slot_capacity, seq.sequences));
 
     let batch_states = manager.batch_states.clone();
-    let scheduler = Arc::new(Scheduler::new(batch_size, seq_len, thread_num, batch_states));
+    let scheduler = Arc::new(Scheduler::new(
+        batch_size,
+        seq_len,
+        thread_num,
+        batch_states,
+    ));
 
     let fake_echo = FakeEcho::new(sequences_ptr, seq_len, eos_id, tokens);
     let operator_queue: Vec<Operator<f16>> = vec![Operator::FakeEcho(fake_echo)];
@@ -194,7 +209,9 @@ pub fn start_runtime_with_fakeecho(
 
 pub fn find_active_slot(manager: &SlotManager<f16>) -> Option<usize> {
     manager.batch_states.with(|slots| {
-        slots.iter().position(|s| !matches!(s.phase, Phase::Start | Phase::Eos))
+        slots
+            .iter()
+            .position(|s| !matches!(s.phase, Phase::Start | Phase::Eos))
     })
 }
 
@@ -272,8 +289,7 @@ pub fn start_generation_worker(
                         manager.batch_states.with_mut(|slots| {
                             let slot = &mut slots[slot_index];
                             if slot.phase == Phase::Prefill {
-                                let prefill_end =
-                                    slot.next_sequence_index + slot.filling_length();
+                                let prefill_end = slot.next_sequence_index + slot.filling_length();
                                 slot.next_sequence_index = prefill_end;
                                 slot.phase = Phase::Decode;
                                 slot.notify.notify_one();
@@ -400,10 +416,15 @@ pub fn assert_sync_content_ends_with(json: &serde_json::Value, eos_text: &str) -
 }
 
 pub fn assert_digit_pattern(generated: &str) {
-    assert!(!generated.is_empty(), "should have generated tokens before eos");
+    assert!(
+        !generated.is_empty(),
+        "should have generated tokens before eos"
+    );
     let expected_pattern = "0123456789".repeat(generated.len() / 10 + 1);
     assert!(
-        generated.chars().eq(expected_pattern.chars().take(generated.len())),
+        generated
+            .chars()
+            .eq(expected_pattern.chars().take(generated.len())),
         "generated content should cycle through 0-9 digits, got: {:?}",
         generated
     );
