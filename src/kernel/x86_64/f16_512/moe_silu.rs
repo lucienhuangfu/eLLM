@@ -49,11 +49,13 @@ pub unsafe fn moe_silu_finalize_row_32(gate_row: *const f16, up_row: *const f16,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::Rng;
+    use rand::RngExt;
 
     fn random_vec(len: usize) -> Vec<f16> {
-        let mut rng = rand::thread_rng();
-        (0..len).map(|_| rng.gen_range(-1.0..1.0) as f16).collect()
+        let mut rng = rand::rng();
+        (0..len)
+            .map(|_| rng.random_range(-1.0..1.0) as f16)
+            .collect()
     }
 
     #[test]

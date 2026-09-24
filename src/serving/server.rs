@@ -1,13 +1,14 @@
 use async_stream::stream;
 use axum::{
-    body::Bytes,
+    body::{Body, Bytes},
     extract::State,
-    response::sse::Event,
-    response::{IntoResponse, Sse},
+    response::IntoResponse,
     routing::post,
     Json, Router,
 };
+use bytes::{BufMut, BytesMut};
 use std::borrow::Cow;
+use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -105,116 +106,124 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 // ─── SSE Writer (zero-alloc per-chunk serialization) ─────────────────────────
 
-/// Pre-allocates the static JSON envelope and writes variable delta content
-/// directly into a reusable buffer, eliminating per-chunk serde allocations.
-/// Output is raw JSON (no SSE framing) — axum's `Event` handles `data:` prefix.
+/// Writes complete SSE frames (`data: {...}\n\n`) directly into a caller-owned
+/// [`BytesMut`], bypassing axum's `Event`/`Sse` re-serialization. The static JSON
+/// envelope is pre-built once; per-chunk work is pure byte appends with no
+/// intermediate `String` allocation.
 struct SseWriter {
-    buf: String,
     /// Pre-built: `{"id":"...","object":"chat.completion.chunk","created":N,"model":"...","choices":[{"index":0,"delta":{`
-    prefix: String,
+    prefix: Bytes,
 }
 
 impl SseWriter {
     fn new(id: &str, created: u64, model: &str) -> Self {
-        let mut prefix = String::with_capacity(192);
-        prefix.push_str("{\"id\":\"");
+        let mut prefix = BytesMut::with_capacity(192);
+        prefix.put_slice(b"{\"id\":\"");
         push_json_escaped(&mut prefix, id);
-        prefix.push_str("\",\"object\":\"chat.completion.chunk\",\"created\":");
-        prefix.push_str(&created.to_string());
-        prefix.push_str(",\"model\":\"");
+        prefix.put_slice(b"\",\"object\":\"chat.completion.chunk\",\"created\":");
+        prefix.put_slice(created.to_string().as_bytes());
+        prefix.put_slice(b",\"model\":\"");
         push_json_escaped(&mut prefix, model);
-        prefix.push_str("\",\"choices\":[{\"index\":0,\"delta\":{");
+        prefix.put_slice(b"\",\"choices\":[{\"index\":0,\"delta\":{");
 
         Self {
-            buf: String::with_capacity(4096),
-            prefix,
+            prefix: prefix.freeze(),
         }
     }
 
-    /// Write a content delta chunk. Returns the complete SSE frame.
-    fn write_content(&mut self, role: bool, content: &str) -> &str {
-        self.buf.clear();
-        self.buf.push_str(&self.prefix);
-        if role {
-            self.buf.push_str("\"role\":\"assistant\",");
-        }
-        self.buf.push_str("\"content\":\"");
-        push_json_escaped(&mut self.buf, content);
-        self.buf.push_str("\"},\"finish_reason\":null}]}");
-        &self.buf
+    /// Write a content delta frame into `out`.
+    fn write_content(&self, out: &mut BytesMut, role: bool, content: &str) {
+        self.begin(out, role);
+        out.put_slice(b"\"content\":\"");
+        push_json_escaped(out, content);
+        out.put_slice(b"\"},\"finish_reason\":null}]}\n\n");
     }
 
-    /// Write a reasoning_content delta chunk.
-    fn write_reasoning(&mut self, role: bool, reasoning: &str) -> &str {
-        self.buf.clear();
-        self.buf.push_str(&self.prefix);
-        if role {
-            self.buf.push_str("\"role\":\"assistant\",");
-        }
-        self.buf.push_str("\"reasoning_content\":\"");
-        push_json_escaped(&mut self.buf, reasoning);
-        self.buf.push_str("\"},\"finish_reason\":null}]}");
-        &self.buf
+    /// Write a reasoning_content delta frame into `out`.
+    fn write_reasoning(&self, out: &mut BytesMut, role: bool, reasoning: &str) {
+        self.begin(out, role);
+        out.put_slice(b"\"reasoning_content\":\"");
+        push_json_escaped(out, reasoning);
+        out.put_slice(b"\"},\"finish_reason\":null}]}\n\n");
     }
 
-    /// Write a tool_call delta chunk.
+    /// Write a tool_call delta frame into `out`.
     fn write_tool_call_delta(
-        &mut self,
+        &self,
+        out: &mut BytesMut,
         role: bool,
         index: u32,
         name: Option<&str>,
         arguments: Option<&str>,
-    ) -> &str {
-        self.buf.clear();
-        self.buf.push_str(&self.prefix);
-        if role {
-            self.buf.push_str("\"role\":\"assistant\",");
-        }
-        self.buf.push_str("\"tool_calls\":[{\"index\":");
-        self.buf.push_str(&index.to_string());
-        self.buf.push_str(",\"type\":\"function\",\"function\":{");
+    ) {
+        self.begin(out, role);
+        out.put_slice(b"\"tool_calls\":[{\"index\":");
+        out.put_slice(index.to_string().as_bytes());
+        out.put_slice(b",\"type\":\"function\",\"function\":{");
         if let Some(n) = name {
-            self.buf.push_str("\"name\":\"");
-            push_json_escaped(&mut self.buf, n);
-            self.buf.push('"');
+            out.put_slice(b"\"name\":\"");
+            push_json_escaped(out, n);
+            out.put_u8(b'"');
             if arguments.is_some() {
-                self.buf.push(',');
+                out.put_u8(b',');
             }
         }
         if let Some(args) = arguments {
-            self.buf.push_str("\"arguments\":\"");
-            push_json_escaped(&mut self.buf, args);
-            self.buf.push('"');
+            out.put_slice(b"\"arguments\":\"");
+            push_json_escaped(out, args);
+            out.put_u8(b'"');
         }
-        self.buf.push_str("}}]},\"finish_reason\":null}]}");
-        &self.buf
+        out.put_slice(b"}}]},\"finish_reason\":null}]}\n\n");
     }
 
-    /// Write the final finish chunk with empty delta.
-    fn write_finish(&mut self) -> &str {
-        self.buf.clear();
-        self.buf.push_str(&self.prefix);
-        self.buf.push_str("},\"finish_reason\":\"stop\"}]}");
-        &self.buf
+    /// Write the final finish frame (empty delta) into `out`.
+    fn write_finish(&self, out: &mut BytesMut) {
+        out.put_slice(b"data: ");
+        out.put_slice(&self.prefix[..]);
+        out.put_slice(b"},\"finish_reason\":\"stop\"}]}\n\n");
+    }
+
+    /// Emit the `data: ` prefix, the JSON envelope and the optional role field.
+    #[inline]
+    fn begin(&self, out: &mut BytesMut, role: bool) {
+        out.put_slice(b"data: ");
+        out.put_slice(&self.prefix[..]);
+        if role {
+            out.put_slice(b"\"role\":\"assistant\",");
+        }
     }
 }
 
-/// Minimal JSON string escaping (RFC 8259).
+/// Minimal JSON string escaping (RFC 8259), byte-oriented for [`BytesMut`].
+/// Multi-byte UTF-8 sequences (bytes >= 0x80) are copied through untouched.
 #[inline]
-fn push_json_escaped(out: &mut String, s: &str) {
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
+fn push_json_escaped(out: &mut BytesMut, s: &str) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    for i in 0..bytes.len() {
+        let b = bytes[i];
+        let esc: &[u8] = match b {
+            b'"' => b"\\\"",
+            b'\\' => b"\\\\",
+            b'\n' => b"\\n",
+            b'\r' => b"\\r",
+            b'\t' => b"\\t",
+            c if c < 0x20 => {
+                out.put_slice(&bytes[start..i]);
+                out.put_slice(b"\\u00");
+                out.put_u8(HEX[(c >> 4) as usize]);
+                out.put_u8(HEX[(c & 0x0f) as usize]);
+                start = i + 1;
+                continue;
             }
-            c => out.push(c),
-        }
+            _ => continue,
+        };
+        out.put_slice(&bytes[start..i]);
+        out.put_slice(esc);
+        start = i + 1;
     }
+    out.put_slice(&bytes[start..]);
 }
 
 // ─── Stream Session (state machine) ─────────────────────────────────────────
@@ -238,11 +247,11 @@ impl StreamSession {
         }
     }
 
-    /// Process one decoded token text. Appends SSE frames to `out`.
-    fn process_token(&mut self, text: &str, out: &mut String) {
-        // Split borrows: parser and writer are independent fields.
+    /// Process one decoded token text, appending complete SSE frames to `out`.
+    fn process_token(&mut self, text: &str, out: &mut BytesMut) {
+        // Split borrows: parser (mut) and writer (shared) are independent fields.
         let parser = &mut self.parser;
-        let writer = &mut self.writer;
+        let writer = &self.writer;
         let role_sent = &mut self.role_sent;
         let tool_call_index = &mut self.tool_call_index;
 
@@ -250,31 +259,27 @@ impl StreamSession {
         for event in events {
             match event {
                 ParserEvent::Content(content) => {
-                    let frame = writer.write_content(!*role_sent, content);
+                    writer.write_content(out, !*role_sent, content);
                     *role_sent = true;
-                    out.push_str(frame);
-                    out.push('\n');
                 }
                 ParserEvent::Reasoning(reasoning) => {
-                    let frame = writer.write_reasoning(!*role_sent, reasoning);
+                    writer.write_reasoning(out, !*role_sent, reasoning);
                     *role_sent = true;
-                    out.push_str(frame);
-                    out.push('\n');
                 }
                 ParserEvent::ToolCallDelta(fragment) => {
-                    let frame = writer.write_tool_call_delta(
+                    writer.write_tool_call_delta(
+                        out,
                         !*role_sent,
                         *tool_call_index,
                         None,
                         Some(fragment),
                     );
                     *role_sent = true;
-                    out.push_str(frame);
-                    out.push('\n');
                 }
                 ParserEvent::ToolCall(tool_call) => {
                     let args_str = tool_call.arguments.to_string();
-                    let frame = writer.write_tool_call_delta(
+                    writer.write_tool_call_delta(
+                        out,
                         !*role_sent,
                         *tool_call_index,
                         Some(&tool_call.name),
@@ -282,16 +287,14 @@ impl StreamSession {
                     );
                     *tool_call_index += 1;
                     *role_sent = true;
-                    out.push_str(frame);
-                    out.push('\n');
                 }
             }
         }
     }
 
-    /// Generate the final finish frame.
-    fn finish(&mut self) -> &str {
-        self.writer.write_finish()
+    /// Append the final finish frame to `out`.
+    fn finish(&self, out: &mut BytesMut) {
+        self.writer.write_finish(out);
     }
 }
 
@@ -490,7 +493,9 @@ fn build_stream_response(
     let writer = SseWriter::new(request_id, created, model);
     let prompt_length = slot_manager.get_prompt_length(slot_index);
     let mut session = StreamSession::new(parser, writer, prompt_length);
-    let mut frame_buf = String::with_capacity(4096);
+    // Accumulates complete SSE frames for one wake-up; handed off as a single
+    // zero-copy `Bytes` chunk (one allocation per notify batch, not per frame).
+    let mut frame_buf = BytesMut::with_capacity(4096);
 
     let stream_body = stream! {
         loop {
@@ -502,20 +507,21 @@ fn build_stream_response(
             while session.last_emitted < token_index {
                 let text = slot_manager.decode_single_token(slot_index, session.last_emitted);
                 session.last_emitted += 1;
-
-                frame_buf.clear();
                 session.process_token(&text, &mut frame_buf);
-
-                if !frame_buf.is_empty() {
-                    for json_str in frame_buf.split('\n').filter(|s| !s.is_empty()) {
-                        yield Ok::<Event, axum::Error>(Event::default().data(json_str.to_string()));
-                    }
-                }
             }
 
             if is_eos {
-                let finish_frame = session.finish().to_string();
-                yield Ok::<Event, axum::Error>(Event::default().data(finish_frame));
+                session.finish(&mut frame_buf);
+            }
+
+            if !frame_buf.is_empty() {
+                // `mem::take` transfers the filled buffer's allocation to `Bytes`
+                // with no copy; `frame_buf` becomes empty and refills next round.
+                let chunk = std::mem::take(&mut frame_buf).freeze();
+                yield Ok::<Bytes, Infallible>(chunk);
+            }
+
+            if is_eos {
                 break;
             }
         }
@@ -524,7 +530,16 @@ fn build_stream_response(
         Arc::clone(&slot_manager).release_session(&session_id, sequence_length).await;
     };
 
-    Sse::new(stream_body).into_response()
+    // Hand-built SSE response: `Body::from_stream` forwards the pre-framed bytes
+    // verbatim, skipping axum's `Event`/`Sse` per-frame re-serialization.
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/event-stream"),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+        ],
+        Body::from_stream(stream_body),
+    )
+        .into_response()
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -559,16 +574,23 @@ mod tests {
 
     #[test]
     fn sse_writer_content_basic() {
-        let mut w = SseWriter::new("chatcmpl-1", 123, "test-model");
-        let frame = w.write_content(true, "hello").to_string();
+        let w = SseWriter::new("chatcmpl-1", 123, "test-model");
+        let mut out = BytesMut::new();
+        w.write_content(&mut out, true, "hello");
+        let frame = String::from_utf8(out.to_vec()).unwrap();
         assert!(frame.contains("\"role\":\"assistant\""));
         assert!(frame.contains("\"content\":\"hello\""));
         assert!(frame.contains("\"id\":\"chatcmpl-1\""));
         assert!(frame.contains("\"model\":\"test-model\""));
-        assert!(frame.starts_with('{'));
-        assert!(frame.ends_with('}'));
-        // Must be valid JSON
-        let v: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        // Full SSE framing: `data: ` prefix and `\n\n` terminator.
+        assert!(frame.starts_with("data: {"));
+        assert!(frame.ends_with("}\n\n"));
+        // Payload must be valid JSON once the SSE framing is stripped.
+        let json = frame
+            .strip_prefix("data: ")
+            .and_then(|s| s.strip_suffix("\n\n"))
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
         assert_eq!(v["choices"][0]["delta"]["role"], "assistant");
         assert_eq!(v["choices"][0]["delta"]["content"], "hello");
         assert_eq!(v["choices"][0]["finish_reason"], serde_json::Value::Null);
@@ -576,16 +598,28 @@ mod tests {
 
     #[test]
     fn sse_writer_escapes_special_chars() {
-        let mut w = SseWriter::new("id", 0, "m");
-        let frame = w.write_content(false, "line1\nline2\"quote").to_string();
+        let w = SseWriter::new("id", 0, "m");
+        let mut out = BytesMut::new();
+        w.write_content(&mut out, false, "line1\nline2\"quote");
+        let frame = String::from_utf8(out.to_vec()).unwrap();
         assert!(frame.contains("line1\\nline2\\\"quote"));
+        // Escaping must not leak a raw newline that would break SSE framing.
+        let json = frame
+            .strip_prefix("data: ")
+            .and_then(|s| s.strip_suffix("\n\n"))
+            .unwrap();
+        assert!(!json.contains('\n'));
     }
 
     #[test]
     fn sse_writer_finish() {
-        let mut w = SseWriter::new("id", 0, "m");
-        let frame = w.write_finish().to_string();
+        let w = SseWriter::new("id", 0, "m");
+        let mut out = BytesMut::new();
+        w.write_finish(&mut out);
+        let frame = String::from_utf8(out.to_vec()).unwrap();
         assert!(frame.contains("\"finish_reason\":\"stop\""));
         assert!(frame.contains("\"delta\":{}"));
+        assert!(frame.starts_with("data: {"));
+        assert!(frame.ends_with("}\n\n"));
     }
 }

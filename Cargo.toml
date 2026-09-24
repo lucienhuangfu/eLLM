@@ -40,31 +40,32 @@ name = "multi_batch_test"
 path = "alignment/tokenizer/multi_batch_test.rs"
 
 [dependencies]
-anyhow = "1.0.72"
+anyhow = "1.0.104"
 async-stream = "0.3.6"
 rustc-hash = "2.1.3"
-axum = "0.8.4"
-core_affinity = "0.8.1"
-clap = { version = "4.5.20", features = ["derive"] }
-itertools = "0.14.0"
-memmap2 = "0.9.4"
-minijinja = "2.12.0"
+axum = "0.8.9"
+bytes = "1.11.1"
+core_affinity = "0.8.3"
+clap = { version = "4.6.7", features = ["derive"] }
+itertools = "0.15.0"
+memmap2 = "0.9.11"
+minijinja = "2.20.0"
 npy = "0.4.0"
 num = "0.4.3"
 num-traits = "0.2.19"
-num_cpus = "1.13"
-once_cell = "1.19"
-rand = "0.8.5"
-regex = "1.10.2"
-safetensors = "0.4.1"
-serde = {version = "1.0.226", features = ["derive"]}
-serde_json = "1.0.108"
-serde_yaml = "0.9"
+num_cpus = "1.17.0"
+once_cell = "1.21.4"
+rand = "0.10.3"
+regex = "1.13.1"
+safetensors = "0.8.0"
+serde = {version = "1.0.229", features = ["derive"]}
+serde_json = "1.0.151"
+serde_yaml = "0.9.34"
 tiktoken-rs = "0.12.0"
-thiserror = "1.0"
+thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["sync", "net", "rt", "rt-multi-thread", "macros"] }
-tokio-stream = "0.1"
-uuid = { version = "1.0", features = ["v4"] }
+tokio-stream = "0.1.19"
+uuid = { version = "1.26.1", features = ["v4"] }
 
 [profile.release]
 opt-level = 3
@@ -80,16 +81,15 @@ rpath = false
 incremental = false
 
 [build-dependencies]
-raw-cpuid = "11.0.2"
+raw-cpuid = "11.6.0"
 
 [dev-dependencies]
-rand = "0.8.5"
-criterion = { version = "0.5.1", features = ["html_reports"] }
+criterion = { version = "0.8.2", features = ["html_reports"] }
 approx = "0.5.1"
-tempfile = "3.8.1"
-tower = { version = "0.5", features = ["util"] }
-hyper = { version = "1.0", features = ["full"] }
-futures-util = "0.3"
+tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }
+hyper = { version = "1.11.1", features = ["full"] }
+futures-util = "0.3.34"
 
 [features]
 default = []
