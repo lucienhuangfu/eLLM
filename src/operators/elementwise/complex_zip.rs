@@ -62,7 +62,7 @@ where
         }
     }
 
-    pub fn run(&self, prefill_size: usize, cpu_num: usize, thread_id: usize) {
+    pub fn run(&self, prefill_size: usize, _total_size: usize, cpu_num: usize, thread_id: usize) {
         let stride = self.head_num;
 
         if let Some((begin, end)) = assign(stride, cpu_num, thread_id) {
@@ -247,7 +247,7 @@ mod test {
         let thread_num: usize = num_cpus::get();
         for i in 0..thread_num {
             // for position_index in 0..sequence_length {
-            operator.run(batch_size, thread_num, i);
+            operator.run(batch_size, 0, thread_num, i);
             // }
             break;
         }

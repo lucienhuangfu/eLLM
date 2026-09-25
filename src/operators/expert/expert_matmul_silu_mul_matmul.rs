@@ -344,7 +344,7 @@ where
                 *expert_tasks_ptr.add(expert_task_count) = ExpertTaskMeta {
                     expert_id,
                     token_begin: routed_row_count,
-                    token_count: routed_token_count,
+                    sequence_length: routed_token_count,
                     task_begin: total_tasks,
                     task_end: total_tasks + task_count,
                 };
@@ -364,14 +364,16 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
+        lift_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
-            let active_token_count = if prefill_size == 0 {
-                decode_size
+            let active_token_count = if self.decode_only_flag {
+                lift_size
             } else {
-                prefill_size
+                _total_size
             };
             let output_cols = self.inter;
             let reduction_cols = self.hidden;
@@ -425,7 +427,7 @@ where
 
                 let token_block_start = token_tile_id * token_block_rows;
                 let tokens_in_block =
-                    (task_meta.token_count - token_block_start).min(token_block_rows);
+                    (task_meta.sequence_length - token_block_start).min(token_block_rows);
                 debug_assert!(tokens_in_block > 0);
 
                 let expert_id = task_meta.expert_id;
@@ -1028,7 +1030,7 @@ mod tests {
 
     fn run_all_threads(runner: &ExpertMatMulSilu<f16>, batch: usize, cpu_num: usize) {
         for tid in 0..cpu_num {
-            runner.run(batch, 0, cpu_num, tid);
+            runner.run(batch, 0, batch, batch, cpu_num, tid);
         }
     }
 
@@ -1637,7 +1639,7 @@ mod tests {
             let used = num_threads.min(threads_cap).max(1);
 
             for tid in 0..used {
-                op.run(batch, 0, used, tid);
+                op.run(batch, 0, batch, batch, used, tid);
             }
         }
 
@@ -1789,7 +1791,7 @@ mod tests {
         };
 
         // 单线程即可复现
-        op.run(B_RUN, 0, 1, 0);
+        op.run(B_RUN, 0, B_RUN, B_RUN, 1, 0);
 
         // row 7/8 必须仍为 0（没被触碰）
         for b in B_RUN..B_CAP {
@@ -1888,7 +1890,7 @@ mod tests {
 
         // run 只跑 B_RUN
         for tid in 0..cpu_num {
-            runner.run(B_RUN, 0, cpu_num, tid);
+            runner.run(B_RUN, 0, B_RUN, B_RUN, cpu_num, tid);
         }
 
         // 断言：row 7,8 必须仍然是 0（没被触碰）
@@ -1997,7 +1999,7 @@ mod tests {
 
             // 你说固定机器跑，这里就直接用 num_threads（确保不超过你那台机的 threads）
             for tid in 0..num_threads {
-                op.run(batch, 0, num_threads, tid);
+                op.run(batch, 0, batch, batch, num_threads, tid);
             }
         }
 

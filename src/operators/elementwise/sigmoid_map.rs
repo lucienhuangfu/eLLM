@@ -36,8 +36,7 @@ where
 
     pub fn run(
         &self,
-        _prefill_size: usize,
-        _decode_size: usize,
+        _total_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {

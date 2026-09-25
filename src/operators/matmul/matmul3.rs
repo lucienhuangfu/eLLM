@@ -11,7 +11,7 @@ use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 
 use crate::operators::assign::KqvPath;
 use crate::operators::traits::MatMulkqvTrait;
-use crate::runtime::scheduling::SequenceSlice;
+use crate::runtime::SequenceSlice;
 
 // Generic scalar helpers used by fallback paths.
 // fallback 路径使用的通用标量 helper。
@@ -448,11 +448,11 @@ where
 
             for offset in 0..slice.length {
                 let token_index = slice.token_start_index + offset;
-                let sequence_index = slice.sequence_index + offset;
-                if token_index >= self.m_row || sequence_index >= self.sequence_length {
+                let next_sequence_index = slice.next_sequence_index + offset;
+                if token_index >= self.m_row || next_sequence_index >= self.sequence_length {
                     continue;
                 }
-                rows.push((token_index, slice.batch_index, sequence_index));
+                rows.push((token_index, slice.batch_index, next_sequence_index));
             }
         }
         rows
@@ -468,7 +468,7 @@ where
         head_index: usize,
         apply_rope: bool,
         norm_weight: *const T,
-        sequence_index: usize,
+        next_sequence_index: usize,
     ) where
         Self: MatMulkqvTrait<T>,
     {
@@ -498,7 +498,7 @@ where
 
         if apply_rope {
             let eps = T::from_f32(1e-6);
-            let rope_ptr = self.rope_ptr.ptr.add(sequence_index * self.head_dim);
+            let rope_ptr = self.rope_ptr.ptr.add(next_sequence_index * self.head_dim);
             if self.use_qk_norm {
                 self.compute_norm_rope(dst_head, norm_weight, rope_ptr, self.head_dim, eps);
             } else {
@@ -733,6 +733,7 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
         attention_list: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
@@ -749,7 +750,7 @@ where
             if row_count == 0 || thread_id >= thread_num || thread_num == 0 {
                 return;
             }
-            if self.can_use_prefill_row_tiles(&row_map) {
+            if !attention_list.is_empty() && self.can_use_prefill_row_tiles(&row_map) {
                 self.run_prefill_row_tiled(row_count, thread_num, thread_id);
                 return;
             }
@@ -1218,6 +1219,8 @@ mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
 
+    const EMPTY_SLICES: &[SequenceSlice] = &[];
+
     // ========================================================================
     // Helpers for f32 tests
     // ========================================================================
@@ -1317,7 +1320,7 @@ mod tests {
 
     fn run_runner(runner: &MatMul3<f16>, m: usize, thread_num: usize) {
         for tid in 0..thread_num {
-            runner.run(m, 0, &[], thread_num, tid);
+            runner.run(m, 0, 0, EMPTY_SLICES, thread_num, tid);
         }
     }
 
@@ -1405,7 +1408,7 @@ mod tests {
                 32,              // b_row_step_micro
             );
 
-            matmul.run(m, 0, &[], 1, 0);
+            matmul.run(m, 0, 0, EMPTY_SLICES, 1, 0);
 
             // reference（从 W_nt 计算）
             ref_matmul_f32_from_wnt(m, k, n_q, &a, &wq_nt, &mut cq_ref);

@@ -55,14 +55,11 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
-        let active_rows = if prefill_size == 0 {
-            decode_size
-        } else {
-            prefill_size
-        };
+        let active_rows = _total_size;
 
         if let Some((begin, end)) = assign(active_rows, thread_num, thread_id) {
             let mut ptr1 = self.ptr1.ptr;
@@ -219,7 +216,7 @@ mod test {
         // argmax_operator.set_chunk(chunks);
 
         for i in 0..thread_num {
-            operator.run(batch_size, 0, thread_num, i);
+            operator.run(batch_size - 1, 1, batch_size, thread_num, i);
         }
 
         // 如需打印输出数据，请取消以下注释

@@ -168,15 +168,13 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
+        lift_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
-            let active_input_rows = if prefill_size == 0 {
-                decode_size
-            } else {
-                prefill_size
-            };
+            let active_input_rows = if self.decode_only_flag { lift_size } else { _total_size };
 
             let output_cols = self.n_max;
             let reduction_cols = self.k_max;
@@ -396,7 +394,7 @@ mod tests {
             )
         };
 
-        runner.run(M, 0, 1, 0);
+        runner.run(M, 0, M, M, 1, 0);
 
         for i in 0..M {
             for j in 0..N {

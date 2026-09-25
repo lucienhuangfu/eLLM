@@ -6,6 +6,7 @@ Internal architecture documentation for the eLLM inference engine.
 
 - [Runtime Overview](runtime/overview.md) — module structure, component map, data flow
 - [Scheduler Design](runtime/schedule.md) — BatchScheduler, SliceScheduler, event-driven triggering
+- [Dialogue Cache](runtime/dialogue_cache.md) — timer-based retention, LRU eviction, delta prefill optimization
 
 ## Transformer
 

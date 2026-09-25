@@ -56,6 +56,8 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertSoftmax
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
+        lift_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
@@ -69,11 +71,7 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertSoftmax
             }
         }
 
-        let task_size = if prefill_size == 0 {
-            decode_size
-        } else {
-            prefill_size
-        };
+        let task_size = if self.decode_only_flag { lift_size } else { _total_size };
 
         if let Some((begin, end)) = assign(task_size, 1, 0) {
             let ptr1 = self.ptr1.ptr;
@@ -250,7 +248,7 @@ mod test {
 
         let thread_num = 1;
         let thread_id = 0;
-        operator.run(batch_size, 0, thread_num, thread_id);
+        operator.run(batch_size, 0, batch_size, batch_size, thread_num, thread_id);
 
         // Verification for token 0
         let mut expected1: Vec<(usize, f32)> = input_data1.iter().copied().enumerate().collect();
@@ -352,7 +350,7 @@ mod test {
 
         let thread_num = 8;
         for thread_id in 0..thread_num {
-            operator.run(batch_size, 0, thread_num, thread_id);
+            operator.run(batch_size, 0, batch_size, batch_size, thread_num, thread_id);
         }
 
         // Verification

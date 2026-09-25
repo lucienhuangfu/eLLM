@@ -1,0 +1,9 @@
+{
+  "model": "local-model",
+  "messages": [
+    {"role": "system", "content": "你是一个简洁、专业的助手。"},
+    {"role": "user", "content": "请用一句话介绍你自己。"}
+  ],
+  "stream": false,
+  "temperature": 0.7
+}

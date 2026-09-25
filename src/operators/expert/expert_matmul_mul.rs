@@ -371,18 +371,18 @@ where
                     routed_count += 1;
                 }
 
-                let token_count = routed_count - token_begin;
-                if token_count == 0 {
+                let sequence_length = routed_count - token_begin;
+                if sequence_length == 0 {
                     routed_count = token_begin;
                     continue;
                 }
 
-                let token_tile_count = token_count.div_ceil(token_block_rows);
+                let token_tile_count = sequence_length.div_ceil(token_block_rows);
                 let task_count = token_tile_count * output_column_tile_count;
                 *expert_tasks_ptr.add(expert_task_count) = ExpertTaskMeta {
                     expert_id,
                     token_begin,
-                    token_count,
+                    sequence_length,
                     task_begin: total_tasks,
                     task_end: total_tasks + task_count,
                 };
@@ -404,14 +404,16 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
+        lift_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
         unsafe {
-            let active_token_count = if prefill_size == 0 {
-                decode_size
+            let active_token_count = if self.decode_only_flag {
+                lift_size
             } else {
-                prefill_size
+                _total_size
             };
             let output_cols = self.h;
             let reduction_cols = self.hmid;
@@ -462,7 +464,7 @@ where
                 }
 
                 let tokens_in_block =
-                    (task_meta.token_count - token_block_start).min(token_block_rows);
+                    (task_meta.sequence_length - token_block_start).min(token_block_rows);
                 debug_assert!(tokens_in_block > 0);
 
                 let routed_token_begin = task_meta.token_begin + token_block_start;
@@ -1144,7 +1146,7 @@ mod tests {
             )
         };
 
-        runner.run(num_token, 0, 1, 0);
+        runner.run(num_token, 0, num_token, num_token, 1, 0);
 
         // reference (f32)
         let mut out_ref = vec![0.0f32; num_token * num_topk * h];
@@ -1232,7 +1234,7 @@ mod tests {
             )
         };
 
-        runner.run(num_token, 0, 1, 0);
+        runner.run(num_token, 0, num_token, num_token, 1, 0);
 
         // reference
         let mut out_ref = vec![0.0f32; num_token * num_topk * h];
@@ -1335,7 +1337,7 @@ mod tests {
             )
         };
 
-        runner.run(num_token, 0, 1, 0);
+        runner.run(num_token, 0, num_token, num_token, 1, 0);
 
         // token0 只命中 expert0 => slot1 应接近 0
         {
@@ -1448,7 +1450,7 @@ mod tests {
         // 用 2 线程跑一遍
         let cpu_num = 2usize;
         for tid in 0..cpu_num {
-            runner.run(num_token, 0, cpu_num, tid);
+            runner.run(num_token, 0, num_token, num_token, cpu_num, tid);
         }
 
         // 保存一次结果
@@ -1456,7 +1458,7 @@ mod tests {
 
         // 再跑一遍（验证 += 语义：第二次的增量应基本等于第一次的增量）
         for tid in 0..cpu_num {
-            runner.run(num_token, 0, cpu_num, tid);
+            runner.run(num_token, 0, num_token, num_token, cpu_num, tid);
         }
 
         // reference：我们不做全量 ref（太慢），抽样检查若干点
@@ -1612,7 +1614,7 @@ mod tests {
         };
 
         // 单线程即可复现问题
-        runner.run(B_RUN, 0, 1, 0);
+        runner.run(B_RUN, 0, B_RUN, B_RUN, 1, 0);
 
         // -----------------------
         // 断言：token0/1 的 expert1(slot=1) 必须保持 0
@@ -1735,7 +1737,7 @@ mod tests {
         };
 
         // 单线程足够复现
-        runner.run(B_RUN, 0, 1, 0);
+        runner.run(B_RUN, 0, B_RUN, B_RUN, 1, 0);
 
         // 断言1：token0/1 的 expert1(slot=1) 必须仍为 0
         for b in 0..2 {
@@ -1853,7 +1855,7 @@ mod tests {
         };
 
         for tid in 0..cpu_num {
-            runner.run(num_token, 0, cpu_num, tid);
+            runner.run(num_token, 0, num_token, num_token, cpu_num, tid);
         }
 
         let mut out_ref = vec![0.0f32; num_token * num_topk * h];
@@ -1946,7 +1948,7 @@ mod tests {
         };
 
         for tid in 0..cpu_num {
-            runner.run(num_token, 0, cpu_num, tid);
+            runner.run(num_token, 0, num_token, num_token, cpu_num, tid);
         }
 
         let mut out_ref = vec![0.0f32; num_token * num_topk * h];
@@ -2039,7 +2041,7 @@ mod tests {
         };
 
         for tid in 0..4usize {
-            runner.run(num_token, 0, 4, tid);
+            runner.run(num_token, 0, num_token, num_token, 4, tid);
         }
 
         for b in 0..num_token {

@@ -1,11 +1,14 @@
 use super::*;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::expert::expert_routing::routing_from_dense;
+use crate::runtime::scheduler::task::SequenceSlice;
 use crate::tensor::GlobalOperatorQueue;
 use approx::{assert_abs_diff_eq, assert_ulps_eq};
 use std::collections::HashMap;
 use std::f16;
 use std::mem;
+
+const EMPTY_SLICES: &[SequenceSlice] = &[];
 
 // ============================================================
 // helpers
@@ -65,10 +68,11 @@ pub fn run_operator_all_threads(
         op.run(
             prefill_size,
             decode_size,
+            decode_size,
+            0,
             cpu_num,
             tid,
-            &[],
-            &[],
+            EMPTY_SLICES,
             &mut Vec::new(),
         );
     }

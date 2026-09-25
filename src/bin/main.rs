@@ -1,95 +1,54 @@
+#![feature(f16)]
+
 use clap::Parser;
+use ellm::config::{Cli, Config};
+use ellm::runtime::RuntimeContext;
 use ellm::serving;
-use ellm::serving::{initialize_serving_resources, ServingConfig};
-
-const MODEL_DIR: &str = "models/Qwen3-Coder-30B-A3B-Instruct";
-
-#[derive(Debug, Parser)]
-#[command(name = "main", about = "Run the eLLM OpenAI-compatible chat server")]
-struct Args {
-    /// Directory containing the model configuration, tokenizer, and weights.
-    #[arg(long, value_name = "DIR", default_value = MODEL_DIR)]
-    model_path: String,
-
-    /// Maximum tokens processed in one prefill chunk.
-    #[arg(long, value_name = "TOKENS", value_parser = parse_positive_usize)]
-    chunk_size: Option<usize>,
-
-    /// Token capacity of each request slot, including prompt and output.
-    #[arg(long, value_name = "TOKENS", value_parser = parse_positive_usize)]
-    sequence_length: Option<usize>,
-
-    /// Maximum number of concurrent request slots.
-    #[arg(long, value_name = "REQUESTS", value_parser = parse_positive_usize)]
-    batch_size: Option<usize>,
-}
-
-fn parse_positive_usize(value: &str) -> Result<usize, String> {
-    value
-        .parse::<usize>()
-        .map_err(|_| format!("{value:?} is not a positive integer"))
-        .and_then(|parsed| {
-            if parsed == 0 {
-                Err("value must be greater than 0".to_string())
-            } else {
-                Ok(parsed)
-            }
-        })
-}
+use ellm::serving::initialize_serving_resources;
 
 fn create_runtime(
-    resources: &serving::ServingResources,
+    ctx: &RuntimeContext<f16>,
 ) -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error>> {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(resources.worker_threads)
-        .max_blocking_threads(resources.async_threads)
+        .worker_threads(ctx.thread_config.api_threads)
+        .max_blocking_threads(ctx.thread_config.blocking_threads)
         .enable_all()
         .build()
         .map_err(Into::into)
 }
 
 async fn run_server(
-    resources: serving::ServingResources,
+    ctx: RuntimeContext<f16>,
+    host: String,
+    port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    tokio::spawn(async move {
-        resources.runner.start().await;
-    });
-
-    serving::run(
-        resources.batch_sequences,
-        resources.batch_states,
-        resources.token_counter,
-        resources.parser_options,
-    )
-    .await?;
-
+    serving::run(ctx.slot_manager, &host, port).await?;
     Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
-    println!("Starting Qwen3-Coder-30B-A3B-Instruct server...");
+    println!("Starting backend server...");
 
-    let mut serving_config = ServingConfig::new(args.model_path);
-    if let Some(chunk_size) = args.chunk_size {
-        serving_config.chunk_size = chunk_size;
-    }
-    if let Some(sequence_length) = args.sequence_length {
-        serving_config.sequence_length = sequence_length;
-    }
-    if let Some(batch_size) = args.batch_size {
-        serving_config.batch_size = batch_size;
-    }
+    let cli = Cli::parse();
+    let config = Config::from_cli(cli)?;
+    let resolved_config = config.resolve()?;
 
-    println!(
-        "Serving config: chunk_size={}, sequence_length={}, batch_size={}",
-        serving_config.chunk_size, serving_config.sequence_length, serving_config.batch_size
-    );
-    let resources = initialize_serving_resources(&serving_config)?;
+    let host = resolved_config
+        .serve
+        .as_ref()
+        .map(|s| s.host.clone())
+        .unwrap_or_else(|| "0.0.0.0".to_string());
+    let port = resolved_config
+        .serve
+        .as_ref()
+        .map(|s| s.port)
+        .unwrap_or(8000);
 
-    let rt = create_runtime(&resources)?;
+    let ctx = initialize_serving_resources(&resolved_config)?;
 
-    rt.block_on(async move { run_server(resources).await })?;
+    let rt = create_runtime(&ctx)?;
+
+    rt.block_on(async move { run_server(ctx, host, port).await })?;
 
     Ok(())
 }

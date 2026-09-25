@@ -17,7 +17,7 @@ pub fn block_flash_attention<T>(
     q_seq_stride: usize,
     head_size: usize,
     inverse_sqrt_head: T,
-    sequence_index: usize,
+    next_sequence_index: usize,
     running_max: &mut [T],
     running_denom: &mut [T],
     scores: &mut [T],
@@ -34,7 +34,7 @@ pub fn block_flash_attention<T>(
 {
     unsafe {
         for (row_offset, row) in (row_begin..row_end).enumerate() {
-            let visible_col_end = (sequence_index + row + 1).min(total_col_end);
+            let visible_col_end = (next_sequence_index + row + 1).min(total_col_end);
             let row_col_end = col_end.min(visible_col_end);
             if col_begin >= row_col_end {
                 continue;
@@ -215,7 +215,7 @@ mod tests {
         let col_end = 6;
         let col_size = 3;
         let inverse_sqrt_head = 1.0;
-        let sequence_index = 2;
+        let next_sequence_index = 2;
 
         let q = vec![9.0, 9.0, 1.0, 0.0, 0.0, 1.0, 8.0, 8.0];
         let k = vec![
@@ -253,7 +253,7 @@ mod tests {
                 head_size,
                 head_size,
                 inverse_sqrt_head,
-                sequence_index,
+                next_sequence_index,
                 &mut running_max,
                 &mut running_denom,
                 &mut scores,
@@ -264,7 +264,7 @@ mod tests {
         assert_close(&output[3 * head_size..4 * head_size], &[-7.0, -7.0]);
 
         for row in row_begin..row_end {
-            let visible_col_end = (sequence_index + row + 1).min(col_end);
+            let visible_col_end = (next_sequence_index + row + 1).min(col_end);
             let expected = naive_attention_row(
                 &q[row * head_size..(row + 1) * head_size],
                 &k,

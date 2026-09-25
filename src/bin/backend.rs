@@ -5,14 +5,15 @@ use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
-    BatchScheduler, BatchSequence, Phase, Runner, SafeTensorsLoader, ScheduleTask, SequenceState,
+    ExecutorPool, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SessionMode, SlotManager,
+    SlotSequence, SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
 use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 fn physical_core_thread_limit(requested_thread_num: usize) -> usize {
     let all_core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -94,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sequences_box = AlignedBox::allocate_init(sequences_capacity, 0);
     let sequences_ptr = sequences_box.as_mut_ptr();
 
-    let mut batch_seq = BatchSequence::<f16>::new(
+    let mut slot_seq = SlotSequence::<f16>::new(
         sequences_ptr,
         batch_size,
         sequence_length,
@@ -102,13 +103,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &tokenizer_config_path,
         &chat_template_path,
     )
-    .map_err(|e| format!("failed to create batch sequence: {}", e))?;
+    .map_err(|e| format!("failed to create slot sequence: {}", e))?;
 
-    // Write fixed prompts into each slot using BatchSequence
+    // Write fixed prompts into each slot using SlotSequence
     let mut written_lengths = Vec::with_capacity(batch_size);
     for (slot, prompt) in fixed_prompts.iter().enumerate().take(batch_size) {
         let messages: [(&str, &str); 1] = [("user", prompt)];
-        let write_len = batch_seq
+        let write_len = slot_seq
             .write_prompts(slot, &messages, 1.0)
             .map_err(|e| format!("failed to write prompt: {}", e))?;
         written_lengths.push(write_len);
@@ -152,117 +153,84 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run the model forward pass to populate the operator queue
     let (_output_indices, _output_tensor) =
-        model.forward(sequences_ptr, batch_seq.batch_temperature.as_mut_ptr());
+        model.forward(sequences_ptr, slot_seq.slot_temperature.as_mut_ptr());
 
-    let mut batch_scheduler =
-        BatchScheduler::with_mode(sequence_length, batch_size, chunk_size, thread_num);
-    let mut batch_list = Vec::with_capacity(batch_size);
-    batch_list.extend(
-        written_lengths
-            .iter()
-            .enumerate()
-            .map(|(_, &len)| SequenceState {
-                filling_length: len.min(sequence_length),
-                sequence_index: 0,
-                kv_index: 0,
-                phase: Phase::Prefill,
-                notify: Arc::new(tokio::sync::Notify::new()),
-            }),
-    );
-    batch_scheduler.batch_list = Arc::new(SharedMut::new(batch_list));
-    let batch_list_ref = Arc::clone(&batch_scheduler.batch_list);
-    let (task_sender, _) = tokio::sync::broadcast::channel(8);
-    let sizes = batch_scheduler.schedule_batch();
-    let task = ScheduleTask::new(
-        sizes.0,
-        sizes.1,
-        batch_scheduler.prefill_list.clone(),
-        batch_scheduler.decode_list.clone(),
-        1,
-    );
-    println!("Starting serving runner...");
-    let task_in_flight = Arc::new(AtomicBool::new(false));
-    let runner = Runner::new(
+    let mut slot_list = Vec::with_capacity(batch_size);
+    slot_list.extend(written_lengths.iter().enumerate().map(|(_, &len)| {
+        let mut s = SlotState::idle();
+        s.start_prefill(0, len.min(sequence_length));
+        s
+    }));
+    let slot_list_arc = Arc::new(SharedMut::new(slot_list));
+    let slot_seq_arc = Arc::new(SharedMut::new(slot_seq));
+
+    let batch_scheduler = Arc::new(Scheduler::new(
+        batch_size,
+        chunk_size,
+        thread_num,
+        Arc::clone(&slot_list_arc),
+    ));
+
+    let slot_manager = Arc::new(SlotManager::new(
+        batch_size,
+        Arc::clone(&slot_seq_arc),
+        Arc::clone(&slot_list_arc),
+        SessionMode::Reusable,
+        600000, // 10 minutes
+        true,
+        true,
+    ));
+
+    let worker_pool = ExecutorPool::<f16>::new(
         f16::take_operator_queue(),
-        Arc::clone(&batch_list_ref),
-        task_sender.clone(),
-    )
-    .with_task_in_flight(Arc::clone(&task_in_flight));
-    let runner_handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(thread_num)
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(runner.start());
-    });
+        Arc::clone(&batch_scheduler),
+        thread_num,
+    );
 
-    // Send prefill task
-    task_in_flight.store(true, Ordering::Release);
-    let mut task = task;
-    loop {
-        match task_sender.send(task.clone()) {
-            Ok(_) => break,
-            Err(err) => {
-                task = err.0;
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        }
+    println!("Starting inference with ExecutorPool...");
+
+    if batch_scheduler.schedule_batch() {
+        batch_scheduler.with_task(|task| {
+            // Execute prefill task
+            // worker_pool.execute_task(task);
+        });
     }
 
     // Decode loop
     let mut generated_count = 0usize;
     loop {
-        while task_in_flight.load(Ordering::Acquire) {
-            std::thread::sleep(std::time::Duration::from_micros(100));
-        }
         generated_count += 1;
 
-        let all_done = batch_scheduler
-            .batch_list
-            .with(|list| list.iter().all(|s| matches!(s.phase, Phase::Eos)));
+        let all_done =
+            slot_list_arc.with(|list| list.iter().all(|s| matches!(s.phase, Phase::Eos)));
         if all_done {
             break;
         }
 
-        let sizes = batch_scheduler.schedule_batch();
-        if sizes.1 == 0 {
+        if !batch_scheduler.schedule_batch() {
             break;
         }
-        let decode_task = ScheduleTask::new(
-            sizes.0,
-            sizes.1,
-            batch_scheduler.prefill_list.clone(),
-            batch_scheduler.decode_list.clone(),
-            1,
-        );
 
-        task_in_flight.store(true, Ordering::Release);
-        loop {
-            match task_sender.send(decode_task.clone()) {
-                Ok(_) => break,
-                Err(err) => {
-                    let _ = err.0;
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-            }
+        let decode_size = batch_scheduler.with_task(|task| task.decode_size);
+        if decode_size == 0 {
+            break;
         }
-    }
 
-    drop(task_sender);
-    while task_in_flight.load(Ordering::Acquire) {
-        std::thread::sleep(std::time::Duration::from_micros(100));
+        batch_scheduler.with_task(|task| {
+            // worker_pool.execute_task(task);
+        });
     }
-    let _ = runner_handle.join();
 
     println!("\n=== Generated Output ===");
-    batch_list_ref.with(|list| {
-        for (slot, record) in list.iter().enumerate() {
-            let text = batch_seq.decode_generated_text(slot, record);
-            if !text.is_empty() {
-                println!("Slot {}: {}", slot, text);
+    slot_list_arc.with(|list| {
+        slot_seq_arc.with(|batch_seq| {
+            for (slot, record) in list.iter().enumerate() {
+                let text = batch_seq.decode_token_span(slot, record.prompt_length, record.next_sequence_index);
+                if !text.is_empty() {
+                    println!("Slot {}: {}", slot, text);
+                }
             }
-        }
+        });
     });
 
     Ok(())

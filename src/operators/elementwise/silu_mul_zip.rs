@@ -70,22 +70,19 @@ where
     //    self.chunks = chunks;
     // }
 
-    pub fn run(&self, prefill_size: usize, cpu_num: usize, thread_id: usize) {
-        self.run_scheduled(prefill_size, 0, cpu_num, thread_id);
+    pub fn run(&self, prefill_size: usize, _total_size: usize, cpu_num: usize, thread_id: usize) {
+        self.run_scheduled(prefill_size, 0, _total_size, cpu_num, thread_id);
     }
 
     pub fn run_scheduled(
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
         cpu_num: usize,
         thread_id: usize,
     ) {
-        let active_rows = if prefill_size == 0 {
-            decode_size
-        } else {
-            prefill_size
-        };
+        let active_rows = _total_size;
         let total_len = active_rows * self.head_num;
         if let Some((begin, end)) = assign(total_len, cpu_num, thread_id) {
             let ptr1 = self.ptr1.ptr;
@@ -236,7 +233,7 @@ mod test {
         );
         // _operator.set_chunk(chunks);
         for i in 0..thread_num {
-            _operator.run(batch_size, thread_num, i);
+            _operator.run(batch_size, batch_size, thread_num, i);
         }
         let result = vec![
             1.9444659948349,

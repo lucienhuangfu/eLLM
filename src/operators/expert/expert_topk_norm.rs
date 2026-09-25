@@ -54,23 +54,21 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
+        _total_size: usize,
+        lift_size: usize,
         thread_num: usize,
         thread_id: usize,
     ) {
-        if thread_id != 0 {
-            return;
-        }
-
         for expert in 0..self.num_experts {
             unsafe {
                 (&*self.routing.expert_counts.ptr.add(expert)).store(0, Ordering::Release);
             }
         }
 
-        let task_size = if prefill_size == 0 {
-            decode_size
+        let task_size = if self.decode_only_flag {
+            lift_size
         } else {
-            prefill_size
+            _total_size
         };
 
         if let Some((begin, end)) = assign(task_size, 1, 0) {

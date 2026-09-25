@@ -18,7 +18,7 @@ Its goal is not to perform real model computation. Instead, it proves that the r
 
 In the `fake_server` scenario, it can replace the complex forward pass of a real model so you can quickly verify the following:
 
-1. Whether `ServingRunner` can schedule the operator queue correctly
+1. Whether `ExecutorPool` can schedule the operator queue correctly
 2. Whether `batch_list` state advances from `Prefill` to `Eos`
 3. Whether the waiting request's `Notify` gets woken up correctly
 
@@ -28,7 +28,7 @@ In the `fake_server` scenario, it can replace the complex forward pass of a real
 
 `FakeEcho` runs only when `thread_id == 0`.
 
-That is because thread 0 in the current `ServingRunner` takes responsibility for scheduling progress, and `FakeEcho` follows the same convention:
+That is because thread 0 in the current `ExecutorPool` takes responsibility for scheduling progress, and `FakeEcho` follows the same convention:
 
 * Non-zero threads return immediately
 * Only thread 0 iterates over `batch_list`
@@ -72,14 +72,14 @@ The `fake_server` flow is:
 
 1. Create `BatchSequence`
 2. Create `BatchScheduler`
-3. Put `FakeEcho` into the `ServingRunner` operator queue
+3. Put `FakeEcho` into the `ExecutorPool` operator queue
 4. Start the runtime thread and HTTP server
 
 This means that after a request enters the system, it does not go through a real model forward pass, but it still experiences the full serving lifecycle:
 
 1. Request is written into the token buffer
 2. Slot enters `Prefill`
-3. `ServingRunner` schedules `FakeEcho`
+3. `ExecutorPool` schedules `FakeEcho`
 4. `FakeEcho` ends the request
 5. The HTTP layer reads the generated result and returns it
 

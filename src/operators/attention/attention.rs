@@ -4,7 +4,7 @@ use std::sync::{Arc, Once};
 use crate::num_traits::NegInfinity;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::AttentionTrait;
-use crate::runtime::scheduling::SequenceSlice;
+use crate::runtime::SequenceSlice;
 
 use super::scratch::{AttentionScratch, AttentionScratchSlice};
 use super::utils::{split_sequence_by_triangle, RowVisitPlan};
@@ -258,7 +258,7 @@ where
         k_head_ptr: *const T,
         v_head_ptr: *const T,
         thread_id: usize,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         row_begin: usize,
         row_end: usize,
@@ -267,7 +267,7 @@ where
 
         for row_chunk in (row_begin..row_end).step_by(row_step) {
             let row_chunk_end = row_chunk + row_step;
-            let visible_row_end = row_chunk_end.min(col_end.saturating_sub(sequence_index));
+            let visible_row_end = row_chunk_end.min(col_end.saturating_sub(next_sequence_index));
             if row_chunk >= visible_row_end {
                 continue;
             }
@@ -289,7 +289,7 @@ where
             }
 
             let key_end = if self.causal_col_prune {
-                (sequence_index + visible_row_end).min(col_end)
+                (next_sequence_index + visible_row_end).min(col_end)
             } else {
                 col_end
             };
@@ -306,7 +306,7 @@ where
                     col_begin,
                     col_chunk_end,
                     col_end,
-                    sequence_index,
+                    next_sequence_index,
                     self.k_seq_stride,
                     self.v_seq_stride,
                     self.q_seq_stride,
@@ -327,12 +327,12 @@ where
         k_head_ptr: *const T,
         v_head_ptr: *const T,
         thread_id: usize,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         row_begin: usize,
         row_end: usize,
     ) {
-        let visible_row_end = row_end.min(col_end.saturating_sub(sequence_index));
+        let visible_row_end = row_end.min(col_end.saturating_sub(next_sequence_index));
         if row_begin >= visible_row_end {
             return;
         }
@@ -354,7 +354,7 @@ where
         scratch.clear();
 
         let key_end = if self.causal_col_prune {
-            (sequence_index + visible_row_end).min(col_end)
+            (next_sequence_index + visible_row_end).min(col_end)
         } else {
             col_end
         };
@@ -371,7 +371,7 @@ where
                 col_begin,
                 col_chunk_end,
                 col_end,
-                sequence_index,
+                next_sequence_index,
                 self.k_seq_stride,
                 self.v_seq_stride,
                 self.q_seq_stride,
@@ -390,7 +390,7 @@ where
         k_head_ptr: *const T,
         v_head_ptr: *const T,
         thread_id: usize,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         row_plan: RowVisitPlan,
     ) {
@@ -401,7 +401,7 @@ where
                 k_head_ptr,
                 v_head_ptr,
                 thread_id,
-                sequence_index,
+                next_sequence_index,
                 col_end,
                 row_begin,
                 row_end,
@@ -415,7 +415,7 @@ where
                 k_head_ptr,
                 v_head_ptr,
                 thread_id,
-                sequence_index,
+                next_sequence_index,
                 col_end,
                 row_begin,
                 row_end,
@@ -430,7 +430,7 @@ where
         output_slice_ptr: *mut T,
         k_batch_ptr: *const T,
         v_batch_ptr: *const T,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         slice_len: usize,
         aligned_len: usize,
@@ -469,7 +469,7 @@ where
                         row_begin,
                         row_end,
                         col_end,
-                        sequence_index,
+                        next_sequence_index,
                         self.k_seq_stride,
                         self.v_seq_stride,
                         self.q_seq_stride,
@@ -487,7 +487,7 @@ where
                         row_begin,
                         row_end,
                         col_end,
-                        sequence_index,
+                        next_sequence_index,
                         self.k_seq_stride,
                         self.v_seq_stride,
                         self.q_seq_stride,
@@ -512,7 +512,7 @@ where
                     k_head_ptr,
                     v_head_ptr,
                     thread_id,
-                    sequence_index,
+                    next_sequence_index,
                     col_end,
                     row_plan,
                 );
@@ -528,7 +528,7 @@ where
         output_slice_ptr: *mut T,
         k_batch_ptr: *const T,
         v_batch_ptr: *const T,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         slice_len: usize,
         aligned_len: usize,
@@ -553,7 +553,7 @@ where
                 output_slice_ptr,
                 k_batch_ptr,
                 v_batch_ptr,
-                sequence_index,
+                next_sequence_index,
                 col_end,
                 slice_len,
                 aligned_len,
@@ -614,7 +614,7 @@ where
                         row_begin,
                         row_end,
                         col_end,
-                        sequence_index,
+                        next_sequence_index,
                         self.k_seq_stride,
                         self.v_seq_stride,
                         self.q_seq_stride,
@@ -632,7 +632,7 @@ where
                         row_begin,
                         row_end,
                         col_end,
-                        sequence_index,
+                        next_sequence_index,
                         self.k_seq_stride,
                         self.v_seq_stride,
                         self.q_seq_stride,
@@ -657,7 +657,7 @@ where
                     k_head_ptr,
                     v_head_ptr,
                     thread_id,
-                    sequence_index,
+                    next_sequence_index,
                     col_end,
                     row_plan,
                 );
@@ -672,7 +672,7 @@ where
         output_slice_ptr: *mut T,
         k_batch_ptr: *const T,
         v_batch_ptr: *const T,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         slice_len: usize,
         aligned_len: usize,
@@ -726,7 +726,7 @@ where
                         row_begin,
                         row_end,
                         col_end,
-                        sequence_index,
+                        next_sequence_index,
                         self.k_seq_stride,
                         self.v_seq_stride,
                         self.q_seq_stride,
@@ -742,7 +742,7 @@ where
                         row_begin,
                         row_end,
                         col_end,
-                        sequence_index,
+                        next_sequence_index,
                         self.k_seq_stride,
                         self.v_seq_stride,
                         self.q_seq_stride,
@@ -759,7 +759,7 @@ where
                             k_head_ptr,
                             v_head_ptr,
                             thread_id,
-                            sequence_index,
+                            next_sequence_index,
                             col_end,
                             row_plan,
                         );
@@ -805,7 +805,7 @@ where
                     k_head_ptr,
                     v_head_ptr,
                     thread_id,
-                    sequence_index,
+                    next_sequence_index,
                     col_end,
                     row_plan,
                 );
@@ -824,7 +824,7 @@ where
         output_slice_ptr: *mut T,
         k_batch_ptr: *const T,
         v_batch_ptr: *const T,
-        sequence_index: usize,
+        next_sequence_index: usize,
         col_end: usize,
         slice_len: usize,
         thread_num: usize,
@@ -851,7 +851,7 @@ where
             let row_begin = row_block * self.row_step;
             let row_end = (row_begin + self.row_step).min(slice_len);
             let key_end = if self.causal_col_prune {
-                (sequence_index + row_end).min(col_end)
+                (next_sequence_index + row_end).min(col_end)
             } else {
                 col_end
             };
@@ -884,7 +884,7 @@ where
                     k_head_ptr,
                     v_head_ptr,
                     thread_id,
-                    sequence_index,
+                    next_sequence_index,
                     col_end,
                     RowVisitPlan {
                         main: Some((row_begin, row_end)),
@@ -898,8 +898,7 @@ where
     /// Main entry point for running attention computation
     pub fn run(
         &self,
-        _prefill_size: usize,
-        _decode_size: usize,
+        _total_size: usize,
         attention_list: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
@@ -921,7 +920,7 @@ where
                 let output_slice_ptr = output_ptr.add(slice.token_start_index * q_token_stride);
                 let k_batch_ptr = k_ptr.add(slice.batch_index * self.k_batch_stride);
                 let v_batch_ptr = v_ptr.add(slice.batch_index * self.v_batch_stride);
-                let col_end = slice.sequence_index + slice.length;
+                let col_end = slice.next_sequence_index + slice.length;
                 let aligned_len = slice.length / self.row_step * self.row_step;
                 let use_head_split = self.force_head_split
                     || (slice.length > 0
@@ -969,7 +968,7 @@ where
                         output_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
-                        slice.sequence_index,
+                        slice.next_sequence_index,
                         col_end,
                         slice.length,
                         thread_num,
@@ -984,7 +983,7 @@ where
                         output_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
-                        slice.sequence_index,
+                        slice.next_sequence_index,
                         col_end,
                         slice.length,
                         aligned_len,
@@ -1000,7 +999,7 @@ where
                         output_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
-                        slice.sequence_index,
+                        slice.next_sequence_index,
                         col_end,
                         slice.length,
                         aligned_len,
@@ -1016,7 +1015,7 @@ where
                         output_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
-                        slice.sequence_index,
+                        slice.next_sequence_index,
                         col_end,
                         slice.length,
                         aligned_len,
@@ -1035,7 +1034,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::Attention;
-    use crate::runtime::scheduling::SequenceSlice;
+    use crate::runtime::SequenceSlice;
+
+    const EMPTY_SLICES: &[SequenceSlice] = &[];
 
     #[test]
     fn head_row_split_assigns_every_task_once() {
@@ -1138,15 +1139,16 @@ mod tests {
         );
         attention.causal_col_prune = true;
 
-        let slices = [SequenceSlice {
+        let slices = vec![SequenceSlice {
             token_start_index: 0,
             batch_index: 0,
-            sequence_index: 0,
+            next_sequence_index: 0,
             length: 3,
             last_token_flag: false,
+            lift_index: 0,
         }];
 
-        attention.run(0, 0, &slices, 1, 0);
+        attention.run(slices.iter().map(|s| s.length).sum(), &slices, 1, 0);
 
         for row in 0..3 {
             let expected = naive_attention_row(
@@ -1208,15 +1210,16 @@ mod tests {
             1,
         );
 
-        let slice = [SequenceSlice {
+        let slice = vec![SequenceSlice {
             token_start_index: 0,
             batch_index: 1,
-            sequence_index: 0,
+            next_sequence_index: 0,
             length: seq_len,
             last_token_flag: false,
+            lift_index: 0,
         }];
 
-        attention.run(0, 0, &slice, 1, 0);
+        attention.run(slice.iter().map(|s| s.length).sum(), &slice, 1, 0);
 
         let batch1_k_base = kv_heads * head_size;
         let batch1_k = [

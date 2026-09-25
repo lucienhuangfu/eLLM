@@ -214,15 +214,13 @@ where
         let norm_state = hidden_state.rms(
             &self.norm_weight,
             self.rms_norm_eps,
-            false,
+            true,
             format!("{}.norm_hidden", self.scope_name),
         );
 
-        // Prefill produces one row per input token. Compact the last token of
-        // each sequence into the leading batch rows before scoring the LM head.
-        // Decode already uses one leading row per active sequence, so this is
-        // also a no-op copy in the decode path.
-        norm_state.lift_vector();
+        // Lift: copy last prefill token's norm to batch position, so MatMulTopK
+        // processes the correct token during both prefill and decode.
+        // norm_state.lift_vector();
 
         if trace_alignment {
             eprintln!("building lm_head/topk");
@@ -270,18 +268,22 @@ mod test {
     // use crate::common::config::Config;
     // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::mem_mgr::allocator::AlignedBox;
-    use crate::runtime::scheduling::SequenceSlice;
-    use crate::runtime::{Phase, SequenceState};
+    use crate::runtime::SequenceSlice;
+    use crate::runtime::{Phase, SlotState};
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
 
-    fn build_batch_list(batch_size: usize) -> Vec<SequenceState> {
+    const EMPTY_SLICES: &[SequenceSlice] = &[];
+
+    fn build_batch_list(batch_size: usize) -> Vec<SlotState> {
         (0..batch_size)
-            .map(|i| SequenceState {
-                filling_length: 0,
-                sequence_index: i,
-                kv_index: i,
+            .map(|i| SlotState {
+                next_sequence_index: i,
+                prompt_length: i,
                 phase: Phase::Decode,
-                notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+                sequence_length: 0,
+                notify: Arc::new(Notify::new()),
             })
             .collect()
     }
@@ -290,10 +292,11 @@ mod test {
         (0..batch_size)
             .map(|batch_index| SequenceSlice {
                 batch_index,
-                sequence_index: batch_index,
+                next_sequence_index: batch_index,
                 token_start_index: batch_index,
                 length: 1,
                 last_token_flag: true,
+                lift_index: 0,
             })
             .collect()
     }
@@ -303,10 +306,11 @@ mod test {
             (0..batch_size)
                 .map(|batch_index| SequenceSlice {
                     batch_index,
-                    sequence_index: batch_index,
+                    next_sequence_index: batch_index,
                     token_start_index: batch_index,
                     length: 1,
                     last_token_flag: false,
+                    lift_index: 0,
                 })
                 .collect()
         }]
@@ -353,7 +357,6 @@ mod test {
             AlignedBox::allocate_init((config.max_position_embeddings) * batch_size, 0);
 
         let mut batch_list = build_batch_list(batch_size);
-        let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
         let (_output_indices, _output_tensor) =
@@ -365,9 +368,10 @@ mod test {
                     operator.run(
                         batch_size,
                         1,
+                        1,
+                        batch_size + 1,
                         thread_num,
                         thread_id,
-                        &prefill_list,
                         &decode_list,
                         &mut batch_list,
                     );
@@ -428,7 +432,6 @@ mod test {
         let mut sequences_box =
             AlignedBox::allocate_init((config.max_position_embeddings) * batch_size, 0);
         let mut batch_list = build_batch_list(batch_size);
-        let prefill_list = build_prefill_list(batch_size);
         let decode_list = build_decode_list(batch_size);
 
         let (_output_indices, _output_tensor) =
@@ -440,9 +443,10 @@ mod test {
                     operator.run(
                         batch_size,
                         1,
+                        1,
+                        batch_size + 1,
                         thread_num,
                         thread_id,
-                        &prefill_list,
                         &decode_list,
                         &mut batch_list,
                     );

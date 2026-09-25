@@ -236,8 +236,11 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::runtime::SequenceSlice;
     use std::collections::HashMap;
     // use std::slice;
+
+    const EMPTY_SLICES: &[SequenceSlice] = &[];
 
     #[test]
     #[ignore = "model-scale integration test; run manually on a large machine"]
@@ -307,7 +310,7 @@ mod test {
             for (index, operator) in queue.iter().enumerate() {
                 println!("operator {} in queue", index);
                 for i in 0..thread_num {
-                    operator.run(batch_size, 0, thread_num, i, &[], &[], &mut Vec::new());
+                    operator.run(batch_size, 0, 0, batch_size, thread_num, i, EMPTY_SLICES, &mut Vec::new());
                 }
             }
         });
@@ -390,10 +393,11 @@ mod test {
                     operator.run(
                         sequence_length * batch_size,
                         sequence_length,
+                        sequence_length,
+                        sequence_length * batch_size + sequence_length,
                         thread_num,
                         i,
-                        &[],
-                        &[],
+                        EMPTY_SLICES,
                         &mut Vec::new(),
                     );
                 }

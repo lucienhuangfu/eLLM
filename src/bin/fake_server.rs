@@ -1,90 +1,75 @@
 #![feature(f16)]
 
-use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::operators::operator::Operator;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::operators::testing::FakeEcho;
-use ellm::runtime::batch_sequence::BatchSequence;
-use ellm::runtime::{BatchScheduler, Phase, SequenceState, ServingRunner, TokenCounter};
+use ellm::runtime::{
+    build_slot_sequence, ExecutorPool, Scheduler, SessionMode, SlotManager, SlotState,
+};
 use ellm::serving;
-use ellm::serving::parser::{ParserOptions, ParserRule};
-use ellm::transformer::config::ModelFamily;
 use std::sync::Arc;
-use std::time::Duration;
 
-fn build_sequence_state(batch_size: usize) -> Vec<SequenceState> {
-    (0..batch_size)
-        .map(|_| SequenceState {
-            filling_length: 0,
-            sequence_index: usize::MAX,
-            kv_index: usize::MAX,
-            phase: Phase::Start,
-            notify: Arc::new(tokio::sync::Notify::new()),
-        })
-        .collect()
+fn create_runtime() -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error>> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(4)
+        .enable_all()
+        .build()
+        .map_err(Into::into)
 }
 
-fn build_fake_runner(
-    batch_states: Arc<SharedMut<Vec<SequenceState>>>,
-    task_sender: tokio::sync::broadcast::Sender<ellm::runtime::ScheduleTask>,
-) -> ServingRunner<f16> {
-    let operator_queue = vec![Operator::FakeEcho(FakeEcho)];
-    ServingRunner::new(operator_queue, batch_states, task_sender)
+async fn run_server(
+    batch_states: Arc<SharedMut<Vec<SlotState>>>,
+    slot_manager: Arc<SlotManager<f16>>,
+    sequences_ptr: *mut usize,
+    sequence_length: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let batch_size = batch_states.with(|list| list.len());
+    let scheduler = Arc::new(Scheduler::new(batch_size, 64, 4, Arc::clone(&batch_states)));
+
+    let digit_tokens: Vec<usize> = (15..25).collect();
+    let fake_echo = FakeEcho::new(sequences_ptr, sequence_length, 151643, digit_tokens);
+    let operator_queue = vec![Operator::<f16>::FakeEcho(fake_echo)];
+    let worker_pool = ExecutorPool::new(operator_queue, Arc::clone(&scheduler), 4);
+    worker_pool.start();
+
+    serving::run(slot_manager, "0.0.0.0", 8000).await?;
+
+    Ok(())
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting fake server for runtime + serving integration test...");
 
-    let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
+    let model_dir = "models/MiniMax-M2.5";
     let sequence_length = 256usize;
     let batch_size = 4usize;
-    let sequences = {
-        let boxed = AlignedBox::allocate_init(sequence_length * batch_size, 0);
-        let ptr = boxed.as_mut_ptr();
-        std::mem::forget(boxed);
-        ptr
-    };
 
-    let tokenizer_path = format!("{}/tokenizer.json", model_dir);
-    let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);
-    let chat_template_path = format!("{}/chat_template.jinja", model_dir);
+    let (sequences_box, slot_sequences) =
+        build_slot_sequence(model_dir, batch_size, sequence_length)?;
+    let sequences_ptr = sequences_box.as_mut_ptr();
 
-    let batch_sequences = Arc::new(SharedMut::new(
-        BatchSequence::<f16>::new(
-            sequences,
-            batch_size,
-            sequence_length,
-            tokenizer_path.as_str(),
-            tokenizer_config_path.as_str(),
-            chat_template_path.as_str(),
-        )
-        .map_err(|e| format!("Unable to initialize BatchSequence: {}", e))?,
+    let batch_states = Arc::new(SharedMut::new(
+        (0..batch_size)
+            .map(|_| SlotState::idle())
+            .collect::<Vec<_>>(),
     ));
 
-    let batch_states = Arc::new(SharedMut::new(build_sequence_state(batch_size)));
-    let mut batch_scheduler = BatchScheduler::new(sequence_length, batch_size, 1);
-    batch_scheduler.batch_list = Arc::clone(&batch_states);
-    let batch_scheduler = Arc::new(tokio::sync::Mutex::new(batch_scheduler));
-    let (task_sender, _) = tokio::sync::broadcast::channel(8);
-    let token_counter = Arc::new(TokenCounter::new(
-        1,
-        Duration::from_millis(10),
-        Arc::clone(&batch_scheduler),
-        task_sender.clone(),
+    let slot_manager = Arc::new(SlotManager::new(
+        batch_size,
+        slot_sequences.clone(),
+        Arc::clone(&batch_states),
+        SessionMode::NonReusable,
+        600000,
+        true,
+        true,
     ));
-    let runner = build_fake_runner(batch_states.clone(), task_sender.clone());
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(runner.start());
-    });
+    let rt = create_runtime()?;
 
-    let parser_options = ParserOptions::new(ParserRule::for_model_family(&ModelFamily::Qwen));
+    rt.block_on(async move {
+        run_server(batch_states, slot_manager, sequences_ptr, sequence_length).await
+    })?;
 
-    serving::run(batch_sequences, batch_states, token_counter, parser_options).await?;
     Ok(())
 }

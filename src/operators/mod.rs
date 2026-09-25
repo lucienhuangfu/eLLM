@@ -32,7 +32,7 @@ pub mod expert_imports {
     pub use super::expert::expert_merge_add::ExpertMergeAdd;
 }
 
-pub mod left_vector;
+pub mod lift_vector;
 
 pub mod linear {
     pub use super::attention::Attention;
@@ -51,7 +51,7 @@ pub mod matmul {
 }
 
 pub mod movement {
-    pub use super::left_vector::LiftVector;
+    pub use super::lift_vector::LiftVector;
 }
 
 pub mod testing {

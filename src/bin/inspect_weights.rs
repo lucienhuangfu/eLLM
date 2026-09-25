@@ -1,6 +1,6 @@
 #![feature(f16)]
 
-use ellm::runtime::io::SafeTensorsLoader;
+use ellm::runtime::loader::SafeTensorsLoader;
 use std::env;
 use std::f16;
 use std::time::Instant;
