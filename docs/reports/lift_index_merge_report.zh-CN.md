@@ -66,3 +66,7 @@
 - **会话槽边界另需审计。** SlotSequence 的公开原始指针写入接口依赖调用方传入有效 slot_index/start_pos；token_ids 的检查侧重整个分配区间。此次没有扩展成完整输入边界/并发安全审计。
 - **文档和示例不能替代实测。** 旧 README 性能数据不能直接代表新运行时；被替换的对齐工具和删除的旧集成测试应安排替代覆盖。
 - **工具链可复现性。** rust-toolchain 仍为浮动 nightly，并新增 rust-analyzer 组件；本次 Rustup 自动同步了 nightly。推荐在正式性能验收时固定版本。生成 wiki 保留了上游 Markdown 尾空格，整仓 diff --check 可能因此报告样式问题。
+
+## 后续保留核对与执行清单
+
+已补充[详细调整清单](lift_index_followup_checklist.zh-CN.md)，核对 lift_index 保留范围，并逐项列出索引、并发、会话回收、容量、请求参数、线程数量和测试迁移问题的优先级、代码位置及验收条件。以该清单跟踪后续修复，本次不要求全部修复后才完成合并。
