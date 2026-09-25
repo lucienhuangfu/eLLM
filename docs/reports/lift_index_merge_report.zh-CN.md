@@ -70,3 +70,80 @@
 ## 后续保留核对与执行清单
 
 已补充[详细调整清单](lift_index_followup_checklist.zh-CN.md)，核对 lift_index 保留范围，并逐项列出索引、并发、会话回收、容量、请求参数、线程数量和测试迁移问题的优先级、代码位置及验收条件。以该清单跟踪后续修复，本次不要求全部修复后才完成合并。
+
+
+## develop 原设计的删除、替换与能力损失台账
+
+本节补充此前概述未逐项列出的内容。比较基准是 **合并前 develop `eb41be2` → 合并提交 `d3c1c11`**，不是公共祖先；因此反映的是本次合并相对于用户原工作分支的实际变化。采用 lift_index 不表示 develop 原有能力都有等价替代。
+
+| 编号 | develop 原设计与原位置 | 合并后的处理 | 状态、影响和后续要求 |
+| --- | --- | --- | --- |
+| D01 | `runtime/runner.rs` 的 ServingRunner / Runner，订阅 Tokio broadcast 的 ScheduleTask，JoinSet 管理 worker | `runtime/executor/executor_pool.rs` 的常驻线程 + Scheduler 共享任务 | **架构替换**。旧 broadcast/JoinSet 路径没有保留；应在 ExecutorPool 内补齐任务发布和 shutdown/join，不恢复旧 runner |
+| D02 | `runtime/scheduling/token_counter.rs`：token 阈值或 timeout 触发，schedule_gate 互斥，task_in_flight CAS 门控，task id | ExecutorPool 主线程直接调度，其他线程轮询 has_work | **机制移除，非等价搬迁**。旧 threshold/timeout 和 in-flight 门控不再存在；需用新任务代次/发布协议保证等价的任务互斥与唤醒正确性（CON-02） |
+| D03 | `runtime/scheduling/scheduler.rs` 的 BatchScheduler、SliceScheduler、每线程 prefill_list、DecodeList | Scheduler 两遍遍历，统一 slices，prefill/decode 连续 token 布局 | **架构替换**。旧 per-thread 预切片和独立 DecodeList API 被删除；保留 lift_index 的统一切片方案 |
+| D04 | `runtime/scheduling/types.rs` 的 SequenceState：sequence_index、kv_index、filling_length；task 的 thread_count | SlotState 的 next_sequence_index、prompt_length、sequence_length；执行器固定 worker 数 | **状态模型/API 替换**。原有读位置/写位置的分工不能仅改字段名；需关闭 IDX-01。旧每 task 活跃线程数量接口未等价保留 |
+| D05 | `runtime/batch_sequence.rs` 的 BatchSequence、batch_temperature、row_size/col_size | SlotSequence、slot_temperature、slot_count/slot_capacity | **替换**。序列/tokenizer/模板能力仍在；增加会话槽语义，外部旧类型与字段调用不兼容 |
+| D06 | `runtime/scheduling/sequence_slice.rs` 的 DecodeList / DecodeLookupResult、lookup_global_index、walk_global_range | SequenceSlice + token_start_index / lift_index，LookupRMSMap 自行定位切片 | **旧抽象/API 删除，功能路径改写**。不能把旧 global index 接口当成仍然可用 |
+| D07 | `runtime/runner.rs` 的 ProfileRow、算子执行/pre/post barrier 统计，ELLM_PROFILE_OPS、ELLM_PROFILE_DECODE_OPS、ELLM_PROFILE_DECODE_ALL、ELLM_PROFILE_DECODE_STEP、ELLM_PROFILE_OP_THREADS | 新 ExecutorPool 未见等效开关与输出 | **能力未迁移**。旧 profiling 环境变量不再产生对应统计；应在新执行器内恢复观测能力，再比较性能 |
+| D08 | `serving/mod.rs` 的 ApiState，Semaphore + free_slots 队列；`chat_handlers.rs` 在无槽时 await permit | SlotManager acquire_session 槽满返回 SlotUnavailable，API 返回错误 | **背压行为改变**。从等待空槽转为容量不足报错；客户端需退避重试，或在新 SlotManager 前实现有界等待策略 |
+| D09 | `serving/chat_handlers.rs` 读取 request.max_tokens（默认 100，至少 1），同步/流式路径参与生成停止 | 新 request 保留字段，但 server handler 不使用 max_tokens | **旧功能未保留**。这是相对 develop 的明确行为退化，非单纯 API 移动；需要在新槽/调度体系内恢复长度限制（API-01）。旧实现也需独立验证，不能直接照搬计数方式 |
+| D10 | `runtime/runner.rs` 在一轮结束后对比 SequenceSnapshot，token 或 phase 改变时通知请求；旧 handler 记录 generation_starts 并处理 EOS 输出范围 | 新 TopKSoftmax 通知 EOS/容量结束，常规 token 按 write_sequence_index % 10 通知；按 prompt_length 解码 | **通知节奏和输出边界改变**。可能改变首 token/流式延迟；需验收不足 10 token、EOS 是否包含、容量终止，不保证与原 develop 等价 |
+| D11 | `serving/config.rs` 的 ELLM_BATCH / ELLM_SEQUENCE_LENGTH / ELLM_CHUNK_SIZE / ELLM_SCHEDULE_TIMEOUT_MS；`model_setup.rs` 的 ELLM_THREAD_NUM、worker_threads/async_threads | 统一 CLI/ResolvedConfig + runtime/config.rs 的 api_threads/blocking_threads | **主服务配置入口替换**。旧环境变量在主服务未等价保留；个别示例 bin 仍读取部分同名变量，不能据此认定主服务兼容。需发布迁移表并处理 CPU-01 |
+| D12 | `serving/model_setup.rs` 对空 eos_token_id_list 使用模型配置回退（filter 非空） | `runtime/config.rs` 仅对 None 回退，Some([]) 保持空 | **边界行为退化**。生成配置显式给空列表时，可能不识别模型 EOS，只在容量处结束；需增加空列表回退/明确校验和测试 |
+| D13 | `serving/resources.rs`、`model.rs`、`model_setup.rs`、`scheduler.rs` 分层初始化与 ServingResources | runtime/init.rs / config.rs / RuntimeContext，server.rs 初始化入口 | **组织/API 替换**。模型构图、采样配置、权重加载仍存在，但不保证所有默认值/生命周期等价；aligned 加载已接回 initialize_runtime |
+| D14 | 最终 norm 后调用 norm_state.lift_vector()（transformer/model.rs） | lift_index 在最后一层 attention 路径提前压缩，后续使用 lift_size；最终 norm 后不再重复 lift | **计算图设计替换**，并非丢失 lift 功能。必须保留新压缩位置与最后一层行数约定，验证 dense/MoE、混合 prefill/decode |
+| D15 | `alignment/tokenizer/multi_batch_alignment.rs`、`qwen3_one_token_alignment.rs` 的模型执行、逐层 tensor dump、token 对齐输出 | 采用 lift_index 的精简 tokenizer/template 程序 | **能力缩减，尚无等价替代**。旧调试/对齐流程不能继续照旧使用；应基于新 runtime 迁移完整对齐工具（COMPAT-01） |
+| D16 | `tests/qwen3_06b_integration_test.rs` | 文件删除；新增 runtime/serving 测试 | **测试覆盖移除**。新 FakeEcho/调度测试不等价于真实 Qwen 模型集成验证，需恢复等效端到端覆盖 |
+| D17 | `runtime/io/*`、FromSafetensors；`runtime/spin_barrier.rs` | loader/* 整合转换函数，executor/sync.rs 提供 barrier | **移动/整合或替换，不能一概算能力删除**。直接 aligned f16 转换、并行加载已保留；旧 import 路径仍不兼容 |
+| D18 | `docs/serving/parallelism_scaling.md`、两份 Llama-2 示例 config；旧运行时设计文档 | 并行扩展文档和示例 config 删除，overview/schedule 改写，新增 executor/session_management 文档 | **文档/样例移除与替换**。删去 config 不等于已证明模型支持被删除；需要按实际 loader/model 验收支持范围 |
+
+### develop 已保留的内容，不应误记为删除
+
+BRGEMM attention、KV stride 与 head/row 分工、QKV 打包快路径、MoE 紧凑 routing/gather 优化、内存对齐 ownership 和主初始化路径的并行 aligned f16 加载已保留并适配。Expert 单数命名、AGPL 许可证、README/benchmark 发布材料也保留。保留实现不等于其组合已经完成真实模型数值与性能验收。
+
+### 应在 lift_index 架构内补回的 develop 能力
+
+- [ ] 恢复 max_tokens 限制及正确结束原因，不恢复旧 ApiState/TokenCounter。
+- [ ] 迁移算子和 barrier profiling 开关到 ExecutorPool。
+- [ ] 给任务发布、单轮互斥、取消和 shutdown 提供明确协议，替代旧门控，不直接拷回旧调度器。
+- [ ] 恢复空 EOS 列表回退或显式配置校验。
+- [ ] 迁移完整模型对齐/tensor dump，并建立真实 Qwen 集成覆盖。
+- [ ] 明确过载等待/拒绝策略、流式通知节奏、旧环境变量迁移及示例配置的保留范围。
+
+### Git 追溯与删除路径原始清单
+
+查看被删除实现使用 `git show eb41be2:<原路径>`，不需要切分支或覆盖现有文件。例如：
+
+```bash
+git show eb41be2:src/runtime/runner.rs
+git show eb41be2:src/serving/chat_handlers.rs
+git diff eb41be2 d3c1c11 -- src/transformer/model.rs
+git diff --name-status --find-renames eb41be2 d3c1c11
+```
+
+下列是 Git 按默认重命名检测列出的 D 路径；“D”仅表示原路径消失，是否有替代以台账为准。修改但路径仍在的 alignment 程序不会出现在此列表，因此不能只看删除文件判断能力损失。
+
+```text
+docs/serving/parallelism_scaling.md
+models/Llama-2-70b-hf/config.json
+models/Llama-2-7b-hf/config.json
+src/runtime/batch_sequence.rs
+src/runtime/io/from_safetensors.rs
+src/runtime/io/mod.rs
+src/runtime/runner.rs
+src/runtime/scheduling/initialization.rs
+src/runtime/scheduling/mod.rs
+src/runtime/scheduling/scheduler.rs
+src/runtime/scheduling/sequence_slice.rs
+src/runtime/scheduling/slice_scheduler.rs
+src/runtime/scheduling/token_counter.rs
+src/runtime/scheduling/types.rs
+src/runtime/spin_barrier.rs
+src/serving/chat_handlers.rs
+src/serving/config.rs
+src/serving/model.rs
+src/serving/model_setup.rs
+src/serving/resources.rs
+src/serving/scheduler.rs
+tests/qwen3_06b_integration_test.rs
+```
