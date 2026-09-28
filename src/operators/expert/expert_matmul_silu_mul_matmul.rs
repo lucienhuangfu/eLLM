@@ -125,7 +125,11 @@ where
         // gate/up 专家权重 panel 并行打包。
         struct SendFn<T>(Box<dyn FnOnce() -> Box<[T]>>);
         unsafe impl<T> Send for SendFn<T> {}
-        impl<T> SendFn<T> { fn call(self) -> Box<[T]> { (self.0)() } }
+        impl<T> SendFn<T> {
+            fn call(self) -> Box<[T]> {
+                (self.0)()
+            }
+        }
         struct SendBox<T>(T);
         unsafe impl<T> Send for SendBox<T> {}
 
@@ -137,7 +141,9 @@ where
         let kc = reduction_block_cols;
         let nr = micro_tile_cols;
 
-        let task_g = SendFn(Box::new(move || Self::pack_expert_b_panels(g_addr, n_exp, n_inter, n_hidden, kc, nr)));
+        let task_g = SendFn(Box::new(move || {
+            Self::pack_expert_b_panels(g_addr, n_exp, n_inter, n_hidden, kc, nr)
+        }));
         let gh = std::thread::spawn(move || SendBox(task_g.call()));
         // Pack up on the current thread while gate runs in parallel.
         let packed_up = Self::pack_expert_b_panels(u_addr, n_exp, n_inter, n_hidden, kc, nr);
@@ -1576,18 +1582,18 @@ mod tests {
         let mb = 3;
         let nb = 32;
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         let input: Vec<f16> = (0..batch * hidden)
-            .map(|_| rng.gen_range(-0.1f32..0.1f32) as f16)
+            .map(|_| rng.random_range(-0.1f32..0.1f32) as f16)
             .collect();
 
         // 原始权重：K×N（H×I）
         let gate_weights_kxn: Vec<f16> = (0..num_experts * hidden * inter)
-            .map(|_| rng.gen_range(-0.05f32..0.05f32) as f16)
+            .map(|_| rng.random_range(-0.05f32..0.05f32) as f16)
             .collect();
         let up_weights_kxn: Vec<f16> = (0..num_experts * hidden * inter)
-            .map(|_| rng.gen_range(-0.05f32..0.05f32) as f16)
+            .map(|_| rng.random_range(-0.05f32..0.05f32) as f16)
             .collect();
 
         // ✅ 转成 NT：N×K（I×H）
@@ -1602,7 +1608,7 @@ mod tests {
         for b in 0..batch {
             let mut selected_experts = HashSet::new();
             while selected_experts.len() < top_k {
-                selected_experts.insert(rng.gen_range(0..num_experts));
+                selected_experts.insert(rng.random_range(0..num_experts));
             }
             for &e in &selected_experts {
                 indice_ptr[e * batch + b] = true;
@@ -1661,12 +1667,12 @@ mod tests {
         while checked < samples && tries < max_tries {
             tries += 1;
 
-            let e = rng.gen_range(0..num_experts);
-            let b = rng.gen_range(0..batch);
+            let e = rng.random_range(0..num_experts);
+            let b = rng.random_range(0..batch);
             if !indice_ptr[e * batch + b] {
                 continue;
             }
-            let ii = rng.gen_range(0..inter);
+            let ii = rng.random_range(0..inter);
 
             // reference: g = sum_k a[b,k] * w_gate[k,ii]; u = sum_k a[b,k] * w_up[k,ii]
             let mut g = 0.0f32;
@@ -1943,18 +1949,18 @@ mod tests {
         use rand::prelude::*;
         use std::collections::HashSet;
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         let input: Vec<f16> = (0..batch * hidden)
-            .map(|_| rng.gen_range(-0.1f32..0.1f32) as f16)
+            .map(|_| rng.random_range(-0.1f32..0.1f32) as f16)
             .collect();
 
         // 原始权重：K×N（H×I）
         let gate_weights_kxn: Vec<f16> = (0..num_experts * hidden * inter)
-            .map(|_| rng.gen_range(-0.05f32..0.05f32) as f16)
+            .map(|_| rng.random_range(-0.05f32..0.05f32) as f16)
             .collect();
         let up_weights_kxn: Vec<f16> = (0..num_experts * hidden * inter)
-            .map(|_| rng.gen_range(-0.05f32..0.05f32) as f16)
+            .map(|_| rng.random_range(-0.05f32..0.05f32) as f16)
             .collect();
 
         // 转 NT：N×K（I×H）
@@ -1968,7 +1974,7 @@ mod tests {
         for b in 0..batch {
             let mut selected_experts = HashSet::new();
             while selected_experts.len() < top_k {
-                selected_experts.insert(rng.gen_range(0..num_experts));
+                selected_experts.insert(rng.random_range(0..num_experts));
             }
             for &e in &selected_experts {
                 indice_ptr[e * batch + b] = true;
@@ -2018,12 +2024,12 @@ mod tests {
         while checked < samples && tries < max_tries {
             tries += 1;
 
-            let e = rng.gen_range(0..num_experts);
-            let b = rng.gen_range(0..batch);
+            let e = rng.random_range(0..num_experts);
+            let b = rng.random_range(0..batch);
             if !indice_ptr[e * batch + b] {
                 continue;
             }
-            let ii = rng.gen_range(0..inter);
+            let ii = rng.random_range(0..inter);
 
             let mut g = 0.0f32;
             let mut u = 0.0f32;

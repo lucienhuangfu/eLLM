@@ -1,5 +1,5 @@
-use ellm::runtime::loader::ChatTemplate;
 use ellm::runtime::loader::load_tiktoken;
+use ellm::runtime::loader::ChatTemplate;
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         token_ids.len()
     );
 
-    let text = tokenizer.decode(token_ids).unwrap();
+    let text = tokenizer.decode(&token_ids).unwrap();
     println!("Decoded text: {}", text);
 
     Ok(())

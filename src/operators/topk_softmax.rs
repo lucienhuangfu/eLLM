@@ -10,7 +10,7 @@ use crate::operators::traits::TopKSoftmaxTrait;
 use crate::runtime::session::Phase;
 use crate::runtime::session::SlotState;
 use crate::runtime::SequenceSlice;
-use rand::Rng;
+use rand::prelude::*;
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {
@@ -321,7 +321,7 @@ impl<
         }
 
         // ── Sampling: draw once, single cumulative scan over [0..cutoff) ──
-        let sample: T = T::from_f32(rand::thread_rng().gen::<f32>());
+        let sample: T = T::from_f32(rand::rng().random::<f32>());
         let mut cum = zero;
         for i in 0..cutoff {
             cum += *output_values_ptr.add(i);

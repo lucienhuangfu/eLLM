@@ -8,8 +8,7 @@ use ellm::runtime::loader::load_tiktoken;
 use ellm::runtime::loader::ChatTemplate;
 use ellm::runtime::loader::SafeTensorsLoader;
 use ellm::runtime::{
-    ExecutorPool, Phase, ScheduleTask, Scheduler, SessionMode, SlotManager, SlotSequence,
-    SlotState,
+    ExecutorPool, Phase, ScheduleTask, Scheduler, SessionMode, SlotManager, SlotSequence, SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::config::Config;
@@ -237,8 +236,7 @@ fn main() {
         eos_ids,
     );
     model.set_thread_num(thread_num);
-    let (_indices, _values) =
-        model.forward(sequences_ptr, slot_seq.slot_temperature.as_mut_ptr());
+    let (_indices, _values) = model.forward(sequences_ptr, slot_seq.slot_temperature.as_mut_ptr());
     log_timing("build_graph", program_start);
 
     let slot_list: Vec<SlotState> = written_lengths
@@ -335,7 +333,7 @@ fn main() {
                 .collect();
             let text: String = ids
                 .iter()
-                .filter_map(|&tid| tokenizer.decode(vec![tid]).ok())
+                .filter_map(|&tid| tokenizer.decode(&[tid]).ok())
                 .collect();
             println!("Slot {slot}: {gen_len} tokens\n{text}\n");
         }

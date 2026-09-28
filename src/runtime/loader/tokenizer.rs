@@ -276,7 +276,7 @@ mod tests {
             println!("token[{idx}] id={token_id}, piece={piece:?}");
         }
 
-        let decoded = tokenizer.decode(token_ids).expect("decode failed");
+        let decoded = tokenizer.decode(&token_ids).expect("decode failed");
         println!("decoded={decoded:?}");
         assert!(decoded.contains("hello"));
     }
