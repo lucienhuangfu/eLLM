@@ -1,0 +1,4 @@
+interface:
+  display_name: "Module Creator"
+  short_description: "Create eLLM transformer modules"
+  default_prompt: "Use $create_module to implement a new transformer module in src/transformer, register it in mod.rs, add its tensor-name struct in names.rs, and optionally wire it into DecoderLayer."

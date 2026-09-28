@@ -1,5 +1,5 @@
 ---
-name: align-operators
+name: align_operator
 description: Align Rust eLLM operators with HuggingFace FP32 operator outputs at the operator/unit-test level. Use when comparing mathematical correctness for operators such as Linear, RMSNorm, SiLU, SwiGLU, Softmax, or Attention; generating synthetic inputs; checking FP32 determinism; or debugging shape, layout, transpose, reshape, or epsilon mismatches between Rust and Python implementations.
 ---
 
