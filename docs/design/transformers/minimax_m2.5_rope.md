@@ -31,7 +31,7 @@ So it can be viewed as:
 
 ## 3. Key Configuration Values
 
-From `models/MiniMax-M2.5/config.json`, the RoPE-related fields are mainly:
+From `checkpoints/MiniMax-M2.5/config.json`, the RoPE-related fields are mainly:
 
 | Parameter | Value | Meaning |
 | --- | --- | --- |

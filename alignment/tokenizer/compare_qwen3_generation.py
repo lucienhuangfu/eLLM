@@ -92,7 +92,7 @@ def first_mismatch(left, right):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("model_dir", nargs="?", default="models/Qwen3-0.6B")
+    parser.add_argument("model_dir", nargs="?", default="checkpoints/Qwen3-0.6B")
     parser.add_argument("--max-new-tokens", type=int, default=64)
     args = parser.parse_args()
 

@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_size = 3;
     let chunk_size = 64;
 
-    let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
+    let model_dir = "checkpoints/Qwen3-Coder-30B-A3B-Instruct";
     let config = Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
     let generation_config =
         GenerationConfig::load_from_file(format!("{}/generation_config.json", model_dir)).ok();

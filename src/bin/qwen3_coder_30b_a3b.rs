@@ -115,7 +115,7 @@ fn main() {
 
     let batch_size = parse_env_usize("ELLM_BATCH", 3);
     let max_output_tokens: usize = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 128);
-    let model_dir = "models/Qwen3-Coder-30B-A3B-Instruct";
+    let model_dir = "checkpoints/Qwen3-Coder-30B-A3B-Instruct";
     let program_start = Instant::now();
 
     let config = Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();

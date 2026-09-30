@@ -38,7 +38,7 @@ def parse_dtype(name: str) -> torch.dtype:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("model_dir", nargs="?", default="models/Qwen3-Coder-30B-A3B-Instruct")
+    parser.add_argument("model_dir", nargs="?", default="checkpoints/Qwen3-Coder-30B-A3B-Instruct")
     parser.add_argument("out_dir", nargs="?", default="alignment/tokenizer/dump")
     parser.add_argument("--torch-dtype", default="float16",
                         choices=["float16", "bfloat16", "float32"])

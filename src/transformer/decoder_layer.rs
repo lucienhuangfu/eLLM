@@ -249,7 +249,7 @@ mod test {
         let batch_size = 6;
 
         let config =
-            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let hidden_size = config.hidden_size;
         let max_position_embeddings = config.max_position_embeddings;
@@ -334,7 +334,7 @@ mod test {
         let batch_size = 3;
 
         let config =
-            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let sequence_length = position_window_size;
         let hidden_size = config.hidden_size;

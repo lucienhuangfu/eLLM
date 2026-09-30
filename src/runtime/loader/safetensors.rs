@@ -407,17 +407,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Requires models/Qwen3-0.6B to be present"]
+    #[ignore = "Requires checkpoints/Qwen3-0.6B to be present"]
     fn test_load_qwen3_06b_f16() {
-        let loader = SafeTensorsLoader::new("models/Qwen3-0.6B").unwrap();
+        let loader = SafeTensorsLoader::new("checkpoints/Qwen3-0.6B").unwrap();
         let weights = loader.load_all_weights::<f16>().unwrap();
         assert!(!weights.is_empty());
     }
 
     #[test]
-    #[ignore = "Requires models/Qwen3-0.6B to be present"]
+    #[ignore = "Requires checkpoints/Qwen3-0.6B to be present"]
     fn test_load_qwen3_06b_f32() {
-        let loader = SafeTensorsLoader::new("models/Qwen3-0.6B").unwrap();
+        let loader = SafeTensorsLoader::new("checkpoints/Qwen3-0.6B").unwrap();
         let weights = loader.load_all_weights::<f32>().unwrap();
         assert!(!weights.is_empty());
     }

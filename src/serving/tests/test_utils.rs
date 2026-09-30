@@ -41,7 +41,7 @@ pub fn test_chat_template() -> Arc<ChatTemplate> {
     )
 }
 
-const QWEN3_MODEL_DIR: &str = "./models/Qwen3-Coder-30B-A3B-Instruct";
+const QWEN3_MODEL_DIR: &str = "./checkpoints/Qwen3-Coder-30B-A3B-Instruct";
 
 pub fn qwen3_tokenizer() -> Arc<CoreBPE> {
     let tokenizer_path = format!("{}/tokenizer.json", QWEN3_MODEL_DIR);

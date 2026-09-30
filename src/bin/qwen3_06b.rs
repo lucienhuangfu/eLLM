@@ -44,7 +44,7 @@ fn physical_core_thread_limit(requested_thread_num: usize) -> usize {
 fn main() {
     let batch_size = 3;
     let max_output_tokens = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 32);
-    let model_dir = "models/Qwen3-0.6B";
+    let model_dir = "checkpoints/Qwen3-0.6B";
 
     let config = Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
     let gen_cfg =

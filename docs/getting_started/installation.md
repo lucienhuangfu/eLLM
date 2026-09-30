@@ -3,7 +3,7 @@
 The current runnable service targets one model and one layout:
 
 ```text
-models/Qwen3-Coder-30B-A3B-Instruct/
+checkpoints/Qwen3-Coder-30B-A3B-Instruct/
 ```
 
 The directory must contain the complete Hugging Face snapshot, including the
@@ -31,7 +31,7 @@ cd eLLM
 
 python3 -m pip install --upgrade huggingface_hub
 hf download Qwen/Qwen3-Coder-30B-A3B-Instruct \
-  --local-dir models/Qwen3-Coder-30B-A3B-Instruct
+  --local-dir checkpoints/Qwen3-Coder-30B-A3B-Instruct
 ```
 
 Some environments require a Hugging Face login before downloading the model:

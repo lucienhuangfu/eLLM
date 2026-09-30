@@ -47,7 +47,7 @@ def compare(name, rust_data, ref_data, cos_threshold=0.9999):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-dir", default="models/Qwen3-Coder-30B-A3B-Instruct")
+    parser.add_argument("--model-dir", default="checkpoints/Qwen3-Coder-30B-A3B-Instruct")
     parser.add_argument("--dump-dir", default="alignment/tokenizer/dump")
     args = parser.parse_args()
 

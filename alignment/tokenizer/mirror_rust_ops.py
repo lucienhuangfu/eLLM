@@ -47,7 +47,7 @@ def rotate_half_rope_f16(head, rope, head_dim):
 
 
 def main() -> None:
-    model_dir = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "models/Qwen3-0.6B")
+    model_dir = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "checkpoints/Qwen3-0.6B")
     out_dir = pathlib.Path("alignment/tokenizer/dump")
     messages = [{"role": "user", "content": "你好，请用一句话介绍 Rust。"}]
 

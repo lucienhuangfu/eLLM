@@ -48,7 +48,7 @@ def compare_component(dump_dir, layer_idx, component, ref_data, token_count, hid
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("model_dir", nargs="?", default="models/Qwen3-0.6B")
+    parser.add_argument("model_dir", nargs="?", default="checkpoints/Qwen3-0.6B")
     parser.add_argument("--dump-dir", default="alignment/tokenizer/dump")
     args = parser.parse_args()
 

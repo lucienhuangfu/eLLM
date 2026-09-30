@@ -41,7 +41,7 @@ fn parse_args() -> Args {
     }
 
     Args {
-        model_dir: model_dir.unwrap_or_else(|| "models/Qwen3-Coder-30B-A3B-Instruct".to_string()),
+        model_dir: model_dir.unwrap_or_else(|| "checkpoints/Qwen3-Coder-30B-A3B-Instruct".to_string()),
         parallel,
         validate,
         fingerprint,

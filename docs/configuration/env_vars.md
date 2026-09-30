@@ -46,7 +46,7 @@ The `qwen3_coder_30b_a3b` binary also accepts:
 
 | Variable | Default | Description |
 |---|---:|---|
-| `ELLM_MODEL_DIR` | `models/Qwen3-Coder-30B-A3B-Instruct` | Model directory |
+| `ELLM_MODEL_DIR` | `checkpoints/Qwen3-Coder-30B-A3B-Instruct` | Model directory |
 | `ELLM_PROMPT` | built-in benchmark prompt | Literal prompt text |
 | `ELLM_PROMPT_REPEAT` | unset | Repeats the benchmark prompt to create a long input |
 | `ELLM_MAX_OUTPUT_TOKENS` | `100` | Output limit |

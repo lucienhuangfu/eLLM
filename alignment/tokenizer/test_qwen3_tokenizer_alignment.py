@@ -37,7 +37,7 @@ def run(cmd: list[str]) -> dict:
 
 
 def main() -> None:
-    model_dir = sys.argv[1] if len(sys.argv) > 1 else "models/Qwen3-0.6B"
+    model_dir = sys.argv[1] if len(sys.argv) > 1 else "checkpoints/Qwen3-0.6B"
     rust = run(["cargo", "run", "--quiet", "--bin", "qwen3_tokenizer_alignment", "--", model_dir])
     hf = run(["python3", "alignment/tokenizer/generate_hf_qwen3_tokenizer.py", model_dir])
 

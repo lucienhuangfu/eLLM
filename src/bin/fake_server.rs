@@ -41,7 +41,7 @@ async fn run_server(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting fake server for runtime + serving integration test...");
 
-    let model_dir = "models/MiniMax-M2.5";
+    let model_dir = "checkpoints/MiniMax-M2.5";
     let sequence_length = 256usize;
     let batch_size = 4usize;
 

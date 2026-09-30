@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn test_from_file() {
-        let path = r"models/Qwen3-Coder-30B-A3B-Instruct/config.json";
+        let path = r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json";
         let config = match HfConfig::load_from_file(path) {
             Ok(hf) => Config::from_hf(hf),
             Err(e) => {

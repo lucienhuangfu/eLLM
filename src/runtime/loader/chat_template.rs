@@ -104,7 +104,7 @@ impl fmt::Debug for ChatTemplate {
 mod tests {
     use super::*;
 
-    const TEMPLATE_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
+    const TEMPLATE_PATH: &str = "./checkpoints/Qwen3-Coder-30B-A3B-Instruct/chat_template.jinja";
 
     #[test]
     fn test_chat_template() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

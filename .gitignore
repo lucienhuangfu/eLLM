@@ -4,7 +4,7 @@ debug
 target
 site/
 Cargo.lock
-models/
+checkpoints/
 scripts/*
 !scripts/chat.py
 third_party/transformers/

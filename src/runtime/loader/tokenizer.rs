@@ -245,9 +245,9 @@ pub fn load_tiktoken(
 mod tests {
     use super::*;
 
-    const QWEN3_TOKENIZER_JSON_PATH: &str = "./models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
+    const QWEN3_TOKENIZER_JSON_PATH: &str = "./checkpoints/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
     const QWEN3_TOKENIZER_CONFIG_JSON_PATH: &str =
-        "./models/Qwen3-Coder-30B-Instruct/tokenizer_config.json";
+        "./checkpoints/Qwen3-Coder-30B-Instruct/tokenizer_config.json";
 
     #[test]
     fn test_load_qwen3_tokenizer_json() {

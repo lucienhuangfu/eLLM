@@ -78,17 +78,17 @@ To better support **long-horizon tasks**, eLLM targets the Agent scenario of "mu
 We recommend first downloading the complete Qwen3-Coder-30B-A3B-Instruct model from Hugging Face.
 After cloning the repository and entering its root directory, copy the model to the following path:
 ```text
-models/Qwen3-Coder-30B-A3B-Instruct
+checkpoints/Qwen3-Coder-30B-A3B-Instruct
 ```
 Then build eLLM and start the service with roughly 50K token capacity and a single request slot:
 
 ```bash
 git clone https://github.com/lucienhuangfu/eLLM.git
 cd eLLM
-# Copy the downloaded model to models/Qwen3-Coder-30B-A3B-Instruct
+# Copy the downloaded model to checkpoints/Qwen3-Coder-30B-A3B-Instruct
 cargo build --release --bin main
 ./target/release/main \
-  --model-path models/Qwen3-Coder-30B-A3B-Instruct \
+  --model-path checkpoints/Qwen3-Coder-30B-A3B-Instruct \
   --chunk-size 50000 \
   --sequence-length 50000 \
   --batch-size 1

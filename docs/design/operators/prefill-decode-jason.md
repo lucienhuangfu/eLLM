@@ -295,7 +295,7 @@ QK BRGEMM 约 35%、online softmax 约 20%、packed KV/cache 约 3%，最终输�
 ### 10k input / 100 output 的 decode 全量 operator profile
 
 本机根目录保留一份不提交 Git 的复现脚本 `benchmark_qwen3_coder_10k_100.sh`。
-准备好 `models/Qwen3-Coder-30B-A3B-Instruct` 后，可以直接运行：
+准备好 `checkpoints/Qwen3-Coder-30B-A3B-Instruct` 后，可以直接运行：
 
 ```bash
 # 关闭 profile，测 TTFT 和首 token 后 100-token 输出时间

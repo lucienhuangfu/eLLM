@@ -6,8 +6,8 @@ Complete [Installation](installation.md) first.
 ## 1. Check the fixed model path
 
 ```bash
-test -f models/Qwen3-Coder-30B-A3B-Instruct/config.json
-test -f models/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json
+test -f checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json
+test -f checkpoints/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json
 ```
 
 The `main` binary currently serves only

@@ -63,7 +63,7 @@ def save_f16_bin(path, tensor):
 
 
 def main():
-    model_dir = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "models/Qwen3-0.6B")
+    model_dir = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "checkpoints/Qwen3-0.6B")
     out_dir = pathlib.Path("alignment/matmul3/dump")
     out_dir.mkdir(parents=True, exist_ok=True)
 

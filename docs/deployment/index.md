@@ -11,7 +11,7 @@ cargo build --release --bin main
 ```
 
 Before starting, place the complete model snapshot at
-`models/Qwen3-Coder-30B-A3B-Instruct`. See [Installation](../getting_started/installation.md)
+`checkpoints/Qwen3-Coder-30B-A3B-Instruct`. See [Installation](../getting_started/installation.md)
 for the download command and hardware guidance.
 
 ## Readiness check

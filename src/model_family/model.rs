@@ -328,7 +328,7 @@ mod test {
             .unwrap_or(1);
 
         let config =
-            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,
@@ -405,7 +405,7 @@ mod test {
             .unwrap_or(1);
 
         let config =
-            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,
@@ -466,7 +466,7 @@ mod test {
         let batch_size = 1;
         let topk_size = 8;
 
-        let config_path = r"models/Qwen3-0.6B/config.json";
+        let config_path = r"checkpoints/Qwen3-0.6B/config.json";
         if !std::path::Path::new(config_path).exists() {
             eprintln!("skip test_qwen3_06b_creation: {config_path} not found");
             return;
@@ -518,7 +518,7 @@ mod test {
         let batch_size = 1;
         let topk_size = 8;
 
-        let config_path = r"models/Qwen3-0.6B/config.json";
+        let config_path = r"checkpoints/Qwen3-0.6B/config.json";
         if !std::path::Path::new(config_path).exists() {
             eprintln!("skip test_qwen3_06b_creation_f16: {config_path} not found");
             return;

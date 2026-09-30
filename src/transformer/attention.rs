@@ -231,7 +231,7 @@ mod test {
         // let sequence_length = 10;
 
         let config =
-            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         // let inverse_sqrt_head = 1.0 / (config.hidden_size as f32).sqrt();
         let attention_head_size: usize = config.head_dim;
@@ -313,7 +313,7 @@ mod test {
         let batch_size = 3;
 
         let config =
-            Config::load_from_file(r"models/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
 
         let attention_head_size: usize = config.head_dim;
 

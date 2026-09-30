@@ -92,7 +92,7 @@ compare("post-attention RMS norm", rust_post_attn, hf_post_attn)
 # 用 HF 的 attn_residual 和 Rust 的 weight 重算一遍
 from transformers import AutoModelForCausalLM
 model = AutoModelForCausalLM.from_pretrained(
-    "models/Qwen3-Coder-30B-A3B-Instruct", local_files_only=True,
+    "checkpoints/Qwen3-Coder-30B-A3B-Instruct", local_files_only=True,
     trust_remote_code=False, torch_dtype=torch.float16
 ).eval().to("cpu")
 
