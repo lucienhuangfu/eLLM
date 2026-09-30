@@ -91,7 +91,7 @@ Wrap variants in a private enum with `new` (dispatch on a `*Kind` config) and `f
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::model_family::config::Config;
+    use crate::model_family::qwen3_moe::Config;
     use crate::runtime::SequenceSlice;
     use std::collections::HashMap;
 

@@ -5,10 +5,7 @@ use std::collections::HashMap;
 
 use crate::config::HfConfig;
 
-use crate::model_family::config::FfnResolveParams;
-use crate::model_family::config::LayerPlan;
-use crate::model_family::config::RouterScoringKind;
-use crate::model_family::model_name::ModelName;
+use crate::model_spec::{FfnResolveParams, LayerPlan, ModelName, RouterScoringKind};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -117,8 +114,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use crate::model_family::config::HfConfig;
-    use crate::model_family::qwen3_moe::config::Config;
+    use super::Config;
+    use crate::config::HfConfig;
 
     #[test]
     fn test_from_file() {

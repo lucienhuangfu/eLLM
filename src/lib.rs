@@ -8,6 +8,7 @@ pub mod config;
 pub mod kernel;
 pub mod mem_mgr;
 pub mod model_family;
+pub mod model_spec;
 pub mod num_traits;
 pub mod operators;
 pub mod runtime;

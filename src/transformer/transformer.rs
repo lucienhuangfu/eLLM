@@ -9,9 +9,63 @@ use crate::num_traits::{Exp, Sigmoid, Sqrt};
 use super::attention::Attention;
 use super::dense_mlp::DenseMlp;
 use super::sparse_moe::SparseMoe;
-use super::tensor_name::{layer_tensor_names, FfnTensorNames};
-use crate::model_family::config::{AttentionBlock, AttentionKind, Config, FfnBlock, FfnKind};
+use super::tensor_name::{layer_tensor_names, DenseMlpTensorNames, SparseMoeTensorNames};
+use crate::model_family::qwen3_moe::Config;
+use crate::model_spec::{AttentionKind, FfnKind};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
+
+// FFN 运行时块：配置蓝图 FfnKind 的已实例化对应物。仿照 SparseMoeRouter 范本——
+// 私有 enum,由 build() 内一次 exhaustive match 从 config enum 构建,张量名在分支内派生。
+enum FfnBlock<T>
+where
+    T: Copy + PartialOrd,
+{
+    Dense(DenseMlp<T>),
+    SparseMoe(SparseMoe<T>),
+}
+
+impl<T> FfnBlock<T>
+where
+    T: Copy
+        + PartialOrd
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid
+        + Sqrt
+        + AddAssign
+        + GlobalMemPool
+        + GlobalOperatorQueue,
+{
+    fn build(spec: &FfnKind, ffn_scope: &str, hidden_size: usize) -> Self {
+        match spec {
+            FfnKind::Dense { intermediate_size } => FfnBlock::Dense(DenseMlp::new(
+                hidden_size,
+                *intermediate_size,
+                DenseMlpTensorNames::new(ffn_scope),
+            )),
+            FfnKind::SparseMoe {
+                intermediate_size,
+                num_experts,
+                num_experts_per_tok,
+                norm_topk_prob,
+                router_scoring,
+                use_routing_bias,
+            } => FfnBlock::SparseMoe(SparseMoe::new(
+                hidden_size,
+                *intermediate_size,
+                *num_experts,
+                *num_experts_per_tok,
+                *norm_topk_prob,
+                router_scoring.clone(),
+                *use_routing_bias,
+                SparseMoeTensorNames::new(ffn_scope, *use_routing_bias),
+            )),
+        }
+    }
+}
 
 // #[derive(Clone)]
 pub struct Transformer<T>
@@ -27,7 +81,7 @@ where
     position_embedding: Rc<Tensor<T>>,
     input_layernorm_weight: Tensor<T>,
     post_attention_layernorm_weight: Tensor<T>,
-    self_attention: AttentionBlock<T>,
+    self_attention: Attention<T>,
     ffn_block: FfnBlock<T>,
     scope_name: String,
 }
@@ -60,56 +114,24 @@ where
     ) -> Self {
         let names = layer_tensor_names(config, layer_idx);
         let self_attention = match config.layers[layer_idx].attention {
-            AttentionKind::Full => AttentionBlock::Full(Attention::<T>::new(
+            AttentionKind::Full | AttentionKind::SlidingWindow => Attention::<T>::new(
                 config,
                 chunk_size,
                 sequence_length,
                 batch_size,
                 names.attention.clone(),
-            )),
-            AttentionKind::SlidingWindow => AttentionBlock::SlidingWindow(Attention::<T>::new(
-                config,
-                chunk_size,
-                sequence_length,
-                batch_size,
-                names.attention.clone(),
-            )),
-            AttentionKind::Linear => panic!(
+            ),
+            AttentionKind::Linear => unimplemented!(
                 "linear attention is not implemented for layer {}",
                 layer_idx
             ),
         };
 
-        let ffn_block = match (&config.layers[layer_idx].ffn, names.ffn.clone()) {
-            (FfnKind::Dense { intermediate_size }, FfnTensorNames::Dense(ffn_names)) => {
-                FfnBlock::Dense(DenseMlp::new(
-                    config.hidden_size,
-                    *intermediate_size,
-                    ffn_names,
-                ))
-            }
-            (
-                FfnKind::SparseMoe {
-                    intermediate_size,
-                    num_experts,
-                    num_experts_per_tok,
-                    norm_topk_prob,
-                    router_scoring,
-                    use_routing_bias,
-                },
-                FfnTensorNames::SparseMoe(ffn_names),
-            ) => FfnBlock::SparseMoe(SparseMoe::new(
-                config.hidden_size,
-                *intermediate_size,
-                *num_experts,
-                *num_experts_per_tok,
-                *norm_topk_prob,
-                router_scoring.clone(),
-                *use_routing_bias,
-                ffn_names,
-            )),
-            _ => unreachable!("ffn plan and names must match"),
-        };
+        let ffn_block = FfnBlock::build(
+            &config.layers[layer_idx].ffn,
+            &names.ffn_scope,
+            config.hidden_size,
+        );
 
         Self {
             chunk_size: chunk_size,
@@ -165,16 +187,13 @@ where
         };
         let hidden_states = &hidden_states_owned;
 
-        let attention_hidden_states = match &self.self_attention {
-            AttentionBlock::Full(attention) | AttentionBlock::SlidingWindow(attention) => attention
-                .forward(
-                    &norm_hidden,
-                    hidden_states,
-                    &*self.position_embedding,
-                    decode_only_flag,
-                    _tensor_name,
-                ),
-        };
+        let attention_hidden_states = self.self_attention.forward(
+            &norm_hidden,
+            hidden_states,
+            &*self.position_embedding,
+            decode_only_flag,
+            _tensor_name,
+        );
 
         let norm_hidden_states = attention_hidden_states.rms(
             &self.post_attention_layernorm_weight,

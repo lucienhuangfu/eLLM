@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::model_family::model_name::ModelName;
+use super::ModelName;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RouterScoringKind {

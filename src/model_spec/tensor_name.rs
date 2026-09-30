@@ -1,5 +1,5 @@
-use crate::model_family::config::{Config, FfnKind};
-use crate::model_family::model_name::ModelName;
+use super::ModelName;
+use crate::model_family::qwen3_moe::Config;
 
 #[derive(Debug, Clone)]
 pub struct ModelTensorNames {
@@ -29,6 +29,17 @@ pub struct DenseMlpTensorNames {
     pub down_proj: String,
 }
 
+impl DenseMlpTensorNames {
+    pub fn new(scope: &str) -> Self {
+        Self {
+            gate_proj: format!("{}.gate_proj.weight", scope),
+            up_proj: format!("{}.up_proj.weight", scope),
+            down_proj: format!("{}.down_proj.weight", scope),
+            scope: scope.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SparseMoeTensorNames {
     pub scope: String,
@@ -39,17 +50,28 @@ pub struct SparseMoeTensorNames {
     pub experts_down_proj: String,
 }
 
-#[derive(Debug, Clone)]
-pub enum FfnTensorNames {
-    Dense(DenseMlpTensorNames),
-    SparseMoe(SparseMoeTensorNames),
+impl SparseMoeTensorNames {
+    pub fn new(scope: &str, use_routing_bias: bool) -> Self {
+        Self {
+            router_gate: format!("{}.gate.weight", scope),
+            router_bias: if use_routing_bias {
+                Some(format!("{}.e_score_correction_bias", scope))
+            } else {
+                None
+            },
+            experts_gate_proj: format!("{}.experts.gate_proj.weight", scope),
+            experts_up_proj: format!("{}.experts.up_proj.weight", scope),
+            experts_down_proj: format!("{}.experts.down_proj.weight", scope),
+            scope: scope.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct LayerTensorNames {
     pub scope: String,
     pub attention: AttentionTensorNames,
-    pub ffn: FfnTensorNames,
+    pub ffn_scope: String,
     pub input_layernorm: String,
     pub post_attention_layernorm: String,
 }
@@ -95,40 +117,13 @@ pub fn layer_tensor_names(config: &Config, layer_idx: usize) -> LayerTensorNames
         k_norm: format!("{}.k_norm.weight", attention_scope),
     };
 
-    let ffn = match &config.layers[layer_idx].ffn {
-        FfnKind::Dense { .. } => {
-            let ffn_scope = format!("{}.mlp", scope);
-            FfnTensorNames::Dense(DenseMlpTensorNames {
-                scope: ffn_scope.clone(),
-                gate_proj: format!("{}.gate_proj.weight", ffn_scope),
-                up_proj: format!("{}.up_proj.weight", ffn_scope),
-                down_proj: format!("{}.down_proj.weight", ffn_scope),
-            })
-        }
-        FfnKind::SparseMoe {
-            use_routing_bias, ..
-        } => {
-            let ffn_scope = format!("{}.mlp", scope);
-            FfnTensorNames::SparseMoe(SparseMoeTensorNames {
-                scope: ffn_scope.clone(),
-                router_gate: format!("{}.gate.weight", ffn_scope),
-                router_bias: if *use_routing_bias {
-                    Some(format!("{}.e_score_correction_bias", ffn_scope))
-                } else {
-                    None
-                },
-                experts_gate_proj: format!("{}.experts.gate_proj.weight", ffn_scope),
-                experts_up_proj: format!("{}.experts.up_proj.weight", ffn_scope),
-                experts_down_proj: format!("{}.experts.down_proj.weight", ffn_scope),
-            })
-        }
-    };
+    let ffn_scope = format!("{}.mlp", scope);
 
     LayerTensorNames {
         input_layernorm: format!("{}.input_layernorm.weight", scope),
         post_attention_layernorm: format!("{}.post_attention_layernorm.weight", scope),
         scope,
         attention,
-        ffn,
+        ffn_scope,
     }
 }

@@ -9,7 +9,7 @@ use crate::tensor::{GlobalOperatorQueue, Tensor};
 use super::super::tensor_name::SparseMoeTensorNames;
 use super::router_sigmoid::SparseMoeSigmoidRouter;
 use super::router_softmax::SparseMoeSoftmaxRouter;
-use crate::model_family::config::RouterScoringKind;
+use crate::model_spec::RouterScoringKind;
 
 #[derive(Clone)]
 enum SparseMoeRouter<T>

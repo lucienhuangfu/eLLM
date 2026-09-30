@@ -7,7 +7,7 @@ use crate::kernel::common::matmul_params::MatMulParams;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
 use super::tensor_name::AttentionTensorNames;
-use crate::model_family::config::Config;
+use crate::model_family::qwen3_moe::Config;
 
 // #[derive(Clone)]
 pub struct Attention<T>

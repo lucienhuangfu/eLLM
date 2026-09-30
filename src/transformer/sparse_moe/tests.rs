@@ -1,5 +1,5 @@
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::model_family::config::RouterScoringKind;
+use crate::model_spec::RouterScoringKind;
 use crate::operators::operator::Operator;
 use crate::runtime::SequenceSlice;
 use crate::tensor::{GlobalOperatorQueue, Tensor};

@@ -1,5 +1,5 @@
 use crate::config::GenerationConfig;
-use crate::model_family::config::Config;
+use crate::model_family::qwen3_moe::Config;
 
 #[derive(Debug, Clone)]
 pub struct GenerationParameters {
