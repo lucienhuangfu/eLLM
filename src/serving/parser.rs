@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::model_family::config::ModelFamily;
+use crate::model_family::model_name::ModelName;
 
 /// Maximum accumulated tool-call buffer before forced recovery (256 KiB).
 const MAX_TOOL_BUF: usize = 256 * 1024;
@@ -146,13 +146,13 @@ impl ParserRule {
         )
     }
 
-    pub fn for_model_family(family: &ModelFamily) -> Self {
+    pub fn for_model_family(family: &ModelName) -> Self {
         match family {
-            ModelFamily::Qwen => Self::qwen(),
-            ModelFamily::Llama => Self::llama3_json(),
-            ModelFamily::Mixtral => Self::mistral(),
-            ModelFamily::MiniMax | ModelFamily::MiniMaxM2 => Self::minimax_m1(),
-            ModelFamily::Unknown(_) => Self::qwen(),
+            ModelName::Qwen => Self::qwen(),
+            ModelName::Llama => Self::llama3_json(),
+            ModelName::Mixtral => Self::mistral(),
+            ModelName::MiniMax | ModelName::MiniMaxM2 => Self::minimax_m1(),
+            ModelName::Unknown(_) => Self::qwen(),
         }
     }
 }

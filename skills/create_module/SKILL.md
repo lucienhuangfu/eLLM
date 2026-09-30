@@ -40,7 +40,7 @@ use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-use super::names::MyModuleTensorNames;
+use super::tensor_name::MyModuleTensorNames;
 
 #[derive(Clone)]
 pub struct MyModule<T>

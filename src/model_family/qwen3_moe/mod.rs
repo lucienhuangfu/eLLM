@@ -6,11 +6,13 @@ use std::rc::Rc;
 // use super::barrier::Barrier;
 // use serde::{Deserialize, Serialize};
 
-use super::config::Config;
+pub mod config;
+
 use crate::num_traits::FromNumber;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
-use crate::transformer::names::model_tensor_names;
+use crate::transformer::tensor_name::model_tensor_names;
+use config::Config;
 
 // use super::super::operators::map::rms_map::RMSMap;
 use crate::kernel::common::matmul_params::MatMulParams;
@@ -18,7 +20,7 @@ use crate::mem_mgr::mem_pool::GlobalMemPool;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
-use crate::transformer::decoder_layer::DecoderLayer;
+use crate::transformer::transformer::Transformer;
 // use crate::runtime::inference::state::TokenRecord;
 
 #[cfg(test)]
@@ -31,7 +33,7 @@ where
 {
     lm_head_weight: Tensor<T>,
     norm_weight: Tensor<T>,
-    pub layers: Vec<DecoderLayer<T>>,
+    pub layers: Vec<Transformer<T>>,
     rms_norm_eps: T,
     pub chunk_size: usize,
     pub sequence_length: usize,
@@ -130,9 +132,9 @@ where
             model_names.position_embedding.clone(),
         ));
 
-        let mut layers: Vec<DecoderLayer<T>> = Vec::new();
+        let mut layers: Vec<Transformer<T>> = Vec::new();
         for i in 0..config.layers.len() {
-            layers.push(DecoderLayer::<T>::new(
+            layers.push(Transformer::<T>::new(
                 &config,
                 i,
                 effective_chunk,
@@ -328,7 +330,8 @@ mod test {
             .unwrap_or(1);
 
         let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
+                .unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,
@@ -405,7 +408,8 @@ mod test {
             .unwrap_or(1);
 
         let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
+                .unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,

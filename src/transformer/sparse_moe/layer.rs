@@ -6,7 +6,7 @@ use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-use super::super::names::SparseMoeTensorNames;
+use super::super::tensor_name::SparseMoeTensorNames;
 use super::router_sigmoid::SparseMoeSigmoidRouter;
 use super::router_softmax::SparseMoeSoftmaxRouter;
 use crate::model_family::config::RouterScoringKind;

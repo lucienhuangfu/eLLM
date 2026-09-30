@@ -3,7 +3,7 @@ use crate::model_family::config::RouterScoringKind;
 use crate::operators::operator::Operator;
 use crate::runtime::SequenceSlice;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
-use crate::transformer::names::SparseMoeTensorNames;
+use crate::transformer::tensor_name::SparseMoeTensorNames;
 use std::collections::HashMap;
 
 const EMPTY_SLICES: &[SequenceSlice] = &[];

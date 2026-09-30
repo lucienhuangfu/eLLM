@@ -8,29 +8,13 @@ use crate::num_traits::{Exp, Sigmoid, Sqrt};
 
 use super::attention::Attention;
 use super::dense_mlp::DenseMlp;
-use super::names::{layer_tensor_names, FfnTensorNames};
 use super::sparse_moe::SparseMoe;
-use crate::model_family::config::{AttentionKind, Config, FfnKind};
+use super::tensor_name::{layer_tensor_names, FfnTensorNames};
+use crate::model_family::config::{AttentionBlock, AttentionKind, Config, FfnBlock, FfnKind};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-pub enum AttentionBlock<T>
-where
-    T: Copy + PartialOrd,
-{
-    Full(Attention<T>),
-    SlidingWindow(Attention<T>),
-}
-
-pub enum FfnBlock<T>
-where
-    T: Copy + PartialOrd,
-{
-    Dense(DenseMlp<T>),
-    SparseMoe(SparseMoe<T>),
-}
-
 // #[derive(Clone)]
-pub struct DecoderLayer<T>
+pub struct Transformer<T>
 where
     T: Copy + PartialOrd,
 {
@@ -48,7 +32,7 @@ where
     scope_name: String,
 }
 
-impl<T> DecoderLayer<T>
+impl<T> Transformer<T>
 where
     T: Copy
         + PartialOrd
@@ -244,12 +228,13 @@ mod test {
 
     #[test]
     #[ignore = "model-scale integration test; run manually on a large machine"]
-    fn test_decoder_layer_f32() {
+    fn test_transformer_f32() {
         let sequence_length = 1;
         let batch_size = 6;
 
         let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
+                .unwrap();
 
         let hidden_size = config.hidden_size;
         let max_position_embeddings = config.max_position_embeddings;
@@ -268,7 +253,7 @@ mod test {
             String::from("model.position_embedding.weight"),
         ));
 
-        let layer = DecoderLayer::<f32>::new(
+        let layer = Transformer::<f32>::new(
             &config,
             1,
             max_position_embeddings,
@@ -329,12 +314,13 @@ mod test {
 
     #[test]
     #[ignore = "model-scale integration test; run manually on a large machine"]
-    fn test_decoder_layer_f16() {
+    fn test_transformer_f16() {
         let position_window_size = 1;
         let batch_size = 3;
 
         let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
+                .unwrap();
 
         let sequence_length = position_window_size;
         let hidden_size = config.hidden_size;
@@ -354,7 +340,7 @@ mod test {
             String::from("model.position_embedding.weight"),
         ));
 
-        let layer = DecoderLayer::<f16>::new(
+        let layer = Transformer::<f16>::new(
             &config,
             0,
             max_position_embeddings,

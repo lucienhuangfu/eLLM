@@ -5,7 +5,7 @@ use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-use super::names::GatedDeltaAttentionTensorNames;
+use super::tensor_name::GatedDeltaAttentionTensorNames;
 
 // Qwen3.5-MoE gated delta linear attention block
 // (scripts/modeling_qwen3_5_moe.py::Qwen3_5MoeGatedDeltaNet):

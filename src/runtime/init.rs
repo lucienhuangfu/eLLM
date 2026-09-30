@@ -8,7 +8,7 @@ use crate::config::{GenerationConfig, ResolvedConfig};
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::model_family::config::Config;
-use crate::model_family::model::Model;
+use crate::model_family::qwen3_moe::Model;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{build_slot_sequence, SlotSequence};

@@ -1,4 +1,5 @@
-use crate::model_family::config::{Config, FfnKind, ModelFamily};
+use crate::model_family::config::{Config, FfnKind};
+use crate::model_family::model_name::ModelName;
 
 #[derive(Debug, Clone)]
 pub struct ModelTensorNames {
@@ -55,12 +56,12 @@ pub struct LayerTensorNames {
 
 pub fn model_tensor_names(config: &Config) -> ModelTensorNames {
     match config.family {
-        ModelFamily::Qwen
-        | ModelFamily::Llama
-        | ModelFamily::Mixtral
-        | ModelFamily::MiniMax
-        | ModelFamily::MiniMaxM2
-        | ModelFamily::Unknown(_) => {
+        ModelName::Qwen
+        | ModelName::Llama
+        | ModelName::Mixtral
+        | ModelName::MiniMax
+        | ModelName::MiniMaxM2
+        | ModelName::Unknown(_) => {
             let token_embedding = String::from("model.embed_tokens.weight");
             let lm_head = if config.tie_word_embeddings {
                 token_embedding.clone()

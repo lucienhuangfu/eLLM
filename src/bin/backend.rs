@@ -4,7 +4,7 @@ use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::model_family::config::Config;
-use ellm::model_family::model::Model;
+use ellm::model_family::qwen3_moe::Model;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
     ExecutorPool, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SessionMode, SlotManager,

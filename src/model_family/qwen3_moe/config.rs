@@ -5,14 +5,14 @@ use std::collections::HashMap;
 
 use crate::config::HfConfig;
 
-use super::ffn_kind::FfnResolveParams;
-use super::layer_plan::LayerPlan;
-use super::model_family::ModelFamily;
-use super::router_scoring::RouterScoringKind;
+use crate::model_family::config::FfnResolveParams;
+use crate::model_family::config::LayerPlan;
+use crate::model_family::config::RouterScoringKind;
+use crate::model_family::model_name::ModelName;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub family: ModelFamily,
+    pub family: ModelName,
     pub vocab_size: usize,
     pub hidden_size: usize,
     pub num_hidden_layers: usize,
@@ -38,7 +38,7 @@ pub struct Config {
 
 impl Config {
     pub fn from_hf(hf: HfConfig) -> Self {
-        let family = ModelFamily::parse(&hf.model_type);
+        let family = ModelName::parse(&hf.model_type);
         let head_dim = hf
             .head_dim
             .unwrap_or_else(|| hf.hidden_size / hf.num_attention_heads.max(1));
@@ -55,7 +55,7 @@ impl Config {
         let router_scoring = RouterScoringKind::from_hf(hf.scoring_func.as_deref(), family.clone());
         let use_routing_bias = hf
             .use_routing_bias
-            .unwrap_or(matches!(family, ModelFamily::MiniMaxM2));
+            .unwrap_or(matches!(family, ModelName::MiniMaxM2));
         let decoder_sparse_step = hf.decoder_sparse_step.max(1);
         let use_qk_norm = hf.use_qk_norm || matches!(hf.model_type.as_str(), "qwen3" | "qwen3_moe");
 
@@ -117,7 +117,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use crate::model_family::config::{Config, HfConfig};
+    use crate::model_family::config::HfConfig;
+    use crate::model_family::qwen3_moe::config::Config;
 
     #[test]
     fn test_from_file() {

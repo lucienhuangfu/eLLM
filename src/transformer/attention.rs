@@ -6,7 +6,7 @@ use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-use super::names::AttentionTensorNames;
+use super::tensor_name::AttentionTensorNames;
 use crate::model_family::config::Config;
 
 // #[derive(Clone)]
@@ -231,7 +231,8 @@ mod test {
         // let sequence_length = 10;
 
         let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
+                .unwrap();
 
         // let inverse_sqrt_head = 1.0 / (config.hidden_size as f32).sqrt();
         let attention_head_size: usize = config.head_dim;
@@ -245,7 +246,7 @@ mod test {
             sequence_length,
             sequence_length,
             batch_size,
-            crate::transformer::names::AttentionTensorNames {
+            crate::transformer::tensor_name::AttentionTensorNames {
                 scope: String::from("model.layers.1.self_attn"),
                 q_proj: String::from("model.layers.1.self_attn.q_proj.weight"),
                 k_proj: String::from("model.layers.1.self_attn.k_proj.weight"),
@@ -313,7 +314,8 @@ mod test {
         let batch_size = 3;
 
         let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json").unwrap();
+            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
+                .unwrap();
 
         let attention_head_size: usize = config.head_dim;
 
