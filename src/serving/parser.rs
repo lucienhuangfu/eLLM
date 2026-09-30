@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::transformer::config::ModelFamily;
+use crate::model_family::config::ModelFamily;
 
 /// Maximum accumulated tool-call buffer before forced recovery (256 KiB).
 const MAX_TOOL_BUF: usize = 256 * 1024;

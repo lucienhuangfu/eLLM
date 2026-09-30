@@ -3,6 +3,8 @@
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
+use ellm::model_family::config::Config;
+use ellm::model_family::model::Model;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::loader::load_tiktoken;
 use ellm::runtime::loader::ChatTemplate;
@@ -11,8 +13,6 @@ use ellm::runtime::{
     ExecutorPool, Phase, ScheduleTask, Scheduler, SessionMode, SlotManager, SlotSequence, SlotState,
 };
 use ellm::tensor::GlobalOperatorQueue;
-use ellm::transformer::config::Config;
-use ellm::transformer::model::Model;
 use ellm::transformer::rope::RotaryEmbedding;
 use std::env;
 use std::sync::Arc;

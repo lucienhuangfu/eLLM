@@ -1,4 +1,4 @@
-use super::config::{Config, FfnKind, ModelFamily};
+use crate::model_family::config::{Config, FfnKind, ModelFamily};
 
 #[derive(Debug, Clone)]
 pub struct ModelTensorNames {
