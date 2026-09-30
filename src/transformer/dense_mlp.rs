@@ -4,7 +4,6 @@ use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
 
-use super::tensor_name::DenseMlpTensorNames;
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
@@ -34,12 +33,21 @@ where
         + GlobalMemPool
         + GlobalOperatorQueue,
 {
-    pub fn new(hidden_size: usize, intermediate_size: usize, names: DenseMlpTensorNames) -> Self {
+    pub fn new(hidden_size: usize, intermediate_size: usize, scope: &str) -> Self {
         Self {
-            gate_weight: Tensor::zeros(vec![intermediate_size, hidden_size], names.gate_proj),
-            up_weight: Tensor::zeros(vec![intermediate_size, hidden_size], names.up_proj),
-            down_weight: Tensor::zeros(vec![hidden_size, intermediate_size], names.down_proj),
-            scope_name: names.scope,
+            gate_weight: Tensor::zeros(
+                vec![intermediate_size, hidden_size],
+                format!("{scope}.gate_proj.weight"),
+            ),
+            up_weight: Tensor::zeros(
+                vec![intermediate_size, hidden_size],
+                format!("{scope}.up_proj.weight"),
+            ),
+            down_weight: Tensor::zeros(
+                vec![hidden_size, intermediate_size],
+                format!("{scope}.down_proj.weight"),
+            ),
+            scope_name: scope.to_string(),
         }
     }
 

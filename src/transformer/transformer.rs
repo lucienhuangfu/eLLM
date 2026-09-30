@@ -9,7 +9,7 @@ use crate::num_traits::{Exp, Sigmoid, Sqrt};
 use super::attention::Attention;
 use super::dense_mlp::DenseMlp;
 use super::sparse_moe::SparseMoe;
-use super::tensor_name::{layer_tensor_names, DenseMlpTensorNames, SparseMoeTensorNames};
+use super::tensor_name::layer_scope;
 use crate::model_family::qwen3_moe::Config;
 use crate::model_spec::{AttentionKind, FfnKind};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
@@ -41,11 +41,9 @@ where
 {
     fn build(spec: &FfnKind, ffn_scope: &str, hidden_size: usize) -> Self {
         match spec {
-            FfnKind::Dense { intermediate_size } => FfnBlock::Dense(DenseMlp::new(
-                hidden_size,
-                *intermediate_size,
-                DenseMlpTensorNames::new(ffn_scope),
-            )),
+            FfnKind::Dense { intermediate_size } => {
+                FfnBlock::Dense(DenseMlp::new(hidden_size, *intermediate_size, ffn_scope))
+            }
             FfnKind::SparseMoe {
                 intermediate_size,
                 num_experts,
@@ -61,7 +59,7 @@ where
                 *norm_topk_prob,
                 router_scoring.clone(),
                 *use_routing_bias,
-                SparseMoeTensorNames::new(ffn_scope, *use_routing_bias),
+                ffn_scope,
             )),
         }
     }
@@ -112,15 +110,13 @@ where
         position_embedding: Rc<Tensor<T>>,
         _parent_scope_name: &str,
     ) -> Self {
-        let names = layer_tensor_names(config, layer_idx);
-        let self_attention = match config.layers[layer_idx].attention {
-            AttentionKind::Full | AttentionKind::SlidingWindow => Attention::<T>::new(
-                config,
-                chunk_size,
-                sequence_length,
-                batch_size,
-                names.attention.clone(),
-            ),
+        let scope = layer_scope(layer_idx);
+        let attn_scope = format!("{scope}.self_attn");
+        let ffn_scope = format!("{scope}.mlp");
+        let self_attention = match config.layer_spec.attention(layer_idx) {
+            AttentionKind::Full | AttentionKind::SlidingWindow => {
+                Attention::<T>::new(config, chunk_size, sequence_length, batch_size, &attn_scope)
+            }
             AttentionKind::Linear => unimplemented!(
                 "linear attention is not implemented for layer {}",
                 layer_idx
@@ -128,8 +124,8 @@ where
         };
 
         let ffn_block = FfnBlock::build(
-            &config.layers[layer_idx].ffn,
-            &names.ffn_scope,
+            &config.layer_spec.ffn(layer_idx),
+            &ffn_scope,
             config.hidden_size,
         );
 
@@ -145,13 +141,13 @@ where
             position_embedding: position_embedding,
             input_layernorm_weight: Tensor::zeros(
                 vec![config.hidden_size],
-                names.input_layernorm.clone(),
+                format!("{scope}.input_layernorm.weight"),
             ),
             post_attention_layernorm_weight: Tensor::zeros(
                 vec![config.hidden_size],
-                names.post_attention_layernorm.clone(),
+                format!("{scope}.post_attention_layernorm.weight"),
             ),
-            scope_name: names.scope,
+            scope_name: scope,
         }
     }
 

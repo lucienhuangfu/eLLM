@@ -6,7 +6,6 @@ use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-use super::super::tensor_name::SparseMoeTensorNames;
 use super::router_sigmoid::SparseMoeSigmoidRouter;
 use super::router_softmax::SparseMoeSoftmaxRouter;
 use crate::model_spec::RouterScoringKind;
@@ -108,15 +107,18 @@ where
         _norm_topk_prob: bool,
         router_scoring: RouterScoringKind,
         use_routing_bias: bool,
-        names: SparseMoeTensorNames,
+        scope: &str,
     ) -> Self {
-        let scope_name = names.scope.clone();
-        let gate_weight = Tensor::zeros(vec![num_experts, hidden_size], names.router_gate);
+        let scope_name = scope.to_string();
+        let gate_weight = Tensor::zeros(
+            vec![num_experts, hidden_size],
+            format!("{scope}.gate.weight"),
+        );
         let router_bias = if use_routing_bias {
-            let bias_name = names
-                .router_bias
-                .expect("use_routing_bias is true but SparseMoeTensorNames.router_bias is None");
-            Some(Tensor::zeros(vec![num_experts], bias_name))
+            Some(Tensor::zeros(
+                vec![num_experts],
+                format!("{scope}.e_score_correction_bias"),
+            ))
         } else {
             None
         };
@@ -135,15 +137,15 @@ where
             ),
             experts_gate_weight: Tensor::zeros(
                 vec![num_experts, moe_intermediate_size, hidden_size],
-                names.experts_gate_proj,
+                format!("{scope}.experts.gate_proj.weight"),
             ),
             experts_up_weight: Tensor::zeros(
                 vec![num_experts, moe_intermediate_size, hidden_size],
-                names.experts_up_proj,
+                format!("{scope}.experts.up_proj.weight"),
             ),
             experts_down_weight: Tensor::zeros(
                 vec![num_experts, hidden_size, moe_intermediate_size],
-                names.experts_down_proj,
+                format!("{scope}.experts.down_proj.weight"),
             ),
             scope_name,
         }

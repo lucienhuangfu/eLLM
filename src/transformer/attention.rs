@@ -6,7 +6,6 @@ use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-use super::tensor_name::AttentionTensorNames;
 use crate::model_family::qwen3_moe::Config;
 
 // #[derive(Clone)]
@@ -52,7 +51,7 @@ where
         chunk_size: usize,
         sequence_length: usize,
         batch_size: usize,
-        names: AttentionTensorNames,
+        scope: &str,
     ) -> Self {
         let head_dim: usize = config.head_dim;
         let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
@@ -68,24 +67,24 @@ where
             use_qk_norm: config.use_qk_norm,
             q_weight: Tensor::zeros(
                 vec![config.num_attention_heads * head_dim, config.hidden_size],
-                names.q_proj,
+                format!("{scope}.q_proj.weight"),
             ),
             k_weight: Tensor::zeros(
                 vec![config.num_key_value_heads * head_dim, config.hidden_size],
-                names.k_proj,
+                format!("{scope}.k_proj.weight"),
             ),
             v_weight: Tensor::zeros(
                 vec![config.num_key_value_heads * head_dim, config.hidden_size],
-                names.v_proj,
+                format!("{scope}.v_proj.weight"),
             ),
 
             o_weight: Tensor::zeros(
                 vec![config.hidden_size, config.num_attention_heads * head_dim],
-                names.o_proj,
+                format!("{scope}.o_proj.weight"),
             ),
-            q_norm_weight: Tensor::zeros(vec![head_dim], names.q_norm),
-            k_norm_weight: Tensor::zeros(vec![head_dim], names.k_norm),
-            scope_name: names.scope,
+            q_norm_weight: Tensor::zeros(vec![head_dim], format!("{scope}.q_norm.weight")),
+            k_norm_weight: Tensor::zeros(vec![head_dim], format!("{scope}.k_norm.weight")),
+            scope_name: scope.to_string(),
         }
     }
 
@@ -246,15 +245,7 @@ mod test {
             sequence_length,
             sequence_length,
             batch_size,
-            crate::transformer::tensor_name::AttentionTensorNames {
-                scope: String::from("model.layers.1.self_attn"),
-                q_proj: String::from("model.layers.1.self_attn.q_proj.weight"),
-                k_proj: String::from("model.layers.1.self_attn.k_proj.weight"),
-                v_proj: String::from("model.layers.1.self_attn.v_proj.weight"),
-                o_proj: String::from("model.layers.1.self_attn.o_proj.weight"),
-                q_norm: String::from("model.layers.1.self_attn.q_norm.weight"),
-                k_norm: String::from("model.layers.1.self_attn.k_norm.weight"),
-            },
+            "model.layers.1.self_attn",
         );
 
         let hidden_states = Tensor::zeros(
@@ -327,15 +318,7 @@ mod test {
             sequence_length,
             sequence_length,
             batch_size,
-            AttentionTensorNames {
-                scope: String::from("model.layers.1.self_attn"),
-                q_proj: String::from("model.layers.1.self_attn.q_proj.weight"),
-                k_proj: String::from("model.layers.1.self_attn.k_proj.weight"),
-                v_proj: String::from("model.layers.1.self_attn.v_proj.weight"),
-                o_proj: String::from("model.layers.1.self_attn.o_proj.weight"),
-                q_norm: String::from("model.layers.1.self_attn.q_norm.weight"),
-                k_norm: String::from("model.layers.1.self_attn.k_norm.weight"),
-            },
+            "model.layers.1.self_attn",
         );
 
         let hidden_states = Tensor::zeros(

@@ -10,7 +10,9 @@ use super::model_config::Config;
 use crate::num_traits::FromNumber;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
-use crate::transformer::tensor_name::model_tensor_names;
+use crate::transformer::tensor_name::{
+    lm_head_name, norm_weight_name, position_embedding_name, token_embedding_name, MODEL_SCOPE,
+};
 
 // use super::super::operators::map::rms_map::RMSMap;
 use crate::kernel::common::matmul_params::MatMulParams;
@@ -107,8 +109,7 @@ where
         do_sample: bool,
         eos_ids: Vec<usize>,
     ) -> Self {
-        let model_names = model_tensor_names(config);
-        let scope_name = model_names.scope.clone();
+        let scope_name = MODEL_SCOPE.to_string();
 
         T::init_operator_queue();
 
@@ -121,17 +122,17 @@ where
         // Create default tensors
         let word_embedding = Rc::new(Tensor::zeros(
             vec![config.vocab_size, config.hidden_size],
-            model_names.token_embedding.clone(),
+            token_embedding_name().to_string(),
         ));
 
         let position_embedding = Rc::new(Tensor::from_vec(
             vec![config.max_position_embeddings, 1, 1, config.head_dim],
             position_vec,
-            model_names.position_embedding.clone(),
+            position_embedding_name().to_string(),
         ));
 
         let mut layers: Vec<Transformer<T>> = Vec::new();
-        for i in 0..config.layers.len() {
+        for i in 0..config.num_hidden_layers {
             layers.push(Transformer::<T>::new(
                 &config,
                 i,
@@ -153,9 +154,9 @@ where
         Self {
             lm_head_weight: Tensor::zeros(
                 vec![config.vocab_size, config.hidden_size],
-                model_names.lm_head.clone(),
+                lm_head_name(config.tie_word_embeddings),
             ),
-            norm_weight: Tensor::zeros(vec![config.hidden_size], model_names.norm_weight.clone()),
+            norm_weight: Tensor::zeros(vec![config.hidden_size], norm_weight_name().to_string()),
             layers: layers,
             chunk_size: effective_chunk,
             sequence_length: sequence_length,

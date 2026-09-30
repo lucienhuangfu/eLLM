@@ -3,7 +3,6 @@ use crate::model_spec::RouterScoringKind;
 use crate::operators::operator::Operator;
 use crate::runtime::SequenceSlice;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
-use crate::transformer::tensor_name::SparseMoeTensorNames;
 use std::collections::HashMap;
 
 const EMPTY_SLICES: &[SequenceSlice] = &[];
@@ -82,15 +81,7 @@ fn build_case(
         true,
         router_scoring,
         use_routing_bias,
-        SparseMoeTensorNames {
-            scope: String::from("model.layers.0.mlp"),
-            router_gate: String::from("model.layers.0.mlp.gate.weight"),
-            router_bias: use_routing_bias
-                .then(|| String::from("model.layers.0.mlp.gate.e_score_correction_bias")),
-            experts_gate_proj: String::from("model.layers.0.mlp.experts.gate_proj.weight"),
-            experts_up_proj: String::from("model.layers.0.mlp.experts.up_proj.weight"),
-            experts_down_proj: String::from("model.layers.0.mlp.experts.down_proj.weight"),
-        },
+        "model.layers.0.mlp",
     );
 
     let shape = vec![sequence_length * batch_size, hidden_size];

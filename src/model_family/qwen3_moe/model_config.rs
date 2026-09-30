@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::config::HfConfig;
 
-use crate::model_spec::{FfnResolveParams, LayerPlan, ModelName, RouterScoringKind};
+use crate::model_spec::{LayerSpec, ModelName, RouterScoringKind};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -21,7 +21,7 @@ pub struct Config {
     pub rope_theta: usize,
     pub rotary_dim: usize,
     pub tie_word_embeddings: bool,
-    pub layers: Vec<LayerPlan>,
+    pub layer_spec: LayerSpec,
     pub qkv_bias: bool,
     pub use_qk_norm: bool,
     pub rope_scaling: Option<HashMap<String, Value>>,
@@ -56,27 +56,21 @@ impl Config {
         let decoder_sparse_step = hf.decoder_sparse_step.max(1);
         let use_qk_norm = hf.use_qk_norm || matches!(hf.model_type.as_str(), "qwen3" | "qwen3_moe");
 
-        let layer_types = hf.layer_types;
-
-        let ffn_params = FfnResolveParams {
-            mlp_only_layers: &hf.mlp_only_layers,
+        let layer_spec = LayerSpec {
+            num_hidden_layers: hf.num_hidden_layers,
+            use_sliding_window: hf.use_sliding_window,
+            max_window_layers,
+            layer_types: hf.layer_types,
+            mlp_only_layers: hf.mlp_only_layers,
             num_experts,
             num_experts_per_tok,
             moe_intermediate_size,
+            intermediate_size,
             norm_topk_prob: hf.norm_topk_prob,
             decoder_sparse_step,
-            intermediate_size,
-        };
-
-        let layers = LayerPlan::build_stack(
-            hf.num_hidden_layers,
-            hf.use_sliding_window,
-            max_window_layers,
-            layer_types.as_deref(),
-            &ffn_params,
-            &router_scoring,
+            router_scoring,
             use_routing_bias,
-        );
+        };
 
         let eos_token_ids = vec![hf.eos_token_id];
         let eos_token_id = hf.eos_token_id;
@@ -94,7 +88,7 @@ impl Config {
             rope_theta: hf.rope_theta.unwrap_or(10000),
             rotary_dim: hf.rotary_dim.unwrap_or(head_dim),
             tie_word_embeddings: hf.tie_word_embeddings,
-            layers,
+            layer_spec,
             qkv_bias: hf.qkv_bias,
             use_qk_norm,
             rope_scaling: hf.rope_scaling,
@@ -128,6 +122,6 @@ mod tests {
             }
         };
         println!("{:?}", config.family);
-        assert_eq!(config.layers.len(), config.num_hidden_layers);
+        assert_eq!(config.layer_spec.len(), config.num_hidden_layers);
     }
 }
