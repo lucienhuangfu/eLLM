@@ -1,4 +1,4 @@
-// === compiler/mul/experts_matmul_silu_mul_matmul.rs ===
+// === operators/expert/sparse_expert/expert_matmul_silu_mul_matmul.rs ===
 #![allow(non_snake_case)]
 
 use std::f16;

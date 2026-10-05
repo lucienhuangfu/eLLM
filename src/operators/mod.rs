@@ -5,6 +5,12 @@ pub mod operator;
 pub mod send_sync_ptr;
 pub use operator::Operator;
 
+pub mod conv {
+    pub mod causal_conv1d_silu;
+
+    pub use causal_conv1d_silu::CausalConv1dSilu;
+}
+
 pub mod elementwise {
     pub mod add_zip;
     pub mod complex_zip;
@@ -13,32 +19,53 @@ pub mod elementwise {
 }
 
 pub mod expert {
-    pub mod expert_matmul_mul;
-    pub mod expert_matmul_silu_mul_matmul;
-    pub mod expert_merge_add;
+    pub mod sparse_expert {
+        pub mod expert_matmul_mul;
+        pub mod expert_matmul_silu_mul_matmul;
+        pub mod expert_merge_add;
+
+        pub use expert_matmul_mul::ExpertMatMulDown;
+        pub use expert_matmul_silu_mul_matmul::ExpertMatMulSilu;
+        pub use expert_merge_add::ExpertMergeAdd;
+    }
+
+    pub mod shared_expert {
+        pub mod shared_expert_matmul_mul;
+        pub mod shared_expert_matmul_silu_mul_matmul;
+        pub mod shared_expert_merge_add;
+
+        pub use shared_expert_matmul_mul::SharedExpertMatMulDown;
+        pub use shared_expert_matmul_silu_mul_matmul::SharedExpertMatMulSilu;
+        pub use shared_expert_merge_add::SharedExpertMergeAdd;
+    }
+
     pub mod expert_routing;
     pub mod expert_softmax_norm;
     pub mod expert_topk_norm;
 
-    pub use expert_matmul_mul::ExpertMatMulDown;
-    pub use expert_matmul_silu_mul_matmul::ExpertMatMulSilu;
-    pub use expert_merge_add::ExpertMergeAdd;
     pub use expert_softmax_norm::ExpertSoftmaxNorm;
+    pub use shared_expert::SharedExpertMatMulDown;
+    pub use shared_expert::SharedExpertMatMulSilu;
+    pub use shared_expert::SharedExpertMergeAdd;
+    pub use sparse_expert::ExpertMatMulDown;
+    pub use sparse_expert::ExpertMatMulSilu;
+    pub use sparse_expert::ExpertMergeAdd;
 }
 
 pub mod expert_imports {
-    pub use super::expert::expert_matmul_mul::ExpertMatMulDown;
-    pub use super::expert::expert_matmul_silu_mul_matmul::ExpertMatMulSilu;
-    pub use super::expert::expert_merge_add::ExpertMergeAdd;
+    pub use super::expert::sparse_expert::expert_matmul_mul::ExpertMatMulDown;
+    pub use super::expert::sparse_expert::expert_matmul_silu_mul_matmul::ExpertMatMulSilu;
+    pub use super::expert::sparse_expert::expert_merge_add::ExpertMergeAdd;
 }
 
 pub mod lift_vector;
 
 pub mod linear {
-    pub use super::attention::Attention;
+    pub use super::attention::full_attention::Attention;
     pub use super::matmul::matmul::MatMul;
     pub use super::matmul::matmul3::MatMul3;
     pub use super::matmul::matmul_add::MatMulAdd;
+    pub use super::matmul::matmul_proj::MatMulProj;
     pub use super::matmul::matmul_sigmoid::MatMulSigmoid;
 }
 
@@ -46,6 +73,7 @@ pub mod matmul {
     pub mod matmul;
     pub mod matmul3;
     pub mod matmul_add;
+    pub mod matmul_proj;
     pub mod matmul_sigmoid;
     pub mod matmul_topk;
 }
@@ -84,15 +112,23 @@ pub mod transform {
     pub use super::normalization::rms_map::RMSMap;
 }
 pub mod traits {
+    pub mod conv;
     pub mod expert;
     pub mod linear;
+    pub mod linear_attention;
     pub mod map;
     pub mod softmax;
 
-    pub use expert::{ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait};
-    pub use linear::{
-        AttentionTrait, MatMulAddTrait, MatMulSigmoidTrait, MatMulTrait, MatMulkqvTrait,
+    pub use conv::CausalConvTrait;
+    pub use expert::{
+        ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait, SharedExpertsDownTrait,
+        SharedExpertsSiluTrait, SharedMergeAddTrait,
     };
+    pub use linear::{
+        AttentionTrait, MatMulAddTrait, MatMulProjTrait, MatMulSigmoidTrait, MatMulTrait,
+        MatMulkqvTrait,
+    };
+    pub use linear_attention::RecurrentGatedDeltaRuleTrait;
     pub use map::{MapTrait, ZipMapTrait};
     pub use softmax::{ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
 }

@@ -1,4 +1,4 @@
-// === compiler/mul/experts_matmul_mul.rs ===
+// === operators/expert/sparse_expert/expert_matmul_mul.rs ===
 #![allow(non_snake_case)]
 
 use crate::kernel;

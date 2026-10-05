@@ -93,3 +93,70 @@ pub trait ExpertsSiluTrait<T> {
 pub trait MoeMergeTrait<T> {
     fn merge_add(&self, out_row: *mut T, add_row: *const T, len: usize);
 }
+
+pub trait SharedExpertsSiluTrait<T> {
+    fn compute1(
+        &self,
+        a_tile: *const T,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+    );
+
+    fn compute1_single(
+        &self,
+        input_row: *const T,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+    );
+
+    fn compute1_rows(
+        &self,
+        a_tile: *const T,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+        rows: usize,
+    );
+
+    fn compute2(&self, gate_row: *const T, up_row: *const T, c_row: *mut T);
+}
+
+/// Shared + routed down projection.
+/// shared 与 routed 的 down 投影。
+///
+/// Signatures mirror [`ExpertsDownTrait`].
+/// 签名与 [`ExpertsDownTrait`] 一致。
+pub trait SharedExpertsDownTrait<T> {
+    fn compute1(&self, a_tile: *const T, b_panel: *const T, acc: *mut T);
+
+    fn compute1_single(&self, input_row: *const T, b_panel: *const T, acc: *mut T, kc: usize);
+
+    fn compute1_rows(
+        &self,
+        a_tile: *const T,
+        b_panel: *const T,
+        acc: *mut T,
+        kc: usize,
+        rows: usize,
+    );
+
+    fn compute2(&self, out_row: *mut T, acc_row: *const T, factor: *const T, len: usize);
+}
+
+/// Merge routed expert outputs, residual, and the gated shared-expert output.
+/// 合并 routed expert 输出、residual 以及带门控的 shared expert 输出。
+pub trait SharedMergeAddTrait<T> {
+    /// out_row[j] += add_row[j].
+    fn merge_add(&self, out_row: *mut T, add_row: *const T, len: usize);
+
+    /// out_row[j] += add_row[j] * factor.
+    fn merge_add_scaled(&self, out_row: *mut T, add_row: *const T, factor: T, len: usize);
+}

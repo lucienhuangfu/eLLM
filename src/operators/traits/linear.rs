@@ -142,3 +142,39 @@ pub trait MatMulkqvTrait<T> {
         head_dim: usize,
     );
 }
+
+pub trait MatMulProjTrait<T> {
+    // Plain GEMM on one output segment: C = A @ B_nt^T over output_cols columns.
+    // 对一个输出段做纯乘法：C = A @ B_nt^T，共 output_cols 列。
+    fn compute(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        output_ptr: *mut T,
+        output_cols: usize,
+    );
+
+    // GEMM with the b-segment epilogue fused in place:
+    //   beta[h] = sigmoid(b[row, h])
+    // 乘法混合 sigmoid，作用于输出的 b 段，原地得到 beta：
+    //   beta[h] = sigmoid(b[row, h])
+    fn compute_sigmoid_b(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        output_ptr: *mut T,
+        output_cols: usize,
+    );
+
+    // GEMM with the a-segment epilogue fused in place:
+    //   g[row, h] = -exp(A_log[h]) * softplus(a[row, h] + dt_bias[h])
+    // 乘法混合衰减门（softplus + exp 缩放），作用于输出的 a 段，原地得到 g：
+    //   g[row, h] = -exp(A_log[h]) * softplus(a[row, h] + dt_bias[h])
+    fn compute_gate_a(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        output_ptr: *mut T,
+        output_cols: usize,
+    );
+}

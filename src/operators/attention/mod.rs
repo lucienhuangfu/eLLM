@@ -1,10 +1,9 @@
-// Core attention structure and implementation
-mod attention;
-// AttentionTrait implementations for different data types
-mod compute;
-// Scratch buffers for thread-local computation
-mod scratch;
-// Utility functions for sequence splitting
-mod utils;
+pub mod full_attention;
+pub mod linear_attention {
+    pub mod recurrent_gated_delta_rule;
 
-pub use attention::Attention;
+    pub use recurrent_gated_delta_rule::RecurrentGatedDeltaRule;
+}
+
+pub use full_attention::Attention;
+pub use linear_attention::RecurrentGatedDeltaRule;

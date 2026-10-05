@@ -1,4 +1,4 @@
-// === operators/experts/experts_merge_add.rs ===
+// === operators/expert/sparse_expert/expert_merge_add.rs ===
 #![allow(non_snake_case)]
 
 use crate::kernel;

@@ -14,7 +14,13 @@ use crate::operators::routing::TopKSoftmax;
 // Add missing imports for zip map operations
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 // use super::mul::matmul_silu_mul_matmul::MatMulSilu;
-use crate::operators::expert::{ExpertMatMulDown, ExpertMatMulSilu, ExpertMergeAdd};
+use crate::operators::attention::linear_attention::RecurrentGatedDeltaRule;
+use crate::operators::conv::CausalConv1dSilu;
+use crate::operators::expert::{
+    ExpertMatMulDown, ExpertMatMulSilu, ExpertMergeAdd, SharedExpertMatMulDown,
+    SharedExpertMatMulSilu, SharedExpertMergeAdd,
+};
+use crate::operators::linear::MatMulProj;
 use crate::operators::movement::LiftVector;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddZipMap;
@@ -36,10 +42,14 @@ pub enum Operator<T>
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
     Attention(Attention<T>),
+    CausalConv1dSilu(CausalConv1dSilu<T>),
     // ComplexZipMap(ComplexZipMap<T>),
     ExpertMatMulDown(ExpertMatMulDown<T>),
     ExpertMatMulSilu(ExpertMatMulSilu<T>),
     ExpertMergeAdd(ExpertMergeAdd<T>),
+    SharedExpertMatMulDown(SharedExpertMatMulDown<T>),
+    SharedExpertMatMulSilu(SharedExpertMatMulSilu<T>),
+    SharedExpertMergeAdd(SharedExpertMergeAdd<T>),
     MatMulSigmoid(MatMulSigmoid<T>),
     ExpertSoftmaxNorm(ExpertSoftmaxNorm<T>),
     ExpertTopkNorm(ExpertTopkNorm<T>),
@@ -48,8 +58,10 @@ pub enum Operator<T>
     MatMul(MatMul<T>),
     MatMul3(MatMul3<T>),
     MatMulAdd(MatMulAdd<T>),
+    MatMulProj(MatMulProj<T>),
     // MatMulSiluMulMatMul(MatMulSilu<T>),
     MatMulTopK(MatMulTopK<T>),
+    RecurrentGatedDeltaRule(RecurrentGatedDeltaRule<T>),
     RMSMap(RMSMap<T>),
     SigmoidMap(SigmoidMap<T>),
     FakeEcho(FakeEcho),
@@ -103,6 +115,9 @@ where
             Self::Attention(operator) => {
                 operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
+            Self::CausalConv1dSilu(operator) => {
+                operator.run(total_size, computing_slices, cpu_num, thread_id);
+            }
 
             Self::ExpertMatMulDown(operator) => {
                 operator.run(
@@ -135,11 +150,55 @@ where
                     thread_id,
                 );
             }
+            Self::SharedExpertMatMulDown(operator) => {
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    total_size,
+                    lift_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::SharedExpertMatMulSilu(operator) => {
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    total_size,
+                    lift_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
+            Self::SharedExpertMergeAdd(operator) => {
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    total_size,
+                    lift_size,
+                    cpu_num,
+                    thread_id,
+                );
+            }
             Self::MatMulSigmoid(operator) => {
-                operator.run(prefill_size, decode_size, total_size, lift_size, cpu_num, thread_id);
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    total_size,
+                    lift_size,
+                    cpu_num,
+                    thread_id,
+                );
             }
             Self::ExpertSoftmaxNorm(operator) => {
-                operator.run(prefill_size, decode_size, total_size, lift_size, cpu_num, thread_id);
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    total_size,
+                    lift_size,
+                    cpu_num,
+                    thread_id,
+                );
             }
             Self::ExpertTopkNorm(operator) => {
                 operator.run(
@@ -158,7 +217,14 @@ where
                 operator.run(total_size, cpu_num, thread_id, computing_slices);
             }
             Self::MatMul(operator) => {
-                operator.run(prefill_size, decode_size, total_size, lift_size, cpu_num, thread_id);
+                operator.run(
+                    prefill_size,
+                    decode_size,
+                    total_size,
+                    lift_size,
+                    cpu_num,
+                    thread_id,
+                );
             }
 
             Self::MatMul3(operator) => {
@@ -181,6 +247,9 @@ where
                     thread_id,
                 );
             }
+            Self::MatMulProj(operator) => {
+                operator.run(total_size, computing_slices, cpu_num, thread_id);
+            }
             /*
             Self::MatMulSiluMulMatMul(operator) => {
                 operator.run(
@@ -193,6 +262,9 @@ where
             }*/
             Self::MatMulTopK(operator) => {
                 operator.run(0, lift_size, lift_size, cpu_num, thread_id);
+            }
+            Self::RecurrentGatedDeltaRule(operator) => {
+                operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
 
             Self::TopKSoftmax(operator) => {
@@ -237,9 +309,13 @@ where
             Self::AddRMSZipMap(_) => "AddRMSZipMap",
             Self::AddZipMap(_) => "AddZipMap",
             Self::Attention(_) => "Attention",
+            Self::CausalConv1dSilu(_) => "CausalConv1dSilu",
             Self::ExpertMatMulDown(_) => "ExpertMatMulDown",
             Self::ExpertMatMulSilu(_) => "ExpertMatMulSilu",
             Self::ExpertMergeAdd(_) => "ExpertMergeAdd",
+            Self::SharedExpertMatMulDown(_) => "SharedExpertMatMulDown",
+            Self::SharedExpertMatMulSilu(_) => "SharedExpertMatMulSilu",
+            Self::SharedExpertMergeAdd(_) => "SharedExpertMergeAdd",
             Self::MatMulSigmoid(_) => "MatMulSigmoid",
             Self::ExpertSoftmaxNorm(_) => "ExpertSoftmaxNorm",
             Self::ExpertTopkNorm(_) => "ExpertTopkNorm",
@@ -248,7 +324,9 @@ where
             Self::MatMul(_) => "MatMul",
             Self::MatMul3(_) => "MatMul3",
             Self::MatMulAdd(_) => "MatMulAdd",
+            Self::MatMulProj(_) => "MatMulProj",
             Self::MatMulTopK(_) => "MatMulTopK",
+            Self::RecurrentGatedDeltaRule(_) => "RecurrentGatedDeltaRule",
             Self::RMSMap(_) => "RMSMap",
             Self::SigmoidMap(_) => "SigmoidMap",
             Self::FakeEcho(_) => "FakeEcho",
