@@ -143,25 +143,25 @@ where
     pub fn run(
         &self,
         _total_size: usize,
-        attention_list: &[SequenceSlice],
+        computing_slices: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
     ) {
         debug_assert!(thread_num >= 1);
         debug_assert!(thread_id < thread_num);
 
-        if attention_list.is_empty() {
+        if computing_slices.is_empty() {
             return;
         }
 
         // Enough slices to fill the pool: keep the slice as the unit, one
         // thread per slice region, full head range per thread.
         // slice 足以填满线程池：保持 slice 为调度单位，每线程处理完整头范围。
-        if attention_list.len() >= thread_num {
+        if computing_slices.len() >= thread_num {
             if let Some((slice_begin, slice_end)) =
-                assign(attention_list.len(), thread_num, thread_id)
+                assign(computing_slices.len(), thread_num, thread_id)
             {
-                for slice in &attention_list[slice_begin..slice_end] {
+                for slice in &computing_slices[slice_begin..slice_end] {
                     self.run_slice(slice, 0, self.num_v_heads);
                 }
             }
@@ -176,7 +176,7 @@ where
         // 仅靠 slice 填不满线程池（如小 batch decode）：按行数比例给各
         // slice 分线程，再在 slice 内部切分 v 头维度。每个头块内的行
         // 保持串行，块之间不会竞争递推状态。
-        let slice_lengths: Vec<usize> = attention_list.iter().map(|s| s.length).collect();
+        let slice_lengths: Vec<usize> = computing_slices.iter().map(|s| s.length).collect();
         let max_blocks: Vec<usize> = slice_lengths.iter().map(|_| self.num_v_heads).collect();
         if let Some(tile) =
             assign_slice_channel_tile(&slice_lengths, &max_blocks, thread_num, thread_id)
@@ -184,7 +184,7 @@ where
             if let Some((head_begin, head_end)) =
                 assign(self.num_v_heads, tile.local_num, tile.local_id)
             {
-                self.run_slice(&attention_list[tile.slice_index], head_begin, head_end);
+                self.run_slice(&computing_slices[tile.slice_index], head_begin, head_end);
             }
         }
     }
@@ -291,7 +291,7 @@ mod tests {
         // compute 仍为空：所有线程跑完该 slice 不应 panic，
         // 状态与输出保持原样。
         let thread_num = 4;
-        let attention_list = [SequenceSlice {
+        let computing_slices = [SequenceSlice {
             token_start_index: 0,
             batch_index: 0,
             next_sequence_index: 0,
@@ -300,7 +300,7 @@ mod tests {
             lift_index: 0,
         }];
         for thread_id in 0..thread_num {
-            operator.run(SEQUENCE_LENGTH, &attention_list, thread_num, thread_id);
+            operator.run(SEQUENCE_LENGTH, &computing_slices, thread_num, thread_id);
         }
         assert!(state_data.iter().all(|&value| value == 0.0));
         assert!(output_data.iter().all(|&value| value == 0.0));

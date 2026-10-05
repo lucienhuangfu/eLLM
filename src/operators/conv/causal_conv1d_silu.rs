@@ -146,25 +146,25 @@ where
     pub fn run(
         &self,
         _total_size: usize,
-        attention_list: &[SequenceSlice],
+        computing_slices: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
     ) {
         debug_assert!(thread_num >= 1);
         debug_assert!(thread_id < thread_num);
 
-        if attention_list.is_empty() {
+        if computing_slices.is_empty() {
             return;
         }
 
         // Enough slices to fill the pool: keep the slice as the unit, one
         // thread per slice region, full channel range per thread.
         // slice 足以填满线程池：保持 slice 为调度单位，每线程处理完整通道。
-        if attention_list.len() >= thread_num {
+        if computing_slices.len() >= thread_num {
             if let Some((slice_begin, slice_end)) =
-                assign(attention_list.len(), thread_num, thread_id)
+                assign(computing_slices.len(), thread_num, thread_id)
             {
-                for slice in &attention_list[slice_begin..slice_end] {
+                for slice in &computing_slices[slice_begin..slice_end] {
                     self.run_slice(slice, 0, self.conv_dim);
                 }
             }
@@ -178,7 +178,7 @@ where
         // blocks never race on the rolling state.
         // 仅靠 slice 填不满线程池（如小 batch decode 或单条长 prefill）：按行数比例给各 slice 分线程，
         // 再在 slice 内部切分通道维度。每个通道块内的行保持串行，块之间不会竞争滚动状态。
-        let slice_lengths: Vec<usize> = attention_list.iter().map(|s| s.length).collect();
+        let slice_lengths: Vec<usize> = computing_slices.iter().map(|s| s.length).collect();
         // Per-slice thread cap by head-aligned block granularity: blocks
         // thinner than MIN_CHANNEL_BLOCK would waste SIMD width, and blocks
         // cutting a head would break the norm epilogue.
@@ -199,7 +199,7 @@ where
             let head_num = self.conv_dim / self.head_k_dim;
             if let Some((head_begin, head_end)) = assign(head_num, tile.local_num, tile.local_id) {
                 self.run_slice(
-                    &attention_list[tile.slice_index],
+                    &computing_slices[tile.slice_index],
                     head_begin * self.head_k_dim,
                     head_end * self.head_k_dim,
                 );
@@ -370,7 +370,7 @@ mod tests {
         // compute 仍为空，但归一化 epilogue 已生效：第 0 行的 q 头做
         // l2norm + 1 / sqrt(head_k_dim) 缩放，k 头只做 l2norm，其余保持 0。
         let thread_num = 4;
-        let attention_list = [SequenceSlice {
+        let computing_slices = [SequenceSlice {
             token_start_index: 0,
             batch_index: 0,
             next_sequence_index: 0,
@@ -379,7 +379,7 @@ mod tests {
             lift_index: 0,
         }];
         for thread_id in 0..thread_num {
-            operator.run(M, &attention_list, thread_num, thread_id);
+            operator.run(M, &computing_slices, thread_num, thread_id);
         }
         let eps = 1e-6f32;
         let expected_q = (1.0 / (HEAD_K_DIM as f32).sqrt()) / (2.0 + eps).sqrt();

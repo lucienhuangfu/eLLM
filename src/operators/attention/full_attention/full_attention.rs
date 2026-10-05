@@ -899,7 +899,7 @@ where
     pub fn run(
         &self,
         _total_size: usize,
-        attention_list: &[SequenceSlice],
+        computing_slices: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
     ) {
@@ -911,7 +911,7 @@ where
             let q_token_stride = self.attention_head_num * self.head_size;
             let attention_heads_per_kv = self.attention_head_num / self.kv_head_num;
 
-            for slice in attention_list {
+            for slice in computing_slices {
                 if slice.batch_index >= self.batch_size {
                     continue;
                 }

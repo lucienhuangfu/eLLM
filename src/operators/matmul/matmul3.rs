@@ -165,7 +165,11 @@ where
         // Q/K 在后台线程并行打包，V 在当前线程。
         struct SendFn<T>(Box<dyn FnOnce() -> Box<[T]>>);
         unsafe impl<T> Send for SendFn<T> {}
-        impl<T> SendFn<T> { fn call(self) -> Box<[T]> { (self.0)() } }
+        impl<T> SendFn<T> {
+            fn call(self) -> Box<[T]> {
+                (self.0)()
+            }
+        }
         struct SendBox<T>(T);
         unsafe impl<T> Send for SendBox<T> {}
 
@@ -178,8 +182,12 @@ where
         let nq_v = nq;
         let nkv_v = nkv;
 
-        let task_q = SendFn(Box::new(move || Self::pack_b_panels(q_addr, nq_v, col_v, kc, nr)));
-        let task_k = SendFn(Box::new(move || Self::pack_b_panels(k_addr, nkv_v, col_v, kc, nr)));
+        let task_q = SendFn(Box::new(move || {
+            Self::pack_b_panels(q_addr, nq_v, col_v, kc, nr)
+        }));
+        let task_k = SendFn(Box::new(move || {
+            Self::pack_b_panels(k_addr, nkv_v, col_v, kc, nr)
+        }));
         let qh = std::thread::spawn(move || SendBox(task_q.call()));
         let kh = std::thread::spawn(move || SendBox(task_k.call()));
         let packed_v = Self::pack_b_panels(v_addr, nkv_v, col_v, kc, nr);
@@ -431,17 +439,17 @@ where
         &self,
         prefill_size: usize,
         decode_size: usize,
-        attention_list: &[SequenceSlice],
+        computing_slices: &[SequenceSlice],
     ) -> Vec<(usize, usize, usize)> {
-        if attention_list.is_empty() {
+        if computing_slices.is_empty() {
             let fallback_len = prefill_size.max(decode_size).min(self.m_row);
             return (0..fallback_len)
                 .map(|row| (row, 0usize, row.min(self.sequence_length.saturating_sub(1))))
                 .collect();
         }
 
-        let mut rows = Vec::with_capacity(attention_list.iter().map(|slice| slice.length).sum());
-        for slice in attention_list {
+        let mut rows = Vec::with_capacity(computing_slices.iter().map(|slice| slice.length).sum());
+        for slice in computing_slices {
             if slice.batch_index >= self.batch_size {
                 continue;
             }
@@ -734,7 +742,7 @@ where
         prefill_size: usize,
         decode_size: usize,
         _total_size: usize,
-        attention_list: &[SequenceSlice],
+        computing_slices: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
     ) where
@@ -745,12 +753,12 @@ where
             let query_output_cols = self.kv_head_num * self.group_num * self.head_dim;
             let key_value_output_cols = self.kv_head_num * self.head_dim;
             let query_head_count = self.kv_head_num * self.group_num;
-            let row_map = self.build_row_map(prefill_size, decode_size, attention_list);
+            let row_map = self.build_row_map(prefill_size, decode_size, computing_slices);
             let row_count = row_map.len();
             if row_count == 0 || thread_id >= thread_num || thread_num == 0 {
                 return;
             }
-            if !attention_list.is_empty() && self.can_use_prefill_row_tiles(&row_map) {
+            if !computing_slices.is_empty() && self.can_use_prefill_row_tiles(&row_map) {
                 self.run_prefill_row_tiled(row_count, thread_num, thread_id);
                 return;
             }
@@ -774,7 +782,7 @@ where
                 let (token_index, batch_index, sequence_index) = row_map[row_idx];
                 let input_row = a_base.add(token_index * reduction_cols);
 
-                let rope_sequence_index = if attention_list.is_empty() {
+                let rope_sequence_index = if computing_slices.is_empty() {
                     0
                 } else {
                     sequence_index
@@ -1142,6 +1150,22 @@ impl MatMulkqvTrait<f32> for MatMul3<f32> {
                 }
             }
         }
+    }
+
+    #[inline]
+    fn compute1_init(
+        &self,
+        a: *const f32,
+        b_panel: *const f32,
+        c: *mut f32,
+        lda: usize,
+        ldc: usize,
+        kc: usize,
+    ) {
+        // f32 fallback: same as the generic default, accumulate into a
+        // caller-zero-initialized C.
+        // f32 fallback：与 generic default 一致，累加进调用方已零初始化的 C。
+        self.compute1(a, b_panel, c, lda, ldc, kc);
     }
 
     #[inline]

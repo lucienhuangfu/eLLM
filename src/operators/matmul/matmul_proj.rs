@@ -150,16 +150,16 @@ where
         }
     }
 
-    // Collect the active token rows from attention_list, like MatMul3::build_row_map.
+    // Collect the active token rows from computing_slices, like MatMul3::build_row_map.
     // Each entry carries (token_index, batch_index, next_sequence_index) so
     // the qkv output can be placed at its cache row.
-    // 从 attention_list 收集有效 token 行，与 MatMul3::build_row_map 一致。
+    // 从 computing_slices 收集有效 token 行，与 MatMul3::build_row_map 一致。
     // 每行同时记录 (token_index, batch_index, next_sequence_index)，
     // 供 qkv 输出按缓存行落位。
     #[inline(always)]
-    fn build_row_map(&self, attention_list: &[SequenceSlice]) -> Vec<(usize, usize, usize)> {
+    fn build_row_map(&self, computing_slices: &[SequenceSlice]) -> Vec<(usize, usize, usize)> {
         let mut rows = Vec::new();
-        for slice in attention_list {
+        for slice in computing_slices {
             for offset in 0..slice.length {
                 let token_index = slice.token_start_index + offset;
                 let next_sequence_index = slice.next_sequence_index + offset;
@@ -175,7 +175,7 @@ where
     pub fn run(
         &self,
         _total_size: usize,
-        attention_list: &[SequenceSlice],
+        computing_slices: &[SequenceSlice],
         thread_num: usize,
         thread_id: usize,
     ) where
@@ -184,7 +184,7 @@ where
         debug_assert!(thread_num >= 1);
         debug_assert!(thread_id < thread_num);
 
-        let row_map = self.build_row_map(attention_list);
+        let row_map = self.build_row_map(computing_slices);
         let row_count = row_map.len();
         if row_count == 0 {
             return;
@@ -358,7 +358,7 @@ mod tests {
         // While compute is empty: only assert no panic / partition coverage.
         // compute 为空期间：只验证不 panic、分区覆盖完整。
         let thread_num = 4;
-        let attention_list = [SequenceSlice {
+        let computing_slices = [SequenceSlice {
             token_start_index: 0,
             batch_index: 0,
             next_sequence_index: 0,
@@ -367,7 +367,7 @@ mod tests {
             lift_index: 0,
         }];
         for thread_id in 0..thread_num {
-            operator.run(M, &attention_list, thread_num, thread_id);
+            operator.run(M, &computing_slices, thread_num, thread_id);
         }
         assert!(qkv_output.iter().all(|&value| value == 0.0));
         assert!(z_output.iter().all(|&value| value == 0.0));

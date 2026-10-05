@@ -278,4 +278,36 @@ impl AttentionTrait<f32> for Attention<f32> {
             scores,
         );
     }
+
+    fn compute_gqa8(
+        &self,
+        q_group_ptr: *const f32,
+        k_head_ptr: *const f32,
+        v_head_ptr: *const f32,
+        output_group_ptr: *mut f32,
+        row_begin: usize,
+        row_end: usize,
+        total_col_end: usize,
+        next_sequence_index: usize,
+        k_seq_stride: usize,
+        v_seq_stride: usize,
+        q_seq_stride: usize,
+    ) -> bool {
+        // f32 fallback: no GQA8 fast path, same as the generic default.
+        // f32 fallback：无 GQA8 快路径，与 generic default 一致。
+        let _ = (
+            q_group_ptr,
+            k_head_ptr,
+            v_head_ptr,
+            output_group_ptr,
+            row_begin,
+            row_end,
+            total_col_end,
+            next_sequence_index,
+            k_seq_stride,
+            v_seq_stride,
+            q_seq_stride,
+        );
+        false
+    }
 }
