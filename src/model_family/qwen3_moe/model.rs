@@ -20,7 +20,7 @@ use crate::mem_mgr::mem_pool::GlobalMemPool;
 // use super::super::mem_mgr::model_loader::SafeTensorsLoader;
 // use super::super::ptensor::linear::Linear;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
-use crate::transformer::transformer::Transformer;
+use crate::transformer::decoder_layer::DecoderLayer;
 // use crate::runtime::inference::state::TokenRecord;
 
 #[cfg(test)]
@@ -33,7 +33,7 @@ where
 {
     lm_head_weight: Tensor<T>,
     norm_weight: Tensor<T>,
-    pub layers: Vec<Transformer<T>>,
+    pub layers: Vec<DecoderLayer<T>>,
     rms_norm_eps: T,
     pub chunk_size: usize,
     pub sequence_length: usize,
@@ -131,9 +131,9 @@ where
             position_embedding_name().to_string(),
         ));
 
-        let mut layers: Vec<Transformer<T>> = Vec::new();
+        let mut layers: Vec<DecoderLayer<T>> = Vec::new();
         for i in 0..config.num_hidden_layers {
-            layers.push(Transformer::<T>::new(
+            layers.push(DecoderLayer::<T>::new(
                 &config,
                 i,
                 effective_chunk,
@@ -259,8 +259,8 @@ where
     }
 }
 
-// unsafe impl<T: Copy + Default + Send + Sync> Send for Transformer<T> {}
-// unsafe impl<T: Copy + Default + Send + Sync> Sync for Transformer<T> {}
+// unsafe impl<T: Copy + Default + Send + Sync> Send for DecoderLayer<T> {}
+// unsafe impl<T: Copy + Default + Send + Sync> Sync for DecoderLayer<T> {}
 
 #[cfg(test)]
 mod test {

@@ -73,6 +73,13 @@ pub struct HfConfig {
     #[serde(default)]
     pub(crate) vocab_size: usize,
     pub(crate) layer_types: Option<Vec<String>>,
+    // GatedDeltaNet (linear attention) block dims; only present for hybrid
+    // models whose `layer_types` contain `linear_attention`.
+    pub(crate) linear_num_key_heads: Option<usize>,
+    pub(crate) linear_num_value_heads: Option<usize>,
+    pub(crate) linear_key_head_dim: Option<usize>,
+    pub(crate) linear_value_head_dim: Option<usize>,
+    pub(crate) linear_conv_kernel_dim: Option<usize>,
 }
 
 fn default_decoder_sparse_step() -> usize {

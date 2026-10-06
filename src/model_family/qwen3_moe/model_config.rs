@@ -31,6 +31,13 @@ pub struct Config {
     pub use_sliding_window: bool,
     pub sliding_window: Option<usize>,
     pub intermediate_size: usize,
+    // GatedDeltaNet (linear attention) block dims; zero for non-hybrid models
+    // (their layers never resolve to AttentionKind::Linear).
+    pub linear_num_key_heads: usize,
+    pub linear_num_value_heads: usize,
+    pub linear_key_head_dim: usize,
+    pub linear_value_head_dim: usize,
+    pub linear_conv_kernel_dim: usize,
 }
 
 impl Config {
@@ -98,6 +105,11 @@ impl Config {
             use_sliding_window: hf.use_sliding_window,
             sliding_window: hf.sliding_window,
             intermediate_size,
+            linear_num_key_heads: hf.linear_num_key_heads.unwrap_or(0),
+            linear_num_value_heads: hf.linear_num_value_heads.unwrap_or(0),
+            linear_key_head_dim: hf.linear_key_head_dim.unwrap_or(0),
+            linear_value_head_dim: hf.linear_value_head_dim.unwrap_or(0),
+            linear_conv_kernel_dim: hf.linear_conv_kernel_dim.unwrap_or(0),
         }
     }
 
