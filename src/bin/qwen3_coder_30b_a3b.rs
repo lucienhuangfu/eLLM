@@ -1,11 +1,9 @@
 #![feature(f16)]
 
-use ellm::auto::load_tiktoken;
-use ellm::auto::ChatTemplate;
+use ellm::auto::{AutoConfig, AutoTokenizer};
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::model_family::load_text_config;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::loader::SafeTensorsLoader;
 use ellm::runtime::{
@@ -118,18 +116,11 @@ fn main() {
     let model_dir = "checkpoints/Qwen3-Coder-30B-A3B-Instruct";
     let program_start = Instant::now();
 
-    let config = load_text_config(format!("{}/config.json", model_dir)).unwrap();
-    let gen_cfg =
-        GenerationConfig::load_from_file(format!("{}/generation_config.json", model_dir)).ok();
-
-    let tokenizer_path = format!("{}/tokenizer.json", model_dir);
-    let tokenizer_config_path = format!("{}/tokenizer_config.json", model_dir);
-    let chat_template_path = format!("{}/chat_template.jinja", model_dir);
-
-    let chat_template = ChatTemplate::from_model_files(&chat_template_path, &tokenizer_config_path)
-        .ok()
-        .unwrap();
-    let tokenizer = load_tiktoken(&tokenizer_path, &tokenizer_config_path).unwrap();
+    let AutoConfig {
+        text: config,
+        generation: gen_cfg,
+    } = AutoConfig::from_pretrained(model_dir).unwrap();
+    let tokenizer = AutoTokenizer::from_pretrained(model_dir).unwrap();
 
     let default_prompts = [
         "Write a Rust function that implements a thread-safe LRU cache.",
@@ -148,10 +139,10 @@ fn main() {
 
     let mut all_input_lens = Vec::new();
     for prompt in &prompts {
-        let rendered = chat_template
+        let rendered = tokenizer
             .apply_chat_template(&[("user", prompt.as_str())], true)
             .unwrap();
-        let ids = tokenizer.encode_with_special_tokens(&rendered);
+        let ids = tokenizer.encode(&rendered);
         all_input_lens.push(ids.len());
     }
 
@@ -187,9 +178,9 @@ fn main() {
         sequences_ptr,
         batch_size,
         sequence_length,
-        &tokenizer_path,
-        &tokenizer_config_path,
-        &chat_template_path,
+        tokenizer.tokenizer_json_path(),
+        tokenizer.tokenizer_config_path(),
+        tokenizer.chat_template_path(),
     )
     .unwrap();
 

@@ -1,10 +1,13 @@
 use std::collections::HashMap as StdHashMap;
 use std::fs;
+use std::path::Path;
 use std::sync::OnceLock;
 
 use anyhow::Result;
 use serde::Deserialize;
 use tiktoken_rs::CoreBPE;
+
+use super::chat_template::ChatTemplate;
 
 #[derive(Debug, Deserialize)]
 struct TokenizerJson {
@@ -241,11 +244,106 @@ pub fn load_tiktoken(
     })
 }
 
+/// `AutoTokenizer`：对齐 HuggingFace `tokenization_auto.AutoTokenizer.from_pretrained`
+/// 的惯用门面。Python 版按 `model_type` 经 `TOKENIZER_MAPPING` 动态分发到具体
+/// tokenizer 类；eLLM 的分词统一走 tiktoken（`load_tiktoken`），无需注册表，
+/// 这里把“给定模型目录、自动拼标准文件名、加载 BPE 与 chat template”收敛为
+/// 单一入口，并暴露 `encode` / `decode` / `apply_chat_template` 委托方法，
+/// 语义与 HF 的 `tokenizer(...)` / `tokenizer.apply_chat_template(...)` 对齐。
+///
+/// 仅需底层 BPE 而不含 chat template 时，可继续使用导出的 `load_tiktoken`。
+pub struct AutoTokenizer {
+    tokenizer: CoreBPE,
+    chat_template: ChatTemplate,
+    tokenizer_json_path: String,
+    tokenizer_config_path: String,
+    chat_template_path: String,
+}
+
+impl AutoTokenizer {
+    /// 从模型目录加载。目录下需存在 `tokenizer.json` 与 `tokenizer_config.json`；
+    /// chat template 优先读 `chat_template.jinja`，缺失时回退到
+    /// `tokenizer_config.json` 内嵌的 `chat_template`（由 `ChatTemplate` 负责）。
+    pub fn from_pretrained<P: AsRef<Path>>(model_dir: P) -> Result<Self> {
+        let dir = model_dir.as_ref();
+        let tokenizer_json_path = dir.join("tokenizer.json");
+        let tokenizer_config_path = dir.join("tokenizer_config.json");
+        let chat_template_path = dir.join("chat_template.jinja");
+
+        let tokenizer_json = path_str(&tokenizer_json_path)?;
+        let tokenizer_config = path_str(&tokenizer_config_path)?;
+        let chat_template_file = path_str(&chat_template_path)?;
+
+        let tokenizer =
+            load_tiktoken(tokenizer_json, tokenizer_config).map_err(anyhow::Error::msg)?;
+        let chat_template = ChatTemplate::from_model_files(chat_template_file, tokenizer_config)
+            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
+
+        Ok(Self {
+            tokenizer,
+            chat_template,
+            tokenizer_json_path: tokenizer_json.to_owned(),
+            tokenizer_config_path: tokenizer_config.to_owned(),
+            chat_template_path: chat_template_file.to_owned(),
+        })
+    }
+
+    /// 底层 tiktoken BPE。
+    pub fn tokenizer(&self) -> &CoreBPE {
+        &self.tokenizer
+    }
+
+    /// 底层 chat template。
+    pub fn chat_template(&self) -> &ChatTemplate {
+        &self.chat_template
+    }
+
+    /// 编码文本（含特殊 token），等价 HF `tokenizer(text).input_ids`。
+    pub fn encode(&self, text: &str) -> Vec<u32> {
+        self.tokenizer.encode_with_special_tokens(text)
+    }
+
+    /// 解码 token id 序列，等价 HF `tokenizer.decode(ids)`。
+    pub fn decode(&self, ids: &[u32]) -> Result<String> {
+        self.tokenizer
+            .decode(ids)
+            .map_err(|e| anyhow::Error::msg(e.to_string()))
+    }
+
+    /// 渲染对话模板，等价 HF `tokenizer.apply_chat_template(...)`。
+    pub fn apply_chat_template(
+        &self,
+        messages: &[(&str, &str)],
+        add_generation_prompt: bool,
+    ) -> std::result::Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        self.chat_template
+            .apply_chat_template(messages, add_generation_prompt)
+    }
+
+    pub fn tokenizer_json_path(&self) -> &str {
+        &self.tokenizer_json_path
+    }
+
+    pub fn tokenizer_config_path(&self) -> &str {
+        &self.tokenizer_config_path
+    }
+
+    pub fn chat_template_path(&self) -> &str {
+        &self.chat_template_path
+    }
+}
+
+fn path_str(path: &Path) -> Result<&str> {
+    path.to_str()
+        .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const QWEN3_TOKENIZER_JSON_PATH: &str = "./checkpoints/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
+    const QWEN3_TOKENIZER_JSON_PATH: &str =
+        "./checkpoints/Qwen3-Coder-30B-A3B-Instruct/tokenizer.json";
     const QWEN3_TOKENIZER_CONFIG_JSON_PATH: &str =
         "./checkpoints/Qwen3-Coder-30B-Instruct/tokenizer_config.json";
 
