@@ -4,8 +4,6 @@
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::model_family::qwen3_moe::Config;
-use ellm::model_family::qwen3_moe::Model;
 use ellm::operators::operator::Operator;
 use ellm::runtime::loader::load_tiktoken;
 use ellm::runtime::loader::ChatTemplate;

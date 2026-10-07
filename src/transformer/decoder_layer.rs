@@ -11,7 +11,7 @@ use super::dense_mlp::DenseMlp;
 use super::gated_delta_attention::GatedDeltaAttention;
 use super::sparse_moe::SparseMoe;
 use super::tensor_name::{gated_delta_attention_tensor_names, layer_scope};
-use crate::model_family::qwen3_moe::Config;
+use crate::model_spec::TextConfig;
 use crate::model_spec::{AttentionKind, FfnKind};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
@@ -45,7 +45,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     fn build(
-        config: &Config,
+        config: &TextConfig,
         kind: AttentionKind,
         attn_scope: &str,
         chunk_size: usize,
@@ -185,7 +185,7 @@ where
         + GlobalOperatorQueue,
 {
     pub fn new(
-        config: &Config,
+        config: &TextConfig,
         layer_idx: usize,
         chunk_size: usize,
         sequence_length: usize,
@@ -331,9 +331,10 @@ mod test {
         let sequence_length = 1;
         let batch_size = 6;
 
-        let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
-                .unwrap();
+        let config = crate::model_family::load_text_config(
+            r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
+        )
+        .unwrap();
 
         let hidden_size = config.hidden_size;
         let max_position_embeddings = config.max_position_embeddings;
@@ -417,9 +418,10 @@ mod test {
         let position_window_size = 1;
         let batch_size = 3;
 
-        let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
-                .unwrap();
+        let config = crate::model_family::load_text_config(
+            r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
+        )
+        .unwrap();
 
         let sequence_length = position_window_size;
         let hidden_size = config.hidden_size;

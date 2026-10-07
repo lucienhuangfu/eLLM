@@ -3,8 +3,7 @@
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::model_family::qwen3_moe::Config;
-use ellm::model_family::qwen3_moe::Model;
+use ellm::model_family::load_text_config;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::loader::load_tiktoken;
 use ellm::runtime::loader::ChatTemplate;
@@ -14,6 +13,7 @@ use ellm::runtime::{
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::rope::RotaryEmbedding;
+use ellm::transformer::TextModel;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,7 +46,7 @@ fn main() {
     let max_output_tokens = parse_env_usize("ELLM_MAX_OUTPUT_TOKENS", 32);
     let model_dir = "checkpoints/Qwen3-0.6B";
 
-    let config = Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
+    let config = load_text_config(format!("{}/config.json", model_dir)).unwrap();
     let gen_cfg =
         GenerationConfig::load_from_file(format!("{}/generation_config.json", model_dir)).ok();
 
@@ -150,7 +150,7 @@ fn main() {
     println!("Threads: {thread_num}");
 
     println!("Building model graph...");
-    let mut model = Model::<f16>::with_sampling(
+    let mut model = TextModel::<f16>::with_sampling(
         &config,
         position_vec,
         chunk_size,

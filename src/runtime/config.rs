@@ -1,5 +1,5 @@
 use crate::config::GenerationConfig;
-use crate::model_family::qwen3_moe::Config;
+use crate::model_spec::TextConfig;
 
 #[derive(Debug, Clone)]
 pub struct GenerationParameters {
@@ -19,7 +19,7 @@ pub struct ThreadingConfig {
 }
 
 pub fn extract_generation_params(
-    config: &Config,
+    config: &TextConfig,
     generation_config: &Option<GenerationConfig>,
 ) -> GenerationParameters {
     let top_k = generation_config

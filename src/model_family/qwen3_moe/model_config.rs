@@ -1,139 +1,50 @@
-use std::path::Path;
+//! qwen 系（qwen2 / qwen3 / qwen3_moe）的 family profile 与配置入口。
+//!
+//! 文本主干配置已通用化为 `model_spec::TextConfig`；本模块只承载 qwen 系的
+//! `FamilyProfile`（默认值）与 `Config` 入口别名，维持“每模型一目录”的组织约定。
 
-use serde_json::Value;
-use std::collections::HashMap;
+use crate::model_spec::FamilyProfile;
 
-use crate::config::HfConfig;
+/// qwen 系文本配置入口：通用 `TextConfig` 的 family 别名。
+pub use crate::model_spec::TextConfig as Config;
 
-use crate::model_spec::{LayerSpec, ModelName, RouterScoringKind};
-
-#[derive(Debug, Clone)]
-pub struct Config {
-    pub family: ModelName,
-    pub vocab_size: usize,
-    pub hidden_size: usize,
-    pub num_hidden_layers: usize,
-    pub num_attention_heads: usize,
-    pub num_key_value_heads: usize,
-    pub head_dim: usize,
-    pub max_position_embeddings: usize,
-    pub rms_norm_eps: f32,
-    pub rope_theta: usize,
-    pub rotary_dim: usize,
-    pub tie_word_embeddings: bool,
-    pub layer_spec: LayerSpec,
-    pub qkv_bias: bool,
-    pub use_qk_norm: bool,
-    pub rope_scaling: Option<HashMap<String, Value>>,
-    pub eos_token_id: usize,
-    pub eos_token_ids: Vec<usize>,
-    pub max_window_layers: usize,
-    pub use_sliding_window: bool,
-    pub sliding_window: Option<usize>,
-    pub intermediate_size: usize,
-    // GatedDeltaNet (linear attention) block dims; zero for non-hybrid models
-    // (their layers never resolve to AttentionKind::Linear).
-    pub linear_num_key_heads: usize,
-    pub linear_num_value_heads: usize,
-    pub linear_key_head_dim: usize,
-    pub linear_value_head_dim: usize,
-    pub linear_conv_kernel_dim: usize,
-}
-
-impl Config {
-    pub fn from_hf(hf: HfConfig) -> Self {
-        let family = ModelName::parse(&hf.model_type);
-        let head_dim = hf
-            .head_dim
-            .unwrap_or_else(|| hf.hidden_size / hf.num_attention_heads.max(1));
-        let num_key_value_heads = hf
-            .num_key_value_heads
-            .unwrap_or(hf.num_attention_heads.max(1));
-        let intermediate_size = hf
-            .intermediate_size
-            .unwrap_or_else(|| hf.moe_intermediate_size.unwrap_or(hf.hidden_size));
-        let moe_intermediate_size = hf.moe_intermediate_size.unwrap_or(intermediate_size);
-        let num_experts = hf.num_experts.unwrap_or(0);
-        let num_experts_per_tok = hf.num_experts_per_tok.unwrap_or(0);
-        let max_window_layers = hf.max_window_layers.unwrap_or(hf.num_hidden_layers);
-        let router_scoring = RouterScoringKind::from_hf(hf.scoring_func.as_deref(), family.clone());
-        let use_routing_bias = hf
-            .use_routing_bias
-            .unwrap_or(matches!(family, ModelName::MiniMaxM2));
-        let decoder_sparse_step = hf.decoder_sparse_step.max(1);
-        let use_qk_norm = hf.use_qk_norm || matches!(hf.model_type.as_str(), "qwen3" | "qwen3_moe");
-
-        let layer_spec = LayerSpec {
-            num_hidden_layers: hf.num_hidden_layers,
-            use_sliding_window: hf.use_sliding_window,
-            max_window_layers,
-            layer_types: hf.layer_types,
-            mlp_only_layers: hf.mlp_only_layers,
-            num_experts,
-            num_experts_per_tok,
-            moe_intermediate_size,
-            intermediate_size,
-            norm_topk_prob: hf.norm_topk_prob,
-            decoder_sparse_step,
-            router_scoring,
-            use_routing_bias,
-        };
-
-        let eos_token_ids = vec![hf.eos_token_id];
-        let eos_token_id = hf.eos_token_id;
-
-        Self {
-            family,
-            vocab_size: hf.vocab_size,
-            hidden_size: hf.hidden_size,
-            num_hidden_layers: hf.num_hidden_layers,
-            num_attention_heads: hf.num_attention_heads,
-            num_key_value_heads,
-            head_dim,
-            max_position_embeddings: hf.max_position_embeddings,
-            rms_norm_eps: hf.rms_norm_eps,
-            rope_theta: hf.rope_theta.unwrap_or(10000),
-            rotary_dim: hf.rotary_dim.unwrap_or(head_dim),
-            tie_word_embeddings: hf.tie_word_embeddings,
-            layer_spec,
-            qkv_bias: hf.qkv_bias,
-            use_qk_norm,
-            rope_scaling: hf.rope_scaling,
-            eos_token_id,
-            eos_token_ids,
-            max_window_layers,
-            use_sliding_window: hf.use_sliding_window,
-            sliding_window: hf.sliding_window,
-            intermediate_size,
-            linear_num_key_heads: hf.linear_num_key_heads.unwrap_or(0),
-            linear_num_value_heads: hf.linear_num_value_heads.unwrap_or(0),
-            linear_key_head_dim: hf.linear_key_head_dim.unwrap_or(0),
-            linear_value_head_dim: hf.linear_value_head_dim.unwrap_or(0),
-            linear_conv_kernel_dim: hf.linear_conv_kernel_dim.unwrap_or(0),
-        }
-    }
-
-    pub fn load_from_file<P: AsRef<Path>>(filename: P) -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self::from_hf(HfConfig::load_from_file(filename)?))
+/// qwen 系（`ModelName::Qwen`）的 family 默认值。
+///
+/// `qk_norm` 由 `model_type` 区分 qwen2 / qwen3：`ModelName::Qwen` 同时涵盖
+/// qwen2 / qwen2_moe / qwen3 / qwen3_moe，其中仅 qwen3 系默认启用 qk-norm
+/// （与原 `qwen3_moe::Config::from_hf` 判定一致）。qwen 系为 dense 或标准 MoE，
+/// 无 GatedDeltaNet 线性注意力，故 linear 默认全 0；rotary_dim = head_dim
+/// （partial_rotary_factor=1.0）；不自动生成 layer_types。
+pub fn profile(model_type: &str) -> FamilyProfile {
+    FamilyProfile {
+        qk_norm: matches!(model_type, "qwen3" | "qwen3_moe"),
+        ..Default::default()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
-    use crate::config::HfConfig;
+    use super::profile;
 
     #[test]
-    fn test_from_file() {
-        let path = r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json";
-        let config = match HfConfig::load_from_file(path) {
-            Ok(hf) => Config::from_hf(hf),
-            Err(e) => {
-                println!("Error loading config: {}", e);
-                return;
-            }
-        };
-        println!("{:?}", config.family);
-        assert_eq!(config.layer_spec.len(), config.num_hidden_layers);
+    fn qwen3_enables_qk_norm() {
+        assert!(profile("qwen3").qk_norm);
+        assert!(profile("qwen3_moe").qk_norm);
+    }
+
+    #[test]
+    fn qwen2_disables_qk_norm() {
+        assert!(!profile("qwen2").qk_norm);
+        assert!(!profile("qwen2_moe").qk_norm);
+    }
+
+    #[test]
+    fn qwen_profile_is_neutral_except_qk_norm() {
+        let p = profile("qwen3_moe");
+        assert_eq!(p.partial_rotary_factor, 1.0);
+        assert!(p.full_attention_interval.is_none());
+        assert_eq!(p.linear_defaults.num_k, 0);
+        assert_eq!(p.linear_defaults.conv_kernel, 0);
+        assert!(!p.routing_bias);
     }
 }

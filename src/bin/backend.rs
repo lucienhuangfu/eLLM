@@ -3,8 +3,7 @@
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::model_family::qwen3_moe::Config;
-use ellm::model_family::qwen3_moe::Model;
+use ellm::model_family::load_text_config;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
     ExecutorPool, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SessionMode, SlotManager,
@@ -12,6 +11,7 @@ use ellm::runtime::{
 };
 use ellm::tensor::GlobalOperatorQueue;
 use ellm::transformer::rope::RotaryEmbedding;
+use ellm::transformer::TextModel;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chunk_size = 64;
 
     let model_dir = "checkpoints/Qwen3-Coder-30B-A3B-Instruct";
-    let config = Config::load_from_file(format!("{}/config.json", model_dir)).unwrap();
+    let config = load_text_config(format!("{}/config.json", model_dir)).unwrap();
     let generation_config =
         GenerationConfig::load_from_file(format!("{}/generation_config.json", model_dir)).ok();
 
@@ -130,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|cfg| cfg.eos_token_id_list.clone())
         .unwrap_or_else(|| vec![config.eos_token_id]);
 
-    let mut model = Model::<f16>::with_sampling(
+    let mut model = TextModel::<f16>::with_sampling(
         &config,
         position_vec,
         chunk_size,

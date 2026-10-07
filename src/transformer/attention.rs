@@ -6,7 +6,7 @@ use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-use crate::model_family::qwen3_moe::Config;
+use crate::model_spec::TextConfig;
 
 // #[derive(Clone)]
 pub struct Attention<T>
@@ -47,7 +47,7 @@ where
         + GlobalOperatorQueue,
 {
     pub fn new(
-        config: &Config,
+        config: &TextConfig,
         chunk_size: usize,
         sequence_length: usize,
         batch_size: usize,
@@ -229,9 +229,10 @@ mod test {
         // let num_kv_heads = 8;
         // let sequence_length = 10;
 
-        let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
-                .unwrap();
+        let config = crate::model_family::load_text_config(
+            r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
+        )
+        .unwrap();
 
         // let inverse_sqrt_head = 1.0 / (config.hidden_size as f32).sqrt();
         let attention_head_size: usize = config.head_dim;
@@ -304,9 +305,10 @@ mod test {
         let sequence_length = 1;
         let batch_size = 3;
 
-        let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
-                .unwrap();
+        let config = crate::model_family::load_text_config(
+            r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
+        )
+        .unwrap();
 
         let attention_head_size: usize = config.head_dim;
 

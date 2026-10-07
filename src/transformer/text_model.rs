@@ -1,33 +1,30 @@
 use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
 
-// use serde::{Deserialize, Serialize};
-// use hurdles::Barrier;
-// use super::barrier::Barrier;
-// use serde::{Deserialize, Serialize};
-
-use super::model_config::Config;
+use super::decoder_layer::DecoderLayer;
+use super::tensor_name::{
+    lm_head_name, norm_weight_name, position_embedding_name, token_embedding_name, MODEL_SCOPE,
+};
+use crate::model_spec::TextConfig;
 use crate::num_traits::FromNumber;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
-use crate::transformer::tensor_name::{
-    lm_head_name, norm_weight_name, position_embedding_name, token_embedding_name, MODEL_SCOPE,
-};
 
-// use super::super::operators::map::rms_map::RMSMap;
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-// use super::super::mem_mgr::model_loader::SafeTensorsLoader;
-// use super::super::ptensor::linear::Linear;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
-use crate::transformer::decoder_layer::DecoderLayer;
-// use crate::runtime::inference::state::TokenRecord;
 
 #[cfg(test)]
-use crate::transformer::rope::RotaryEmbedding;
+use super::rope::RotaryEmbedding;
 
+/// Family-agnostic text backbone runtime: token/position embedding + a stack of
+/// `DecoderLayer` + final norm + lm_head/topk. Migrated verbatim from the former
+/// `model_family::qwen3_moe::Model<T>` (renamed by role); it consumes the shared
+/// `model_spec::TextConfig` and is thus reusable by every family.
+/// 家族无关的文本主干运行时。由原 `model_family::qwen3_moe::Model<T>` 按角色改名
+/// 迁移而来，消费共享的 `model_spec::TextConfig`，故可被所有 family 复用。
 // #[derive(Clone)]
-pub struct Model<T>
+pub struct TextModel<T>
 where
     T: Copy + PartialOrd,
 {
@@ -50,7 +47,7 @@ where
     scope_name: String,
 }
 
-impl<T> Model<T>
+impl<T> TextModel<T>
 where
     T: Copy
         + PartialOrd
@@ -71,7 +68,7 @@ where
 {
     /// Backward-compatible constructor (greedy, no sampling).
     pub fn new(
-        config: &Config,
+        config: &TextConfig,
         position_vec: Vec<T>,
         chunk_size: usize,
         sequence_length: usize,
@@ -97,7 +94,7 @@ where
 
     /// Full constructor with sampling parameters.
     pub fn with_sampling(
-        config: &Config,
+        config: &TextConfig,
         position_vec: Vec<T>,
         chunk_size: usize,
         sequence_length: usize,
@@ -266,8 +263,6 @@ where
 mod test {
 
     use super::*;
-    // use crate::common::config::Config;
-    // use crate::llama::model_loader::SafeTensorsLoader;
     use crate::mem_mgr::allocator::AlignedBox;
     use crate::runtime::SequenceSlice;
     use crate::runtime::{Phase, SlotState};
@@ -328,9 +323,10 @@ mod test {
             .map(|n| n.get())
             .unwrap_or(1);
 
-        let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
-                .unwrap();
+        let config = crate::model_family::load_text_config(
+            r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
+        )
+        .unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,
@@ -343,7 +339,7 @@ mod test {
         let eos_id = 151643;
         f32::init_global(HashMap::new());
         let mut batch_temperature = vec![1.0f32; batch_size];
-        let mut model = Model::<f32>::new(
+        let mut model = TextModel::<f32>::new(
             &config,
             position_vec,
             sequence_length, // chunk_size
@@ -406,9 +402,10 @@ mod test {
             .map(|n| n.get())
             .unwrap_or(1);
 
-        let config =
-            Config::load_from_file(r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json")
-                .unwrap();
+        let config = crate::model_family::load_text_config(
+            r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
+        )
+        .unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,
@@ -421,7 +418,7 @@ mod test {
         let eos_id = 151643;
         f16::init_global(HashMap::new());
         let mut batch_temperature = vec![1.0f16; batch_size];
-        let mut model = Model::<f16>::new(
+        let mut model = TextModel::<f16>::new(
             &config,
             position_vec,
             sequence_length, // chunk_size
@@ -475,7 +472,7 @@ mod test {
             return;
         }
 
-        let config = Config::load_from_file(config_path).unwrap();
+        let config = crate::model_family::load_text_config(config_path).unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,
@@ -493,7 +490,7 @@ mod test {
         params.insert("dummy.key".to_string(), vec![0.0f32; 10]);
         f32::init_global(params);
 
-        let model = Model::<f32>::new(
+        let model = TextModel::<f32>::new(
             &config,
             position_vec,
             sequence_length, // chunk_size
@@ -527,7 +524,7 @@ mod test {
             return;
         }
 
-        let config = Config::load_from_file(config_path).unwrap();
+        let config = crate::model_family::load_text_config(config_path).unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,
@@ -542,7 +539,7 @@ mod test {
         // Initialize global mem pool with empty parameters
         f16::init_global(HashMap::new());
 
-        let model = Model::<f16>::new(
+        let model = TextModel::<f16>::new(
             &config,
             position_vec,
             sequence_length, // chunk_size

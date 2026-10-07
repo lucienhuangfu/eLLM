@@ -7,14 +7,14 @@ use super::executor::executor_pool::ExecutorPool;
 use crate::config::{GenerationConfig, ResolvedConfig};
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::model_family::qwen3_moe::Config;
-use crate::model_family::qwen3_moe::Model;
+use crate::model_family::load_text_config;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{build_slot_sequence, SlotSequence};
 use crate::runtime::session::{SessionMode, SlotManager, SlotState};
 use crate::tensor::GlobalOperatorQueue;
 use crate::transformer::rope::RotaryEmbedding;
+use crate::transformer::TextModel;
 
 use crate::runtime::loader::SafeTensorsLoader;
 
@@ -45,7 +45,7 @@ pub fn initialize_runtime(
     let model_dir = &resolved_config.model.raw_config.model;
     println!("Loading config from: {}", model_dir);
 
-    let model_config = Config::load_from_file(format!("{}/config.json", model_dir))
+    let model_config = load_text_config(format!("{}/config.json", model_dir))
         .map_err(|e| format!("failed to load config: {}", e))?;
 
     let generation_config =
@@ -90,7 +90,7 @@ pub fn initialize_runtime(
     )
     .forward::<f16>();
 
-    let mut model = Model::<f16>::with_sampling(
+    let mut model = TextModel::<f16>::with_sampling(
         &model_config,
         position_vec,
         chunk_size,
