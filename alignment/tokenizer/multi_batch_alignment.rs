@@ -1,7 +1,7 @@
 #![feature(f16)]
 
-use ellm::runtime::loader::load_tiktoken;
-use ellm::runtime::loader::ChatTemplate;
+use ellm::auto::load_tiktoken;
+use ellm::auto::ChatTemplate;
 
 const DEFAULT_PROMPTS: &[&str] = &[
     "你好，请用一句话介绍 Rust。",

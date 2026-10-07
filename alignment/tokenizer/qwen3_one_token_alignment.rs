@@ -1,7 +1,7 @@
 #![feature(f16)]
 
-use ellm::runtime::loader::load_tiktoken;
-use ellm::runtime::loader::ChatTemplate;
+use ellm::auto::load_tiktoken;
+use ellm::auto::ChatTemplate;
 use std::f16;
 use std::sync::Arc;
 use std::time::Instant;

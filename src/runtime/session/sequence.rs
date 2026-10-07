@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use tiktoken_rs::CoreBPE;
 
+use crate::auto::{load_tiktoken, ChatTemplate};
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::num_traits::FromNumber;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::loader::{load_tiktoken, ChatTemplate};
 
 pub struct SlotSequence<T> {
     pub sequences: *mut usize,

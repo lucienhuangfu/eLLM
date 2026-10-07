@@ -4,6 +4,7 @@
 #![feature(min_specialization)]
 #![feature(sync_unsafe_cell)]
 
+pub mod auto;
 pub mod config;
 pub mod kernel;
 pub mod mem_mgr;

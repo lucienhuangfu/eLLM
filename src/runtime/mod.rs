@@ -13,7 +13,7 @@ pub use config::{
 };
 pub use executor::executor_pool::ExecutorPool;
 pub use init::{initialize_runtime, RuntimeContext};
-pub use loader::{load_tiktoken, ChatTemplate, SafeTensorsLoader};
+pub use loader::SafeTensorsLoader;
 pub use scheduler::SequenceSlice;
 pub use scheduler::{ScheduleTask, Scheduler};
 pub use session::{build_slot_sequence, SlotSequence};

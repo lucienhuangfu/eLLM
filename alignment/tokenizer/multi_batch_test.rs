@@ -1,12 +1,12 @@
 #![feature(f16)]
 #![feature(sync_unsafe_cell)]
 
+use ellm::auto::load_tiktoken;
+use ellm::auto::ChatTemplate;
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::operators::operator::Operator;
-use ellm::runtime::loader::load_tiktoken;
-use ellm::runtime::loader::ChatTemplate;
 use ellm::runtime::loader::SafeTensorsLoader;
 use ellm::runtime::Phase;
 use ellm::runtime::SequenceSlice;

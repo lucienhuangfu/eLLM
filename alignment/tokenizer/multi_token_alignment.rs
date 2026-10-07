@@ -1,7 +1,7 @@
 #![feature(f16)]
 
-use ellm::runtime::loader::load_tiktoken;
-use ellm::runtime::loader::ChatTemplate;
+use ellm::auto::load_tiktoken;
+use ellm::auto::ChatTemplate;
 
 fn main() -> anyhow::Result<()> {
     let model_dir = std::env::args()

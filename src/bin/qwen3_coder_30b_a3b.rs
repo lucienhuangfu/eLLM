@@ -1,12 +1,12 @@
 #![feature(f16)]
 
+use ellm::auto::load_tiktoken;
+use ellm::auto::ChatTemplate;
 use ellm::config::GenerationConfig;
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
 use ellm::model_family::load_text_config;
 use ellm::operators::send_sync_ptr::SharedMut;
-use ellm::runtime::loader::load_tiktoken;
-use ellm::runtime::loader::ChatTemplate;
 use ellm::runtime::loader::SafeTensorsLoader;
 use ellm::runtime::{
     ExecutorPool, Phase, ScheduleTask, Scheduler, SessionMode, SlotManager, SlotSequence, SlotState,

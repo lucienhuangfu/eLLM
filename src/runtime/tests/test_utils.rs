@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use crate::auto::ChatTemplate;
 use crate::num_traits::FromNumber;
 use crate::operators::send_sync_ptr::SharedMut;
-use crate::runtime::loader::ChatTemplate;
 use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::SlotSequence;
 use crate::runtime::session::{Phase, SessionMode, SlotManager, SlotState};
