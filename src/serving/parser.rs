@@ -148,7 +148,7 @@ impl ParserRule {
 
     pub fn for_model_family(family: &ModelName) -> Self {
         match family {
-            ModelName::Qwen => Self::qwen(),
+            ModelName::Qwen | ModelName::Qwen3_5 => Self::qwen(),
             ModelName::Llama => Self::llama3_json(),
             ModelName::Mixtral => Self::mistral(),
             ModelName::MiniMax | ModelName::MiniMaxM2 => Self::minimax_m1(),

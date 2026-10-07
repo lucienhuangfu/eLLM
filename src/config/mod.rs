@@ -12,4 +12,4 @@ pub use config_types::{
 };
 pub use config_validator::ConfigError;
 pub use generation_config::GenerationConfig;
-pub use huggingface_config::HfConfig;
+pub use huggingface_config::{HfConfig, HfVisionConfig};
