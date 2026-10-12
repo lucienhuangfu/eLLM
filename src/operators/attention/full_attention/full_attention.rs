@@ -35,6 +35,7 @@ pub struct Attention<T> {
     pub(super) row_step: usize,
     pub(super) col_step: usize,
     pub(super) decode_only_flag: bool,
+    pub(super) is_causal: bool,
     pub(super) hybrid_split: bool,
     pub(super) profile_split: bool,
     pub(super) force_head_split: bool,
@@ -81,6 +82,7 @@ where
         head_size: usize,
         inverse_sqrt_head: T,
         decode_only_flag: bool,
+        is_causal: bool,
         thread_num: usize,
     ) -> Self {
         let thread_num = thread_num.max(1);
@@ -178,6 +180,7 @@ where
             head_size,
             inverse_sqrt_head,
             decode_only_flag,
+            is_causal,
             hybrid_split,
             profile_split,
             force_head_split,
@@ -295,25 +298,47 @@ where
             };
             for col_begin in (0..key_end).step_by(col_step) {
                 let col_chunk_end = (col_begin + col_step).min(key_end);
-                AttentionTrait::compute(
-                    self,
-                    q_head_ptr,
-                    k_head_ptr,
-                    v_head_ptr,
-                    output_head_ptr,
-                    row_chunk,
-                    visible_row_end,
-                    col_begin,
-                    col_chunk_end,
-                    col_end,
-                    next_sequence_index,
-                    self.k_seq_stride,
-                    self.v_seq_stride,
-                    self.q_seq_stride,
-                    scratch.running_max,
-                    scratch.running_denom,
-                    scratch.scores,
-                );
+                if self.is_causal {
+                    AttentionTrait::compute(
+                        self,
+                        q_head_ptr,
+                        k_head_ptr,
+                        v_head_ptr,
+                        output_head_ptr,
+                        row_chunk,
+                        visible_row_end,
+                        col_begin,
+                        col_chunk_end,
+                        col_end,
+                        next_sequence_index,
+                        self.k_seq_stride,
+                        self.v_seq_stride,
+                        self.q_seq_stride,
+                        scratch.running_max,
+                        scratch.running_denom,
+                        scratch.scores,
+                    );
+                } else {
+                    AttentionTrait::compute_non_causal(
+                        self,
+                        q_head_ptr,
+                        k_head_ptr,
+                        v_head_ptr,
+                        output_head_ptr,
+                        row_chunk,
+                        visible_row_end,
+                        col_begin,
+                        col_chunk_end,
+                        col_end,
+                        next_sequence_index,
+                        self.k_seq_stride,
+                        self.v_seq_stride,
+                        self.q_seq_stride,
+                        scratch.running_max,
+                        scratch.running_denom,
+                        scratch.scores,
+                    );
+                }
             }
         }
     }
@@ -360,25 +385,47 @@ where
         };
         for col_begin in (0..key_end).step_by(col_step) {
             let col_chunk_end = (col_begin + col_step).min(key_end);
-            AttentionTrait::compute(
-                self,
-                q_head_ptr,
-                k_head_ptr,
-                v_head_ptr,
-                output_head_ptr,
-                row_begin,
-                visible_row_end,
-                col_begin,
-                col_chunk_end,
-                col_end,
-                next_sequence_index,
-                self.k_seq_stride,
-                self.v_seq_stride,
-                self.q_seq_stride,
-                scratch.running_max,
-                scratch.running_denom,
-                scratch.scores,
-            );
+            if self.is_causal {
+                AttentionTrait::compute(
+                    self,
+                    q_head_ptr,
+                    k_head_ptr,
+                    v_head_ptr,
+                    output_head_ptr,
+                    row_begin,
+                    visible_row_end,
+                    col_begin,
+                    col_chunk_end,
+                    col_end,
+                    next_sequence_index,
+                    self.k_seq_stride,
+                    self.v_seq_stride,
+                    self.q_seq_stride,
+                    scratch.running_max,
+                    scratch.running_denom,
+                    scratch.scores,
+                );
+            } else {
+                AttentionTrait::compute_non_causal(
+                    self,
+                    q_head_ptr,
+                    k_head_ptr,
+                    v_head_ptr,
+                    output_head_ptr,
+                    row_begin,
+                    visible_row_end,
+                    col_begin,
+                    col_chunk_end,
+                    col_end,
+                    next_sequence_index,
+                    self.k_seq_stride,
+                    self.v_seq_stride,
+                    self.q_seq_stride,
+                    scratch.running_max,
+                    scratch.running_denom,
+                    scratch.scores,
+                );
+            }
         }
     }
 
@@ -1135,6 +1182,7 @@ mod tests {
             2,
             inverse_sqrt_head,
             false,
+            true,
             1,
         );
         attention.causal_col_prune = true;
@@ -1207,6 +1255,7 @@ mod tests {
             head_size,
             inverse_sqrt_head,
             false,
+            true,
             1,
         );
 
@@ -1251,5 +1300,54 @@ mod tests {
             let actual = &output[row * head_size..(row + 1) * head_size];
             assert_close(actual, &expected);
         }
+    }
+
+    #[test]
+    fn non_causal_attention_stub_runs_without_panic() {
+        // 非因果路径冒烟测试：compute_non_causal 目前是空实现（stub），
+        // 仅验证 is_causal = false 时算子能构造并跑完 run 而不 panic，不校验数值。
+        let head_size = 2;
+        let inverse_sqrt_head = 1.0;
+        let q = vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let k = vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let v = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mut output = vec![-1.0; q.len()];
+
+        let attention = Attention::new(
+            q.as_ptr(),
+            k.as_ptr(),
+            v.as_ptr(),
+            output.as_mut_ptr(),
+            3,
+            1,
+            1,
+            1,
+            3 * head_size,
+            3 * head_size,
+            head_size,
+            3 * head_size,
+            3 * head_size,
+            head_size,
+            head_size,
+            1,
+            1,
+            head_size,
+            inverse_sqrt_head,
+            false,
+            false, // is_causal = false → 分派到 compute_non_causal 空实现
+            1,
+        );
+
+        let slices = vec![SequenceSlice {
+            token_start_index: 0,
+            batch_index: 0,
+            next_sequence_index: 0,
+            length: 3,
+            last_token_flag: false,
+            lift_index: 0,
+        }];
+
+        // 不 panic 即通过（stub 为空实现，不产出 attention 数值）。
+        attention.run(slices.iter().map(|s| s.length).sum(), &slices, 1, 0);
     }
 }

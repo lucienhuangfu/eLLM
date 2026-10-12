@@ -33,6 +33,7 @@ where
         batch_size: usize,
         inverse_sqrt_head: T,
         decode_only_flag: bool,
+        is_causal: bool,
         thread_num: usize,
         scope_name: String,
     ) -> Self {
@@ -59,6 +60,7 @@ where
             self.shape[3],
             inverse_sqrt_head,
             decode_only_flag,
+            is_causal,
             thread_num,
         ));
 

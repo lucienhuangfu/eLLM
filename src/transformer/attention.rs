@@ -21,6 +21,7 @@ where
     head_dim: usize,
     scaling: T,
     use_qk_norm: bool,
+    is_causal: bool,
     q_weight: Tensor<T>,
     k_weight: Tensor<T>,
     v_weight: Tensor<T>,
@@ -51,6 +52,7 @@ where
         chunk_size: usize,
         sequence_length: usize,
         batch_size: usize,
+        is_causal: bool,
         scope: &str,
     ) -> Self {
         let head_dim: usize = config.head_dim;
@@ -65,6 +67,7 @@ where
             head_dim: head_dim,
             scaling: scaling,
             use_qk_norm: config.use_qk_norm,
+            is_causal,
             q_weight: Tensor::zeros(
                 vec![config.num_attention_heads * head_dim, config.hidden_size],
                 format!("{scope}.q_proj.weight"),
@@ -168,6 +171,7 @@ where
                 self.batch_size,
                 self.scaling,
                 decode_only_flag,
+                self.is_causal,
                 thread_num,
                 format!("{}.attn_output", self.scope_name),
             );
@@ -246,6 +250,7 @@ mod test {
             sequence_length,
             sequence_length,
             batch_size,
+            true,
             "model.layers.1.self_attn",
         );
 
@@ -320,6 +325,7 @@ mod test {
             sequence_length,
             sequence_length,
             batch_size,
+            true,
             "model.layers.1.self_attn",
         );
 

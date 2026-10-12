@@ -55,7 +55,15 @@ where
     ) -> Self {
         match kind {
             AttentionKind::Full | AttentionKind::SlidingWindow => AttentionBlock::Full(
-                Attention::<T>::new(config, chunk_size, sequence_length, batch_size, attn_scope),
+                // 现有 family 全为因果注意力，is_causal 传 true。
+                Attention::<T>::new(
+                    config,
+                    chunk_size,
+                    sequence_length,
+                    batch_size,
+                    true,
+                    attn_scope,
+                ),
             ),
             AttentionKind::Linear => AttentionBlock::GatedDelta(GatedDeltaAttention::<T>::new(
                 config.hidden_size,

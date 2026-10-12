@@ -643,6 +643,7 @@ mod test {
             HEAD_DIM,
             1.0,
             false,
+            true,
             THREAD_NUM,
         ));
 
@@ -1041,6 +1042,7 @@ mod test {
             HEAD_DIM,
             1.0,
             false,
+            true,
             THREAD_NUM,
         ));
 
@@ -1277,6 +1279,7 @@ mod test {
             HEAD_DIM,
             1.0,
             false,
+            true,
             THREAD_NUM,
         ));
 
@@ -1453,6 +1456,7 @@ mod test {
             HEAD_DIM,
             1.0,
             false,
+            true,
             THREAD_NUM,
         ));
 

@@ -20,6 +20,34 @@ pub trait AttentionTrait<T> {
         scores: &mut [T],
     );
 
+    /// Non-causal (bidirectional) counterpart of [`compute`]: every query row
+    /// may attend to all columns up to `total_col_end`, with no triangular mask.
+    /// 非因果（双向）版本的 [`compute`]：每个 query 行可见 `total_col_end` 之前的
+    /// 全部列，不做三角掩码。
+    #[allow(clippy::too_many_arguments)]
+    fn compute_non_causal(
+        &self,
+        _q_ptr1: *const T,
+        _k_ptr2: *const T,
+        _v_ptr3: *const T,
+        _output_ptr: *mut T,
+        _row_begin: usize,
+        _row_end: usize,
+        _col_begin: usize,
+        _col_end: usize,
+        _total_col_end: usize,
+        _next_sequence_index: usize,
+        _k_seq_stride: usize,
+        _v_seq_stride: usize,
+        _q_seq_stride: usize,
+        _running_max: &mut [T],
+        _running_denom: &mut [T],
+        _scores: &mut [T],
+    ) {
+        // TODO: 非因果（双向）attention：每行可见列 = total_col_end，不做三角掩码；
+        // 实现时须绕开 causal_col_prune / 三角切分 / gqa8 等因果专用路径，改均匀切分 + 全列可见。
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn compute_gqa8(
         &self,
