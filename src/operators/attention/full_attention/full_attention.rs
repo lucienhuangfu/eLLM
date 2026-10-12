@@ -254,7 +254,7 @@ where
 {
     /// Visit aligned row ranges for attention computation
     #[inline(always)]
-    unsafe fn visit_aligned_row_range(
+    unsafe fn visit_aligned_row_range<const CAUSAL: bool>(
         &self,
         q_head_ptr: *const T,
         output_head_ptr: *mut T,
@@ -291,14 +291,14 @@ where
                 }
             }
 
-            let key_end = if self.causal_col_prune {
+            let key_end = if CAUSAL && self.causal_col_prune {
                 (next_sequence_index + visible_row_end).min(col_end)
             } else {
                 col_end
             };
             for col_begin in (0..key_end).step_by(col_step) {
                 let col_chunk_end = (col_begin + col_step).min(key_end);
-                if self.is_causal {
+                if CAUSAL {
                     AttentionTrait::compute(
                         self,
                         q_head_ptr,
@@ -345,7 +345,7 @@ where
 
     /// Visit tail row ranges (unaligned) for attention computation
     #[inline(always)]
-    unsafe fn visit_tail_row_range(
+    unsafe fn visit_tail_row_range<const CAUSAL: bool>(
         &self,
         q_head_ptr: *const T,
         output_head_ptr: *mut T,
@@ -378,14 +378,14 @@ where
         let mut scratch = self.thread_buffers(thread_id, row_count, col_step);
         scratch.clear();
 
-        let key_end = if self.causal_col_prune {
+        let key_end = if CAUSAL && self.causal_col_prune {
             (next_sequence_index + visible_row_end).min(col_end)
         } else {
             col_end
         };
         for col_begin in (0..key_end).step_by(col_step) {
             let col_chunk_end = (col_begin + col_step).min(key_end);
-            if self.is_causal {
+            if CAUSAL {
                 AttentionTrait::compute(
                     self,
                     q_head_ptr,
@@ -430,7 +430,7 @@ where
     }
 
     /// Visit blocks for a single attention head
-    pub(super) unsafe fn visit_blocks_for_head(
+    pub(super) unsafe fn visit_blocks_for_head<const CAUSAL: bool>(
         &self,
         q_head_ptr: *const T,
         output_head_ptr: *mut T,
@@ -442,7 +442,7 @@ where
         row_plan: RowVisitPlan,
     ) {
         if let Some((row_begin, row_end)) = row_plan.main {
-            self.visit_aligned_row_range(
+            self.visit_aligned_row_range::<CAUSAL>(
                 q_head_ptr,
                 output_head_ptr,
                 k_head_ptr,
@@ -456,7 +456,7 @@ where
         }
 
         if let Some((row_begin, row_end)) = row_plan.tail {
-            self.visit_tail_row_range(
+            self.visit_tail_row_range::<CAUSAL>(
                 q_head_ptr,
                 output_head_ptr,
                 k_head_ptr,
@@ -471,7 +471,7 @@ where
     }
 
     /// Run attention computation with sequence split strategy
-    unsafe fn run_sequence_split(
+    unsafe fn run_sequence_split<const CAUSAL: bool>(
         &self,
         q_slice_ptr: *const T,
         output_slice_ptr: *mut T,
@@ -499,7 +499,7 @@ where
         for kv_head in 0..self.kv_head_num {
             let k_head_ptr = k_batch_ptr.add(kv_head * k_head_stride);
             let v_head_ptr = v_batch_ptr.add(kv_head * v_head_stride);
-            if attention_heads_per_kv == 8 {
+            if CAUSAL && attention_heads_per_kv == 8 {
                 let q_group_offset = kv_head * attention_heads_per_kv * self.head_size;
                 let q_group_ptr = q_slice_ptr.add(q_group_offset);
                 let output_group_ptr = output_slice_ptr.add(q_group_offset);
@@ -553,7 +553,7 @@ where
                 let q_head_ptr = q_slice_ptr.add(q_head_offset);
                 let output_head_ptr = output_slice_ptr.add(q_head_offset);
 
-                self.visit_blocks_for_head(
+                self.visit_blocks_for_head::<CAUSAL>(
                     q_head_ptr,
                     output_head_ptr,
                     k_head_ptr,
@@ -569,7 +569,7 @@ where
 
     /// Run long prefill with a 2D static split:
     /// each task owns one KV group and a triangle-balanced row range.
-    unsafe fn run_grouped_sequence_split(
+    unsafe fn run_grouped_sequence_split<const CAUSAL: bool>(
         &self,
         q_slice_ptr: *const T,
         output_slice_ptr: *mut T,
@@ -595,7 +595,7 @@ where
 
         let row_parts_per_kv = thread_num.div_ceil(self.kv_head_num).max(1);
         if row_parts_per_kv == 1 {
-            self.run_sequence_split(
+            self.run_sequence_split::<CAUSAL>(
                 q_slice_ptr,
                 output_slice_ptr,
                 k_batch_ptr,
@@ -644,7 +644,7 @@ where
             let k_head_ptr = k_batch_ptr.add(kv_head * k_head_stride);
             let v_head_ptr = v_batch_ptr.add(kv_head * v_head_stride);
 
-            if attention_heads_per_kv == 8 {
+            if CAUSAL && attention_heads_per_kv == 8 {
                 let q_group_offset = kv_head * attention_heads_per_kv * self.head_size;
                 let q_group_ptr = q_slice_ptr.add(q_group_offset);
                 let output_group_ptr = output_slice_ptr.add(q_group_offset);
@@ -698,7 +698,7 @@ where
                 let q_head_ptr = q_slice_ptr.add(q_head_offset);
                 let output_head_ptr = output_slice_ptr.add(q_head_offset);
 
-                self.visit_blocks_for_head(
+                self.visit_blocks_for_head::<CAUSAL>(
                     q_head_ptr,
                     output_head_ptr,
                     k_head_ptr,
@@ -713,7 +713,7 @@ where
     }
 
     /// Run attention computation with head split strategy
-    unsafe fn run_head_split(
+    unsafe fn run_head_split<const CAUSAL: bool>(
         &self,
         q_slice_ptr: *const T,
         output_slice_ptr: *mut T,
@@ -743,7 +743,7 @@ where
             tail: (aligned_len < slice_len).then_some((aligned_len, slice_len)),
         };
 
-        if self.decode_gqa8 && slice_len == 1 && attention_heads_per_kv == 8 {
+        if CAUSAL && self.decode_gqa8 && slice_len == 1 && attention_heads_per_kv == 8 {
             let active_thread_num = thread_num.min(self.kv_head_num);
             if thread_id >= active_thread_num {
                 return;
@@ -800,7 +800,7 @@ where
                     for local_head in 0..attention_heads_per_kv {
                         let attention_head = kv_head * attention_heads_per_kv + local_head;
                         let q_head_offset = attention_head * self.head_size;
-                        self.visit_blocks_for_head(
+                        self.visit_blocks_for_head::<CAUSAL>(
                             q_slice_ptr.add(q_head_offset),
                             output_slice_ptr.add(q_head_offset),
                             k_head_ptr,
@@ -846,7 +846,7 @@ where
                 let q_head_ptr = q_slice_ptr.add(q_head_offset);
                 let output_head_ptr = output_slice_ptr.add(q_head_offset);
 
-                self.visit_blocks_for_head(
+                self.visit_blocks_for_head::<CAUSAL>(
                     q_head_ptr,
                     output_head_ptr,
                     k_head_ptr,
@@ -865,7 +865,7 @@ where
     /// This follows the CPU FlashAttention scheduling used by SGLang/PyTorch:
     /// exposing row blocks in addition to heads keeps machines with more worker
     /// threads than query heads busy without serializing all GQA heads.
-    unsafe fn run_head_row_split(
+    unsafe fn run_head_row_split<const CAUSAL: bool>(
         &self,
         q_slice_ptr: *const T,
         output_slice_ptr: *mut T,
@@ -897,7 +897,7 @@ where
         for row_block in (0..row_blocks).rev() {
             let row_begin = row_block * self.row_step;
             let row_end = (row_begin + self.row_step).min(slice_len);
-            let key_end = if self.causal_col_prune {
+            let key_end = if CAUSAL && self.causal_col_prune {
                 (next_sequence_index + row_end).min(col_end)
             } else {
                 col_end
@@ -925,7 +925,7 @@ where
                 let q_head_offset = attention_head * self.head_size;
                 let k_head_ptr = k_batch_ptr.add(kv_head * k_head_stride);
                 let v_head_ptr = v_batch_ptr.add(kv_head * v_head_stride);
-                self.visit_blocks_for_head(
+                self.visit_blocks_for_head::<CAUSAL>(
                     q_slice_ptr.add(q_head_offset),
                     output_slice_ptr.add(q_head_offset),
                     k_head_ptr,
@@ -944,6 +944,22 @@ where
 
     /// Main entry point for running attention computation
     pub fn run(
+        &self,
+        _total_size: usize,
+        computing_slices: &[SequenceSlice],
+        thread_num: usize,
+        thread_id: usize,
+    ) {
+        // is_causal 在实例生命周期内不变：仅在入口分派一次，下游全链走
+        // const CAUSAL 编译期单态化，col 热循环内不再有运行时因果判断。
+        if self.is_causal {
+            self.run_dispatch::<true>(_total_size, computing_slices, thread_num, thread_id)
+        } else {
+            self.run_dispatch::<false>(_total_size, computing_slices, thread_num, thread_id)
+        }
+    }
+
+    fn run_dispatch<const CAUSAL: bool>(
         &self,
         _total_size: usize,
         computing_slices: &[SequenceSlice],
@@ -1010,7 +1026,7 @@ where
                 }
 
                 if use_head_row_split {
-                    self.run_head_row_split(
+                    self.run_head_row_split::<CAUSAL>(
                         q_slice_ptr,
                         output_slice_ptr,
                         k_batch_ptr,
@@ -1025,7 +1041,7 @@ where
                         self.v_head_stride,
                     );
                 } else if use_head_split {
-                    self.run_head_split(
+                    self.run_head_split::<CAUSAL>(
                         q_slice_ptr,
                         output_slice_ptr,
                         k_batch_ptr,
@@ -1041,7 +1057,7 @@ where
                         self.v_head_stride,
                     );
                 } else if use_grouped_sequence_split {
-                    self.run_grouped_sequence_split(
+                    self.run_grouped_sequence_split::<CAUSAL>(
                         q_slice_ptr,
                         output_slice_ptr,
                         k_batch_ptr,
@@ -1057,7 +1073,7 @@ where
                         attention_heads_per_kv,
                     );
                 } else {
-                    self.run_sequence_split(
+                    self.run_sequence_split::<CAUSAL>(
                         q_slice_ptr,
                         output_slice_ptr,
                         k_batch_ptr,
