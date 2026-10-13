@@ -14,7 +14,9 @@ use std::arch::x86_64::{
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::f16;
+#[cfg(unix)]
 use std::ffi::{c_char, c_void, CString};
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -32,18 +34,24 @@ type BrgemmFn = unsafe extern "C" fn(
     bool,
 );
 
+#[cfg(unix)]
 unsafe extern "C" {
     fn dlopen(filename: *const c_char, flags: i32) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
 }
 
+#[cfg(unix)]
 const RTLD_NOW: i32 = 2;
+#[cfg(unix)]
 const BRGEMM_SYMBOL: &str = "_ZN2at6native7cpublas6brgemmEllllllbPKN3c104HalfES5_Pfb";
+#[cfg(unix)]
 const DEFAULT_LIBTORCH_CPU: &str =
     "/usr/local/lib/python3.12/dist-packages/torch/lib/libtorch_cpu.so";
 
+#[cfg(unix)]
 static BRGEMM: OnceLock<Option<BrgemmFn>> = OnceLock::new();
 
+#[cfg(unix)]
 fn python_libtorch_candidates(root: &Path, candidates: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
@@ -71,6 +79,7 @@ fn python_libtorch_candidates(root: &Path, candidates: &mut Vec<PathBuf>) {
     }
 }
 
+#[cfg(unix)]
 fn libtorch_candidates() -> Vec<PathBuf> {
     if let Some(path) = std::env::var_os("ELLM_LIBTORCH_CPU_PATH") {
         return vec![PathBuf::from(path)];
@@ -88,6 +97,12 @@ fn libtorch_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+/// Load LibTorch's BRGEMM microkernel via `dlopen`/`dlsym`.
+///
+/// Both the POSIX loader and the `libtorch_cpu.so` candidates are Linux-only; on
+/// any other platform the microkernel can never be present, so we report it
+/// unavailable and callers fall back to the non-brgemm attention path.
+#[cfg(unix)]
 fn load_brgemm() -> Option<BrgemmFn> {
     *BRGEMM.get_or_init(|| unsafe {
         let symbol = CString::new(BRGEMM_SYMBOL).unwrap();
@@ -106,6 +121,11 @@ fn load_brgemm() -> Option<BrgemmFn> {
         }
         None
     })
+}
+
+#[cfg(not(unix))]
+fn load_brgemm() -> Option<BrgemmFn> {
+    None
 }
 
 pub fn available() -> bool {

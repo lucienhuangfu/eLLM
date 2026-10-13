@@ -14,7 +14,6 @@ pub mod conv {
 pub mod elementwise {
     pub mod add_zip;
     pub mod complex_zip;
-    pub mod sigmoid_map;
     pub mod silu_mul_zip;
 }
 
@@ -58,8 +57,6 @@ pub mod expert_imports {
     pub use super::expert::sparse_expert::expert_merge_add::ExpertMergeAdd;
 }
 
-pub mod lift_vector;
-
 pub mod linear {
     pub use super::attention::full_attention::Attention;
     pub use super::matmul::matmul::MatMul;
@@ -79,7 +76,11 @@ pub mod matmul {
 }
 
 pub mod movement {
-    pub use super::lift_vector::LiftVector;
+    pub mod lift_vector;
+    pub mod lookup;
+
+    pub use lift_vector::LiftVector;
+    pub use lookup::Lookup;
 }
 
 pub mod testing {
@@ -97,19 +98,20 @@ pub mod routing {
     pub use super::expert::expert_topk_norm::ExpertTopkNorm;
     pub use super::matmul::matmul_sigmoid::MatMulSigmoid;
     pub use super::matmul::matmul_topk::MatMulTopK;
-    pub use super::topk_softmax::TopKSoftmax;
+    pub use super::softmax::Softmax;
+    pub use super::softmax::TopKSoftmax;
 }
 
-pub mod topk_softmax;
+pub mod softmax;
 
 pub mod transform {
     pub use super::elementwise::add_zip::AddZipMap;
     pub use super::elementwise::complex_zip::ComplexZipMap;
-    pub use super::elementwise::sigmoid_map::SigmoidMap;
     pub use super::elementwise::silu_mul_zip::SiluMulZipMap;
     pub use super::normalization::add_rms_zip::AddRMSZipMap;
     pub use super::normalization::lookup_rms_map::LookupRMSMap;
     pub use super::normalization::rms_map::RMSMap;
+    pub use super::softmax::SigmoidMap;
 }
 pub mod traits {
     pub mod conv;
@@ -130,5 +132,7 @@ pub mod traits {
     };
     pub use linear_attention::RecurrentGatedDeltaRuleTrait;
     pub use map::{MapTrait, ZipMapTrait};
-    pub use softmax::{ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
+    pub use softmax::{
+        ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxMapTrait, SoftmaxTrait, TopKSoftmaxTrait,
+    };
 }

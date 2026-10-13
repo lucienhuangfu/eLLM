@@ -36,6 +36,12 @@ pub trait SoftmaxTrait<T> {
     );
 }
 
+pub trait SoftmaxMapTrait<T> {
+    /// Three-step softmax computed entirely in-place on `values_ptr`:
+    /// exp (with temperature + max shift), sum, then normalize.
+    fn compute(&self, values_ptr: *mut T, temperature: T, length: usize);
+}
+
 pub trait ExpertsTopkNormTrait<T> {
     fn compute(
         &self,

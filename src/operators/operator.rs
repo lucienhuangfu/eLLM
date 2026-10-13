@@ -10,6 +10,7 @@ use crate::operators::routing::ExpertTopkNorm;
 use crate::operators::routing::MatMulSigmoid;
 use crate::operators::transform::LookupRMSMap;
 
+use crate::operators::routing::Softmax;
 use crate::operators::routing::TopKSoftmax;
 // Add missing imports for zip map operations
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
@@ -22,6 +23,7 @@ use crate::operators::expert::{
 };
 use crate::operators::linear::MatMulProj;
 use crate::operators::movement::LiftVector;
+use crate::operators::movement::Lookup;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddZipMap;
 use crate::operators::transform::SigmoidMap;
@@ -54,6 +56,7 @@ pub enum Operator<T>
     ExpertSoftmaxNorm(ExpertSoftmaxNorm<T>),
     ExpertTopkNorm(ExpertTopkNorm<T>),
     LiftVector(LiftVector<T>),
+    Lookup(Lookup<T>),
     LookupRMSMap(LookupRMSMap<T>),
     MatMul(MatMul<T>),
     MatMul3(MatMul3<T>),
@@ -66,7 +69,7 @@ pub enum Operator<T>
     SigmoidMap(SigmoidMap<T>),
     FakeEcho(FakeEcho),
     SiluMulZipMap(SiluMulZipMap<T>),
-    // SoftmaxMap(SoftmaxMap<T>),
+    Softmax(Softmax<T>),
     TopKSoftmax(TopKSoftmax<T>),
     // ArgmaxReduce(ArgmaxReduce<T>),
 }
@@ -213,6 +216,9 @@ where
             Self::LiftVector(operator) => {
                 operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
+            Self::Lookup(operator) => {
+                operator.run(total_size, cpu_num, thread_id, computing_slices);
+            }
             Self::LookupRMSMap(operator) => {
                 operator.run(total_size, cpu_num, thread_id, computing_slices);
             }
@@ -267,6 +273,17 @@ where
                 operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
 
+            Self::Softmax(operator) => {
+                operator.run(
+                    prefill_size,
+                    lift_size,
+                    total_size,
+                    cpu_num,
+                    thread_id,
+                    computing_slices,
+                    slot_list,
+                );
+            }
             Self::TopKSoftmax(operator) => {
                 operator.run(
                     prefill_size,
@@ -320,6 +337,7 @@ where
             Self::ExpertSoftmaxNorm(_) => "ExpertSoftmaxNorm",
             Self::ExpertTopkNorm(_) => "ExpertTopkNorm",
             Self::LiftVector(_) => "LiftVector",
+            Self::Lookup(_) => "Lookup",
             Self::LookupRMSMap(_) => "LookupRMSMap",
             Self::MatMul(_) => "MatMul",
             Self::MatMul3(_) => "MatMul3",
@@ -331,6 +349,7 @@ where
             Self::SigmoidMap(_) => "SigmoidMap",
             Self::FakeEcho(_) => "FakeEcho",
             Self::SiluMulZipMap(_) => "SiluMulZipMap",
+            Self::Softmax(_) => "Softmax",
             Self::TopKSoftmax(_) => "TopKSoftmax",
         }
     }

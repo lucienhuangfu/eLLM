@@ -2,7 +2,7 @@ use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
-use crate::operators::movement::LiftVector;
+use crate::operators::movement::{LiftVector, Lookup};
 use crate::operators::operator::Operator;
 use crate::operators::transform::{
     AddRMSZipMap, AddZipMap, LookupRMSMap, RMSMap, SigmoidMap, SiluMulZipMap,
@@ -98,6 +98,30 @@ where
             output_tensor.data,
             self.element_count(),
         ));
+        Self::enqueue(operator);
+        output_tensor
+    }
+
+    pub fn lookup(
+        sequences_ptr: *const usize,
+        word_embedding: &Tensor<T>,
+        token_capacity: usize,
+        sequence_stride: usize,
+        scope_name: String,
+    ) -> Self {
+        let output_tensor = Self::from_mem_pool(
+            vec![token_capacity, word_embedding.shape[1]],
+            format!("{}.output", scope_name),
+        );
+
+        let operator = Operator::Lookup(Lookup::new(
+            sequences_ptr,
+            word_embedding.data,
+            output_tensor.data,
+            sequence_stride,
+            word_embedding.shape[1],
+        ));
+
         Self::enqueue(operator);
         output_tensor
     }
