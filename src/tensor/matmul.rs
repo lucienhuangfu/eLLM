@@ -140,6 +140,50 @@ where
         output_tensor
     }
 
+    /// Same as [`matmul_add`](Self::matmul_add) but keeps `tensor2` (the weight)
+    /// alive in the memory pool after packing.
+    ///
+    /// `matmul_add` frees the weight because a normal transformer uses every
+    /// weight exactly once in the graph. A module that reuses one weight across
+    /// several graph nodes (e.g. the markov head unrolled over `proposal_len`
+    /// draft steps) must not let the first node drop the buffer the later nodes
+    /// still read, so this variant skips the `pool.remove`.
+    pub fn matmul_add_shared(
+        &self,
+        tensor2: &Tensor<T>,
+        tensor3: &Tensor<T>,
+        params: MatMulParams,
+        decode_only_flag: bool,
+        tensor_name: String,
+    ) -> Self {
+        let a_row = self.row_count();
+        let output_shape = vec![a_row, tensor2.shape[0]];
+
+        let b_row = tensor2.shape[0];
+        let column = self.last_dim();
+
+        let output_tensor = Self::from_mem_pool(output_shape, tensor_name);
+
+        let operator = Operator::MatMulAdd(unsafe {
+            MatMulAdd::new(
+                self.data,
+                tensor2.data,
+                tensor3.data,
+                output_tensor.data,
+                params,
+                a_row,
+                b_row,
+                column,
+                decode_only_flag,
+            )
+        });
+
+        // Intentionally no `pool.remove(&tensor2.tensor_name)`: the weight is
+        // reused by later graph nodes.
+        Self::enqueue(operator);
+        output_tensor
+    }
+
     pub fn matmul3(
         &self,
         q_weight: &Tensor<T>,

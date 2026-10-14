@@ -6,6 +6,7 @@
 
 pub mod auto;
 pub mod config;
+pub mod dspark;
 pub mod kernel;
 pub mod mem_mgr;
 pub mod model_family;

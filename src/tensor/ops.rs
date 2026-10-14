@@ -1,9 +1,10 @@
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
+use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
 use crate::operators::movement::{LiftVector, Lookup};
 use crate::operators::operator::Operator;
+use crate::operators::routing::SampleTokens;
 use crate::operators::transform::{
     AddRMSZipMap, AddZipMap, LookupRMSMap, RMSMap, SigmoidMap, SiluMulZipMap,
 };
@@ -185,5 +186,49 @@ where
         ));
         Self::enqueue(operator);
         output_tensor
+    }
+}
+
+// Tensor builder for the already-registered `SampleTokens` operator (not a new
+// compute operator). `SampleTokens` needs `FromNumber` on top of the arithmetic
+// bounds the other `ops.rs` builders use, so it lives in its own `impl` block to
+// leave the main block untouched.
+impl<T> Tensor<T>
+where
+    T: Copy
+        + PartialOrd
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Add<Output = T>
+        + Mul<Output = T>
+        + Div<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid
+        + Sqrt
+        + AddAssign
+        + FromNumber
+        + GlobalMemPool
+        + GlobalOperatorQueue,
+{
+    /// Rewrite the logits row in place into a sampled distribution and write the
+    /// sampled token id into `output_sequences[batch_index * sequence_stride + ..]`.
+    pub fn sample_tokens(
+        &self,
+        output_sequences: *mut usize,
+        batch_temperature: *mut T,
+        sequence_stride: usize,
+        _tensor_name: String,
+    ) -> Self {
+        let operator = Operator::SampleTokens(SampleTokens::new(
+            self.data,
+            output_sequences,
+            batch_temperature,
+            sequence_stride,
+            self.last_dim(),
+        ));
+        Self::enqueue(operator);
+        self.clone()
     }
 }
