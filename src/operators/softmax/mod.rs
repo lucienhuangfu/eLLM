@@ -1,7 +1,7 @@
+pub mod sample_tokens;
 pub mod sigmoid_map;
-pub mod softmax;
 pub mod topk_softmax;
 
+pub use sample_tokens::SampleTokens;
 pub use sigmoid_map::SigmoidMap;
-pub use softmax::Softmax;
 pub use topk_softmax::TopKSoftmax;

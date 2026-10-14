@@ -98,7 +98,7 @@ pub mod routing {
     pub use super::expert::expert_topk_norm::ExpertTopkNorm;
     pub use super::matmul::matmul_sigmoid::MatMulSigmoid;
     pub use super::matmul::matmul_topk::MatMulTopK;
-    pub use super::softmax::Softmax;
+    pub use super::softmax::SampleTokens;
     pub use super::softmax::TopKSoftmax;
 }
 
@@ -132,7 +132,5 @@ pub mod traits {
     };
     pub use linear_attention::RecurrentGatedDeltaRuleTrait;
     pub use map::{MapTrait, ZipMapTrait};
-    pub use softmax::{
-        ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxMapTrait, SoftmaxTrait, TopKSoftmaxTrait,
-    };
+    pub use softmax::{ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
 }

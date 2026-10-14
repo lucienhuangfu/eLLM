@@ -10,7 +10,7 @@ use crate::operators::routing::ExpertTopkNorm;
 use crate::operators::routing::MatMulSigmoid;
 use crate::operators::transform::LookupRMSMap;
 
-use crate::operators::routing::Softmax;
+use crate::operators::routing::SampleTokens;
 use crate::operators::routing::TopKSoftmax;
 // Add missing imports for zip map operations
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
@@ -69,7 +69,7 @@ pub enum Operator<T>
     SigmoidMap(SigmoidMap<T>),
     FakeEcho(FakeEcho),
     SiluMulZipMap(SiluMulZipMap<T>),
-    Softmax(Softmax<T>),
+    SampleTokens(SampleTokens<T>),
     TopKSoftmax(TopKSoftmax<T>),
     // ArgmaxReduce(ArgmaxReduce<T>),
 }
@@ -273,7 +273,7 @@ where
                 operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
 
-            Self::Softmax(operator) => {
+            Self::SampleTokens(operator) => {
                 operator.run(
                     prefill_size,
                     lift_size,
@@ -349,7 +349,7 @@ where
             Self::SigmoidMap(_) => "SigmoidMap",
             Self::FakeEcho(_) => "FakeEcho",
             Self::SiluMulZipMap(_) => "SiluMulZipMap",
-            Self::Softmax(_) => "Softmax",
+            Self::SampleTokens(_) => "SampleTokens",
             Self::TopKSoftmax(_) => "TopKSoftmax",
         }
     }
