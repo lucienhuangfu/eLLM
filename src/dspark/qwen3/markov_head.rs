@@ -16,7 +16,7 @@
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::kernel::common::matmul_params::MatMulParams;
-use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::mem_mgr::mem_pool::{GlobalMemPool, GlobalScratchPool};
 use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
@@ -83,15 +83,20 @@ where
     /// Graph-build entry point (this module's "forward"): unroll the
     /// `proposal_len` draft steps into one static graph.
     ///
-    /// Each step: `lookup(prev token) -> matmul_add_shared(bias + base_logits)
-    /// -> sample_tokens(write per-step draft buffer)`. The per-step draft buffer
-    /// of step `k` is the gather index source for step `k + 1`.
+    /// Each step: `lookup(prev token) -> matmul_add(bias + base_logits)
+    /// -> sample_tokens(write ids_buf in place)`. All graph nodes reuse the same
+    /// `ids_buf` scratch: FIFO replay guarantees `Sample(k)` completes before
+    /// `Lookup(k + 1)` starts, so overwriting `ids_buf` is safe. `MemPool`
+    /// regex stripping collapses `step<K>.` names to a single `MemoryBlock`,
+    /// aliasing `latent` and `corrected` across steps as well.
     ///
     /// `base_logits` holds one `[batch, vocab]` tensor per step (the target-model
     /// logits this head corrects); its length is `proposal_len`. `hidden_states`
     /// is intentionally absent — Vanilla drops it.
     ///
-    /// Returns every step's corrected logits and the last step's draft-id buffer.
+    /// Returns every step's corrected logits (all aliasing one buffer, only the
+    /// last write is meaningful) and a pointer to the shared `ids_buf` holding
+    /// the last step's sampled draft id.
     pub fn sample_block_tokens(
         &self,
         base_logits: &[Tensor<T>], // len == proposal_len, each [batch, vocab]
@@ -102,11 +107,27 @@ where
         let proposal_len = base_logits.len();
         // Per-step draft buffers are addressed one row per batch slot.
         let sequence_stride = 1usize;
-        let mut prev_ids = first_prev_token_ids;
         let mut corrected_all = Vec::with_capacity(proposal_len);
+
+        // 单一 in-place `ids_buf`：所有 step 的 Sample 都写这里，Lookup(k+1) 也读
+        // 这里。走 ScratchPool 同 name 幂复用，无需 N 次 `Box::leak`。
+        let ids_buf: *mut usize = usize::with_scratch_pool(|sp| {
+            sp.get_init(
+                "model.draft.markov.ids_buf",
+                batch_size,
+                0usize,
+            )
+        });
 
         for step_idx in 0..proposal_len {
             // 1) Gather the previous token's latent vector: [batch, markov_rank].
+            //    Step 0 reads the external seed; steps 1..N read the shared
+            //    `ids_buf` written by the previous step's Sample.
+            let prev_ids: *const usize = if step_idx == 0 {
+                first_prev_token_ids
+            } else {
+                ids_buf as *const usize
+            };
             let latent = Tensor::lookup(
                 prev_ids,
                 &self.markov_w1,
@@ -116,9 +137,11 @@ where
             );
 
             // 2) Markov bias + residual fuse: latent @ W2^T + base_logits[step].
-            //    `matmul_add_shared` keeps `markov_w2` alive for the next step
-            //    (the plain `matmul_add` would free it after the first node).
-            let corrected = latent.matmul_add_shared(
+            //    `matmul_add` now packs via `MemPool::get_packed`; same
+            //    `(markov_w2.tensor_name, params)` across steps hits the cache,
+            //    so `packed_b` is materialized exactly once for the whole loop.
+            //    Weight stays in the pool; later steps re-read the same Arc.
+            let corrected = latent.matmul_add(
                 &self.markov_w2,
                 &base_logits[step_idx],
                 MatMulParams {
@@ -132,23 +155,21 @@ where
                 format!("{}.step{}.output", self.scope_name, step_idx),
             );
 
-            // 3) Sample into this step's dedicated [batch] draft-id buffer, which
-            //    step_idx + 1 gathers from. Leaked so the buffer lives as long as
-            //    the graph (same lifetime strategy as `leaked_aligned_ptr`).
-            let draft_ids: *mut usize =
-                Box::leak(vec![0usize; batch_size].into_boxed_slice()).as_mut_ptr();
+            // 3) Sample in place into `ids_buf`. Step `k + 1`'s Lookup reads
+            //    the value written here; FIFO ordering makes the overwrite safe
+            //    because this step's Lookup has already finished consuming
+            //    whatever was in `ids_buf` previously.
             corrected.sample_tokens(
-                draft_ids,
+                ids_buf,
                 batch_temperature,
                 sequence_stride,
                 format!("{}.step{}.sample", self.scope_name, step_idx),
             );
 
             corrected_all.push(corrected);
-            prev_ids = draft_ids as *const usize;
         }
 
-        (corrected_all, prev_ids)
+        (corrected_all, ids_buf as *const usize)
     }
 }
 
@@ -204,6 +225,25 @@ mod test {
 
         // proposal_len steps, each contributing lookup + matmul_add + sample.
         f32::with_operator_queue(|queue| assert_eq!(queue.len(), proposal_len * 3));
+
+        // 跨 step 复用：pool key 剥离后，corrected_all 中所有 Tensor 都
+        // 指向同一个 MemoryBlock（只有最后一次写入的值有效）。
+        let first_out = corrected_all[0].data;
+        for corrected in corrected_all.iter().skip(1) {
+            assert_eq!(
+                first_out, corrected.data,
+                "all step corrected tensors must alias the same pool block"
+            );
+        }
+
+        // ids_buf 全局唯一：返回的指针就是 ScratchPool 里 name 对应的块。
+        let sp_ptr = usize::with_scratch_pool(|sp| {
+            sp.get_init("model.draft.markov.ids_buf", batch_size, 0usize)
+        });
+        assert_eq!(
+            sp_ptr as *const usize, _last_draft_ids,
+            "returned draft pointer must be the shared ids_buf"
+        );
     }
 
     // Drain the built queue once. Left `#[ignore]`: full block-by-block draft

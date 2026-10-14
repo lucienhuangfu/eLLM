@@ -97,8 +97,10 @@ where
             ))
         };
 
-        // Packed copy now lives in the operator; free original from pool.
-        T::with_global(|pool| pool.remove(&tensor2.tensor_name));
+        // Weight 现在在 MemPool 内常驻；释放由模型 unload 统一处理，
+        // 建图期不再隐式 `pool.remove`。MatMul 自己的 packed 副本仅包含 tile 布局，
+        // 与池中 HF 原始布局并存。旧注释："Packed copies now live in the operator;
+        // free original from pool." 已不适用。
 
         Self::enqueue(operator);
         output_tensor
@@ -121,7 +123,7 @@ where
         let output_tensor = Self::from_mem_pool(output_shape, tensor_name);
 
         let operator = Operator::MatMulAdd(unsafe {
-            MatMulAdd::new(
+            MatMulAdd::new_cached(
                 self.data,
                 tensor2.data,
                 tensor3.data,
@@ -131,10 +133,13 @@ where
                 b_row,
                 column,
                 decode_only_flag,
+                &tensor2.tensor_name,
             )
         });
 
-        T::with_global(|pool| pool.remove(&tensor2.tensor_name));
+        // 权重在池中常驻，跨节点复用自然共享同一 MemoryBlock；
+        // 不再 `pool.remove`。packed_b 通过 MatMulAdd::new_cached 走
+        // `MemPool::get_packed` 缓存，同权重 + 同 params 只 pack 一次。
 
         Self::enqueue(operator);
         output_tensor
@@ -148,6 +153,7 @@ where
     /// several graph nodes (e.g. the markov head unrolled over `proposal_len`
     /// draft steps) must not let the first node drop the buffer the later nodes
     /// still read, so this variant skips the `pool.remove`.
+    #[deprecated(note = "matmul_add 已不再 pool.remove；直接使用 matmul_add 即可")]
     pub fn matmul_add_shared(
         &self,
         tensor2: &Tensor<T>,
@@ -156,32 +162,7 @@ where
         decode_only_flag: bool,
         tensor_name: String,
     ) -> Self {
-        let a_row = self.row_count();
-        let output_shape = vec![a_row, tensor2.shape[0]];
-
-        let b_row = tensor2.shape[0];
-        let column = self.last_dim();
-
-        let output_tensor = Self::from_mem_pool(output_shape, tensor_name);
-
-        let operator = Operator::MatMulAdd(unsafe {
-            MatMulAdd::new(
-                self.data,
-                tensor2.data,
-                tensor3.data,
-                output_tensor.data,
-                params,
-                a_row,
-                b_row,
-                column,
-                decode_only_flag,
-            )
-        });
-
-        // Intentionally no `pool.remove(&tensor2.tensor_name)`: the weight is
-        // reused by later graph nodes.
-        Self::enqueue(operator);
-        output_tensor
+        self.matmul_add(tensor2, tensor3, params, decode_only_flag, tensor_name)
     }
 
     pub fn matmul3(
@@ -252,12 +233,8 @@ where
             params.b_row_step_micro,
         ));
 
-        // Packed copies now live in MatMul3; free originals from pool.
-        T::with_global(|pool| {
-            pool.remove(&q_weight.tensor_name);
-            pool.remove(&k_weight.tensor_name);
-            pool.remove(&v_weight.tensor_name);
-        });
+        // 权重常驻 MemPool；不再 `pool.remove`。MatMul3 自己的 packed
+        // 副本仅在算子内部，与池中 HF 原始布局并存。
 
         Self::enqueue(operator);
         (q_state, k_state, v_state)
@@ -335,7 +312,7 @@ where
             ))
         };
 
-        T::with_global(|pool| pool.remove(&tensor2.tensor_name));
+        // 权重常驻 MemPool；不再 `pool.remove`。
 
         if trace_alignment {
             eprintln!("created MatMulTopK operator");

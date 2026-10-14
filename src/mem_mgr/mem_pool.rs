@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::allocator::AlignedBox;
+use crate::kernel::common::matmul_params::MatMulParams;
 
 static REGEX_SET: Lazy<RegexSet> = Lazy::new(|| {
     RegexSet::new(&[
@@ -14,12 +15,21 @@ static REGEX_SET: Lazy<RegexSet> = Lazy::new(|| {
         r"model.*\.input_layernorm",
         r"model.*\.post_attention_layernorm",
         r"model.*\.(q|k|v|o)_proj\.output",
+        // Markov draft head: 跨 step 复用同一 buffer。
+        // pattern 与 LAYER_SHARED_REGEX 对称，只是剥离的是 step<K>. 而非 layers.<N>.。
+        r"model\.draft\.markov\.step\d+\.(.*)",
     ])
     .unwrap()
 });
 
 static LAYER_SHARED_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"model\.layers\.\d+\.(.*)").unwrap());
+
+/// 剥离 `model.draft.markov.step<K>.` 中的 step 索引，返回 `(scope, suffix)`。
+/// 与 `LAYER_SHARED_REGEX` 完全对称，只是前缀不同。scope 保留完整前缀避免与
+/// 其他 head 的 suffix 冲突。
+static MARKOV_STEP_SHARED_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(model\.draft\.markov)\.step\d+\.(.*)").unwrap());
 
 #[derive(Debug, Clone)]
 enum MemoryBlock<T> {
@@ -91,6 +101,9 @@ pub struct MemPool<T> {
     parameters: HashMap<String, Vec<T>>,
     aligned_parameters: HashMap<String, AlignedBox<T>>,
     strict_weights: bool,
+    /// 同一权重 + 同一 tile 参数只 pack 一次，多节点共享 `Arc<AlignedBox<T>>`。
+    /// Key = (weight tensor_name, MatMulParams)。
+    packed_views: HashMap<(String, MatMulParams), Arc<AlignedBox<T>>>,
 }
 
 #[derive(Debug, Default)]
@@ -270,6 +283,7 @@ where
             parameters,
             aligned_parameters: HashMap::new(),
             strict_weights,
+            packed_views: HashMap::new(),
         };
 
         pool.merge_expert_parameters();
@@ -282,6 +296,7 @@ where
             parameters: HashMap::new(),
             aligned_parameters: parameters,
             strict_weights: true,
+            packed_views: HashMap::new(),
         };
         pool.merge_expert_parameters();
         pool
@@ -417,6 +432,26 @@ where
         ptr
     }
 
+    /// 以 `(weight_name, params)` 为 key 缓存 pack 后的 tile 布局，同一权重在多
+    /// 个静态图节点间共享同一 `Arc<AlignedBox<T>>`，避免重复 pack。
+    ///
+    /// - 命中：直接 `Arc::clone` 返回，O(1)。
+    /// - 未命中：调 `pack_fn` 一次性生成 AlignedBox，插入缓存后返回。
+    pub fn get_packed(
+        &mut self,
+        weight_name: &str,
+        params: MatMulParams,
+        pack_fn: impl FnOnce() -> AlignedBox<T>,
+    ) -> Arc<AlignedBox<T>> {
+        let key = (weight_name.to_string(), params);
+        if let Some(existing) = self.packed_views.get(&key) {
+            return Arc::clone(existing);
+        }
+        let fresh = Arc::new(pack_fn());
+        self.packed_views.insert(key, Arc::clone(&fresh));
+        fresh
+    }
+
     /// Remove a weight entry from the pool, freeing its memory.
     /// Use after packing: the operator's `Box<[T]>` holds the only copy.
     /// 从池中移除权重条目并释放内存。用于 pack 后消除双份存储。
@@ -472,6 +507,16 @@ where
             return self.blocks.get_mut(name).unwrap();
         }
 
+        // 优先处理 Markov step 剥离：pattern 3 (`model.*\.output`) 也会命中
+        // 形如 `model.draft.markov.step0.output` 的名字，若进入 matches 循环会先
+        // 命中 case 3，导致跨 step 不共享。这里在循环前先手工判一下。
+        if let Some(captures) = MARKOV_STEP_SHARED_REGEX.captures(name) {
+            let scope = captures.get(1).unwrap().as_str();
+            let suffix = captures.get(2).unwrap().as_str();
+            let key_name = format!("{scope}.{suffix}");
+            return self.get_or_allocate_full(&key_name, size, None);
+        }
+
         for m in REGEX_SET.matches(name) {
             match m {
                 0 | 3..=6 => {
@@ -519,6 +564,19 @@ where
                             return self.get_or_allocate_full(name, size, None);
                         }
                         let key_name = suffix.to_string();
+                        return self.get_or_allocate_full(&key_name, size, None);
+                    } else {
+                        return self.get_or_allocate_full(name, size, None);
+                    }
+                }
+                7 => {
+                    // Markov draft head: 跨 step 共享同一 buffer。
+                    // 剥离 step<K>. 后用 (scope, suffix) 合成 pool key，
+                    // 同 key 二次命中时 get_existing_if_valid 直接返回同一 MemoryBlock 指针。
+                    if let Some(captures) = MARKOV_STEP_SHARED_REGEX.captures(name) {
+                        let scope = captures.get(1).unwrap().as_str();
+                        let suffix = captures.get(2).unwrap().as_str();
+                        let key_name = format!("{scope}.{suffix}");
                         return self.get_or_allocate_full(&key_name, size, None);
                     } else {
                         return self.get_or_allocate_full(name, size, None);
@@ -643,5 +701,73 @@ mod test {
             assert_eq!(*sub1.add(0), 40.0f32);
             assert_eq!(*sub1.add(2), 60.0f32);
         }
+    }
+
+    #[test]
+    fn test_markov_step_shared() {
+        let parameters = HashMap::new();
+        let mut pool: MemPool<f32> = MemPool::new(parameters);
+
+        // 不同 step 的同 suffix → 剥高 step 后同一 key，同一 buffer。
+        let p0 = pool.get("model.draft.markov.step0.output", &[4, 8]);
+        let p1 = pool.get("model.draft.markov.step1.output", &[4, 8]);
+        let p7 = pool.get("model.draft.markov.step7.output", &[4, 8]);
+        assert_eq!(p0, p1, "step0/step1 output should alias");
+        assert_eq!(p0, p7, "step0/step7 output should alias");
+
+        // 同 step 不同 suffix → 独立 block。
+        let q0 = pool.get("model.draft.markov.step0.prev_embedding.output", &[4, 64]);
+        assert_ne!(p0, q0, "prev_embedding.output should not alias output");
+
+        // 不同 suffix 的不同 step 也彼此 alias。
+        let q3 = pool.get("model.draft.markov.step3.prev_embedding.output", &[4, 64]);
+        assert_eq!(q0, q3, "step0/step3 prev_embedding.output should alias");
+    }
+
+    #[test]
+    fn test_packed_views_cache() {
+        let parameters = HashMap::new();
+        let mut pool: MemPool<f32> = MemPool::new(parameters);
+
+        let params_a = MatMulParams {
+            a_row_step_macro: 3,
+            b_row_step_macro: 128,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+        let params_b = MatMulParams {
+            a_row_step_macro: 6,
+            b_row_step_macro: 128,
+            column_step_macro: 64,
+            a_row_step_micro: 3,
+            b_row_step_micro: 32,
+        };
+
+        let mut pack_calls = 0usize;
+        let a1 = pool.get_packed("w2.weight", params_a, || {
+            pack_calls += 1;
+            AlignedBox::<f32>::allocate_init(4, 1.0f32)
+        });
+        let a2 = pool.get_packed("w2.weight", params_a, || {
+            pack_calls += 1;
+            AlignedBox::<f32>::allocate_init(4, 1.0f32)
+        });
+        assert!(Arc::ptr_eq(&a1, &a2), "same (name, params) must hit cache");
+        assert_eq!(pack_calls, 1, "second lookup must not re-pack");
+
+        let b1 = pool.get_packed("w2.weight", params_b, || {
+            pack_calls += 1;
+            AlignedBox::<f32>::allocate_init(4, 2.0f32)
+        });
+        assert!(!Arc::ptr_eq(&a1, &b1), "different params → different entry");
+        assert_eq!(pack_calls, 2);
+
+        let other = pool.get_packed("w3.weight", params_a, || {
+            pack_calls += 1;
+            AlignedBox::<f32>::allocate_init(4, 3.0f32)
+        });
+        assert!(!Arc::ptr_eq(&a1, &other), "different weight name → different entry");
+        assert_eq!(pack_calls, 3);
     }
 }

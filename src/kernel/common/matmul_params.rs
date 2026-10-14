@@ -1,4 +1,4 @@
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MatMulParams {
     pub a_row_step_macro: usize,
     pub b_row_step_macro: usize,

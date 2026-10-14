@@ -5,9 +5,12 @@
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
+use std::sync::Arc;
 
 use crate::kernel;
 use crate::kernel::common::matmul_params::MatMulParams;
+use crate::mem_mgr::allocator::AlignedBox;
+use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::MatMulAddTrait;
@@ -46,7 +49,11 @@ pub struct MatMulAdd<T> {
 
     // Weight panels are packed in new(), so run() only reuses prepared memory.
     // 权重 panel 在 new() 中提前 pack，run() 中只复用已准备好的内存。
-    packed_b: Box<[T]>, // [reduction_panels][output_panels][reduction_block * micro_cols]
+    //
+    // `Arc<AlignedBox<T>>` 支持跨静态图节点共享同一份 packed 布局：同一个权重
+    // 在 `new_cached` 路径下命中 MemPool `packed_views`，多 step 只 pack 一次（如
+    // markov draft head 循环里的 `markov_w2`）。旧 `new` 路径依然会新建一份。
+    packed_b: Arc<AlignedBox<T>>, // [reduction_panels][output_panels][reduction_block * micro_cols]
     packed_panel_stride: usize, // reduction_block_cols * micro_tile_cols
 }
 
@@ -56,6 +63,9 @@ where
 {
     /// Create a residual-add matmul operator from already-transposed B weights.
     /// 从已经转置好的 B 权重创建带 residual add 的 matmul operator。
+    ///
+    /// 新建一个专属于本算子的 packed 副本，不进 MemPool 缓存；适用于
+    /// 单元测试与非共享权重路径。
     pub unsafe fn new(
         ptr1: *const T,          // A[input_rows, reduction_cols]
         ptr2_b_nt_nxk: *const T, // B_nt[output_cols, reduction_cols]
@@ -67,18 +77,45 @@ where
         k_max: usize,
         decode_only_flag: bool,
     ) -> Self {
+        let packed_b = Arc::new(Self::pack_b_panels_raw(
+            ptr2_b_nt_nxk,
+            n_max,
+            k_max,
+            params.column_step_macro.max(1),
+            params.b_row_step_micro.max(1),
+        ));
+        Self::from_parts(
+            ptr1,
+            ptr2_b_nt_nxk,
+            ptr3_residual,
+            output_ptr,
+            params,
+            m_max,
+            n_max,
+            k_max,
+            decode_only_flag,
+            packed_b,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn from_parts(
+        ptr1: *const T,
+        ptr2_b_nt_nxk: *const T,
+        ptr3_residual: *const T,
+        output_ptr: *mut T,
+        params: MatMulParams,
+        m_max: usize,
+        n_max: usize,
+        k_max: usize,
+        decode_only_flag: bool,
+        packed_b: Arc<AlignedBox<T>>,
+    ) -> Self {
         let reduction_block_cols = params.column_step_macro.max(1);
         let micro_tile_cols = params.b_row_step_micro.max(1);
         let micro_tile_rows = params.a_row_step_micro.max(1);
         let m_max = m_max.div_ceil(micro_tile_rows) * micro_tile_rows;
         let packed_panel_stride = reduction_block_cols * micro_tile_cols;
-        let packed_b = Self::pack_b_panels(
-            ptr2_b_nt_nxk,
-            n_max,
-            k_max,
-            reduction_block_cols,
-            micro_tile_cols,
-        );
 
         Self {
             ptr1: ConstPtr { ptr: ptr1 },
@@ -104,18 +141,18 @@ where
     }
 
     #[inline(always)]
-    fn pack_b_panels(
+    fn pack_b_panels_raw(
         weight_nt: *const T,
         output_cols: usize,
         reduction_cols: usize,
         reduction_block_cols: usize,
         micro_tile_cols: usize,
-    ) -> Box<[T]> {
+    ) -> AlignedBox<T> {
         let reduction_panel_count = reduction_cols.div_ceil(reduction_block_cols);
         let output_panel_count = output_cols.div_ceil(micro_tile_cols);
         let panel_stride = reduction_block_cols * micro_tile_cols;
         let total_size = reduction_panel_count * output_panel_count * panel_stride;
-        let mut packed = crate::mem_mgr::allocator::alloc_zeroed_box::<T>(total_size);
+        let mut packed = AlignedBox::<T>::allocate_zero(total_size);
 
         unsafe {
             for reduction_panel_index in 0..reduction_panel_count {
@@ -158,8 +195,6 @@ where
                 .add(panel_index * self.packed_panel_stride)
         }
     }
-
-    /// Run: copy residual into output first, then accumulate output += A * B.
     /// 执行：先把 residual 覆盖到 output，然后做 output += A * B。
     ///
     /// The run signature stays aligned with Operator.
@@ -307,6 +342,62 @@ where
 
 /* ------------------ compute default implementation ------------------ */
 /* ------------------ compute 默认实现 ------------------ */
+
+/// Cached constructor variant. Requires `T: GlobalMemPool` to reach
+/// `MemPool::get_packed`; kept in its own impl block so `MatMulAdd::new` /
+/// `run` etc. only need the lightweight `Copy + Add + Mul + Default` bounds.
+/// 带缓存的构造变体：需要访问 MemPool 才能命中 packed 缓存，因此单独开一个
+/// impl block 仅对 `new_cached` 加 `GlobalMemPool` 约束，不影响其他方法。
+impl<T> MatMulAdd<T>
+where
+    T: Copy + Add<Output = T> + Mul<Output = T> + Default + GlobalMemPool,
+{
+    /// Cached variant: same as [`new`](Self::new) but routes `packed_b` through
+    /// [`MemPool::get_packed`](crate::mem_mgr::mem_pool::MemPool::get_packed),
+    /// so multiple operators constructed with the same `(weight_name, params)`
+    /// share one `Arc<AlignedBox<T>>`.
+    /// 带缓存变体：同一权重 + 同一 tile 参数在 MemPool 内只 pack 一次，
+    /// 多 step 静态图节点共享同一份 packed 布局（如 markov draft head）。
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn new_cached(
+        ptr1: *const T,
+        ptr2_b_nt_nxk: *const T,
+        ptr3_residual: *const T,
+        output_ptr: *mut T,
+        params: MatMulParams,
+        m_max: usize,
+        n_max: usize,
+        k_max: usize,
+        decode_only_flag: bool,
+        weight_name: &str,
+    ) -> Self {
+        let reduction_block_cols = params.column_step_macro.max(1);
+        let micro_tile_cols = params.b_row_step_micro.max(1);
+        let packed_b = T::with_global(|pool| {
+            pool.get_packed(weight_name, params, || {
+                Self::pack_b_panels_raw(
+                    ptr2_b_nt_nxk,
+                    n_max,
+                    k_max,
+                    reduction_block_cols,
+                    micro_tile_cols,
+                )
+            })
+        });
+        Self::from_parts(
+            ptr1,
+            ptr2_b_nt_nxk,
+            ptr3_residual,
+            output_ptr,
+            params,
+            m_max,
+            n_max,
+            k_max,
+            decode_only_flag,
+            packed_b,
+        )
+    }
+}
 
 impl<T> MatMulAddTrait<T> for MatMulAdd<T>
 where
