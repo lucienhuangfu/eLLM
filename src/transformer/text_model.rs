@@ -288,9 +288,9 @@ mod test {
         (0..batch_size)
             .map(|batch_index| SequenceSlice {
                 batch_index,
-                next_sequence_index: batch_index,
-                token_start_index: batch_index,
-                length: 1,
+                local_next_index: batch_index,
+                global_start_index: batch_index,
+                local_length: 1,
                 last_token_flag: true,
                 lift_index: 0,
             })
@@ -302,9 +302,9 @@ mod test {
             (0..batch_size)
                 .map(|batch_index| SequenceSlice {
                     batch_index,
-                    next_sequence_index: batch_index,
-                    token_start_index: batch_index,
-                    length: 1,
+                    local_next_index: batch_index,
+                    global_start_index: batch_index,
+                    local_length: 1,
                     last_token_flag: false,
                     lift_index: 0,
                 })

@@ -176,7 +176,7 @@ where
         // 仅靠 slice 填不满线程池（如小 batch decode）：按行数比例给各
         // slice 分线程，再在 slice 内部切分 v 头维度。每个头块内的行
         // 保持串行，块之间不会竞争递推状态。
-        let slice_lengths: Vec<usize> = computing_slices.iter().map(|s| s.length).collect();
+        let slice_lengths: Vec<usize> = computing_slices.iter().map(|s| s.local_length).collect();
         let max_blocks: Vec<usize> = slice_lengths.iter().map(|_| self.num_v_heads).collect();
         if let Some(tile) =
             assign_slice_channel_tile(&slice_lengths, &max_blocks, thread_num, thread_id)
@@ -193,8 +193,8 @@ where
     // v-head range [head_begin, head_end).
     // 按序处理单个 slice 的所有行，只覆盖 [head_begin, head_end) 的 v 头。
     fn run_slice(&self, slice: &SequenceSlice, head_begin: usize, head_end: usize) {
-        for offset in 0..slice.length {
-            let next_sequence_index = slice.next_sequence_index + offset;
+        for offset in 0..slice.local_length {
+            let next_sequence_index = slice.local_next_index + offset;
             if next_sequence_index >= self.sequence_length {
                 continue;
             }
@@ -292,10 +292,10 @@ mod tests {
         // 状态与输出保持原样。
         let thread_num = 4;
         let computing_slices = [SequenceSlice {
-            token_start_index: 0,
+            global_start_index: 0,
             batch_index: 0,
-            next_sequence_index: 0,
-            length: SEQUENCE_LENGTH,
+            local_next_index: 0,
+            local_length: SEQUENCE_LENGTH,
             last_token_flag: true,
             lift_index: 0,
         }];

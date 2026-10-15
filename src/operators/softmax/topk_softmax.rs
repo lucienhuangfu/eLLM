@@ -155,7 +155,7 @@ impl<
 
         for slice in slices {
             let batch_index = slice.batch_index;
-            let slice_length = slice.length;
+            let slice_length = slice.local_length;
             // Safety: scheduler guarantees batch_index < slot_list.len()
             let record = unsafe { slot_list.get_unchecked_mut(batch_index) };
 
@@ -480,9 +480,9 @@ mod test {
             for batch_index in start..end {
                 slices.push(SequenceSlice {
                     batch_index,
-                    next_sequence_index: 1,
-                    token_start_index: batch_index,
-                    length: 1,
+                    local_next_index: 1,
+                    global_start_index: batch_index,
+                    local_length: 1,
                     last_token_flag: true,
                     lift_index: batch_index,
                 });
@@ -568,9 +568,9 @@ mod test {
 
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            next_sequence_index: 1,
-            token_start_index: 0,
-            length: 1,
+            local_next_index: 1,
+            global_start_index: 0,
+            local_length: 1,
             last_token_flag: true,
             lift_index: 0,
         }];
@@ -622,9 +622,9 @@ mod test {
 
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            next_sequence_index: 0,
-            token_start_index: 0,
-            length: 3,
+            local_next_index: 0,
+            global_start_index: 0,
+            local_length: 3,
             last_token_flag: false, // 非 last chunk，推进 3 后 filling_length=2 > 0
             lift_index: 0,
         }];
@@ -674,9 +674,9 @@ mod test {
 
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            next_sequence_index: 0,
-            token_start_index: 0,
-            length: 1,
+            local_next_index: 0,
+            global_start_index: 0,
+            local_length: 1,
             last_token_flag: false,
             lift_index: 0,
         }];
@@ -731,9 +731,9 @@ mod test {
 
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            next_sequence_index: 0,
-            token_start_index: 0,
-            length: 3,
+            local_next_index: 0,
+            global_start_index: 0,
+            local_length: 3,
             last_token_flag: true,
             lift_index: 0,
         }];
@@ -779,9 +779,9 @@ mod test {
 
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            next_sequence_index: 2,
-            token_start_index: 0,
-            length: 2,
+            local_next_index: 2,
+            global_start_index: 0,
+            local_length: 2,
             last_token_flag: false,
             lift_index: 0,
         }];
@@ -855,9 +855,9 @@ mod test {
             for batch_index in start..end {
                 slices.push(SequenceSlice {
                     batch_index,
-                    next_sequence_index: 1,
-                    token_start_index: batch_index,
-                    length: 1,
+                    local_next_index: 1,
+                    global_start_index: batch_index,
+                    local_length: 1,
                     last_token_flag: true,
                     lift_index: batch_index,
                 });

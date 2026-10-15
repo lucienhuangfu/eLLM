@@ -92,7 +92,7 @@ impl<
 
         for slice in slices {
             let batch_index = slice.batch_index;
-            let slice_length = slice.length;
+            let slice_length = slice.local_length;
             // Safety: scheduler guarantees batch_index < slot_list.len()
             let record = unsafe { slot_list.get_unchecked_mut(batch_index) };
 
@@ -280,9 +280,9 @@ mod test {
         let mut slot_list = vec![decode_state(1, 1)];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            next_sequence_index: 1,
-            token_start_index: 0,
-            length: 1,
+            local_next_index: 1,
+            global_start_index: 0,
+            local_length: 1,
             last_token_flag: true,
             lift_index: 0,
         }];
@@ -323,9 +323,9 @@ mod test {
         let mut slot_list = vec![decode_state(1, 1)];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            next_sequence_index: 1,
-            token_start_index: 0,
-            length: 1,
+            local_next_index: 1,
+            global_start_index: 0,
+            local_length: 1,
             last_token_flag: true,
             lift_index: 0,
         }];
@@ -361,9 +361,9 @@ mod test {
         let mut slot_list = vec![decode_state(1, 1)];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            next_sequence_index: 1,
-            token_start_index: 0,
-            length: 1,
+            local_next_index: 1,
+            global_start_index: 0,
+            local_length: 1,
             last_token_flag: true,
             lift_index: 0,
         }];
@@ -393,9 +393,9 @@ mod test {
         let mut slot_list = vec![decode_state(1, 1)];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            next_sequence_index: 1,
-            token_start_index: 0,
-            length: 1,
+            local_next_index: 1,
+            global_start_index: 0,
+            local_length: 1,
             last_token_flag: true,
             lift_index: 0,
         }];
@@ -431,17 +431,17 @@ mod test {
         let decode_list = vec![
             SequenceSlice {
                 batch_index: 0,
-                next_sequence_index: 1,
-                token_start_index: 0,
-                length: 1,
+                local_next_index: 1,
+                global_start_index: 0,
+                local_length: 1,
                 last_token_flag: true,
                 lift_index: 0,
             },
             SequenceSlice {
                 batch_index: 1,
-                next_sequence_index: 2,
-                token_start_index: 0,
-                length: 1,
+                local_next_index: 2,
+                global_start_index: 0,
+                local_length: 1,
                 last_token_flag: true,
                 lift_index: 1,
             },
@@ -473,9 +473,9 @@ mod test {
         let mut slot_list = vec![decode_state(7, 3)];
         let decode_list = vec![SequenceSlice {
             batch_index: 0,
-            next_sequence_index: 0,
-            token_start_index: 0,
-            length: 1,
+            local_next_index: 0,
+            global_start_index: 0,
+            local_length: 1,
             last_token_flag: false,
             lift_index: 0,
         }];

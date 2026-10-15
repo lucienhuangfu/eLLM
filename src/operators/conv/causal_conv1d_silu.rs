@@ -178,7 +178,7 @@ where
         // blocks never race on the rolling state.
         // 仅靠 slice 填不满线程池（如小 batch decode 或单条长 prefill）：按行数比例给各 slice 分线程，
         // 再在 slice 内部切分通道维度。每个通道块内的行保持串行，块之间不会竞争滚动状态。
-        let slice_lengths: Vec<usize> = computing_slices.iter().map(|s| s.length).collect();
+        let slice_lengths: Vec<usize> = computing_slices.iter().map(|s| s.local_length).collect();
         // Per-slice thread cap by head-aligned block granularity: blocks
         // thinner than MIN_CHANNEL_BLOCK would waste SIMD width, and blocks
         // cutting a head would break the norm epilogue.
@@ -211,8 +211,8 @@ where
     // channel range [channel_begin, channel_end).
     // 按序处理单个 slice 的所有行，只覆盖 [channel_begin, channel_end) 通道。
     fn run_slice(&self, slice: &SequenceSlice, channel_begin: usize, channel_end: usize) {
-        for offset in 0..slice.length {
-            let next_sequence_index = slice.next_sequence_index + offset;
+        for offset in 0..slice.local_length {
+            let next_sequence_index = slice.local_next_index + offset;
             if next_sequence_index >= self.sequence_length {
                 continue;
             }
@@ -371,10 +371,10 @@ mod tests {
         // l2norm + 1 / sqrt(head_k_dim) 缩放，k 头只做 l2norm，其余保持 0。
         let thread_num = 4;
         let computing_slices = [SequenceSlice {
-            token_start_index: 0,
+            global_start_index: 0,
             batch_index: 0,
-            next_sequence_index: 0,
-            length: M,
+            local_next_index: 0,
+            local_length: M,
             last_token_flag: true,
             lift_index: 0,
         }];

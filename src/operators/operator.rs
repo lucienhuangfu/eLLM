@@ -533,10 +533,10 @@ mod test {
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 7);
         assert_eq!(decode_size, 2);
-        assert_eq!(task.slices[0].token_start_index, 0);
-        assert_eq!(task.slices[0].length, 3);
-        assert_eq!(task.slices[1].token_start_index, 3);
-        assert_eq!(task.slices[1].length, 4);
+        assert_eq!(task.slices[0].global_start_index, 0);
+        assert_eq!(task.slices[0].local_length, 3);
+        assert_eq!(task.slices[1].global_start_index, 3);
+        assert_eq!(task.slices[1].local_length, 4);
 
         let decode_list = task.slices.clone();
 
@@ -678,8 +678,8 @@ mod test {
             );
         });
 
-        let batch0_last_row = decode_list[0].token_start_index + decode_list[0].length - 1;
-        let batch1_last_row = decode_list[1].token_start_index + decode_list[1].length - 1;
+        let batch0_last_row = decode_list[0].global_start_index + decode_list[0].local_length - 1;
+        let batch1_last_row = decode_list[1].global_start_index + decode_list[1].local_length - 1;
         assert!(attention_output[batch0_last_row * HEAD_DIM] != 0.0);
         assert!(attention_output[batch1_last_row * HEAD_DIM] != 0.0);
         assert_ne!(
@@ -936,10 +936,10 @@ mod test {
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 0);
         assert_eq!(decode_size, 2);
-        assert_eq!(task.slices[0].next_sequence_index, 3);
-        assert_eq!(task.slices[0].token_start_index, 0);
-        assert_eq!(task.slices[1].next_sequence_index, 4);
-        assert_eq!(task.slices[1].token_start_index, 1);
+        assert_eq!(task.slices[0].local_next_index, 3);
+        assert_eq!(task.slices[0].global_start_index, 0);
+        assert_eq!(task.slices[1].local_next_index, 4);
+        assert_eq!(task.slices[1].global_start_index, 1);
 
         let decode_list = task.slices.clone();
 
@@ -1200,8 +1200,8 @@ mod test {
         let decode_size = task.decode_size;
         assert_eq!(prefill_size, 3);
         assert_eq!(decode_size, 1);
-        assert_eq!(task.slices[0].next_sequence_index, 0);
-        assert_eq!(task.slices[0].length, 3);
+        assert_eq!(task.slices[0].local_next_index, 0);
+        assert_eq!(task.slices[0].local_length, 3);
         assert!(task.slices[0].last_token_flag);
 
         let decode_list = task.slices.clone();
@@ -1378,8 +1378,8 @@ mod test {
         let decode_size = task.decode_size;
         assert_eq!(decode_prefill_size, 0);
         assert_eq!(decode_size, 1);
-        assert_eq!(task.slices[0].next_sequence_index, 3);
-        assert_eq!(task.slices[0].length, 1);
+        assert_eq!(task.slices[0].local_next_index, 3);
+        assert_eq!(task.slices[0].local_length, 1);
 
         let decode_list = task.slices.clone();
         let norm_weight = vec![1.0f32; HIDDEN_SIZE];
@@ -1658,9 +1658,9 @@ mod test {
             for batch_index in start..end {
                 slices.push(SequenceSlice {
                     batch_index,
-                    next_sequence_index: 0,
-                    token_start_index: batch_index,
-                    length: 1,
+                    local_next_index: 0,
+                    global_start_index: batch_index,
+                    local_length: 1,
                     last_token_flag: true,
                     lift_index: batch_index,
                 });

@@ -56,7 +56,7 @@ impl Scheduler {
     ///
     /// Pass 1（极轻量）：decode 优先占用 chunk 预算，剩余给 prefill，
     ///         仅做整数比较/减法，无写入、无分配。
-    /// Pass 2：直接构建 Vec<SequenceSlice>，token_start_index 当场正确，
+    /// Pass 2：直接构建 Vec<SequenceSlice>，global_start_index 当场正确，
     ///         输出布局 [Prefill 0..prefill_total][Decode prefill_total..total]。
     #[inline]
     pub fn schedule_batch(&self) -> bool {
@@ -98,10 +98,10 @@ impl Scheduler {
 
                 // ===== Pass 2: 直接构建 slices，零后处理 =====
                 // 布局约定：[Prefill 0..prefill_total][Decode prefill_total..total]
-                let mut prefill_acc = 0usize;       // prefill token 在 token 布局中的偏移
+                let mut prefill_acc = 0usize; // prefill token 在 token 布局中的偏移
                 let mut remaining_budget = prefill_budget;
-                let mut lift_acc = 0usize;          // 需要采样的总行数（prefill_last + decode slice）
-                let mut decode_token_acc = 0usize;  // decode 段 token 在 token 布局中的偏移（Decode phase slice 数）
+                let mut lift_acc = 0usize; // 需要采样的总行数（prefill_last + decode slice）
+                let mut decode_token_acc = 0usize; // decode 段 token 在 token 布局中的偏移（Decode phase slice 数）
 
                 // 先推 Prefill 切片（保证在前）
                 for (batch_index, slot) in slot_list.iter().enumerate() {
@@ -122,9 +122,9 @@ impl Scheduler {
 
                         task.slices.push(SequenceSlice {
                             batch_index,
-                            next_sequence_index: slot.next_sequence_index,
-                            token_start_index: prefill_acc,
-                            length: prefill_length,
+                            local_next_index: slot.next_sequence_index,
+                            global_start_index: prefill_acc,
+                            local_length: prefill_length,
                             last_token_flag,
                             lift_index,
                         });
@@ -144,9 +144,9 @@ impl Scheduler {
 
                         task.slices.push(SequenceSlice {
                             batch_index,
-                            next_sequence_index: slot.next_sequence_index,
-                            token_start_index: prefill_total + decode_token_acc,
-                            length: 1,
+                            local_next_index: slot.next_sequence_index,
+                            global_start_index: prefill_total + decode_token_acc,
+                            local_length: 1,
                             last_token_flag: true,
                             lift_index,
                         });
@@ -367,29 +367,29 @@ mod tests {
         let total_tokens: usize = task
             .slices
             .iter()
-            .take_while(|s| s.token_start_index < task.prefill_size)
+            .take_while(|s| s.global_start_index < task.prefill_size)
             .map(|s| {
-                s.length
-                    .min(task.prefill_size.saturating_sub(s.token_start_index))
+                s.local_length
+                    .min(task.prefill_size.saturating_sub(s.global_start_index))
             })
             .sum();
         assert_eq!(total_tokens, 140);
 
         let mut sequence_length = 0;
         for slice in &task.slices {
-            if slice.token_start_index >= task.prefill_size {
+            if slice.global_start_index >= task.prefill_size {
                 break;
             }
             let effective_len = slice
-                .length
-                .min(task.prefill_size.saturating_sub(slice.token_start_index));
+                .local_length
+                .min(task.prefill_size.saturating_sub(slice.global_start_index));
             for t in 0..effective_len {
-                let global_tok = slice.token_start_index + t;
+                let global_tok = slice.global_start_index + t;
                 assert_eq!(global_tok, sequence_length);
                 if sequence_length < 60 {
-                    assert_eq!(slice.next_sequence_index + t, sequence_length);
+                    assert_eq!(slice.local_next_index + t, sequence_length);
                 } else {
-                    assert_eq!(slice.next_sequence_index + t, 100 + (sequence_length - 60));
+                    assert_eq!(slice.local_next_index + t, 100 + (sequence_length - 60));
                 }
                 sequence_length += 1;
             }
@@ -413,10 +413,10 @@ mod tests {
 
         assert_eq!(task.slices.len(), 3);
         for (idx, slice) in task.slices.iter().enumerate() {
-            assert_eq!(slice.token_start_index, idx);
-            assert_eq!(slice.length, 1);
+            assert_eq!(slice.global_start_index, idx);
+            assert_eq!(slice.local_length, 1);
             assert!(slice.last_token_flag);
-            assert_eq!(slice.next_sequence_index, idx * 10);
+            assert_eq!(slice.local_next_index, idx * 10);
         }
     }
 
@@ -450,23 +450,23 @@ mod tests {
         let dl_p1 = &task_p1.slices;
         assert_eq!(dl_p1.len(), 2);
         assert_eq!(dl_p1[0].batch_index, 0);
-        assert_eq!(dl_p1[0].next_sequence_index, 0);
-        assert_eq!(dl_p1[0].token_start_index, 0);
-        assert_eq!(dl_p1[0].length, prefill_length_a);
+        assert_eq!(dl_p1[0].local_next_index, 0);
+        assert_eq!(dl_p1[0].global_start_index, 0);
+        assert_eq!(dl_p1[0].local_length, prefill_length_a);
         assert!(dl_p1[0].last_token_flag);
         assert_eq!(dl_p1[1].batch_index, 1);
-        assert_eq!(dl_p1[1].next_sequence_index, 200);
-        assert_eq!(dl_p1[1].token_start_index, prefill_length_a);
-        assert_eq!(dl_p1[1].length, prefill_length_b);
+        assert_eq!(dl_p1[1].local_next_index, 200);
+        assert_eq!(dl_p1[1].global_start_index, prefill_length_a);
+        assert_eq!(dl_p1[1].local_length, prefill_length_b);
         assert!(dl_p1[1].last_token_flag);
 
         let prefill_token_sum: usize = task_p1
             .slices
             .iter()
-            .filter(|s| s.token_start_index < task_p1.prefill_size)
+            .filter(|s| s.global_start_index < task_p1.prefill_size)
             .map(|s| {
-                s.length
-                    .min(task_p1.prefill_size.saturating_sub(s.token_start_index))
+                s.local_length
+                    .min(task_p1.prefill_size.saturating_sub(s.global_start_index))
             })
             .sum();
         assert_eq!(prefill_token_sum, prefill_length_a + prefill_length_b);
@@ -496,30 +496,30 @@ mod tests {
 
         // Prefill 段 deque 前端 + 顺序保持原 slot_list 顺序（slot2、slot3）
         assert_eq!(dl_p2[0].batch_index, 2);
-        assert_eq!(dl_p2[0].next_sequence_index, 400);
-        assert_eq!(dl_p2[0].token_start_index, 0);
-        assert_eq!(dl_p2[0].length, prefill_length_c);
+        assert_eq!(dl_p2[0].local_next_index, 400);
+        assert_eq!(dl_p2[0].global_start_index, 0);
+        assert_eq!(dl_p2[0].local_length, prefill_length_c);
         assert!(dl_p2[0].last_token_flag);
         assert_eq!(dl_p2[1].batch_index, 3);
-        assert_eq!(dl_p2[1].next_sequence_index, 600);
-        assert_eq!(dl_p2[1].token_start_index, prefill_length_c);
-        assert_eq!(dl_p2[1].length, prefill_length_d);
+        assert_eq!(dl_p2[1].local_next_index, 600);
+        assert_eq!(dl_p2[1].global_start_index, prefill_length_c);
+        assert_eq!(dl_p2[1].local_length, prefill_length_d);
         assert!(dl_p2[1].last_token_flag);
 
         let expected_decode_offset = prefill_length_c + prefill_length_d;
         assert_eq!(dl_p2[2].batch_index, 0);
-        assert_eq!(dl_p2[2].token_start_index, expected_decode_offset + 0);
-        assert_eq!(dl_p2[2].length, 1);
+        assert_eq!(dl_p2[2].global_start_index, expected_decode_offset + 0);
+        assert_eq!(dl_p2[2].local_length, 1);
         assert!(dl_p2[2].last_token_flag);
         assert_eq!(dl_p2[3].batch_index, 1);
-        assert_eq!(dl_p2[3].token_start_index, expected_decode_offset + 1);
-        assert_eq!(dl_p2[3].length, 1);
+        assert_eq!(dl_p2[3].global_start_index, expected_decode_offset + 1);
+        assert_eq!(dl_p2[3].local_length, 1);
         assert!(dl_p2[3].last_token_flag);
 
         for i in 1..dl_p2.len() {
             assert!(
-                dl_p2[i].token_start_index > dl_p2[i - 1].token_start_index,
-                "slices token_start_index should be strictly increasing"
+                dl_p2[i].global_start_index > dl_p2[i - 1].global_start_index,
+                "slices global_start_index should be strictly increasing"
             );
         }
 
@@ -541,8 +541,8 @@ mod tests {
         let dl_p3 = &task_p3.slices;
         assert_eq!(dl_p3.len(), 4);
         for (idx, slice) in dl_p3.iter().enumerate() {
-            assert_eq!(slice.token_start_index, idx);
-            assert_eq!(slice.length, 1);
+            assert_eq!(slice.global_start_index, idx);
+            assert_eq!(slice.local_length, 1);
             assert!(slice.last_token_flag);
             assert_eq!(slice.batch_index, idx);
         }
@@ -601,22 +601,22 @@ mod tests {
 
         // Prefill 段 push_front，在前面；Decode 段 push_back，在后面
         assert_eq!(dl[0].batch_index, 3);
-        assert_eq!(dl[0].token_start_index, 0);
-        assert_eq!(dl[0].length, 50);
+        assert_eq!(dl[0].global_start_index, 0);
+        assert_eq!(dl[0].local_length, 50);
 
         assert_eq!(dl[1].batch_index, 0);
-        assert_eq!(dl[1].token_start_index, 50 + 0);
-        assert_eq!(dl[1].length, 1);
+        assert_eq!(dl[1].global_start_index, 50 + 0);
+        assert_eq!(dl[1].local_length, 1);
 
         assert_eq!(dl[2].batch_index, 1);
-        assert_eq!(dl[2].token_start_index, 50 + 1);
-        assert_eq!(dl[2].length, 1);
+        assert_eq!(dl[2].global_start_index, 50 + 1);
+        assert_eq!(dl[2].local_length, 1);
 
         assert_eq!(dl[3].batch_index, 2);
-        assert_eq!(dl[3].token_start_index, 50 + 2);
-        assert_eq!(dl[3].length, 1);
+        assert_eq!(dl[3].global_start_index, 50 + 2);
+        assert_eq!(dl[3].local_length, 1);
 
-        let total: usize = dl.iter().map(|s| s.length).sum();
+        let total: usize = dl.iter().map(|s| s.local_length).sum();
         assert_eq!(total, 50 + 3);
     }
 
@@ -644,18 +644,18 @@ mod tests {
         assert_eq!(dl.len(), 3);
 
         assert_eq!(dl[0].batch_index, 2);
-        assert_eq!(dl[0].token_start_index, 0);
-        assert_eq!(dl[0].length, expected_prefill);
+        assert_eq!(dl[0].global_start_index, 0);
+        assert_eq!(dl[0].local_length, expected_prefill);
         assert!(!dl[0].last_token_flag);
 
         assert_eq!(dl[1].batch_index, 0);
-        assert_eq!(dl[1].token_start_index, expected_prefill + 0);
-        assert_eq!(dl[1].length, 1);
+        assert_eq!(dl[1].global_start_index, expected_prefill + 0);
+        assert_eq!(dl[1].local_length, 1);
         assert!(dl[1].last_token_flag);
 
         assert_eq!(dl[2].batch_index, 1);
-        assert_eq!(dl[2].token_start_index, expected_prefill + 1);
-        assert_eq!(dl[2].length, 1);
+        assert_eq!(dl[2].global_start_index, expected_prefill + 1);
+        assert_eq!(dl[2].local_length, 1);
         assert!(dl[2].last_token_flag);
     }
 }

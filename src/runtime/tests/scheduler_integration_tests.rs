@@ -275,18 +275,18 @@ fn test_slices_token_layout_prefill_then_decode() {
     assert_eq!(slices.len(), 3);
 
     assert_eq!(slices[0].batch_index, 2);
-    assert_eq!(slices[0].token_start_index, 0);
-    assert_eq!(slices[0].length, 50);
+    assert_eq!(slices[0].global_start_index, 0);
+    assert_eq!(slices[0].local_length, 50);
 
     assert_eq!(slices[1].batch_index, 0);
-    assert_eq!(slices[1].token_start_index, 50);
-    assert_eq!(slices[1].length, 1);
+    assert_eq!(slices[1].global_start_index, 50);
+    assert_eq!(slices[1].local_length, 1);
 
     assert_eq!(slices[2].batch_index, 1);
-    assert_eq!(slices[2].token_start_index, 51);
-    assert_eq!(slices[2].length, 1);
+    assert_eq!(slices[2].global_start_index, 51);
+    assert_eq!(slices[2].local_length, 1);
 
-    let total: usize = slices.iter().map(|s| s.length).sum();
+    let total: usize = slices.iter().map(|s| s.local_length).sum();
     assert_eq!(total, 50 + 2);
 }
 
@@ -300,12 +300,15 @@ fn test_prefill_slices_sum_matches() {
 
     assert_eq!(task.prefill_size, 140);
 
-    // prefill token 全部在 slices 前半段（token_start_index < prefill_size）
+    // prefill token 全部在 slices 前半段（global_start_index < prefill_size）
     let total: usize = task
         .slices
         .iter()
-        .filter(|s| s.token_start_index < task.prefill_size)
-        .map(|s| s.length.min(task.prefill_size.saturating_sub(s.token_start_index)))
+        .filter(|s| s.global_start_index < task.prefill_size)
+        .map(|s| {
+            s.local_length
+                .min(task.prefill_size.saturating_sub(s.global_start_index))
+        })
         .sum();
     assert_eq!(total, 140);
 }

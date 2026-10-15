@@ -100,7 +100,7 @@ where
     pub fn sample_block_tokens(
         &self,
         base_logits: &[Tensor<T>], // len == proposal_len, each [batch, vocab]
-        first_prev_token_ids: *const usize, // [batch], token preceding the block
+        first_prev_token_ids: *mut usize, // [batch], token preceding the block
         batch_temperature: *mut T, // [batch]
         batch_size: usize,
     ) -> (Vec<Tensor<T>>, *const usize) {
@@ -112,21 +112,17 @@ where
         // 单一 in-place `ids_buf`：所有 step 的 Sample 都写这里，Lookup(k+1) 也读
         // 这里。走 ScratchPool 同 name 幂复用，无需 N 次 `Box::leak`。
         let ids_buf: *mut usize = usize::with_scratch_pool(|sp| {
-            sp.get_init(
-                "model.draft.markov.ids_buf",
-                batch_size,
-                0usize,
-            )
+            sp.get_init("model.draft.markov.ids_buf", batch_size, 0usize)
         });
 
         for step_idx in 0..proposal_len {
             // 1) Gather the previous token's latent vector: [batch, markov_rank].
             //    Step 0 reads the external seed; steps 1..N read the shared
             //    `ids_buf` written by the previous step's Sample.
-            let prev_ids: *const usize = if step_idx == 0 {
+            let prev_ids: *mut usize = if step_idx == 0 {
                 first_prev_token_ids
             } else {
-                ids_buf as *const usize
+                ids_buf
             };
             let latent = Tensor::lookup(
                 prev_ids,
@@ -208,12 +204,12 @@ mod test {
             })
             .collect();
 
-        let first_prev_token_ids = vec![0usize; batch_size];
+        let mut first_prev_token_ids = vec![0usize; batch_size];
         let mut batch_temperature = vec![0.0f32; batch_size];
 
         let (corrected_all, _last_draft_ids) = head.sample_block_tokens(
             &base_logits,
-            first_prev_token_ids.as_ptr(),
+            first_prev_token_ids.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
             batch_size,
         );
@@ -275,12 +271,12 @@ mod test {
             })
             .collect();
 
-        let first_prev_token_ids = vec![0usize; batch_size];
+        let mut first_prev_token_ids = vec![0usize; batch_size];
         let mut batch_temperature = vec![0.0f32; batch_size];
 
         let _ = head.sample_block_tokens(
             &base_logits,
-            first_prev_token_ids.as_ptr(),
+            first_prev_token_ids.as_mut_ptr(),
             batch_temperature.as_mut_ptr(),
             batch_size,
         );

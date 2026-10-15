@@ -979,18 +979,18 @@ where
                     continue;
                 }
 
-                let q_slice_ptr = q_ptr.add(slice.token_start_index * q_token_stride);
-                let output_slice_ptr = output_ptr.add(slice.token_start_index * q_token_stride);
+                let q_slice_ptr = q_ptr.add(slice.global_start_index * q_token_stride);
+                let output_slice_ptr = output_ptr.add(slice.global_start_index * q_token_stride);
                 let k_batch_ptr = k_ptr.add(slice.batch_index * self.k_batch_stride);
                 let v_batch_ptr = v_ptr.add(slice.batch_index * self.v_batch_stride);
-                let col_end = slice.next_sequence_index + slice.length;
-                let aligned_len = slice.length / self.row_step * self.row_step;
+                let col_end = slice.local_next_index + slice.local_length;
+                let aligned_len = slice.local_length / self.row_step * self.row_step;
                 let use_head_split = self.force_head_split
-                    || (slice.length > 0
+                    || (slice.local_length > 0
                         && thread_num > 0
-                        && slice.length.div_ceil(self.row_step.max(1)) < thread_num);
+                        && slice.local_length.div_ceil(self.row_step.max(1)) < thread_num);
                 let use_head_row_split =
-                    self.head_row_split && self.brgemm_backend && slice.length > 1;
+                    self.head_row_split && self.brgemm_backend && slice.local_length > 1;
 
                 let use_grouped_sequence_split = self.hybrid_split
                     && !use_head_split
@@ -998,7 +998,7 @@ where
                     && thread_num > self.kv_head_num
                     && self.kv_head_num > 1
                     && attention_heads_per_kv > 1
-                    && slice.length >= thread_num;
+                    && slice.local_length >= thread_num;
                 if self.profile_split && thread_id == 0 {
                     let mode = if use_head_row_split {
                         "head-row"
@@ -1012,7 +1012,7 @@ where
                     let row_parts_per_kv = thread_num.div_ceil(self.kv_head_num.max(1)).max(1);
                     eprintln!(
                         "attention_split mode={mode} slice_len={} aligned_len={} thread_num={} q_heads={} kv_heads={} q_per_kv={} row_step={} col_step={} row_parts_per_kv={} hybrid_enabled={}",
-                        slice.length,
+                        slice.local_length,
                         aligned_len,
                         thread_num,
                         self.attention_head_num,
@@ -1031,9 +1031,9 @@ where
                         output_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
-                        slice.next_sequence_index,
+                        slice.local_next_index,
                         col_end,
-                        slice.length,
+                        slice.local_length,
                         thread_num,
                         thread_id,
                         attention_heads_per_kv,
@@ -1046,9 +1046,9 @@ where
                         output_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
-                        slice.next_sequence_index,
+                        slice.local_next_index,
                         col_end,
-                        slice.length,
+                        slice.local_length,
                         aligned_len,
                         thread_num,
                         thread_id,
@@ -1062,9 +1062,9 @@ where
                         output_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
-                        slice.next_sequence_index,
+                        slice.local_next_index,
                         col_end,
-                        slice.length,
+                        slice.local_length,
                         aligned_len,
                         thread_num,
                         thread_id,
@@ -1078,9 +1078,9 @@ where
                         output_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
-                        slice.next_sequence_index,
+                        slice.local_next_index,
                         col_end,
-                        slice.length,
+                        slice.local_length,
                         aligned_len,
                         thread_num,
                         thread_id,
@@ -1204,15 +1204,15 @@ mod tests {
         attention.causal_col_prune = true;
 
         let slices = vec![SequenceSlice {
-            token_start_index: 0,
+            global_start_index: 0,
             batch_index: 0,
-            next_sequence_index: 0,
-            length: 3,
+            local_next_index: 0,
+            local_length: 3,
             last_token_flag: false,
             lift_index: 0,
         }];
 
-        attention.run(slices.iter().map(|s| s.length).sum(), &slices, 1, 0);
+        attention.run(slices.iter().map(|s| s.local_length).sum(), &slices, 1, 0);
 
         for row in 0..3 {
             let expected = naive_attention_row(
@@ -1276,15 +1276,15 @@ mod tests {
         );
 
         let slice = vec![SequenceSlice {
-            token_start_index: 0,
+            global_start_index: 0,
             batch_index: 1,
-            next_sequence_index: 0,
-            length: seq_len,
+            local_next_index: 0,
+            local_length: seq_len,
             last_token_flag: false,
             lift_index: 0,
         }];
 
-        attention.run(slice.iter().map(|s| s.length).sum(), &slice, 1, 0);
+        attention.run(slice.iter().map(|s| s.local_length).sum(), &slice, 1, 0);
 
         let batch1_k_base = kv_heads * head_size;
         let batch1_k = [
@@ -1355,15 +1355,15 @@ mod tests {
         );
 
         let slices = vec![SequenceSlice {
-            token_start_index: 0,
+            global_start_index: 0,
             batch_index: 0,
-            next_sequence_index: 0,
-            length: 3,
+            local_next_index: 0,
+            local_length: 3,
             last_token_flag: false,
             lift_index: 0,
         }];
 
         // 不 panic 即通过（stub 为空实现，不产出 attention 数值）。
-        attention.run(slices.iter().map(|s| s.length).sum(), &slices, 1, 0);
+        attention.run(slices.iter().map(|s| s.local_length).sum(), &slices, 1, 0);
     }
 }

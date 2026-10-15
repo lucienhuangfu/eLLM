@@ -69,7 +69,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let s = &computing_slices[mid];
-            if s.token_start_index + s.length <= begin {
+            if s.global_start_index + s.local_length <= begin {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -91,12 +91,12 @@ impl<T: Sqrt> LookupRMSMap<T> {
                 break;
             }
             // Gap between slices — no tokens to process.
-            if token_cursor < slice.token_start_index {
+            if token_cursor < slice.global_start_index {
                 break;
             }
 
-            let slice_end = (slice.token_start_index + slice.length).min(end);
-            let mut position = slice.next_sequence_index + (token_cursor - slice.token_start_index);
+            let slice_end = (slice.global_start_index + slice.local_length).min(end);
+            let mut position = slice.local_next_index + (token_cursor - slice.global_start_index);
 
             while token_cursor < slice_end {
                 unsafe {
@@ -175,9 +175,9 @@ mod test {
         for i in 0..batch_size {
             computing_slices.push(SequenceSlice {
                 batch_index: i,
-                next_sequence_index: 0,
-                token_start_index: i,
-                length: 1,
+                local_next_index: 0,
+                global_start_index: i,
+                local_length: 1,
                 last_token_flag: false,
                 lift_index: 0,
             });
@@ -262,33 +262,33 @@ mod test {
         let decode_list = vec![
             SequenceSlice {
                 batch_index: 0,
-                next_sequence_index: 0,
-                token_start_index: 0,
-                length: 1,
+                local_next_index: 0,
+                global_start_index: 0,
+                local_length: 1,
                 last_token_flag: false,
                 lift_index: 0,
             },
             SequenceSlice {
                 batch_index: 1,
-                next_sequence_index: 0,
-                token_start_index: 1,
-                length: 1,
+                local_next_index: 0,
+                global_start_index: 1,
+                local_length: 1,
                 last_token_flag: false,
                 lift_index: 0,
             },
             SequenceSlice {
                 batch_index: 2,
-                next_sequence_index: 0,
-                token_start_index: 2,
-                length: 1,
+                local_next_index: 0,
+                global_start_index: 2,
+                local_length: 1,
                 last_token_flag: false,
                 lift_index: 0,
             },
             SequenceSlice {
                 batch_index: 3,
-                next_sequence_index: 0,
-                token_start_index: 3,
-                length: 1,
+                local_next_index: 0,
+                global_start_index: 3,
+                local_length: 1,
                 last_token_flag: false,
                 lift_index: 0,
             },
@@ -341,17 +341,17 @@ mod test {
         let computing_slices = vec![
             SequenceSlice {
                 batch_index: 0,
-                next_sequence_index: 1,
-                token_start_index: 0,
-                length: 2,
+                local_next_index: 1,
+                global_start_index: 0,
+                local_length: 2,
                 last_token_flag: false,
                 lift_index: 0,
             },
             SequenceSlice {
                 batch_index: 1,
-                next_sequence_index: 0,
-                token_start_index: 2,
-                length: 2,
+                local_next_index: 0,
+                global_start_index: 2,
+                local_length: 2,
                 last_token_flag: false,
                 lift_index: 0,
             },

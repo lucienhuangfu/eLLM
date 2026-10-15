@@ -25,7 +25,7 @@ impl<T> LiftVector<T> {
         thread_id: usize,
     ) {
         // Sources and destinations share storage. Scheduler slices are ordered by
-        // token_start_index, with lift_index <= the source row. A single worker
+        // global_start_index, with lift_index <= the source row. A single worker
         // must compact them in that order so another worker cannot overwrite a
         // source before it has been read.
         if thread_num == 0 || thread_id != 0 {
@@ -38,7 +38,7 @@ impl<T> LiftVector<T> {
                     continue;
                 }
 
-                let source_token_index = slice.token_start_index + slice.length - 1;
+                let source_token_index = slice.global_start_index + slice.local_length - 1;
                 let destination_index = slice.lift_index;
                 let source_ptr = ptr.add(source_token_index * self.length);
                 let destination_ptr = ptr.add(destination_index * self.length);
@@ -60,10 +60,22 @@ mod test {
     fn compaction_does_not_depend_on_worker_order() {
         let mut data = vec![10.0f32, 20.0, 30.0];
         let slices = vec![
-            SequenceSlice { batch_index: 0, next_sequence_index: 0,
-                token_start_index: 0, length: 2, last_token_flag: true, lift_index: 0 },
-            SequenceSlice { batch_index: 1, next_sequence_index: 4,
-                token_start_index: 2, length: 1, last_token_flag: true, lift_index: 1 },
+            SequenceSlice {
+                batch_index: 0,
+                local_next_index: 0,
+                global_start_index: 0,
+                local_length: 2,
+                last_token_flag: true,
+                lift_index: 0,
+            },
+            SequenceSlice {
+                batch_index: 1,
+                local_next_index: 4,
+                global_start_index: 2,
+                local_length: 1,
+                last_token_flag: true,
+                lift_index: 1,
+            },
         ];
         let operator = LiftVector::new(data.as_mut_ptr(), 1);
         operator.run(3, &slices, 2, 1);
@@ -82,25 +94,25 @@ mod test {
         let decode_list = vec![
             SequenceSlice {
                 batch_index: 0,
-                next_sequence_index: 0,
-                token_start_index: 2,
-                length: 1,
+                local_next_index: 0,
+                global_start_index: 2,
+                local_length: 1,
                 last_token_flag: true,
                 lift_index: 0,
             },
             SequenceSlice {
                 batch_index: 0,
-                next_sequence_index: 0,
-                token_start_index: 2,
-                length: 2,
+                local_next_index: 0,
+                global_start_index: 2,
+                local_length: 2,
                 last_token_flag: true,
                 lift_index: 1,
             },
             SequenceSlice {
                 batch_index: 0,
-                next_sequence_index: 0,
-                token_start_index: 2,
-                length: 3,
+                local_next_index: 0,
+                global_start_index: 2,
+                local_length: 3,
                 last_token_flag: true,
                 lift_index: 2,
             },

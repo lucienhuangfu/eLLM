@@ -448,15 +448,20 @@ where
                 .collect();
         }
 
-        let mut rows = Vec::with_capacity(computing_slices.iter().map(|slice| slice.length).sum());
+        let mut rows = Vec::with_capacity(
+            computing_slices
+                .iter()
+                .map(|slice| slice.local_length)
+                .sum(),
+        );
         for slice in computing_slices {
             if slice.batch_index >= self.batch_size {
                 continue;
             }
 
-            for offset in 0..slice.length {
-                let token_index = slice.token_start_index + offset;
-                let next_sequence_index = slice.next_sequence_index + offset;
+            for offset in 0..slice.local_length {
+                let token_index = slice.global_start_index + offset;
+                let next_sequence_index = slice.local_next_index + offset;
                 if token_index >= self.m_row || next_sequence_index >= self.sequence_length {
                     continue;
                 }

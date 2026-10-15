@@ -81,7 +81,7 @@ impl FakeEcho {
 
         let is_prefill = matches!(record.phase, Phase::Prefill);
         let prompt_length = if is_prefill {
-            slice.next_sequence_index + slice.length
+            slice.local_next_index + slice.local_length
         } else {
             record.prompt_length
         };
@@ -153,9 +153,9 @@ mod tests {
     fn make_slice(batch: usize, len: usize) -> SequenceSlice {
         SequenceSlice {
             batch_index: batch,
-            next_sequence_index: 0,
-            token_start_index: 0,
-            length: len,
+            local_next_index: 0,
+            global_start_index: 0,
+            local_length: len,
             last_token_flag: true,
             lift_index: 0,
         }
@@ -170,17 +170,35 @@ mod tests {
         let mut batch = vec![prefill_state(0, 0)];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
+        echo.run(
+            dl.iter().map(|s| s.local_length).sum(),
+            1,
+            0,
+            &dl,
+            &mut batch,
+        );
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 1);
         assert_eq!(seq[PRE_COUNT], 10);
 
         for i in 1..5 {
-            echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
+            echo.run(
+                dl.iter().map(|s| s.local_length).sum(),
+                1,
+                0,
+                &dl,
+                &mut batch,
+            );
             assert_eq!(seq[PRE_COUNT + i], (i + 1) * 10);
         }
 
-        echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
+        echo.run(
+            dl.iter().map(|s| s.local_length).sum(),
+            1,
+            0,
+            &dl,
+            &mut batch,
+        );
         assert_eq!(batch[0].phase, Phase::Eos);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 6);
         assert_eq!(seq[PRE_COUNT + 5], EOS);
@@ -195,7 +213,13 @@ mod tests {
         let mut batch = vec![decode_state(PRE_COUNT, PRE_COUNT)];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
+        echo.run(
+            dl.iter().map(|s| s.local_length).sum(),
+            1,
+            0,
+            &dl,
+            &mut batch,
+        );
 
         assert_eq!(batch[0].phase, Phase::Eos);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 1);
@@ -211,11 +235,23 @@ mod tests {
         let mut batch = vec![decode_state(PRE_COUNT, PRE_COUNT)];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
+        echo.run(
+            dl.iter().map(|s| s.local_length).sum(),
+            1,
+            0,
+            &dl,
+            &mut batch,
+        );
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(seq[PRE_COUNT], 42);
 
-        echo.run(dl.iter().map(|s| s.length).sum(), 1, 0, &dl, &mut batch);
+        echo.run(
+            dl.iter().map(|s| s.local_length).sum(),
+            1,
+            0,
+            &dl,
+            &mut batch,
+        );
         assert_eq!(batch[0].phase, Phase::Eos);
         assert_eq!(seq[PRE_COUNT + 1], EOS);
     }
@@ -229,7 +265,13 @@ mod tests {
         let mut batch = vec![prefill_state(PRE_COUNT, 0)];
         let dl = vec![make_slice(0, PRE_COUNT)];
 
-        echo.run(dl.iter().map(|s| s.length).sum(), 2, 0, &dl, &mut batch);
+        echo.run(
+            dl.iter().map(|s| s.local_length).sum(),
+            2,
+            0,
+            &dl,
+            &mut batch,
+        );
 
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(batch[0].next_sequence_index, PRE_COUNT + 1);
@@ -255,8 +297,20 @@ mod tests {
             make_slice(2, PRE_COUNT),
         ];
 
-        echo.run(dl.iter().map(|s| s.length).sum(), 2, 0, &dl, &mut batch);
-        echo.run(dl.iter().map(|s| s.length).sum(), 2, 1, &dl, &mut batch);
+        echo.run(
+            dl.iter().map(|s| s.local_length).sum(),
+            2,
+            0,
+            &dl,
+            &mut batch,
+        );
+        echo.run(
+            dl.iter().map(|s| s.local_length).sum(),
+            2,
+            1,
+            &dl,
+            &mut batch,
+        );
 
         assert_eq!(batch[0].phase, Phase::Decode);
         assert_eq!(batch[1].phase, Phase::Decode);

@@ -160,9 +160,9 @@ where
     fn build_row_map(&self, computing_slices: &[SequenceSlice]) -> Vec<(usize, usize, usize)> {
         let mut rows = Vec::new();
         for slice in computing_slices {
-            for offset in 0..slice.length {
-                let token_index = slice.token_start_index + offset;
-                let next_sequence_index = slice.next_sequence_index + offset;
+            for offset in 0..slice.local_length {
+                let token_index = slice.global_start_index + offset;
+                let next_sequence_index = slice.local_next_index + offset;
                 if token_index >= self.m_max || next_sequence_index >= self.sequence_length {
                     continue;
                 }
@@ -359,10 +359,10 @@ mod tests {
         // compute 为空期间：只验证不 panic、分区覆盖完整。
         let thread_num = 4;
         let computing_slices = [SequenceSlice {
-            token_start_index: 0,
+            global_start_index: 0,
             batch_index: 0,
-            next_sequence_index: 0,
-            length: M,
+            local_next_index: 0,
+            local_length: M,
             last_token_flag: true,
             lift_index: 0,
         }];
