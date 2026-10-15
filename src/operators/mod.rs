@@ -76,11 +76,11 @@ pub mod matmul {
 }
 
 pub mod movement {
+    pub mod head_lookup;
     pub mod lift_vector;
-    pub mod lookup;
 
+    pub use head_lookup::HeadLookup;
     pub use lift_vector::LiftVector;
-    pub use lookup::Lookup;
 }
 
 pub mod testing {

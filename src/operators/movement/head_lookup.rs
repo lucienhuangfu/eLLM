@@ -8,7 +8,7 @@ use crate::runtime::SequenceSlice;
 // scheduled token into the token buffer. This is the lookup half of
 // LookupRMSMap, kept as an independent operator without RMS normalization.
 #[derive(Clone)]
-pub struct Lookup<T> {
+pub struct HeadLookup<T> {
     pub sequences_ptr: ConstPtr<usize>,
     word_embedding: ConstPtr<T>,
     pub output_ptr: MutPtr<T>,
@@ -16,8 +16,8 @@ pub struct Lookup<T> {
     hidden_size: usize,
 }
 
-impl<T: Copy> Lookup<T> {
-    // Constructor for Lookup
+impl<T: Copy> HeadLookup<T> {
+    // Constructor for HeadLookup
     pub fn new(
         sequences_ptr: *const usize,
         word_embedding: *const T,
@@ -105,7 +105,7 @@ mod test {
     use approx::assert_ulps_eq;
 
     #[test]
-    fn test_lookup_f32() {
+    fn test_head_lookup_f32() {
         let batch_size = 10; // Each batch processes 10 elements
         let hidden_size = 18;
         let vocab_size = 10;
@@ -138,8 +138,8 @@ mod test {
             .collect();
         let mut output_data: Vec<f32> = vec![0.0; length];
 
-        // Initialize Lookup with these chunks and length
-        let o = Lookup::new(
+        // Initialize HeadLookup with these chunks and length
+        let o = HeadLookup::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
             output_data.as_mut_ptr(),
@@ -159,7 +159,7 @@ mod test {
     }
 
     #[test]
-    fn test_lookup_decode_f32_uses_assigned_decode_list() {
+    fn test_head_lookup_decode_f32_uses_assigned_decode_list() {
         let batch_size = 4;
         let hidden_size = 4;
         let vocab_size = 4;
@@ -206,7 +206,7 @@ mod test {
             },
         ];
 
-        let operator = Lookup::new(
+        let operator = HeadLookup::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
             output_data.as_mut_ptr(),
@@ -223,7 +223,7 @@ mod test {
     }
 
     #[test]
-    fn test_lookup_prefill_reads_row_major_slot_sequence_storage() {
+    fn test_head_lookup_prefill_reads_row_major_slot_sequence_storage() {
         let sequence_stride = 5;
         let hidden_size = 2;
 
@@ -257,7 +257,7 @@ mod test {
             },
         ];
 
-        let operator = Lookup::new(
+        let operator = HeadLookup::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
             output_data.as_mut_ptr(),

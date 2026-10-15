@@ -2,7 +2,7 @@ use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
-use crate::operators::movement::{LiftVector, Lookup};
+use crate::operators::movement::{HeadLookup, LiftVector};
 use crate::operators::operator::Operator;
 use crate::operators::routing::SampleTokens;
 use crate::operators::transform::{
@@ -115,7 +115,7 @@ where
             format!("{}.output", scope_name),
         );
 
-        let operator = Operator::Lookup(Lookup::new(
+        let operator = Operator::HeadLookup(HeadLookup::new(
             sequences_ptr,
             word_embedding.data,
             output_tensor.data,

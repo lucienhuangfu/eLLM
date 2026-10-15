@@ -8,7 +8,7 @@
 //! draft block. Steps are chained through per-step draft-id buffers: step `k`
 //! samples into its own `[batch]` buffer, which step `k + 1` gathers from. This
 //! relies on the replay model running operators in enqueue order (each operator
-//! completes before the next), so `SampleTokens(k)` precedes `Lookup(k + 1)`.
+//! completes before the next), so `SampleTokens(k)` precedes `HeadLookup(k + 1)`.
 //!
 //! Only the `Vanilla` variant is ported. `hidden_states` is dropped by the
 //! Vanilla Python (`del`), so it is not part of the graph here either.
@@ -86,7 +86,7 @@ where
     /// Each step: `lookup(prev token) -> matmul_add(bias + base_logits)
     /// -> sample_tokens(write ids_buf in place)`. All graph nodes reuse the same
     /// `ids_buf` scratch: FIFO replay guarantees `Sample(k)` completes before
-    /// `Lookup(k + 1)` starts, so overwriting `ids_buf` is safe. `MemPool`
+    /// `HeadLookup(k + 1)` starts, so overwriting `ids_buf` is safe. `MemPool`
     /// regex stripping collapses `step<K>.` names to a single `MemoryBlock`,
     /// aliasing `latent` and `corrected` across steps as well.
     ///
@@ -109,7 +109,7 @@ where
         let sequence_stride = 1usize;
         let mut corrected_all = Vec::with_capacity(proposal_len);
 
-        // 单一 in-place `ids_buf`：所有 step 的 Sample 都写这里，Lookup(k+1) 也读
+        // 单一 in-place `ids_buf`：所有 step 的 Sample 都写这里，HeadLookup(k+1) 也读
         // 这里。走 ScratchPool 同 name 幂复用，无需 N 次 `Box::leak`。
         let ids_buf: *mut usize = usize::with_scratch_pool(|sp| {
             sp.get_init("model.draft.markov.ids_buf", batch_size, 0usize)
@@ -151,9 +151,9 @@ where
                 format!("{}.step{}.output", self.scope_name, step_idx),
             );
 
-            // 3) Sample in place into `ids_buf`. Step `k + 1`'s Lookup reads
+            // 3) Sample in place into `ids_buf`. Step `k + 1`'s HeadLookup reads
             //    the value written here; FIFO ordering makes the overwrite safe
-            //    because this step's Lookup has already finished consuming
+            //    because this step's HeadLookup has already finished consuming
             //    whatever was in `ids_buf` previously.
             corrected.sample_tokens(
                 ids_buf,

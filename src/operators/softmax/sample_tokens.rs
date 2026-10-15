@@ -30,6 +30,10 @@ pub struct SampleTokens<T> {
     batch_temperature: *mut T,
     sequence_stride: usize,
     vocab_size: usize,
+    // Speculative-decoding proposal window: total proposal length and the
+    // index of the current proposal slot (starts at 0).
+    proposal_len: usize,
+    proposal_index: usize,
 }
 
 // SampleTokens carries raw pointers across thread boundaries; the scheduler
@@ -63,6 +67,8 @@ impl<
             batch_temperature,
             sequence_stride,
             vocab_size,
+            proposal_len: 0,
+            proposal_index: 0,
         }
     }
 

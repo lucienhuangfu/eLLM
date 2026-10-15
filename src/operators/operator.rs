@@ -22,8 +22,8 @@ use crate::operators::expert::{
     SharedExpertMatMulSilu, SharedExpertMergeAdd,
 };
 use crate::operators::linear::MatMulProj;
+use crate::operators::movement::HeadLookup;
 use crate::operators::movement::LiftVector;
-use crate::operators::movement::Lookup;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddZipMap;
 use crate::operators::transform::SigmoidMap;
@@ -56,7 +56,7 @@ pub enum Operator<T>
     ExpertSoftmaxNorm(ExpertSoftmaxNorm<T>),
     ExpertTopkNorm(ExpertTopkNorm<T>),
     LiftVector(LiftVector<T>),
-    Lookup(Lookup<T>),
+    HeadLookup(HeadLookup<T>),
     LookupRMSMap(LookupRMSMap<T>),
     MatMul(MatMul<T>),
     MatMul3(MatMul3<T>),
@@ -216,7 +216,7 @@ where
             Self::LiftVector(operator) => {
                 operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
-            Self::Lookup(operator) => {
+            Self::HeadLookup(operator) => {
                 operator.run(total_size, cpu_num, thread_id, computing_slices);
             }
             Self::LookupRMSMap(operator) => {
@@ -337,7 +337,7 @@ where
             Self::ExpertSoftmaxNorm(_) => "ExpertSoftmaxNorm",
             Self::ExpertTopkNorm(_) => "ExpertTopkNorm",
             Self::LiftVector(_) => "LiftVector",
-            Self::Lookup(_) => "Lookup",
+            Self::HeadLookup(_) => "HeadLookup",
             Self::LookupRMSMap(_) => "LookupRMSMap",
             Self::MatMul(_) => "MatMul",
             Self::MatMul3(_) => "MatMul3",
