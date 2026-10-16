@@ -128,7 +128,6 @@ where
                 prev_ids,
                 &self.markov_w1,
                 batch_size,
-                sequence_stride,
                 format!("{}.step{}.prev_embedding", self.scope_name, step_idx),
             );
 

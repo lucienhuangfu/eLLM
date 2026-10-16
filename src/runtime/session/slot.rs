@@ -17,6 +17,7 @@ pub enum Phase {
 
 pub struct SlotState {
     pub next_sequence_index: usize,
+    pub next_proposal_index: usize,
     pub prompt_length: usize,
     pub phase: Phase,
     pub sequence_length: usize,
@@ -27,6 +28,7 @@ impl SlotState {
     pub fn idle() -> Self {
         Self {
             next_sequence_index: usize::MAX,
+            next_proposal_index: usize::MAX,
             prompt_length: usize::MAX,
             phase: Phase::Start,
             sequence_length: 0,
@@ -57,6 +59,7 @@ impl SlotState {
 
     pub fn reset_to_start(&mut self) {
         self.next_sequence_index = usize::MAX;
+        self.next_proposal_index = usize::MAX;
         self.prompt_length = usize::MAX;
         self.phase = Phase::Start;
         self.sequence_length = 0;

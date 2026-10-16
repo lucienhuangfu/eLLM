@@ -217,7 +217,7 @@ where
                 operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
             Self::HeadLookup(operator) => {
-                operator.run(total_size, cpu_num, thread_id, computing_slices);
+                operator.run(decode_size, cpu_num, thread_id);
             }
             Self::LookupRMSMap(operator) => {
                 operator.run(total_size, cpu_num, thread_id, computing_slices);

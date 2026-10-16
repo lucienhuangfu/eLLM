@@ -49,6 +49,7 @@ fn test_topk_softmax_f32() {
     for i in 0..batch_size {
         slot_list.push(SlotState {
             next_sequence_index: 0,
+            next_proposal_index: usize::MAX,
             prompt_length: 0,
             phase: Phase::Decode,
             sequence_length: 0,
@@ -214,6 +215,7 @@ fn test_topk_softmax_f16() {
     for i in 0..batch_size {
         slot_list.push(SlotState {
             next_sequence_index: 0,
+            next_proposal_index: usize::MAX,
             prompt_length: 0,
             phase: Phase::Decode,
             sequence_length: 0,

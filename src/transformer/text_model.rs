@@ -276,6 +276,7 @@ mod test {
         (0..batch_size)
             .map(|i| SlotState {
                 next_sequence_index: i,
+                next_proposal_index: usize::MAX,
                 prompt_length: i,
                 phase: Phase::Decode,
                 sequence_length: 0,

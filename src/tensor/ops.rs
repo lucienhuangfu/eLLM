@@ -104,10 +104,9 @@ where
     }
 
     pub fn lookup(
-        sequences_ptr: *const usize,
+        head_token_ptr: *const usize,
         word_embedding: &Tensor<T>,
         token_capacity: usize,
-        sequence_stride: usize,
         scope_name: String,
     ) -> Self {
         let output_tensor = Self::from_mem_pool(
@@ -116,10 +115,9 @@ where
         );
 
         let operator = Operator::HeadLookup(HeadLookup::new(
-            sequences_ptr,
+            head_token_ptr,
             word_embedding.data,
             output_tensor.data,
-            sequence_stride,
             word_embedding.shape[1],
         ));
 

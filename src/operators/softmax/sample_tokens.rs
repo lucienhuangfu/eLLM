@@ -22,8 +22,9 @@ use rand::prelude::*;
 ///   inspection, and the sampled token id is written to `output_sequences`.
 #[derive(Clone)]
 pub struct SampleTokens<T> {
-    // In-place buffer: [lift_size, vocab_size] logits -> probabilities.
-    input_values_ptr: *mut T,
+    // In-place buffer: [lift_size, vocab_size] logits -> probabilities, indexed
+    // by the per-slice `lift_index` (renamed after HeadLookup's `*_token_ptr`).
+    dspark_token_ptr: *mut T,
     // [batch, sequence_stride] sampled token ids.
     output_sequences: *mut usize,
     // [batch] per-request temperature.
@@ -55,14 +56,14 @@ impl<
     > SampleTokens<T>
 {
     pub fn new(
-        input_values_ptr: *mut T,
+        dspark_token_ptr: *mut T,
         output_sequences: *mut usize,
         batch_temperature: *mut T,
         sequence_stride: usize,
         vocab_size: usize,
     ) -> Self {
         Self {
-            input_values_ptr,
+            dspark_token_ptr,
             output_sequences,
             batch_temperature,
             sequence_stride,
@@ -88,7 +89,7 @@ impl<
         let slices = &computing_slices[begin..end];
 
         // Hoist all struct reads out of the loop (single load each)
-        let input_values_ptr = self.input_values_ptr;
+        let dspark_token_ptr = self.dspark_token_ptr;
         let output_sequences_ptr = self.output_sequences;
         let batch_temperature_ptr = self.batch_temperature;
         let sequence_stride = self.sequence_stride;
@@ -96,31 +97,22 @@ impl<
         // DeepSpec: temperature < 1e-5 selects the greedy argmax branch.
         let greedy_threshold = T::from_f32(1e-5);
 
+        // Sampling only produces a token for the last token of a step, so the
+        // row index into `dspark_token_ptr` is not the slice position: some
+        // slices don't decode at all. The scheduler already folds that into
+        // `lift_index` (a compact counter incremented only for last-token
+        // slices), so it is used directly as the decode row index.
         for slice in slices {
-            let batch_index = slice.batch_index;
-            let slice_length = slice.local_length;
-            // Safety: scheduler guarantees batch_index < slot_list.len()
-            let record = unsafe { slot_list.get_unchecked_mut(batch_index) };
-
-            // Prefill: advance sequence index for every chunk. Per scheduler
-            // invariant, phase transition to Decode can only happen when the
-            // last prefill chunk is consumed (last_token_flag=true).
-            // Decode slices are always last_token_flag=true.
-            if matches!(record.phase, Phase::Prefill) {
-                record.next_sequence_index += slice_length;
-                if slice.last_token_flag && record.filling_length() == 0 {
-                    record.phase = Phase::Decode;
-                }
-            }
-
-            // Sampling only produces a token for the last token of a step.
             if !slice.last_token_flag {
                 continue;
             }
 
+            let batch_index = slice.batch_index;
+            // Safety: scheduler guarantees batch_index < slot_list.len()
+            let record = unsafe { slot_list.get_unchecked_mut(batch_index) };
+
             let raw_temp = unsafe { *batch_temperature_ptr.add(batch_index) };
-            let lift = slice.lift_index;
-            let row_ptr = unsafe { input_values_ptr.add(lift * vocab_size) };
+            let row_ptr = unsafe { dspark_token_ptr.add(slice.lift_index * vocab_size) };
 
             let predict_token = if raw_temp < greedy_threshold {
                 self.greedy_row(row_ptr)
@@ -128,24 +120,16 @@ impl<
                 self.sample_row(row_ptr, raw_temp)
             };
 
-            let write_sequence_index = record.next_sequence_index;
-            if write_sequence_index >= sequence_stride {
-                record.phase = Phase::Eos;
-                record.notify.notify_one();
-                continue;
-            }
+            let write_proposal_index = record.next_proposal_index;
 
-            // Write sampled token + advance decode cursor.
-            let out_offset = batch_index * sequence_stride + write_sequence_index;
+            // Write sampled token + advance the proposal cursor.
+            let out_offset = batch_index * sequence_stride + write_proposal_index;
             unsafe {
                 ptr::write(output_sequences_ptr.add(out_offset), predict_token);
             }
 
-            record.next_sequence_index += 1;
-            record.sequence_length += 1;
-            if write_sequence_index % 10 == 0 {
-                record.notify.notify_one();
-            }
+            record.next_proposal_index += 1;
+            // record.sequence_length += 1;
         }
     }
 
@@ -248,6 +232,7 @@ mod test {
     fn decode_state(next_sequence_index: usize, prompt_length: usize) -> SlotState {
         let mut s = SlotState::idle();
         s.start_decode(next_sequence_index, prompt_length);
+        s.next_proposal_index = next_sequence_index;
         s
     }
 
@@ -315,8 +300,8 @@ mod test {
         // (batch 0 * stride 2 + write index 1).
         assert_eq!(output_sequences[0], usize::MAX);
         assert!(output_sequences[1] < vocab_size);
-        // Decode cursor advanced.
-        assert_eq!(slot_list[0].next_sequence_index, 2);
+        // Proposal cursor advanced.
+        assert_eq!(slot_list[0].next_proposal_index, 2);
     }
 
     #[test]
@@ -419,7 +404,7 @@ mod test {
 
         assert_eq!(&values[..], &[0.0f32, 1.0, 0.0, 0.0][..]);
         assert_eq!(output_sequences[1], 1);
-        assert_eq!(slot_list[0].next_sequence_index, 2);
+        assert_eq!(slot_list[0].next_proposal_index, 2);
     }
 
     #[test]
@@ -502,5 +487,6 @@ mod test {
         assert_eq!(output_sequences[..], [usize::MAX; 4][..]);
         assert_eq!(slot_list[0].phase, Phase::Decode);
         assert_eq!(slot_list[0].next_sequence_index, 7);
+        assert_eq!(slot_list[0].next_proposal_index, 7);
     }
 }
