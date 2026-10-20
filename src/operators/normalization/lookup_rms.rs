@@ -12,7 +12,7 @@ use crate::runtime::SequenceSlice;
 
 // Fuse embedding lookup with RMS normalization
 #[derive(Clone)]
-pub struct LookupRMSMap<T> {
+pub struct LookupRMS<T> {
     pub sequences_ptr: ConstPtr<usize>,
     word_embedding: ConstPtr<T>,
     norm_weight: ConstPtr<T>,
@@ -23,8 +23,8 @@ pub struct LookupRMSMap<T> {
     eps: T,
 }
 
-impl<T: Sqrt> LookupRMSMap<T> {
-    // Constructor for LookupRMSMap
+impl<T: Sqrt> LookupRMS<T> {
+    // Constructor for LookupRMS
     pub fn new(
         sequences_ptr: *const usize,
         word_embedding: *const T,
@@ -119,7 +119,7 @@ impl<T: Sqrt> LookupRMSMap<T> {
     }
 }
 
-impl<T: Sqrt> MapTrait<T> for LookupRMSMap<T> {
+impl<T: Sqrt> MapTrait<T> for LookupRMS<T> {
     default fn compute(&self, input_ptr: *const T, output_ptr: *mut T, length: usize) {
         kernel::scalar::rms_norm::rms_norm(
             input_ptr,
@@ -132,7 +132,7 @@ impl<T: Sqrt> MapTrait<T> for LookupRMSMap<T> {
 }
 
 // Specialized implementation of MapTrait for f16
-impl MapTrait<f16> for LookupRMSMap<f16> {
+impl MapTrait<f16> for LookupRMS<f16> {
     fn compute(&self, input_ptr: *const f16, output_ptr: *mut f16, length: usize) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::rms_norm::rms_norm(
@@ -197,8 +197,8 @@ mod test {
         let mut output_hidden_data: Vec<f32> = vec![0.0; length];
         let mut output_normal_data: Vec<f32> = vec![0.0; length];
 
-        // Initialize LookupRMSMap with these chunks and length
-        let o = LookupRMSMap::new(
+        // Initialize LookupRMS with these chunks and length
+        let o = LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
             weight.as_ptr(),
@@ -294,7 +294,7 @@ mod test {
             },
         ];
 
-        let operator = LookupRMSMap::new(
+        let operator = LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
             weight.as_ptr(),
@@ -357,7 +357,7 @@ mod test {
             },
         ];
 
-        let operator = LookupRMSMap::new(
+        let operator = LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
             weight.as_ptr(),

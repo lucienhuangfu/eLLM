@@ -6,7 +6,7 @@ use crate::operators::movement::{HeadLookup, LiftVector};
 use crate::operators::operator::Operator;
 use crate::operators::routing::SampleTokens;
 use crate::operators::transform::{
-    AddRMSZipMap, AddZipMap, LookupRMSMap, RMSMap, SigmoidMap, SiluMulZipMap,
+    AddRMSZipMap, AddZipMap, LookupRMS, SigmoidMap, SiluMulZipMap, RMS,
 };
 
 use super::{GlobalOperatorQueue, Tensor};
@@ -144,7 +144,7 @@ where
             format!("{}.output_normal", scope_name),
         );
 
-        let operator = Operator::LookupRMSMap(LookupRMSMap::new(
+        let operator = Operator::LookupRMS(LookupRMS::new(
             sequences_ptr,
             word_embedding.data,
             norm_weight.data,
@@ -174,7 +174,7 @@ where
     ) -> Self {
         let output_tensor = Self::output_tensor(self.shape.clone(), &scope_name);
 
-        let operator = Operator::RMSMap(RMSMap::new(
+        let operator = Operator::RMS(RMS::new(
             self.data,
             weight.data,
             output_tensor.data,

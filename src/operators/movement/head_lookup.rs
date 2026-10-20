@@ -5,7 +5,7 @@ use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 
 // Standalone embedding lookup: gather the word-embedding row of each decode
 // entry's head token into the token buffer. This is the lookup half of
-// LookupRMSMap, kept as an independent operator without RMS normalization.
+// LookupRMS, kept as an independent operator without RMS normalization.
 #[derive(Clone)]
 pub struct HeadLookup<T> {
     pub head_token_ptr: ConstPtr<usize>,

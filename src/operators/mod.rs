@@ -89,8 +89,8 @@ pub mod testing {
 
 pub mod normalization {
     pub mod add_rms_zip;
-    pub mod lookup_rms_map;
-    pub mod rms_map;
+    pub mod lookup_rms;
+    pub mod rms;
 }
 
 pub mod routing {
@@ -109,8 +109,8 @@ pub mod transform {
     pub use super::elementwise::complex_zip::ComplexZipMap;
     pub use super::elementwise::silu_mul_zip::SiluMulZipMap;
     pub use super::normalization::add_rms_zip::AddRMSZipMap;
-    pub use super::normalization::lookup_rms_map::LookupRMSMap;
-    pub use super::normalization::rms_map::RMSMap;
+    pub use super::normalization::lookup_rms::LookupRMS;
+    pub use super::normalization::rms::RMS;
     pub use super::softmax::SigmoidMap;
 }
 pub mod traits {

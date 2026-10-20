@@ -7,7 +7,7 @@ use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::MapTrait;
 
 #[derive(Clone)]
-pub struct RMSMap<T> {
+pub struct RMS<T> {
     ptr1: ConstPtr<T>,
     weight: ConstPtr<T>,
     output_ptr: MutPtr<T>,
@@ -16,7 +16,7 @@ pub struct RMSMap<T> {
     decode_only_flag: bool,
 }
 
-impl<T: Sqrt> RMSMap<T> {
+impl<T: Sqrt> RMS<T> {
     pub fn new(
         ptr1: *const T,
         weight: *const T,
@@ -64,7 +64,7 @@ impl<T: Sqrt> RMSMap<T> {
     }
 }
 
-impl<T: Sqrt> MapTrait<T> for RMSMap<T> {
+impl<T: Sqrt> MapTrait<T> for RMS<T> {
     default fn compute(&self, input_ptr: *const T, output_ptr: *mut T, length: usize) {
         kernel::scalar::rms_norm::rms_norm(
             input_ptr,
@@ -76,7 +76,7 @@ impl<T: Sqrt> MapTrait<T> for RMSMap<T> {
     }
 }
 
-impl MapTrait<f16> for RMSMap<f16> {
+impl MapTrait<f16> for RMS<f16> {
     fn compute(&self, input_ptr: *const f16, output_ptr: *mut f16, length: usize) {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::rms_norm::rms_norm(
@@ -98,7 +98,7 @@ impl MapTrait<f16> for RMSMap<f16> {
     }
 }
 
-impl MapTrait<f32> for RMSMap<f32> {
+impl MapTrait<f32> for RMS<f32> {
     fn compute(&self, input_ptr: *const f32, output_ptr: *mut f32, length: usize) {
         kernel::scalar::rms_norm::rms_norm(
             input_ptr,
@@ -110,7 +110,7 @@ impl MapTrait<f32> for RMSMap<f32> {
     }
 }
 
-impl MapTrait<f64> for RMSMap<f64> {
+impl MapTrait<f64> for RMS<f64> {
     fn compute(&self, input_ptr: *const f64, output_ptr: *mut f64, length: usize) {
         kernel::scalar::rms_norm::rms_norm(
             input_ptr,
@@ -130,7 +130,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_rms_map() {
+    fn test_rms() {
         let batch_size = 10; // 每个批次处理 10 个元素
         let hidden_size = 18;
 
@@ -149,7 +149,7 @@ mod test {
         let mut output_data: Vec<f32> = vec![0.0; length];
 
         // 使用这些块和长度初始化 ArgmaxMap
-        let mut operator = RMSMap::new(
+        let mut operator = RMS::new(
             input_data.as_ptr(),
             weight.as_ptr(),
             output_data.as_mut_ptr(),
@@ -190,7 +190,7 @@ mod test {
 
     /*
     #[test]
-    fn test_rms_map_f16() {
+    fn test_rms_f16() {
         let batch_size = 10; // 每次批处理 10 个元素
         let hidden_size = 128;
 
@@ -230,7 +230,7 @@ mod test {
             output_data,
         );
         // 使用这些块和长度初始化 ArgmaxMap
-        let mut argmax_operator = RMSMap::new(hidden_size, weight, eps, cpu_num);
+        let mut argmax_operator = RMS::new(hidden_size, weight, eps, cpu_num);
 
         argmax_operator.set_chunk(chunks);
         let thread_num: usize = cpu_num;

@@ -8,7 +8,7 @@ use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use crate::operators::routing::ExpertSoftmaxNorm;
 use crate::operators::routing::ExpertTopkNorm;
 use crate::operators::routing::MatMulSigmoid;
-use crate::operators::transform::LookupRMSMap;
+use crate::operators::transform::LookupRMS;
 
 use crate::operators::routing::SampleTokens;
 use crate::operators::routing::TopKSoftmax;
@@ -28,7 +28,7 @@ use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddZipMap;
 use crate::operators::transform::SigmoidMap;
 use crate::operators::transform::SiluMulZipMap;
-use crate::operators::transform::{AddRMSZipMap, RMSMap};
+use crate::operators::transform::{AddRMSZipMap, RMS};
 // use super::zip_map::complex_zip::ComplexZipMap;
 // use super::zip_map::silu_mul_zip::SiluMulZipMap;
 // use crate::kernel::common::matmul_params::MatMulParams;
@@ -57,7 +57,7 @@ pub enum Operator<T>
     ExpertTopkNorm(ExpertTopkNorm<T>),
     LiftVector(LiftVector<T>),
     HeadLookup(HeadLookup<T>),
-    LookupRMSMap(LookupRMSMap<T>),
+    LookupRMS(LookupRMS<T>),
     MatMul(MatMul<T>),
     MatMul3(MatMul3<T>),
     MatMulAdd(MatMulAdd<T>),
@@ -65,7 +65,7 @@ pub enum Operator<T>
     // MatMulSiluMulMatMul(MatMulSilu<T>),
     MatMulTopK(MatMulTopK<T>),
     RecurrentGatedDeltaRule(RecurrentGatedDeltaRule<T>),
-    RMSMap(RMSMap<T>),
+    RMS(RMS<T>),
     SigmoidMap(SigmoidMap<T>),
     FakeEcho(FakeEcho),
     SiluMulZipMap(SiluMulZipMap<T>),
@@ -219,7 +219,7 @@ where
             Self::HeadLookup(operator) => {
                 operator.run(decode_size, cpu_num, thread_id);
             }
-            Self::LookupRMSMap(operator) => {
+            Self::LookupRMS(operator) => {
                 operator.run(total_size, cpu_num, thread_id, computing_slices);
             }
             Self::MatMul(operator) => {
@@ -295,7 +295,7 @@ where
                     slot_list,
                 );
             }
-            Self::RMSMap(operator) => {
+            Self::RMS(operator) => {
                 operator.run(
                     prefill_size,
                     decode_size,
@@ -338,14 +338,14 @@ where
             Self::ExpertTopkNorm(_) => "ExpertTopkNorm",
             Self::LiftVector(_) => "LiftVector",
             Self::HeadLookup(_) => "HeadLookup",
-            Self::LookupRMSMap(_) => "LookupRMSMap",
+            Self::LookupRMS(_) => "LookupRMS",
             Self::MatMul(_) => "MatMul",
             Self::MatMul3(_) => "MatMul3",
             Self::MatMulAdd(_) => "MatMulAdd",
             Self::MatMulProj(_) => "MatMulProj",
             Self::MatMulTopK(_) => "MatMulTopK",
             Self::RecurrentGatedDeltaRule(_) => "RecurrentGatedDeltaRule",
-            Self::RMSMap(_) => "RMSMap",
+            Self::RMS(_) => "RMS",
             Self::SigmoidMap(_) => "SigmoidMap",
             Self::FakeEcho(_) => "FakeEcho",
             Self::SiluMulZipMap(_) => "SiluMulZipMap",
@@ -546,7 +546,7 @@ mod test {
 
         let mut hidden = vec![0.0f32; prefill_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; prefill_size * HIDDEN_SIZE];
-        let lookup = Operator::LookupRMSMap(LookupRMSMap::new(
+        let lookup = Operator::LookupRMS(LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
             norm_weight.as_ptr(),
@@ -798,7 +798,7 @@ mod test {
             let norm_weight = vec![1.0f32; HIDDEN_SIZE];
             let mut hidden = vec![0.0f32; prefill_size * HIDDEN_SIZE];
             let mut normal = vec![0.0f32; prefill_size * HIDDEN_SIZE];
-            let lookup = Operator::LookupRMSMap(LookupRMSMap::new(
+            let lookup = Operator::LookupRMS(LookupRMS::new(
                 sequences.as_ptr(),
                 word_embedding.as_ptr(),
                 norm_weight.as_ptr(),
@@ -949,7 +949,7 @@ mod test {
 
         let mut hidden = vec![0.0f32; decode_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; decode_size * HIDDEN_SIZE];
-        let lookup = Operator::LookupRMSMap(LookupRMSMap::new(
+        let lookup = Operator::LookupRMS(LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
             norm_weight.as_ptr(),
@@ -1208,7 +1208,7 @@ mod test {
         let norm_weight = vec![1.0f32; HIDDEN_SIZE];
         let mut hidden = vec![0.0f32; prefill_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; prefill_size * HIDDEN_SIZE];
-        let lookup = Operator::LookupRMSMap(LookupRMSMap::new(
+        let lookup = Operator::LookupRMS(LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
             norm_weight.as_ptr(),
@@ -1385,7 +1385,7 @@ mod test {
         let norm_weight = vec![1.0f32; HIDDEN_SIZE];
         let mut hidden = vec![0.0f32; decode_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; decode_size * HIDDEN_SIZE];
-        let lookup = Operator::LookupRMSMap(LookupRMSMap::new(
+        let lookup = Operator::LookupRMS(LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
             norm_weight.as_ptr(),
@@ -3073,7 +3073,7 @@ mod test {
         let eps = 1e-6;
         let mut output_data: Vec<f32> = vec![0.0; length];
 
-        let operator = Operator::RMSMap(RMSMap::new(
+        let operator = Operator::RMS(RMS::new(
             input_data.as_ptr(),
             output_data.as_mut_ptr(),
             hidden_size,

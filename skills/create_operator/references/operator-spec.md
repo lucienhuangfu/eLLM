@@ -10,7 +10,7 @@ Lookup material for the `create_operator` skill. The workflow lives in [SKILL.md
 | elementwise/ | `AddZipMap`, `ComplexZipMap` (`ZipMapTrait`); `SigmoidMap` (`MapTrait`); `SiluMulZipMap` (fused SiLU×mul) | map / zip |
 | expert/ | `ExpertMatMulDown`, `ExpertMatMulSilu`, `ExpertMergeAdd`, `ExpertRouting`, `ExpertTopkNorm` | `ExpertsDownTrait`, `ExpertsSiluTrait`, `MoeMergeTrait`, `ExpertsTopkNormTrait` |
 | matmul/ | `MatMul`, `MatMul3` (head-by-head K/Q/V), `MatMulAdd` (fused GEMM+residual), `MatMulSigmoid`, `MatMulTopK` | `MatMul*Trait` |
-| normalization/ | `RMSMap` (canonical simple example), `AddRMSZipMap` (fused), `LookupRMSMap` (embedding+norm) | `MapTrait` |
+| normalization/ | `RMSMap` (canonical simple example), `AddRMSZipMap` (fused), `LookupRMS` (embedding+norm) | `MapTrait` |
 | softmax/ | `ExpertsSoftmaxNorm`, `TopKSoftmax` | `SoftmaxTrait`, `TopKSoftmaxTrait` |
 
 Family choice: per-element math → `elementwise/`, GEMM-family → `matmul/`, norm → `normalization/`, MoE compute → `expert/`, routing/topk → `softmax/` or `expert/`.
@@ -37,7 +37,7 @@ Dispatch entry (called once per worker per round): `Operator::run(prefill_size, 
 | `(prefill, decode, total, lift, cpu_num, thread_id)` | RMSMap, MatMulAdd, ExpertsMatMulDown/Silu/MergeAdd/TopkNorm | explicit |
 | `(total, cpu_num, thread_id)` | SigmoidMap | explicit |
 | `(total, computing_slices, cpu_num, thread_id)` | Attention, LiftVector | explicit |
-| `(total, cpu_num, thread_id, computing_slices)` | LookupRMSMap | explicit |
+| `(total, cpu_num, thread_id, computing_slices)` | LookupRMS | explicit |
 | slot-aware (`slot_list`) | TopKSoftmax, FakeEcho | explicit |
 
 Semantics: `total_size = prefill_size + decode_size`; `lift_size` is the decode-side row count for decode-only operators (`decode_only_flag`); `computing_slices`/`slot_list` only for per-sequence/per-slot state. `kind()` must return the variant name as `&'static str`.

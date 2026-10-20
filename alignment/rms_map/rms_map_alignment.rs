@@ -1,6 +1,6 @@
 #![feature(f16)]
 
-use ellm::operators::transform::RMSMap;
+use ellm::operators::transform::RMS;
 use std::io::Read;
 use std::path::Path;
 
@@ -39,7 +39,7 @@ fn run_test(
     let weight_f16 = f32_to_f16(weight_f32);
     let mut output_f16 = vec![0.0f16; total_size];
 
-    let operator = RMSMap::<f16>::new(
+    let operator = RMS::<f16>::new(
         input_f16.as_ptr(),
         weight_f16.as_ptr(),
         output_f16.as_mut_ptr(),
@@ -115,7 +115,7 @@ fn main() {
     let num_rows = 15;
     let eps: f16 = 1e-6f32 as f16;
 
-    println!("=== RMSMap Alignment Test ===");
+    println!("=== RMS Alignment Test ===");
 
     // Test 1: Sequential inputs with weight=1
     println!("\n--- Test 1: Sequential, weight=1 ---");
@@ -167,7 +167,7 @@ fn main() {
     let input_one_f16 = f32_to_f16(input_one_row);
     let weight_rand_f16 = f32_to_f16(weight_rand_slice);
     let mut output_decode_f16 = vec![0.0f16; hidden_size];
-    let op_decode = RMSMap::<f16>::new(
+    let op_decode = RMS::<f16>::new(
         input_one_f16.as_ptr(),
         weight_rand_f16.as_ptr(),
         output_decode_f16.as_mut_ptr(),
