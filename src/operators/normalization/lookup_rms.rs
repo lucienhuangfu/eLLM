@@ -15,7 +15,7 @@ use crate::runtime::SequenceSlice;
 pub struct LookupRMS<T> {
     pub sequences_ptr: ConstPtr<usize>,
     word_embedding: ConstPtr<T>,
-    norm_weight: ConstPtr<T>,
+    norm_weight: MutPtr<T>,
     pub output_hidden_ptr: MutPtr<T>,
     pub output_normal_ptr: MutPtr<T>,
     sequence_stride: usize,
@@ -28,13 +28,24 @@ impl<T: Sqrt> LookupRMS<T> {
     pub fn new(
         sequences_ptr: *const usize,
         word_embedding: *const T,
-        norm_weight: *const T,
+        norm_weight: *mut T,
         output_hidden_ptr: *mut T,
         output_normal_ptr: *mut T,
         sequence_stride: usize,
         hidden_size: usize,
         eps: T,
+        zero_centered: bool,
     ) -> Self {
+        // Zero-Centered RMSNorm: shift the affine norm weight by +1 in place,
+        // exactly once at graph build time (see RMS::new for the rationale).
+        if zero_centered {
+            let one = T::from_f32(1.0);
+            unsafe {
+                for i in 0..hidden_size {
+                    norm_weight.add(i).write(norm_weight.add(i).read() + one);
+                }
+            }
+        }
         Self {
             sequences_ptr: ConstPtr { ptr: sequences_ptr },
             output_hidden_ptr: MutPtr {
@@ -48,7 +59,7 @@ impl<T: Sqrt> LookupRMS<T> {
             word_embedding: ConstPtr {
                 ptr: word_embedding,
             },
-            norm_weight: ConstPtr { ptr: norm_weight },
+            norm_weight: MutPtr { ptr: norm_weight },
             eps,
         }
     }
@@ -123,7 +134,7 @@ impl<T: Sqrt> MapTrait<T> for LookupRMS<T> {
     default fn compute(&self, input_ptr: *const T, output_ptr: *mut T, length: usize) {
         kernel::scalar::rms_norm::rms_norm(
             input_ptr,
-            self.norm_weight.ptr,
+            self.norm_weight.ptr as *const T,
             output_ptr,
             length,
             self.eps,
@@ -137,7 +148,7 @@ impl MapTrait<f16> for LookupRMS<f16> {
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
         kernel::x86_64::f16_512::rms_norm::rms_norm(
             input_ptr,
-            self.norm_weight.ptr,
+            self.norm_weight.ptr as *const f16,
             output_ptr,
             length,
             self.eps,
@@ -146,7 +157,7 @@ impl MapTrait<f16> for LookupRMS<f16> {
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         kernel::scalar::rms_norm::rms_norm(
             input_ptr,
-            self.norm_weight.ptr,
+            self.norm_weight.ptr as *const f16,
             output_ptr,
             length,
             self.eps,
@@ -193,7 +204,7 @@ mod test {
             .take(vocab_size * hidden_size)
             .map(|x| x as f32)
             .collect();
-        let weight = vec![1.0f32; hidden_size];
+        let mut weight = vec![1.0f32; hidden_size];
         let mut output_hidden_data: Vec<f32> = vec![0.0; length];
         let mut output_normal_data: Vec<f32> = vec![0.0; length];
 
@@ -201,12 +212,13 @@ mod test {
         let o = LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
-            weight.as_ptr(),
+            weight.as_mut_ptr(),
             output_hidden_data.as_mut_ptr(),
             output_normal_data.as_mut_ptr(),
             batch_size,
             hidden_size,
             eps,
+            false,
         );
         let result = [
             0.09238425642251968,
@@ -257,7 +269,7 @@ mod test {
         ];
         let mut output_hidden_data: Vec<f32> = vec![0.0; batch_size * hidden_size];
         let mut output_normal_data: Vec<f32> = vec![0.0; batch_size * hidden_size];
-        let weight = vec![1.0f32; hidden_size];
+        let mut weight = vec![1.0f32; hidden_size];
 
         let decode_list = vec![
             SequenceSlice {
@@ -297,12 +309,13 @@ mod test {
         let operator = LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
-            weight.as_ptr(),
+            weight.as_mut_ptr(),
             output_hidden_data.as_mut_ptr(),
             output_normal_data.as_mut_ptr(),
             1,
             hidden_size,
             eps,
+            false,
         );
 
         for thread_id in 0..thread_num {
@@ -337,7 +350,7 @@ mod test {
         ];
         let mut output_hidden_data = vec![0.0f32; 4 * hidden_size];
         let mut output_normal_data = vec![0.0f32; 4 * hidden_size];
-        let weight = vec![1.0f32; hidden_size];
+        let mut weight = vec![1.0f32; hidden_size];
         let computing_slices = vec![
             SequenceSlice {
                 batch_index: 0,
@@ -360,12 +373,13 @@ mod test {
         let operator = LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
-            weight.as_ptr(),
+            weight.as_mut_ptr(),
             output_hidden_data.as_mut_ptr(),
             output_normal_data.as_mut_ptr(),
             sequence_stride,
             hidden_size,
             eps,
+            false,
         );
 
         operator.run(4, 1, 0, &computing_slices);

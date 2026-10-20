@@ -542,19 +542,20 @@ mod test {
 
         let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
         fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
-        let norm_weight = vec![1.0f32; HIDDEN_SIZE];
+        let mut norm_weight = vec![1.0f32; HIDDEN_SIZE];
 
         let mut hidden = vec![0.0f32; prefill_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; prefill_size * HIDDEN_SIZE];
         let lookup = Operator::LookupRMS(LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
-            norm_weight.as_ptr(),
+            norm_weight.as_mut_ptr(),
             hidden.as_mut_ptr(),
             normal.as_mut_ptr(),
             SEQUENCE_LENGTH,
             HIDDEN_SIZE,
             1.0e-6,
+            false,
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {
@@ -583,8 +584,8 @@ mod test {
         let mut q_state = vec![0.0f32; prefill_size * HEAD_DIM];
         let mut k_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
         let mut v_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
-        let q_norm = vec![1.0f32; HEAD_DIM];
-        let k_norm = vec![1.0f32; HEAD_DIM];
+        let mut q_norm = vec![1.0f32; HEAD_DIM];
+        let mut k_norm = vec![1.0f32; HEAD_DIM];
         let rope = vec![0.0f32; SEQUENCE_LENGTH * HEAD_DIM];
         let params = MatMulParams {
             a_row_step_macro: 1,
@@ -601,8 +602,8 @@ mod test {
             k_cache.as_mut_ptr(),
             v_weight.as_ptr(),
             v_cache.as_mut_ptr(),
-            q_norm.as_ptr(),
-            k_norm.as_ptr(),
+            q_norm.as_mut_ptr(),
+            k_norm.as_mut_ptr(),
             rope.as_ptr(),
             SEQUENCE_LENGTH,
             BATCH_SIZE,
@@ -617,6 +618,7 @@ mod test {
             params.column_step_macro,
             params.a_row_step_micro,
             params.b_row_step_micro,
+            false,
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {
@@ -795,13 +797,13 @@ mod test {
 
             let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
             fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
-            let norm_weight = vec![1.0f32; HIDDEN_SIZE];
+            let mut norm_weight = vec![1.0f32; HIDDEN_SIZE];
             let mut hidden = vec![0.0f32; prefill_size * HIDDEN_SIZE];
             let mut normal = vec![0.0f32; prefill_size * HIDDEN_SIZE];
             let lookup = Operator::LookupRMS(LookupRMS::new(
                 sequences.as_ptr(),
                 word_embedding.as_ptr(),
-                norm_weight.as_ptr(),
+                norm_weight.as_mut_ptr(),
                 hidden.as_mut_ptr(),
                 normal.as_mut_ptr(),
                 SEQUENCE_LENGTH,
@@ -831,8 +833,8 @@ mod test {
             let mut q_state = vec![0.0f32; prefill_size * HEAD_DIM];
             let mut k_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
             let mut v_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
-            let q_norm = vec![1.0f32; HEAD_DIM];
-            let k_norm = vec![1.0f32; HEAD_DIM];
+            let mut q_norm = vec![1.0f32; HEAD_DIM];
+            let mut k_norm = vec![1.0f32; HEAD_DIM];
             let rope = vec![0.0f32; SEQUENCE_LENGTH * HEAD_DIM];
             let params = MatMulParams {
                 a_row_step_macro: 1,
@@ -849,8 +851,8 @@ mod test {
                 k_cache.as_mut_ptr(),
                 v_weight.as_ptr(),
                 v_cache.as_mut_ptr(),
-                q_norm.as_ptr(),
-                k_norm.as_ptr(),
+                q_norm.as_mut_ptr(),
+                k_norm.as_mut_ptr(),
                 rope.as_ptr(),
                 SEQUENCE_LENGTH,
                 BATCH_SIZE,
@@ -945,19 +947,20 @@ mod test {
 
         let mut word_embedding = vec![0.0f32; VOCAB_SIZE * HIDDEN_SIZE];
         fill_embedding(&mut word_embedding, VOCAB_SIZE, HIDDEN_SIZE);
-        let norm_weight = vec![1.0f32; HIDDEN_SIZE];
+        let mut norm_weight = vec![1.0f32; HIDDEN_SIZE];
 
         let mut hidden = vec![0.0f32; decode_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; decode_size * HIDDEN_SIZE];
         let lookup = Operator::LookupRMS(LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
-            norm_weight.as_ptr(),
+            norm_weight.as_mut_ptr(),
             hidden.as_mut_ptr(),
             normal.as_mut_ptr(),
             SEQUENCE_LENGTH,
             HIDDEN_SIZE,
             1.0e-6,
+            false,
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {
@@ -983,8 +986,8 @@ mod test {
         let mut q_state = vec![0.0f32; decode_size * HEAD_DIM];
         let mut k_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
         let mut v_cache = vec![0.0f32; SEQUENCE_LENGTH * BATCH_SIZE * HEAD_DIM];
-        let q_norm = vec![1.0f32; HEAD_DIM];
-        let k_norm = vec![1.0f32; HEAD_DIM];
+        let mut q_norm = vec![1.0f32; HEAD_DIM];
+        let mut k_norm = vec![1.0f32; HEAD_DIM];
         let rope = vec![0.0f32; SEQUENCE_LENGTH * HEAD_DIM];
         let params = MatMulParams {
             a_row_step_macro: 1,
@@ -1001,8 +1004,8 @@ mod test {
             k_cache.as_mut_ptr(),
             v_weight.as_ptr(),
             v_cache.as_mut_ptr(),
-            q_norm.as_ptr(),
-            k_norm.as_ptr(),
+            q_norm.as_mut_ptr(),
+            k_norm.as_mut_ptr(),
             rope.as_ptr(),
             SEQUENCE_LENGTH,
             BATCH_SIZE,
@@ -1017,6 +1020,7 @@ mod test {
             params.column_step_macro,
             params.a_row_step_micro,
             params.b_row_step_micro,
+            false,
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {
@@ -1179,8 +1183,8 @@ mod test {
         let k_weight = vec![0.0f32; HEAD_DIM * HIDDEN_SIZE];
         let mut v_weight = vec![0.0f32; HEAD_DIM * HIDDEN_SIZE];
         copy_identity_prefix(&mut v_weight, HEAD_DIM, HIDDEN_SIZE);
-        let q_norm = vec![1.0f32; HEAD_DIM];
-        let k_norm = vec![1.0f32; HEAD_DIM];
+        let mut q_norm = vec![1.0f32; HEAD_DIM];
+        let mut k_norm = vec![1.0f32; HEAD_DIM];
         let rope = vec![0.0f32; SEQUENCE_LENGTH * HEAD_DIM];
         let params = MatMulParams {
             a_row_step_macro: 1,
@@ -1205,18 +1209,19 @@ mod test {
         assert!(task.slices[0].last_token_flag);
 
         let decode_list = task.slices.clone();
-        let norm_weight = vec![1.0f32; HIDDEN_SIZE];
+        let mut norm_weight = vec![1.0f32; HIDDEN_SIZE];
         let mut hidden = vec![0.0f32; prefill_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; prefill_size * HIDDEN_SIZE];
         let lookup = Operator::LookupRMS(LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
-            norm_weight.as_ptr(),
+            norm_weight.as_mut_ptr(),
             hidden.as_mut_ptr(),
             normal.as_mut_ptr(),
             SEQUENCE_LENGTH,
             HIDDEN_SIZE,
             1.0e-6,
+            false,
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {
@@ -1242,8 +1247,8 @@ mod test {
             k_cache.as_mut_ptr(),
             v_weight.as_ptr(),
             v_cache.as_mut_ptr(),
-            q_norm.as_ptr(),
-            k_norm.as_ptr(),
+            q_norm.as_mut_ptr(),
+            k_norm.as_mut_ptr(),
             rope.as_ptr(),
             SEQUENCE_LENGTH,
             BATCH_SIZE,
@@ -1258,6 +1263,7 @@ mod test {
             params.column_step_macro,
             params.a_row_step_micro,
             params.b_row_step_micro,
+            false,
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {
@@ -1382,18 +1388,19 @@ mod test {
         assert_eq!(task.slices[0].local_length, 1);
 
         let decode_list = task.slices.clone();
-        let norm_weight = vec![1.0f32; HIDDEN_SIZE];
+        let mut norm_weight = vec![1.0f32; HIDDEN_SIZE];
         let mut hidden = vec![0.0f32; decode_size * HIDDEN_SIZE];
         let mut normal = vec![0.0f32; decode_size * HIDDEN_SIZE];
         let lookup = Operator::LookupRMS(LookupRMS::new(
             sequences.as_ptr(),
             word_embedding.as_ptr(),
-            norm_weight.as_ptr(),
+            norm_weight.as_mut_ptr(),
             hidden.as_mut_ptr(),
             normal.as_mut_ptr(),
             SEQUENCE_LENGTH,
             HIDDEN_SIZE,
             1.0e-6,
+            false,
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {
@@ -1418,8 +1425,8 @@ mod test {
             k_cache.as_mut_ptr(),
             v_weight.as_ptr(),
             v_cache.as_mut_ptr(),
-            q_norm.as_ptr(),
-            k_norm.as_ptr(),
+            q_norm.as_mut_ptr(),
+            k_norm.as_mut_ptr(),
             rope.as_ptr(),
             SEQUENCE_LENGTH,
             BATCH_SIZE,
@@ -1434,6 +1441,7 @@ mod test {
             params.column_step_macro,
             params.a_row_step_micro,
             params.b_row_step_micro,
+            false,
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {

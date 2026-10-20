@@ -180,6 +180,7 @@ where
         head_dim: usize,
         use_qk_norm: bool,
         params: MatMulParams,
+        zero_centered: bool,
         scope_name: String,
     ) -> (Self, Self, Self)
     where
@@ -231,6 +232,7 @@ where
             params.column_step_macro,
             params.a_row_step_micro,
             params.b_row_step_micro,
+            zero_centered,
         ));
 
         // 权重常驻 MemPool；不再 `pool.remove`。MatMul3 自己的 packed

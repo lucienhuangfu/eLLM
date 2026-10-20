@@ -68,6 +68,10 @@ pub struct HfConfig {
     pub(crate) use_cache: bool,
     #[serde(default)]
     pub(crate) use_qk_norm: bool,
+    /// Zero-Centered RMSNorm: normalization applies `(1 + w)` to the affine
+    /// weight instead of `w`. Model-level switch, default `false`.
+    #[serde(default)]
+    pub(crate) zero_centered_norm: bool,
     #[serde(default)]
     pub(crate) use_sliding_window: bool,
     #[serde(default)]

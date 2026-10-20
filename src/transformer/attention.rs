@@ -21,6 +21,7 @@ where
     head_dim: usize,
     scaling: T,
     use_qk_norm: bool,
+    zero_centered: bool,
     is_causal: bool,
     q_weight: Tensor<T>,
     k_weight: Tensor<T>,
@@ -67,6 +68,7 @@ where
             head_dim: head_dim,
             scaling: scaling,
             use_qk_norm: config.use_qk_norm,
+            zero_centered: config.zero_centered_norm,
             is_causal,
             q_weight: Tensor::zeros(
                 vec![config.num_attention_heads * head_dim, config.hidden_size],
@@ -129,6 +131,7 @@ where
                     a_row_step_micro: 3,
                     b_row_step_micro: 32,
                 },
+                self.zero_centered,
                 self.scope_name.clone(),
             );
 

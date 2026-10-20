@@ -84,8 +84,8 @@ pub struct MatMul3<T> {
     pub q_state_ptr: MutPtr<T>, // Query state. query 输出。
     pub k_state_ptr: MutPtr<T>, // Key cache/state. key cache/state。
     pub v_state_ptr: MutPtr<T>, // Value cache/state. value cache/state。
-    q_norm_weight: ConstPtr<T>,
-    k_norm_weight: ConstPtr<T>,
+    q_norm_weight: MutPtr<T>,
+    k_norm_weight: MutPtr<T>,
 
     // RoPE table; caller guarantees layout compatibility.
     // RoPE 表；布局由外部保证一致。
@@ -127,8 +127,8 @@ where
         k_state_ptr: *mut T,
         v_weight_ptr_nt: *const T, // Wv_nt[key_value_cols, reduction_cols]
         v_state_ptr: *mut T,
-        q_norm_weight: *const T,
-        k_norm_weight: *const T,
+        q_norm_weight: *mut T,
+        k_norm_weight: *mut T,
         rope_ptr: *const T,
         sequence_length: usize,
         batch_size: usize,
@@ -147,6 +147,7 @@ where
         column_step_macro: usize,
         a_row_step_micro: usize,
         b_row_step_micro: usize,
+        zero_centered: bool,
     ) -> Self
     where
         T: Send + 'static,
@@ -194,13 +195,26 @@ where
         let packed_q = qh.join().unwrap().0;
         let packed_k = kh.join().unwrap().0;
 
+        // Zero-Centered per-head Q/K RMSNorm: shift the affine norm weights by
+        // +1 in place (over head_dim elements), exactly once at graph build time
+        // (see RMS::new for the rationale). Only relevant when q/k norm is used.
+        if use_qk_norm && zero_centered {
+            let one = T::from_f32(1.0);
+            unsafe {
+                for i in 0..head_dim {
+                    q_norm_weight.add(i).write(q_norm_weight.add(i).read() + one);
+                    k_norm_weight.add(i).write(k_norm_weight.add(i).read() + one);
+                }
+            }
+        }
+
         Self {
             hidden_ptr: ConstPtr { ptr: hidden_ptr },
             q_state_ptr: MutPtr { ptr: q_state_ptr },
             k_state_ptr: MutPtr { ptr: k_state_ptr },
             v_state_ptr: MutPtr { ptr: v_state_ptr },
-            q_norm_weight: ConstPtr { ptr: q_norm_weight },
-            k_norm_weight: ConstPtr { ptr: k_norm_weight },
+            q_norm_weight: MutPtr { ptr: q_norm_weight },
+            k_norm_weight: MutPtr { ptr: k_norm_weight },
 
             rope_ptr: ConstPtr { ptr: rope_ptr },
             sequence_length,
@@ -1383,8 +1397,8 @@ mod tests {
         let mut cv = vec![0.0f32; m * n_kv];
         let mut cv_ref = vec![0.0f32; m * n_kv];
 
-        let q_norm = vec![1.0f32; head_dim];
-        let k_norm = vec![1.0f32; head_dim];
+        let mut q_norm = vec![1.0f32; head_dim];
+        let mut k_norm = vec![1.0f32; head_dim];
         let mut rope = vec![1.0f32; n_q.max(n_kv)];
 
         for i in 0..m * k {
@@ -1419,8 +1433,8 @@ mod tests {
                 ck.as_mut_ptr(),
                 wv_nt.as_ptr(),
                 cv.as_mut_ptr(),
-                q_norm.as_ptr(),
-                k_norm.as_ptr(),
+                q_norm.as_mut_ptr(),
+                k_norm.as_mut_ptr(),
                 rope.as_ptr(),
                 sequence_length, // sequence_length
                 1,               // batch_size
@@ -1435,6 +1449,7 @@ mod tests {
                 32,              // column_step_macro
                 3,               // a_row_step_micro
                 32,              // b_row_step_micro
+                false,           // zero_centered
             );
 
             matmul.run(m, 0, 0, EMPTY_SLICES, 1, 0);
@@ -1493,8 +1508,8 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
-        let q_norm = vec![1.0f16; HEAD_DIM];
-        let k_norm = vec![1.0f16; HEAD_DIM];
+        let mut q_norm = vec![1.0f16; HEAD_DIM];
+        let mut k_norm = vec![1.0f16; HEAD_DIM];
         let mut rope = vec![0.0f16; NQ.max(NKV)];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
@@ -1527,8 +1542,8 @@ mod tests {
             ck.as_mut_ptr(),
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
-            q_norm.as_ptr(),
-            k_norm.as_ptr(),
+            q_norm.as_mut_ptr(),
+            k_norm.as_mut_ptr(),
             rope.as_ptr(),
             HEAD_DIM,       // sequence_length
             1,              // batch_size
@@ -1543,6 +1558,7 @@ mod tests {
             64,             // column_step_macro
             3,              // a_row_step_micro
             32,             // b_row_step_micro
+            false,          // zero_centered
         );
 
         run_runner(&runner, M, thread_num);
@@ -1595,8 +1611,8 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
-        let q_norm = vec![1.0f16; HEAD_DIM];
-        let k_norm = vec![1.0f16; HEAD_DIM];
+        let mut q_norm = vec![1.0f16; HEAD_DIM];
+        let mut k_norm = vec![1.0f16; HEAD_DIM];
         let mut rope = vec![0.0f16; NQ.max(NKV)];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
@@ -1627,8 +1643,8 @@ mod tests {
             ck.as_mut_ptr(),
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
-            q_norm.as_ptr(),
-            k_norm.as_ptr(),
+            q_norm.as_mut_ptr(),
+            k_norm.as_mut_ptr(),
             rope.as_ptr(),
             HEAD_DIM,       // sequence_length
             1,              // batch_size
@@ -1643,6 +1659,7 @@ mod tests {
             64,             // column_step_macro
             3,              // a_row_step_micro
             32,             // b_row_step_micro
+            false,          // zero_centered
         );
 
         run_runner(&runner, M, thread_num);
@@ -1687,8 +1704,8 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
-        let q_norm = vec![1.0f16; HEAD_DIM];
-        let k_norm = vec![1.0f16; HEAD_DIM];
+        let mut q_norm = vec![1.0f16; HEAD_DIM];
+        let mut k_norm = vec![1.0f16; HEAD_DIM];
         let mut rope = vec![0.0f16; NQ.max(NKV)];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
@@ -1719,8 +1736,8 @@ mod tests {
             ck.as_mut_ptr(),
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
-            q_norm.as_ptr(),
-            k_norm.as_ptr(),
+            q_norm.as_mut_ptr(),
+            k_norm.as_mut_ptr(),
             rope.as_ptr(),
             HEAD_DIM,       // sequence_length
             1,              // batch_size
@@ -1735,6 +1752,7 @@ mod tests {
             64,             // column_step_macro
             3,              // a_row_step_micro
             32,             // b_row_step_micro
+            false,          // zero_centered
         );
 
         run_runner(&runner, M, thread_num);
@@ -1779,8 +1797,8 @@ mod tests {
         let mut ck = vec![0.0f16; M * NKV];
         let mut cv = vec![0.0f16; M * NKV];
 
-        let q_norm = vec![1.0f16; HEAD_DIM];
-        let k_norm = vec![1.0f16; HEAD_DIM];
+        let mut q_norm = vec![1.0f16; HEAD_DIM];
+        let mut k_norm = vec![1.0f16; HEAD_DIM];
         let mut rope = vec![0.0f16; NQ.max(NKV)];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
@@ -1811,8 +1829,8 @@ mod tests {
             ck.as_mut_ptr(),
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
-            q_norm.as_ptr(),
-            k_norm.as_ptr(),
+            q_norm.as_mut_ptr(),
+            k_norm.as_mut_ptr(),
             rope.as_ptr(),
             HEAD_DIM,       // sequence_length
             1,              // batch_size
@@ -1827,6 +1845,7 @@ mod tests {
             64,             // column_step_macro
             3,              // a_row_step_micro
             32,             // b_row_step_micro
+            false,          // zero_centered
         );
 
         run_runner(&runner, M, thread_num);
@@ -1896,8 +1915,8 @@ mod tests {
         let mut ck = vec![0.0f16; M_MAX * NKV];
         let mut cv = vec![0.0f16; M_MAX * NKV];
 
-        let q_norm = vec![1.0f16; HEAD_DIM];
-        let k_norm = vec![1.0f16; HEAD_DIM];
+        let mut q_norm = vec![1.0f16; HEAD_DIM];
+        let mut k_norm = vec![1.0f16; HEAD_DIM];
         let mut rope = vec![0.0f16; HEAD_DIM.max(NQ).max(NKV)];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
@@ -1912,8 +1931,8 @@ mod tests {
             ck.as_mut_ptr(),
             wv_nt.as_ptr(),
             cv.as_mut_ptr(),
-            q_norm.as_ptr(),
-            k_norm.as_ptr(),
+            q_norm.as_mut_ptr(),
+            k_norm.as_mut_ptr(),
             rope.as_ptr(),
             HEAD_DIM,       // sequence_length
             1,              // batch_size
@@ -1928,6 +1947,7 @@ mod tests {
             64,             // column_step_macro
             3,              // a_row_step_micro
             32,             // b_row_step_micro
+            false,          // zero_centered
         );
 
         // run 传 batch=7（内部 pad 到 9）

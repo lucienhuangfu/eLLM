@@ -58,6 +58,8 @@ pub struct FamilyProfile {
     pub linear_defaults: LinearDefaults,
     /// 是否默认启用 qk-norm（qwen3 系为 true，qwen2 为 false）。
     pub qk_norm: bool,
+    /// 是否默认启用 Zero-Centered RMSNorm（归一化权重取 `1 + w`）。
+    pub zero_centered_norm: bool,
     /// MoE 路由是否默认带 bias（MiniMaxM2 为 true）。
     pub routing_bias: bool,
 }
@@ -69,6 +71,7 @@ impl Default for FamilyProfile {
             full_attention_interval: None,
             linear_defaults: LinearDefaults::default(),
             qk_norm: false,
+            zero_centered_norm: false,
             routing_bias: false,
         }
     }
@@ -96,6 +99,8 @@ pub struct TextConfig {
     pub layer_spec: LayerSpec,
     pub qkv_bias: bool,
     pub use_qk_norm: bool,
+    /// Zero-Centered RMSNorm 开关：true 时全部 RMSNorm 权重在建图期就地 +1。
+    pub zero_centered_norm: bool,
     pub rope_scaling: Option<HashMap<String, Value>>,
     pub eos_token_id: usize,
     pub eos_token_ids: Vec<usize>,
@@ -143,6 +148,7 @@ impl TextConfig {
         let use_routing_bias = hf.use_routing_bias.unwrap_or(profile.routing_bias);
         let decoder_sparse_step = hf.decoder_sparse_step.max(1);
         let use_qk_norm = hf.use_qk_norm || profile.qk_norm;
+        let zero_centered_norm = hf.zero_centered_norm || profile.zero_centered_norm;
 
         // layer_types：显式给出则用之；否则若 profile 指定 full_attention_interval，
         // 按 (i+1)%interval==0 → full_attention，其余 linear_attention 生成。
@@ -197,6 +203,7 @@ impl TextConfig {
             layer_spec,
             qkv_bias: hf.qkv_bias,
             use_qk_norm,
+            zero_centered_norm,
             rope_scaling: hf.rope_scaling.clone(),
             eos_token_id,
             eos_token_ids,
@@ -241,6 +248,7 @@ mod tests {
                 conv_kernel: 4,
             },
             qk_norm: true,
+            zero_centered_norm: false,
             routing_bias: false,
         }
     }

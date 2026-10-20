@@ -166,6 +166,7 @@ where
     sequence_length: usize,
     batch_size: usize,
     rms_norm_eps: T,
+    zero_centered_norm: bool,
     layer_idx: usize,
     word_embedding: Rc<Tensor<T>>,
     position_embedding: Rc<Tensor<T>>,
@@ -226,6 +227,7 @@ where
             sequence_length: sequence_length,
             batch_size: batch_size,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
+            zero_centered_norm: config.zero_centered_norm,
             layer_idx: layer_idx,
             attention_block,
             ffn_block,
@@ -259,6 +261,7 @@ where
                 &self.input_layernorm_weight,
                 self.rms_norm_eps,
                 false,
+                self.zero_centered_norm,
                 format!("{}.input_layernorm", self.scope_name),
             );
             (hidden_states.clone(), norm_hidden)
@@ -270,6 +273,7 @@ where
                 self.chunk_size,
                 self.sequence_length,
                 self.rms_norm_eps,
+                self.zero_centered_norm,
                 self.scope_name.clone(),
             )
         };
@@ -287,6 +291,7 @@ where
             &self.post_attention_layernorm_weight,
             self.rms_norm_eps,
             decode_only_flag,
+            self.zero_centered_norm,
             format!("{}.post_attention_layernorm", self.scope_name),
         );
 

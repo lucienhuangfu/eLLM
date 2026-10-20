@@ -58,6 +58,7 @@ pub fn profile() -> FamilyProfile {
             conv_kernel: DEFAULT_LINEAR_CONV_KERNEL_DIM,
         },
         qk_norm: true,
+        zero_centered_norm: false,
         routing_bias: false,
     }
 }

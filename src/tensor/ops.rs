@@ -132,6 +132,7 @@ where
         token_capacity: usize,
         sequence_stride: usize,
         eps: T,
+        zero_centered: bool,
         scope_name: String,
     ) -> (Self, Self) {
         let output_hidden_tensor = Self::from_mem_pool(
@@ -153,6 +154,7 @@ where
             sequence_stride,
             word_embedding.shape[1],
             eps,
+            zero_centered,
         ));
 
         Self::enqueue(operator);
@@ -170,6 +172,7 @@ where
         weight: &Tensor<T>,
         eps: T,
         decode_only_flag: bool,
+        zero_centered: bool,
         scope_name: String,
     ) -> Self {
         let output_tensor = Self::output_tensor(self.shape.clone(), &scope_name);
@@ -181,6 +184,7 @@ where
             self.last_dim(),
             eps,
             decode_only_flag,
+            zero_centered,
         ));
         Self::enqueue(operator);
         output_tensor

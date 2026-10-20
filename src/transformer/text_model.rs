@@ -32,6 +32,7 @@ where
     norm_weight: Tensor<T>,
     pub layers: Vec<DecoderLayer<T>>,
     rms_norm_eps: T,
+    zero_centered_norm: bool,
     pub chunk_size: usize,
     pub sequence_length: usize,
     pub batch_size: usize,
@@ -168,6 +169,7 @@ where
             eos_ids,
             thread_num,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
+            zero_centered_norm: config.zero_centered_norm,
             scope_name: scope_name,
         }
     }
@@ -213,6 +215,7 @@ where
             &self.norm_weight,
             self.rms_norm_eps,
             true,
+            self.zero_centered_norm,
             format!("{}.norm_hidden", self.scope_name),
         );
 

@@ -36,16 +36,17 @@ fn run_test(
 ) -> Vec<f32> {
     let total_size = num_rows * hidden_size;
     let input_f16 = f32_to_f16(input_f32);
-    let weight_f16 = f32_to_f16(weight_f32);
+    let mut weight_f16 = f32_to_f16(weight_f32);
     let mut output_f16 = vec![0.0f16; total_size];
 
     let operator = RMS::<f16>::new(
         input_f16.as_ptr(),
-        weight_f16.as_ptr(),
+        weight_f16.as_mut_ptr(),
         output_f16.as_mut_ptr(),
         hidden_size,
         eps,
         decode_only,
+        false,
     );
 
     // Run single-threaded
@@ -165,15 +166,16 @@ fn main() {
     let input_one_row = &input_rand[..hidden_size];
     let weight_rand_slice = &weight_rand;
     let input_one_f16 = f32_to_f16(input_one_row);
-    let weight_rand_f16 = f32_to_f16(weight_rand_slice);
+    let mut weight_rand_f16 = f32_to_f16(weight_rand_slice);
     let mut output_decode_f16 = vec![0.0f16; hidden_size];
     let op_decode = RMS::<f16>::new(
         input_one_f16.as_ptr(),
-        weight_rand_f16.as_ptr(),
+        weight_rand_f16.as_mut_ptr(),
         output_decode_f16.as_mut_ptr(),
         hidden_size,
         eps,
         true,
+        false,
     );
     op_decode.run(0, 1, 1, 1, 1, 0);
     let output_decode = f16_to_f32(&output_decode_f16);
