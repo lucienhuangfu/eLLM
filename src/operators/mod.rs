@@ -130,7 +130,7 @@ pub mod traits {
         AttentionTrait, MatMulAddTrait, MatMulProjTrait, MatMulSigmoidTrait, MatMulTrait,
         MatMulkqvTrait,
     };
-    pub use linear_attention::RecurrentGatedDeltaRuleTrait;
+    pub use linear_attention::{FusedGatedDeltaRuleTrait, RecurrentGatedDeltaRuleTrait};
     pub use map::{MapTrait, ZipMapTrait};
     pub use softmax::{ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
 }

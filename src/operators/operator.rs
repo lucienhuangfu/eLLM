@@ -15,6 +15,7 @@ use crate::operators::routing::TopKSoftmax;
 // Add missing imports for zip map operations
 use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
 // use super::mul::matmul_silu_mul_matmul::MatMulSilu;
+use crate::operators::attention::linear_attention::FusedGatedDeltaRule;
 use crate::operators::attention::linear_attention::RecurrentGatedDeltaRule;
 use crate::operators::conv::CausalConv1dSilu;
 use crate::operators::expert::{
@@ -49,6 +50,7 @@ pub enum Operator<T>
     ExpertMatMulDown(ExpertMatMulDown<T>),
     ExpertMatMulSilu(ExpertMatMulSilu<T>),
     ExpertMergeAdd(ExpertMergeAdd<T>),
+    FusedGatedDeltaRule(FusedGatedDeltaRule<T>),
     SharedExpertMatMulDown(SharedExpertMatMulDown<T>),
     SharedExpertMatMulSilu(SharedExpertMatMulSilu<T>),
     SharedExpertMergeAdd(SharedExpertMergeAdd<T>),
@@ -119,6 +121,9 @@ where
                 operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
             Self::CausalConv1dSilu(operator) => {
+                operator.run(total_size, computing_slices, cpu_num, thread_id);
+            }
+            Self::FusedGatedDeltaRule(operator) => {
                 operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
 
@@ -330,6 +335,7 @@ where
             Self::ExpertMatMulDown(_) => "ExpertMatMulDown",
             Self::ExpertMatMulSilu(_) => "ExpertMatMulSilu",
             Self::ExpertMergeAdd(_) => "ExpertMergeAdd",
+            Self::FusedGatedDeltaRule(_) => "FusedGatedDeltaRule",
             Self::SharedExpertMatMulDown(_) => "SharedExpertMatMulDown",
             Self::SharedExpertMatMulSilu(_) => "SharedExpertMatMulSilu",
             Self::SharedExpertMergeAdd(_) => "SharedExpertMergeAdd",
@@ -809,6 +815,7 @@ mod test {
                 SEQUENCE_LENGTH,
                 HIDDEN_SIZE,
                 1.0e-6,
+                false,
             ));
 
             scheduler.slot_list().with_mut(|slot_list| {
@@ -867,6 +874,7 @@ mod test {
                 params.column_step_macro,
                 params.a_row_step_micro,
                 params.b_row_step_micro,
+                false,
             ));
 
             scheduler.slot_list().with_mut(|slot_list| {

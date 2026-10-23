@@ -108,6 +108,7 @@ fn test_matmul3_f16() {
         head_dim,
         true,
         params,
+        false,
         "model.layers.0.matmul3".to_string(),
     );
 
@@ -264,6 +265,7 @@ fn test_tensor_matmul3_f16_seq1_batch24() {
         head_dim,
         true,
         params,
+        false,
         "model.layers.0.matmul3".to_string(),
     );
 
