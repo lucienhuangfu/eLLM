@@ -1,0 +1,330 @@
+use std::ops::{AddAssign, Neg, Sub};
+
+use crate::mem_mgr::mem_pool::GlobalMemPool;
+use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
+
+use crate::kernel::common::matmul_params::MatMulParams;
+use crate::tensor::{GlobalOperatorQueue, Tensor};
+
+use crate::model_spec::TextConfig;
+
+// #[derive(Clone)]
+pub struct FullAttention<T>
+where
+    T: Copy + PartialOrd,
+{
+    sequence_length: usize,
+    batch_size: usize,
+    num_attention_heads: usize,
+    num_key_value_heads: usize,
+    head_dim: usize,
+    scaling: T,
+    use_qk_norm: bool,
+    zero_centered: bool,
+    is_causal: bool,
+    q_weight: Tensor<T>,
+    k_weight: Tensor<T>,
+    v_weight: Tensor<T>,
+    pub(super) o_weight: Tensor<T>,
+    q_norm_weight: Tensor<T>,
+    k_norm_weight: Tensor<T>,
+    pub(super) scope_name: String,
+}
+
+impl<T> FullAttention<T>
+where
+    T: Copy
+        + PartialOrd
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid
+        + Sqrt
+        + FromNumber
+        + AddAssign
+        + GlobalMemPool
+        + GlobalOperatorQueue,
+{
+    pub fn new(
+        config: &TextConfig,
+        sequence_length: usize,
+        batch_size: usize,
+        is_causal: bool,
+        scope: &str,
+    ) -> Self {
+        let head_dim: usize = config.head_dim;
+        let scaling = T::from_f32(1.0 / (head_dim as f32).sqrt());
+
+        Self {
+            sequence_length,
+            batch_size: batch_size,
+            num_attention_heads: config.num_attention_heads,
+            num_key_value_heads: config.num_key_value_heads,
+            head_dim: head_dim,
+            scaling: scaling,
+            use_qk_norm: config.use_qk_norm,
+            zero_centered: config.zero_centered_norm,
+            is_causal,
+            q_weight: Tensor::zeros(
+                vec![config.num_attention_heads * head_dim, config.hidden_size],
+                format!("{scope}.q_proj.weight"),
+            ),
+            k_weight: Tensor::zeros(
+                vec![config.num_key_value_heads * head_dim, config.hidden_size],
+                format!("{scope}.k_proj.weight"),
+            ),
+            v_weight: Tensor::zeros(
+                vec![config.num_key_value_heads * head_dim, config.hidden_size],
+                format!("{scope}.v_proj.weight"),
+            ),
+
+            o_weight: Tensor::zeros(
+                vec![config.hidden_size, config.num_attention_heads * head_dim],
+                format!("{scope}.o_proj.weight"),
+            ),
+            q_norm_weight: Tensor::zeros(vec![head_dim], format!("{scope}.q_norm.weight")),
+            k_norm_weight: Tensor::zeros(vec![head_dim], format!("{scope}.k_norm.weight")),
+            scope_name: scope.to_string(),
+        }
+    }
+
+    pub fn forward(
+        &self,
+        hidden_states: &Tensor<T>,
+        position_embedding: &Tensor<T>,
+        decode_only_flag: bool,
+    ) -> Tensor<T>
+    where
+        T: Send + 'static,
+    {
+        {
+            //println!("hidden_states shape: {:?}", hidden_states.shape);
+
+            // mul_rms_complex 合并operators
+            // q [chunk_size, hidden_size]
+            // k [batch_size, head_num, sequence_length, head_dim]
+            // v [batch_size, head_num, sequence_length, head_dim]
+            let (query_states, key_states, value_states) = hidden_states.matmul3(
+                &self.q_weight,
+                &self.k_weight,
+                &self.v_weight,
+                &self.q_norm_weight,
+                &self.k_norm_weight,
+                position_embedding,
+                self.sequence_length,
+                self.batch_size,
+                self.num_key_value_heads,
+                self.num_attention_heads / self.num_key_value_heads,
+                self.head_dim,
+                self.use_qk_norm,
+                MatMulParams {
+                    a_row_step_macro: 3,
+                    b_row_step_macro: 128,
+                    column_step_macro: 64,
+                    a_row_step_micro: 3,
+                    b_row_step_micro: 32,
+                },
+                self.zero_centered,
+                self.scope_name.clone(),
+            );
+
+            if decode_only_flag {
+                hidden_states.lift_vector();
+            }
+
+            // q [chunk_size, head_num, group_num, head_dim] <- [chunk_size, hidden_size]
+            let view_query_states = query_states.view(vec![
+                query_states.shape[0],
+                query_states.shape[1],
+                self.num_attention_heads,
+                self.head_dim,
+            ]);
+            let view_key_states = key_states.view(vec![
+                key_states.shape[0],
+                key_states.shape[1],
+                self.num_key_value_heads,
+                self.head_dim,
+            ]);
+
+            //[batch_size, head_num, sequence_num,  head_size] < - [sequence_num, batch_size, head_num, head_size]
+            let view_key_position_tensor = view_key_states.permute(vec![1, 2, 0, 3]);
+
+            let view_value_states = value_states.view(vec![
+                value_states.shape[0],
+                value_states.shape[1],
+                self.num_key_value_heads,
+                self.head_dim,
+            ]);
+
+            let view_value_states2 = view_value_states.permute(vec![1, 2, 0, 3]);
+            let thread_num = num_cpus::get().max(1);
+
+            // [chunk_size, head_num, head_size] <- [chunk_size, head_num, group_num, head_dim] [batch_size, head_num, sequence_length, head_dim] [batch_size, head_num, sequence_length, head_dim]
+            // 核心注意力输出 [sequence_length, batch_size, num_attention_heads, head_dim]，
+            // out_proj + residual 后处理由 attention.rs 的 AttentionBlock::forward 统一完成。
+            view_query_states.attention(
+                &view_key_position_tensor,
+                &view_value_states2,
+                self.sequence_length,
+                self.batch_size,
+                self.scaling,
+                decode_only_flag,
+                self.is_causal,
+                thread_num,
+                format!("{}.attn_output", self.scope_name),
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::mem_mgr::mem_pool::GlobalMemPool;
+    use crate::runtime::{SequenceSlice, SlotState};
+    use std::collections::HashMap;
+
+    const EMPTY_SLICES: &[SequenceSlice] = &[];
+
+    #[test]
+    fn test_self_attention() {
+        let sequence_length = 1;
+        let batch_size = 3;
+        // let hidden_size = 128;
+        // let num_attention_heads = 64;
+        // let num_kv_heads = 8;
+        // let sequence_length = 10;
+
+        let config = crate::model_family::load_text_config(
+            r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
+        )
+        .unwrap();
+
+        // let inverse_sqrt_head = 1.0 / (config.hidden_size as f32).sqrt();
+        let attention_head_size: usize = config.head_dim;
+        // config.hidden_size / config.num_attention_heads;
+
+        f32::init_global(HashMap::new());
+        f32::init_operator_queue();
+
+        let self_attention = FullAttention::<f32>::new(
+            &config,
+            sequence_length,
+            batch_size,
+            true,
+            "model.layers.1.self_attn",
+        );
+
+        let hidden_states = Tensor::zeros(
+            vec![sequence_length, batch_size, config.hidden_size],
+            String::from("model.layers.1.hidden_tensor"),
+        );
+
+        let position_embedding = Tensor::zeros(
+            vec![config.max_position_embeddings, 1, 1, attention_head_size],
+            String::from("model.position_embedding.weight"),
+        );
+
+        let output = self_attention.forward(&hidden_states, &position_embedding, false);
+
+        // Add assertions to validate the output
+        debug_assert_eq!(
+            output.shape,
+            vec![
+                sequence_length,
+                batch_size,
+                config.num_attention_heads,
+                config.head_dim
+            ]
+        );
+
+        // Execute the operator queue
+        let thread_num: usize = num_cpus::get();
+        f32::with_operator_queue(|queue| {
+            for operator in queue.iter() {
+                for i in 0..thread_num {
+                    operator.run(
+                        batch_size,
+                        0,
+                        0,
+                        0,
+                        thread_num,
+                        i,
+                        EMPTY_SLICES,
+                        &mut Vec::new(),
+                    );
+                }
+            }
+        });
+
+        // Add more assertions as needed
+    }
+
+    #[test]
+    fn test_self_attention_f16() {
+        let sequence_length = 1;
+        let batch_size = 3;
+
+        let config = crate::model_family::load_text_config(
+            r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
+        )
+        .unwrap();
+
+        let attention_head_size: usize = config.head_dim;
+
+        f16::init_global(HashMap::new());
+        f16::init_operator_queue();
+
+        let self_attention = FullAttention::<f16>::new(
+            &config,
+            sequence_length,
+            batch_size,
+            true,
+            "model.layers.1.self_attn",
+        );
+
+        let hidden_states = Tensor::zeros(
+            vec![sequence_length, batch_size, config.hidden_size],
+            String::from("model.layers.1.hidden_tensor"),
+        );
+
+        let position_embedding = Tensor::zeros(
+            vec![config.max_position_embeddings, 1, 1, attention_head_size],
+            String::from("model.position_embedding.weight"),
+        );
+
+        let output = self_attention.forward(&hidden_states, &position_embedding, false);
+
+        // Add assertions to validate the output
+        debug_assert_eq!(
+            output.shape,
+            vec![
+                sequence_length,
+                batch_size,
+                config.num_attention_heads,
+                config.head_dim
+            ]
+        );
+
+        // Execute the operator queue
+        let thread_num: usize = num_cpus::get();
+        f16::with_operator_queue(|queue| {
+            for operator in queue.iter() {
+                for i in 0..thread_num {
+                    operator.run(
+                        batch_size,
+                        0,
+                        0,
+                        0,
+                        thread_num,
+                        i,
+                        EMPTY_SLICES,
+                        &mut Vec::new(),
+                    );
+                }
+            }
+        });
+    }
+}

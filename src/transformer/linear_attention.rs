@@ -1,6 +1,5 @@
 use std::ops::{AddAssign, Neg, Sub};
 
-use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
@@ -39,11 +38,7 @@ where
     // from the weight/state shapes inside the builder.
     // 结构体保留的配置维度；融合路径在 builder 内从权重/状态形状
     // 重新推导。
-    #[allow(dead_code)]
-    key_dim: usize,
-    value_dim: usize,
-    #[allow(dead_code)]
-    head_k_dim: usize,
+    pub(super) value_dim: usize,
     qkv_weight: Tensor<T>,
     z_weight: Tensor<T>,
     b_weight: Tensor<T>,
@@ -59,7 +54,7 @@ where
     // FusedGatedDeltaRule 的 epilogue 中，此句柄传入融合算子，并按
     // HF 键名加载权重。
     norm_weight: Tensor<T>,
-    out_weight: Tensor<T>,
+    pub(super) out_weight: Tensor<T>,
     // Rolling conv window in the fused per-task layout
     // [batch_size, num_v_heads, 2 * head_k_dim + head_v_dim, kernel_size - 1],
     // in-segment order q | k | v; only FusedGatedDeltaRule consumes it.
@@ -70,7 +65,7 @@ where
     // Recurrent cache [batch_size, num_v_heads, head_k_dim, head_v_dim].
     // 递推状态缓存 [batch_size, num_v_heads, head_k_dim, head_v_dim]。
     recurrent_state: Tensor<T>,
-    scope_name: String,
+    pub(super) scope_name: String,
 }
 
 impl<T> GatedDeltaAttention<T>
@@ -108,9 +103,7 @@ where
         Self {
             sequence_length,
             batch_size,
-            key_dim,
             value_dim,
-            head_k_dim,
             qkv_weight: Tensor::zeros(vec![conv_dim, hidden_size], names.in_proj_qkv),
             z_weight: Tensor::zeros(vec![value_dim, hidden_size], names.in_proj_z),
             b_weight: Tensor::zeros(vec![num_v_heads, hidden_size], names.in_proj_b),
@@ -140,10 +133,12 @@ where
     pub fn forward(
         &self,
         hidden_states: &Tensor<T>,
-        residual: &Tensor<T>,
-        decode_only_flag: bool,
-        _tensor_name: String,
+        _position_embedding: &Tensor<T>,
+        _decode_only_flag: bool,
     ) -> Tensor<T> {
+        // 线性注意力无位置编码，_position_embedding / _decode_only_flag 仅为
+        // 与 FullAttention 统一核心签名而存在；out_proj + residual 后处理由
+        // attention.rs 的 AttentionBlock::forward 统一完成。
         // Fused linear attention: four-way projection (with the beta/g
         // epilogue), causal conv1d + SiLU, qk-norm, chunked gated delta
         // rule and the gated RMSNorm all run inside one operator over
@@ -154,7 +149,7 @@ where
         // 全部在单算子内按 (batch, v_head) 任务完成；两份缓存原地
         // 更新，输出 [sequence_length, batch_size, value_dim]。
         let thread_num = num_cpus::get().max(1);
-        let attn_output = hidden_states.fused_gated_delta_rule(
+        hidden_states.fused_gated_delta_rule(
             &self.qkv_weight,
             &self.z_weight,
             &self.b_weight,
@@ -170,41 +165,7 @@ where
             self.sequence_length,
             self.batch_size,
             self.scope_name.clone(),
-        );
-
-        // out_proj + residual.
-        let output_sequence_length = attn_output.shape[0];
-        let output_batch_size = attn_output.shape[1];
-        let output_rows = output_sequence_length * output_batch_size;
-
-        let view_attn_output = attn_output.view(vec![output_rows, self.value_dim]);
-        if decode_only_flag {
-            view_attn_output.lift_vector();
-        }
-        let residual_hidden_size = *residual
-            .shape
-            .last()
-            .expect("residual tensor must have at least one dimension");
-        let view_residual = residual.view(vec![output_rows, residual_hidden_size]);
-
-        let output_2d = view_attn_output.matmul_add(
-            &self.out_weight,
-            &view_residual,
-            MatMulParams {
-                a_row_step_macro: 1,
-                b_row_step_macro: 64,
-                column_step_macro: 1,
-                a_row_step_micro: 1,
-                b_row_step_micro: 1,
-            },
-            decode_only_flag,
-            format!("{}.output", self.scope_name),
-        );
-        output_2d.view(vec![
-            output_sequence_length,
-            output_batch_size,
-            self.out_weight.shape[0],
-        ])
+        )
     }
 }
 
@@ -261,28 +222,30 @@ mod test {
             vec![SEQUENCE_LENGTH, BATCH_SIZE, HIDDEN],
             String::from("model.layers.0.hidden_states"),
         );
-        let residual = Tensor::zeros(
+        // 哑位置编码张量：线性注意力不消费，仅为满足统一核心签名。
+        let position_embedding = Tensor::zeros(
             vec![SEQUENCE_LENGTH, BATCH_SIZE, HIDDEN],
-            String::from("model.layers.0.residual"),
+            String::from("model.position_embedding.weight"),
         );
 
-        let output = module.forward(
-            &hidden_states,
-            &residual,
-            false,
-            String::from("test_output"),
+        let output = module.forward(&hidden_states, &position_embedding, false);
+        // 核心输出为 [sequence_length, batch_size, value_dim]，
+        // value_dim = NUM_V_HEADS * HEAD_V_DIM；out_proj 后才是 HIDDEN。
+        debug_assert_eq!(
+            output.shape,
+            vec![SEQUENCE_LENGTH, BATCH_SIZE, NUM_V_HEADS * HEAD_V_DIM]
         );
-        debug_assert_eq!(output.shape, vec![SEQUENCE_LENGTH, BATCH_SIZE, HIDDEN]);
 
-        // Drain the operator queue: the fused pipeline must enqueue exactly
-        // two operators, FusedGatedDeltaRule followed by MatMulAdd.
-        // 排空算子队列：融合流水线应恰好入队两个算子，
-        // FusedGatedDeltaRule 后接 MatMulAdd。
+        // Drain the operator queue: the fused core pipeline must enqueue exactly
+        // one operator, FusedGatedDeltaRule; MatMulAdd now lives in the
+        // AttentionBlock post-processing and is no longer covered here.
+        // 排空算子队列：融合核心流水线应恰好入队一个算子
+        // FusedGatedDeltaRule；MatMulAdd 已移入 AttentionBlock 后处理，
+        // 本测试不再经过。
         let thread_num: usize = num_cpus::get();
         f32::with_operator_queue(|queue| {
-            assert_eq!(queue.len(), 2);
+            assert_eq!(queue.len(), 1);
             assert_eq!(queue[0].kind(), "FusedGatedDeltaRule");
-            assert_eq!(queue[1].kind(), "MatMulAdd");
             for operator in queue.iter() {
                 for i in 0..thread_num {
                     operator.run(

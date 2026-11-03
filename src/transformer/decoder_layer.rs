@@ -6,105 +6,13 @@ use crate::num_traits::FromNumber;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
 
-use super::attention::Attention;
+use super::attention::AttentionBlock;
 use super::dense_mlp::DenseMlp;
-use super::gated_delta_attention::GatedDeltaAttention;
 use super::sparse_moe::SparseMoe;
-use super::tensor_name::{gated_delta_attention_tensor_names, layer_scope};
+use super::tensor_name::layer_scope;
+use crate::model_spec::FfnKind;
 use crate::model_spec::TextConfig;
-use crate::model_spec::{AttentionKind, FfnKind};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
-
-// Attention 运行时块：配置蓝图 AttentionKind 的已实例化对应物。仿照 FfnBlock /
-// SparseMoeRouter 范本——私有 enum,由 build() 内一次 exhaustive match 从 config enum
-// 构建。对应 Qwen3_5DecoderLayer 的 full_attention(self_attn) / linear_attention
-// (linear_attn) 双分支。
-enum AttentionBlock<T>
-where
-    T: Copy + PartialOrd,
-{
-    Full(Attention<T>),
-    GatedDelta(GatedDeltaAttention<T>),
-}
-
-impl<T> AttentionBlock<T>
-where
-    T: Copy
-        + PartialOrd
-        + Default
-        + Sub<Output = T>
-        + Neg<Output = T>
-        + Exp
-        + NegInfinity
-        + Sigmoid
-        + Sqrt
-        + FromNumber
-        + AddAssign
-        + GlobalMemPool
-        + GlobalOperatorQueue,
-{
-    #[allow(clippy::too_many_arguments)]
-    fn build(
-        config: &TextConfig,
-        kind: AttentionKind,
-        attn_scope: &str,
-        chunk_size: usize,
-        sequence_length: usize,
-        batch_size: usize,
-        layer_idx: usize,
-    ) -> Self {
-        match kind {
-            AttentionKind::Full | AttentionKind::SlidingWindow => AttentionBlock::Full(
-                // 现有 family 全为因果注意力，is_causal 传 true。
-                Attention::<T>::new(
-                    config,
-                    chunk_size,
-                    sequence_length,
-                    batch_size,
-                    true,
-                    attn_scope,
-                ),
-            ),
-            AttentionKind::Linear => AttentionBlock::GatedDelta(GatedDeltaAttention::<T>::new(
-                config.hidden_size,
-                config.linear_num_key_heads,
-                config.linear_num_value_heads,
-                config.linear_key_head_dim,
-                config.linear_value_head_dim,
-                config.linear_conv_kernel_dim,
-                sequence_length,
-                batch_size,
-                gated_delta_attention_tensor_names(layer_idx),
-            )),
-        }
-    }
-
-    fn forward(
-        &self,
-        norm_hidden: &Tensor<T>,
-        residual: &Tensor<T>,
-        position_embedding: &Tensor<T>,
-        decode_only_flag: bool,
-        tensor_name: String,
-    ) -> Tensor<T>
-    where
-        T: Send + 'static,
-    {
-        match self {
-            // RoPE 全/滑窗注意力消费位置编码；GatedDeltaNet 线性注意力无位置编码。
-            AttentionBlock::Full(attention) => attention.forward(
-                norm_hidden,
-                residual,
-                position_embedding,
-                decode_only_flag,
-                tensor_name,
-            ),
-            AttentionBlock::GatedDelta(gated_delta) => {
-                gated_delta.forward(norm_hidden, residual, decode_only_flag, tensor_name)
-            }
-        }
-    }
-}
 
 // FFN 运行时块：配置蓝图 FfnKind 的已实例化对应物。仿照 SparseMoeRouter 范本——
 // 私有 enum,由 build() 内一次 exhaustive match 从 config enum 构建,张量名在分支内派生。
@@ -210,7 +118,6 @@ where
             config,
             config.layer_spec.attention(layer_idx),
             &attn_scope,
-            chunk_size,
             sequence_length,
             batch_size,
             layer_idx,
@@ -284,7 +191,6 @@ where
             hidden_states,
             &*self.position_embedding,
             decode_only_flag,
-            _tensor_name,
         );
 
         let norm_hidden_states = attention_hidden_states.rms(

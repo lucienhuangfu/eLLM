@@ -165,7 +165,7 @@ This is why the operator is best thought of as a carefully controlled buffer rea
 
 # 6. Relationship to Attention
 
-In [`src/transformer/attention.rs`](https://github.com/lucienhuangfu/eLLM/blob/main/src/transformer/attention.rs), the operator is called only when `decode_only_flag` is enabled:
+In [`src/transformer/full_attention.rs`](https://github.com/lucienhuangfu/eLLM/blob/main/src/transformer/full_attention.rs), the operator is called only when `decode_only_flag` is enabled:
 
 ```rust
 if decode_only_flag {
