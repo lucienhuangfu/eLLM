@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use super::router_scoring::RouterScoringKind;
+use super::RouterScoringKind;
 
+/// FFN 配置蓝图：每层的 FFN 形态（Dense / SparseMoe）及其超参数，
+/// 由 `LayerSpec::ffn(i)` 按需解析，`FfnBlock::new` 消费实例化。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FfnKind {
     Dense {

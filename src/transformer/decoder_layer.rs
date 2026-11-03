@@ -7,63 +7,10 @@ use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
 
 use super::attention::AttentionBlock;
-use super::dense_mlp::DenseMlp;
-use super::sparse_moe::SparseMoe;
+use super::mlp::FfnBlock;
 use super::tensor_name::layer_scope;
-use crate::model_spec::FfnKind;
 use crate::model_spec::TextConfig;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
-
-// FFN 运行时块：配置蓝图 FfnKind 的已实例化对应物。仿照 SparseMoeRouter 范本——
-// 私有 enum,由 build() 内一次 exhaustive match 从 config enum 构建,张量名在分支内派生。
-enum FfnBlock<T>
-where
-    T: Copy + PartialOrd,
-{
-    Dense(DenseMlp<T>),
-    SparseMoe(SparseMoe<T>),
-}
-
-impl<T> FfnBlock<T>
-where
-    T: Copy
-        + PartialOrd
-        + Default
-        + Sub<Output = T>
-        + Neg<Output = T>
-        + Exp
-        + NegInfinity
-        + Sigmoid
-        + Sqrt
-        + AddAssign
-        + GlobalMemPool
-        + GlobalOperatorQueue,
-{
-    fn build(spec: &FfnKind, ffn_scope: &str, hidden_size: usize) -> Self {
-        match spec {
-            FfnKind::Dense { intermediate_size } => {
-                FfnBlock::Dense(DenseMlp::new(hidden_size, *intermediate_size, ffn_scope))
-            }
-            FfnKind::SparseMoe {
-                intermediate_size,
-                num_experts,
-                num_experts_per_tok,
-                norm_topk_prob,
-                router_scoring,
-                use_routing_bias,
-            } => FfnBlock::SparseMoe(SparseMoe::new(
-                hidden_size,
-                *intermediate_size,
-                *num_experts,
-                *num_experts_per_tok,
-                *norm_topk_prob,
-                router_scoring.clone(),
-                *use_routing_bias,
-                ffn_scope,
-            )),
-        }
-    }
-}
 
 // #[derive(Clone)]
 pub struct DecoderLayer<T>
@@ -114,16 +61,10 @@ where
         let scope = layer_scope(layer_idx);
         let attn_scope = format!("{scope}.self_attn");
         let ffn_scope = format!("{scope}.mlp");
-        let attention_block = AttentionBlock::build(
-            config,
-            config.layer_spec.attention(layer_idx),
-            &attn_scope,
-            sequence_length,
-            batch_size,
-            layer_idx,
-        );
+        let attention_block =
+            AttentionBlock::new(config, &attn_scope, sequence_length, batch_size, layer_idx);
 
-        let ffn_block = FfnBlock::build(
+        let ffn_block = FfnBlock::new(
             &config.layer_spec.ffn(layer_idx),
             &ffn_scope,
             config.hidden_size,
@@ -201,20 +142,12 @@ where
             format!("{}.post_attention_layernorm", self.scope_name),
         );
 
-        let output_hidden_states = match &self.ffn_block {
-            FfnBlock::Dense(dense_mlp) => dense_mlp.forward(
-                &norm_hidden_states,
-                &attention_hidden_states,
-                decode_only_flag,
-                format!("{}.attention_hidden3", self.scope_name),
-            ),
-            FfnBlock::SparseMoe(sparse_moe) => sparse_moe.forward(
-                &norm_hidden_states,
-                &attention_hidden_states,
-                decode_only_flag,
-                format!("{}.attention_hidden3", self.scope_name),
-            ),
-        };
+        let output_hidden_states = self.ffn_block.forward(
+            &norm_hidden_states,
+            &attention_hidden_states,
+            decode_only_flag,
+            format!("{}.attention_hidden3", self.scope_name),
+        );
 
         /*
         let view_attention_hidden2 = attention_hidden2.view(vec![attention_hidden2.shape[0],

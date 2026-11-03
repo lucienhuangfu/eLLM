@@ -163,7 +163,7 @@ where
 
             // [chunk_size, head_num, head_size] <- [chunk_size, head_num, group_num, head_dim] [batch_size, head_num, sequence_length, head_dim] [batch_size, head_num, sequence_length, head_dim]
             // 核心注意力输出 [sequence_length, batch_size, num_attention_heads, head_dim]，
-            // out_proj + residual 后处理由 attention.rs 的 AttentionBlock::forward 统一完成。
+            // out_proj + residual 后处理由 attention_block.rs 的 AttentionBlock::forward 统一完成。
             view_query_states.attention(
                 &view_key_position_tensor,
                 &view_value_states2,

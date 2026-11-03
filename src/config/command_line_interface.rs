@@ -116,9 +116,6 @@ pub struct SharedArgs {
     #[arg(long = "max-logprobs", default_value = "20", help = "Maximum logprobs")]
     pub max_logprobs: Option<usize>,
 
-    #[arg(long = "disable-sliding-window", num_args = 0..=1, default_missing_value = "true", help = "Disable sliding window")]
-    pub disable_sliding_window: Option<bool>,
-
     #[arg(long = "disable-cascade-attn", num_args = 0..=1, default_missing_value = "true", help = "Disable cascade attention")]
     pub disable_cascade_attn: Option<bool>,
 
@@ -228,7 +225,10 @@ pub struct ServeArgs {
     )]
     pub slot_reuse_timeout: Option<usize>,
 
-    #[arg(long = "max-slot-size", help = "Maximum number of slots in the slot list (slot_list capacity)")]
+    #[arg(
+        long = "max-slot-size",
+        help = "Maximum number of slots in the slot list (slot_list capacity)"
+    )]
     pub max_slot_size: Option<usize>,
 }
 
@@ -295,8 +295,6 @@ pub struct FileModelConfig {
     pub hf_config_path: Option<String>,
     #[serde(alias = "max_logprobs")]
     pub max_logprobs: Option<usize>,
-    #[serde(alias = "disable_sliding_window")]
-    pub disable_sliding_window: Option<bool>,
     #[serde(alias = "disable_cascade_attn")]
     pub disable_cascade_attn: Option<bool>,
     #[serde(alias = "min_p")]
@@ -443,9 +441,6 @@ impl ConfigFile {
         }
         if let Some(max_logprobs) = model.max_logprobs {
             config.model.max_logprobs = max_logprobs;
-        }
-        if let Some(disable_sliding_window) = model.disable_sliding_window {
-            config.model.disable_sliding_window = disable_sliding_window;
         }
         if let Some(disable_cascade_attn) = model.disable_cascade_attn {
             config.model.disable_cascade_attn = disable_cascade_attn;
@@ -763,9 +758,6 @@ impl JsonArgs {
                 "max_logprobs" | "max-logprobs" => {
                     config.model.max_logprobs = self.value_to_usize(value)?
                 }
-                "disable_sliding_window" | "disable-sliding-window" => {
-                    config.model.disable_sliding_window = self.value_to_bool(value)?
-                }
                 "disable_cascade_attn" | "disable-cascade-attn" => {
                     config.model.disable_cascade_attn = self.value_to_bool(value)?
                 }
@@ -1022,9 +1014,6 @@ impl Config {
         }
         if let Some(max_logprobs) = shared.max_logprobs {
             self.model.max_logprobs = max_logprobs;
-        }
-        if let Some(disable_sliding_window) = shared.disable_sliding_window {
-            self.model.disable_sliding_window = disable_sliding_window;
         }
         if let Some(disable_cascade_attn) = shared.disable_cascade_attn {
             self.model.disable_cascade_attn = disable_cascade_attn;

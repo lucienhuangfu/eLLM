@@ -28,7 +28,6 @@ pub struct HfConfig {
     pub(crate) intermediate_size: Option<usize>,
     #[serde(default)]
     pub(crate) max_position_embeddings: usize,
-    pub(crate) max_window_layers: Option<usize>,
     #[serde(default)]
     pub(crate) mlp_only_layers: Vec<usize>,
     #[serde(default)]
@@ -56,7 +55,6 @@ pub struct HfConfig {
     #[serde(default)]
     pub(crate) router_aux_loss_coef: f32,
     pub(crate) shared_experts_intermediate_size: Option<usize>,
-    pub(crate) sliding_window: Option<usize>,
     pub(crate) use_routing_bias: Option<bool>,
     #[serde(default)]
     pub(crate) tie_word_embeddings: bool,
@@ -72,8 +70,6 @@ pub struct HfConfig {
     /// weight instead of `w`. Model-level switch, default `false`.
     #[serde(default)]
     pub(crate) zero_centered_norm: bool,
-    #[serde(default)]
-    pub(crate) use_sliding_window: bool,
     #[serde(default)]
     pub(crate) vocab_size: usize,
     pub(crate) layer_types: Option<Vec<String>>,

@@ -19,10 +19,10 @@ use crate::config::HfConfig;
 
 use super::layer_spec::LayerSpec;
 use super::model_name::ModelName;
-use super::router_scoring::RouterScoringKind;
+use crate::transformer::mlp::RouterScoringKind;
 
 /// 各 family 的 GatedDeltaNet（线性注意力）块默认维度；非混合模型全 0
-/// （其 layer 永不解析为 `AttentionKind::Linear`）。
+/// （其 layer_type 永不含 linear）。
 #[derive(Debug, Clone)]
 pub struct LinearDefaults {
     pub num_k: usize,
@@ -104,9 +104,6 @@ pub struct TextConfig {
     pub rope_scaling: Option<HashMap<String, Value>>,
     pub eos_token_id: usize,
     pub eos_token_ids: Vec<usize>,
-    pub max_window_layers: usize,
-    pub use_sliding_window: bool,
-    pub sliding_window: Option<usize>,
     pub intermediate_size: usize,
     // GatedDeltaNet（线性注意力）块维度；非混合模型为 0。
     pub linear_num_key_heads: usize,
@@ -143,7 +140,6 @@ impl TextConfig {
         let moe_intermediate_size = hf.moe_intermediate_size.unwrap_or(intermediate_size);
         let num_experts = hf.num_experts.unwrap_or(0);
         let num_experts_per_tok = hf.num_experts_per_tok.unwrap_or(0);
-        let max_window_layers = hf.max_window_layers.unwrap_or(hf.num_hidden_layers);
         let router_scoring = RouterScoringKind::from_hf(hf.scoring_func.as_deref(), family.clone());
         let use_routing_bias = hf.use_routing_bias.unwrap_or(profile.routing_bias);
         let decoder_sparse_step = hf.decoder_sparse_step.max(1);
@@ -169,8 +165,6 @@ impl TextConfig {
 
         let layer_spec = LayerSpec {
             num_hidden_layers: hf.num_hidden_layers,
-            use_sliding_window: hf.use_sliding_window,
-            max_window_layers,
             layer_types,
             mlp_only_layers: hf.mlp_only_layers.clone(),
             num_experts,
@@ -207,9 +201,6 @@ impl TextConfig {
             rope_scaling: hf.rope_scaling.clone(),
             eos_token_id,
             eos_token_ids,
-            max_window_layers,
-            use_sliding_window: hf.use_sliding_window,
-            sliding_window: hf.sliding_window,
             intermediate_size,
             linear_num_key_heads: hf
                 .linear_num_key_heads
@@ -233,7 +224,7 @@ impl TextConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_spec::{AttentionKind, FfnKind};
+    use crate::model_spec::FfnKind;
 
     /// qwen3_5 的 profile（与 `model_family::qwen3_5::profile()` 一致）。
     fn qwen3_5_profile() -> FamilyProfile {
@@ -281,11 +272,11 @@ mod tests {
 
         // layer_types 自动生成（full_attention_interval=4）：索引 3、7 为 full，其余 linear。
         assert_eq!(text.layer_spec.len(), 8);
-        assert_eq!(text.layer_spec.attention(0), AttentionKind::Linear);
-        assert_eq!(text.layer_spec.attention(2), AttentionKind::Linear);
-        assert_eq!(text.layer_spec.attention(3), AttentionKind::Full);
-        assert_eq!(text.layer_spec.attention(4), AttentionKind::Linear);
-        assert_eq!(text.layer_spec.attention(7), AttentionKind::Full);
+        assert_eq!(text.layer_spec.layer_type(0), Some("linear_attention"));
+        assert_eq!(text.layer_spec.layer_type(2), Some("linear_attention"));
+        assert_eq!(text.layer_spec.layer_type(3), Some("full_attention"));
+        assert_eq!(text.layer_spec.layer_type(4), Some("linear_attention"));
+        assert_eq!(text.layer_spec.layer_type(7), Some("full_attention"));
 
         // dense 文本部分：无专家。
         assert!(matches!(text.layer_spec.ffn(0), FfnKind::Dense { .. }));
@@ -318,8 +309,8 @@ mod tests {
         assert!(text.use_qk_norm);
         // MoE layer_spec。
         assert!(matches!(text.layer_spec.ffn(0), FfnKind::SparseMoe { .. }));
-        // 无 interval → layer_types=None → attention 默认 Full。
-        assert_eq!(text.layer_spec.attention(0), AttentionKind::Full);
+        // 无 interval → layer_types=None。
+        assert_eq!(text.layer_spec.layer_type(0), None);
         // linear 默认全 0。
         assert_eq!(text.linear_num_key_heads, 0);
         assert_eq!(text.linear_conv_kernel_dim, 0);

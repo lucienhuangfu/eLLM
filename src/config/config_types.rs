@@ -124,10 +124,6 @@ pub struct ModelConfig {
     pub max_logprobs: usize,
 
     #[serde(default)]
-    #[serde(alias = "disable-sliding-window")]
-    pub disable_sliding_window: bool,
-
-    #[serde(default)]
     #[serde(alias = "disable-cascade-attn")]
     pub disable_cascade_attn: bool,
 
@@ -379,7 +375,6 @@ impl Default for ModelConfig {
             allowed_local_media_path: String::new(),
             allowed_media_domains: Vec::new(),
             max_logprobs: default_max_logprobs(),
-            disable_sliding_window: false,
             disable_cascade_attn: true,
             min_p: default_min_p(),
         }

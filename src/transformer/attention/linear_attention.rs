@@ -4,7 +4,7 @@ use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::{Exp, FromNumber, NegInfinity, Sigmoid, Sqrt};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-use super::tensor_name::GatedDeltaAttentionTensorNames;
+use crate::transformer::tensor_name::GatedDeltaAttentionTensorNames;
 
 // Qwen3.5-MoE gated delta linear attention block
 // (scripts/modeling_qwen3_5_moe.py::Qwen3_5MoeGatedDeltaNet), a two-stage
@@ -138,7 +138,7 @@ where
     ) -> Tensor<T> {
         // 线性注意力无位置编码，_position_embedding / _decode_only_flag 仅为
         // 与 FullAttention 统一核心签名而存在；out_proj + residual 后处理由
-        // attention.rs 的 AttentionBlock::forward 统一完成。
+        // attention_block.rs 的 AttentionBlock::forward 统一完成。
         // Fused linear attention: four-way projection (with the beta/g
         // epilogue), causal conv1d + SiLU, qk-norm, chunked gated delta
         // rule and the gated RMSNorm all run inside one operator over

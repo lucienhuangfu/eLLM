@@ -1,17 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-use super::attention_kind::AttentionKind;
-use super::ffn_kind::FfnKind;
-use super::router_scoring::RouterScoringKind;
+use crate::transformer::mlp::{FfnKind, RouterScoringKind};
 
 /// Lazy per-layer blueprint resolver: global parameters are stored once and
-/// `attention(i)` / `ffn(i)` are computed on demand, replacing a previously
-/// materialized per-layer vector (no per-layer cloning of global MoE params).
+/// `ffn(i)` is computed on demand, replacing a previously materialized
+/// per-layer vector (no per-layer cloning of global MoE params). Attention
+/// typing is resolved by the runtime block from the raw `layer_type(i)` string.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerSpec {
     pub(crate) num_hidden_layers: usize,
-    pub(crate) use_sliding_window: bool,
-    pub(crate) max_window_layers: usize,
     pub(crate) layer_types: Option<Vec<String>>,
     pub(crate) mlp_only_layers: Vec<usize>,
     pub(crate) num_experts: usize,
@@ -33,24 +30,13 @@ impl LayerSpec {
         self.num_hidden_layers == 0
     }
 
-    pub fn attention(&self, layer_idx: usize) -> AttentionKind {
-        if let Some(layer_types) = &self.layer_types {
-            if let Some(layer_type) = layer_types.get(layer_idx) {
-                let layer_type = layer_type.to_ascii_lowercase();
-                if layer_type.contains("linear") {
-                    return AttentionKind::Linear;
-                }
-                if layer_type.contains("sliding") || layer_type.contains("window") {
-                    return AttentionKind::SlidingWindow;
-                }
-            }
-        }
-
-        if self.use_sliding_window && layer_idx < self.max_window_layers {
-            return AttentionKind::SlidingWindow;
-        }
-
-        AttentionKind::Full
+    /// 第 layer_idx 层的原始 layer_type 字符串；缺省 None。
+    /// 类型分派由 `AttentionBlock::new` 按字符串完成。
+    pub fn layer_type(&self, layer_idx: usize) -> Option<&str> {
+        self.layer_types
+            .as_ref()
+            .and_then(|types| types.get(layer_idx))
+            .map(|s| s.as_str())
     }
 
     pub fn ffn(&self, layer_idx: usize) -> FfnKind {

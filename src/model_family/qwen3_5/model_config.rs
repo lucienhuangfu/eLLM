@@ -179,7 +179,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_spec::{AttentionKind, FfnKind, ModelName};
+    use crate::model_spec::{FfnKind, ModelName};
 
     #[test]
     fn text_config_derives_rotary_dim_and_layer_types() {
@@ -210,11 +210,11 @@ mod tests {
 
         // layer_types 自动生成（full_attention_interval=4）：索引 3、7 为 full，其余 linear。
         assert_eq!(text.layer_spec.len(), 8);
-        assert_eq!(text.layer_spec.attention(0), AttentionKind::Linear);
-        assert_eq!(text.layer_spec.attention(2), AttentionKind::Linear);
-        assert_eq!(text.layer_spec.attention(3), AttentionKind::Full);
-        assert_eq!(text.layer_spec.attention(4), AttentionKind::Linear);
-        assert_eq!(text.layer_spec.attention(7), AttentionKind::Full);
+        assert_eq!(text.layer_spec.layer_type(0), Some("linear_attention"));
+        assert_eq!(text.layer_spec.layer_type(2), Some("linear_attention"));
+        assert_eq!(text.layer_spec.layer_type(3), Some("full_attention"));
+        assert_eq!(text.layer_spec.layer_type(4), Some("linear_attention"));
+        assert_eq!(text.layer_spec.layer_type(7), Some("full_attention"));
 
         // dense 文本部分：无专家。
         assert!(matches!(text.layer_spec.ffn(0), FfnKind::Dense { .. }));

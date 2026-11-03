@@ -6,9 +6,9 @@ use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
+use super::router_scoring::RouterScoringKind;
 use super::router_sigmoid::SparseMoeSigmoidRouter;
 use super::router_softmax::SparseMoeSoftmaxRouter;
-use crate::model_spec::RouterScoringKind;
 
 #[derive(Clone)]
 enum SparseMoeRouter<T>
