@@ -13,11 +13,9 @@ use crate::operators::transform::LookupRMS;
 use crate::operators::routing::SampleTokens;
 use crate::operators::routing::TopKSoftmax;
 // Add missing imports for zip map operations
-use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
+use crate::operators::linear::{GatedAttention, MatMul, MatMul3, MatMulAdd};
 // use super::mul::matmul_silu_mul_matmul::MatMulSilu;
 use crate::operators::attention::linear_attention::FusedGatedDeltaRule;
-use crate::operators::attention::linear_attention::RecurrentGatedDeltaRule;
-use crate::operators::conv::CausalConv1dSilu;
 use crate::operators::expert::{
     ExpertMatMulDown, ExpertMatMulSilu, ExpertMergeAdd, SharedExpertMatMulDown,
     SharedExpertMatMulSilu, SharedExpertMergeAdd,
@@ -45,8 +43,7 @@ pub enum Operator<T>
 {
     AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
-    Attention(Attention<T>),
-    CausalConv1dSilu(CausalConv1dSilu<T>),
+    GatedAttention(GatedAttention<T>),
     // ComplexZipMap(ComplexZipMap<T>),
     ExpertMatMulDown(ExpertMatMulDown<T>),
     ExpertMatMulSilu(ExpertMatMulSilu<T>),
@@ -67,7 +64,6 @@ pub enum Operator<T>
     MatMulProj(MatMulProj<T>),
     // MatMulSiluMulMatMul(MatMulSilu<T>),
     MatMulTopK(MatMulTopK<T>),
-    RecurrentGatedDeltaRule(RecurrentGatedDeltaRule<T>),
     RMS(RMS<T>),
     SigmoidMap(SigmoidMap<T>),
     FakeEcho(FakeEcho),
@@ -119,10 +115,7 @@ where
             Self::AddZipMap(operator) => {
                 run_simple!(operator);
             }
-            Self::Attention(operator) => {
-                operator.run(total_size, computing_slices, cpu_num, thread_id);
-            }
-            Self::CausalConv1dSilu(operator) => {
+            Self::GatedAttention(operator) => {
                 operator.run(total_size, computing_slices, cpu_num, thread_id);
             }
             Self::FusedGatedDeltaRule(operator) => {
@@ -276,9 +269,6 @@ where
             Self::MatMulTopK(operator) => {
                 operator.run(0, lift_size, lift_size, cpu_num, thread_id);
             }
-            Self::RecurrentGatedDeltaRule(operator) => {
-                operator.run(total_size, computing_slices, cpu_num, thread_id);
-            }
 
             Self::SampleTokens(operator) => {
                 operator.run(
@@ -335,8 +325,7 @@ where
         match self {
             Self::AddRMSZipMap(_) => "AddRMSZipMap",
             Self::AddZipMap(_) => "AddZipMap",
-            Self::Attention(_) => "Attention",
-            Self::CausalConv1dSilu(_) => "CausalConv1dSilu",
+            Self::GatedAttention(_) => "GatedAttention",
             Self::ExpertMatMulDown(_) => "ExpertMatMulDown",
             Self::ExpertMatMulSilu(_) => "ExpertMatMulSilu",
             Self::ExpertMergeAdd(_) => "ExpertMergeAdd",
@@ -355,7 +344,6 @@ where
             Self::MatMulAdd(_) => "MatMulAdd",
             Self::MatMulProj(_) => "MatMulProj",
             Self::MatMulTopK(_) => "MatMulTopK",
-            Self::RecurrentGatedDeltaRule(_) => "RecurrentGatedDeltaRule",
             Self::RMS(_) => "RMS",
             Self::SigmoidMap(_) => "SigmoidMap",
             Self::FakeEcho(_) => "FakeEcho",
@@ -656,11 +644,12 @@ mod test {
         assert_eq!(v_cache[cache_offset(4, 0)], 0.0);
 
         let mut attention_output = vec![0.0f32; prefill_size * HEAD_DIM];
-        let attention = Operator::Attention(Attention::new(
+        let attention = Operator::GatedAttention(GatedAttention::new(
             q_state.as_ptr(),
             k_cache.as_ptr(),
             v_cache.as_ptr(),
             attention_output.as_mut_ptr(),
+            q_state.as_ptr(),
             SEQUENCE_LENGTH,
             BATCH_SIZE,
             1,
@@ -678,6 +667,7 @@ mod test {
             1.0,
             false,
             true,
+            false,
             THREAD_NUM,
         ));
 
@@ -1061,11 +1051,12 @@ mod test {
         assert_eq!(v_cache[cache_offset(5, 1)], 0.0);
 
         let mut attention_output = vec![0.0f32; decode_size * HEAD_DIM];
-        let attention = Operator::Attention(Attention::new(
+        let attention = Operator::GatedAttention(GatedAttention::new(
             q_state.as_ptr(),
             k_cache.as_ptr(),
             v_cache.as_ptr(),
             attention_output.as_mut_ptr(),
+            q_state.as_ptr(),
             SEQUENCE_LENGTH,
             BATCH_SIZE,
             1,
@@ -1083,6 +1074,7 @@ mod test {
             1.0,
             false,
             true,
+            false,
             THREAD_NUM,
         ));
 
@@ -1301,11 +1293,12 @@ mod test {
         assert_eq!(v_cache[cache_offset(3)], 0.0);
 
         let mut prefill_attention_output = vec![0.0f32; prefill_size * HEAD_DIM];
-        let prefill_attention = Operator::Attention(Attention::new(
+        let prefill_attention = Operator::GatedAttention(GatedAttention::new(
             q_state.as_ptr(),
             k_cache.as_ptr(),
             v_cache.as_ptr(),
             prefill_attention_output.as_mut_ptr(),
+            q_state.as_ptr(),
             SEQUENCE_LENGTH,
             BATCH_SIZE,
             1,
@@ -1323,6 +1316,7 @@ mod test {
             1.0,
             false,
             true,
+            false,
             THREAD_NUM,
         ));
 
@@ -1481,11 +1475,12 @@ mod test {
         assert!(v_cache[cache_offset(3)] != 0.0);
 
         let mut decode_attention_output = vec![0.0f32; decode_size * HEAD_DIM];
-        let decode_attention = Operator::Attention(Attention::new(
+        let decode_attention = Operator::GatedAttention(GatedAttention::new(
             q_state.as_ptr(),
             k_cache.as_ptr(),
             v_cache.as_ptr(),
             decode_attention_output.as_mut_ptr(),
+            q_state.as_ptr(),
             SEQUENCE_LENGTH,
             BATCH_SIZE,
             1,
@@ -1503,6 +1498,7 @@ mod test {
             1.0,
             false,
             true,
+            false,
             THREAD_NUM,
         ));
 

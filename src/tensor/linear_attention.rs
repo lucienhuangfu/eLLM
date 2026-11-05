@@ -2,35 +2,27 @@ use std::ops::{AddAssign, Neg, Sub};
 
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
-use crate::operators::attention::linear_attention::{FusedGatedDeltaRule, RecurrentGatedDeltaRule};
-use crate::operators::conv::CausalConv1dSilu;
+use crate::operators::attention::linear_attention::FusedGatedDeltaRule;
 use crate::operators::linear::MatMulProj;
 use crate::operators::operator::Operator;
 
 use super::{GlobalOperatorQueue, Tensor};
 
-// Tensor builders for the GatedDeltaNet-style linear attention pipelines.
-// Two pipelines coexist in the library:
-//   legacy: matmul_proj -> causal_conv_silu -> recurrent_gated_delta_rule
-//   fused:  fused_gated_delta_rule (hidden -> attention output in one
-//           operator; the legacy builders stay available but are no longer
-//           called by GatedDeltaAttention)
-// The qkv projection is a per-token cache laid out like the KV cache in
-// matmul3 ([sequence_length, batch_size, cols]); the conv operator rewrites
-// it in place and the recurrent operator consumes it read-only. The fused
-// path keeps everything in per-thread scratch and uses the per-head
-// conv_state layout [batch_size, num_v_heads, 2 * head_k_dim + head_v_dim,
-// kernel_size - 1], which the legacy causal_conv_silu cannot consume.
-// GatedDeltaNet 线性注意力流水线的 Tensor 构建方法，库内两条流水线并存：
-//   旧路径：matmul_proj -> causal_conv_silu -> recurrent_gated_delta_rule
-//   融合路径：fused_gated_delta_rule（hidden -> 注意力输出单算子完成；
-//           旧 builder 保留可用，但 GatedDeltaAttention 不再调用）
-// qkv 投影输出是与 matmul3 KV cache 同布局的逐 token 缓存
-// （[sequence_length, batch_size, 列宽]），卷积算子原地改写该缓存，
-// 递推算子只读消费。融合路径的中间量全部住在线程私有 scratch，
-// conv_state 采用逐头新布局 [batch_size, num_v_heads,
-// 2 * head_k_dim + head_v_dim, kernel_size - 1]，旧 causal_conv_silu
-// 不能直接消费该布局。
+// Tensor builders for the GatedDeltaNet-style linear attention pipeline.
+// The fused path is the one GatedDeltaAttention calls: fused_gated_delta_rule
+// takes hidden straight to the attention output in a single operator.
+// `matmul_proj` remains as a standalone builder for the input projection
+// stage that other flows may reuse.
+// The fused path keeps everything in per-thread scratch and uses the
+// per-head conv_state layout [batch_size, num_v_heads, 2 * head_k_dim +
+// head_v_dim, kernel_size - 1].
+// GatedDeltaNet 线性注意力流水线的 Tensor 构建方法。
+// 融合路径是 GatedDeltaAttention 实际调用的：fused_gated_delta_rule
+// 单算子从 hidden 直出注意力输出。
+// `matmul_proj` 作为单独的投影阶段 builder 保留，供其他流程复用。
+// 融合路径的中间量全部住在线程私有 scratch，conv_state 采用逐头新布局
+// [batch_size, num_v_heads, 2 * head_k_dim + head_v_dim,
+// kernel_size - 1]。
 impl<T> Tensor<T>
 where
     T: Copy
@@ -127,94 +119,6 @@ where
 
         Self::enqueue(operator);
         (qkv_state, z_state, beta_state, g_state)
-    }
-
-    // Fused depthwise causal conv1d + SiLU + rolling state update with the
-    // qk-norm epilogue, rewriting the qkv cache from matmul_proj in place.
-    // state is the per-batch rolling window
-    // [batch_size, conv_dim, kernel_size - 1] owned by the layer cache.
-    // 融合 depthwise 因果卷积 + SiLU + 滚动状态更新（含 qk-norm epilogue），
-    // 原地改写 matmul_proj 的 qkv 缓存。state 是层缓存持有的逐 batch
-    // 滚动窗口 [batch_size, conv_dim, kernel_size - 1]。
-    pub fn causal_conv_silu(
-        &self,
-        weight: &Tensor<T>,
-        state: &Tensor<T>,
-        key_dim: usize,
-        head_k_dim: usize,
-        sequence_length: usize,
-        batch_size: usize,
-    ) {
-        let conv_dim = self.last_dim();
-        let kernel_size = weight.last_dim();
-
-        let operator = unsafe {
-            Operator::CausalConv1dSilu(CausalConv1dSilu::new(
-                self.data,
-                weight.data,
-                state.data,
-                kernel_size,
-                conv_dim,
-                key_dim,
-                head_k_dim,
-                sequence_length,
-                batch_size,
-            ))
-        };
-
-        Self::enqueue(operator);
-    }
-
-    // Fused single-step gated delta rule recurrence over the qkv cache
-    // (already convolved + normalized upstream); state is the per-layer
-    // recurrent cache [batch_size, num_v_heads, head_k_dim, head_v_dim],
-    // updated in place. Returns the attention output
-    // [sequence_length, batch_size, value_dim].
-    // 在已完成卷积与归一化的 qkv 缓存上执行单步 gated delta rule 递推。
-    // state 是逐层递推缓存 [batch_size, num_v_heads, head_k_dim, head_v_dim]，
-    // 原地更新。返回注意力输出 [sequence_length, batch_size, value_dim]。
-    #[allow(clippy::too_many_arguments)]
-    pub fn recurrent_gated_delta_rule(
-        &self,
-        g_tensor: &Tensor<T>,
-        beta_tensor: &Tensor<T>,
-        state: &Tensor<T>,
-        key_dim: usize,
-        sequence_length: usize,
-        batch_size: usize,
-        scope_name: String,
-    ) -> Self {
-        let num_v_heads = state.shape[1];
-        let head_k_dim = state.shape[2];
-        let head_v_dim = state.shape[3];
-        let num_k_heads = key_dim / head_k_dim;
-        // Width of the v segment inside the qkv row: num_v_heads * head_v_dim.
-        // qkv 行内 v 段的宽度：num_v_heads * head_v_dim。
-        let value_dim = num_v_heads * head_v_dim;
-
-        let output_tensor =
-            Self::output_tensor(vec![sequence_length, batch_size, value_dim], &scope_name);
-
-        let operator = unsafe {
-            Operator::RecurrentGatedDeltaRule(RecurrentGatedDeltaRule::new(
-                self.data,
-                g_tensor.data,
-                beta_tensor.data,
-                state.data,
-                output_tensor.data,
-                key_dim,
-                value_dim,
-                head_k_dim,
-                head_v_dim,
-                num_k_heads,
-                num_v_heads,
-                sequence_length,
-                batch_size,
-            ))
-        };
-
-        Self::enqueue(operator);
-        output_tensor
     }
 
     // Fused linear attention: hidden -> four-way projection -> causal

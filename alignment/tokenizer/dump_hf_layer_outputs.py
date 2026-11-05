@@ -77,6 +77,16 @@ def main() -> None:
             hook_data[f"layer{layer_idx:02d}_post_attn_norm"] = output[0].detach().numpy()
         return hook
 
+    def make_o_proj_input_hook(layer_idx):
+        # 输出门（Qwen3.5 / qwen3_5 `attn_output_gate`）融合在 o_proj 之前：
+        # 参考实现里 `attn_output = attn_output * torch.sigmoid(gate)`（L808），
+        # 再进 o_proj。o_proj 的**输入**正是「门后 attn_output」，可直接与 Rust
+        # 侧 `{scope}.attn_output`（attention 算子 epilogue 门后结果）逐元素比对。
+        def hook(module, input):
+            gated = input[0][0] if isinstance(input, tuple) else input[0]
+            hook_data[f"layer{layer_idx:02d}_attn_output_gated"] = gated.detach().numpy()
+        return hook
+
     def make_mlp_output_hook(layer_idx):
         def hook(module, input, output):
             hook_data[f"layer{layer_idx:02d}_mlp_output"] = output[0].detach().numpy()
@@ -100,6 +110,9 @@ def main() -> None:
             make_input_layernorm_hook(layer_idx)))
         hooks.append(layer.self_attn.register_forward_hook(
             make_attn_output_hook(layer_idx)))
+        if hasattr(layer.self_attn, "o_proj"):
+            hooks.append(layer.self_attn.o_proj.register_forward_pre_hook(
+                make_o_proj_input_hook(layer_idx)))
         hooks.append(layer.post_attention_layernorm.register_forward_hook(
             make_post_attn_norm_hook(layer_idx)))
         hooks.append(layer.mlp.register_forward_hook(

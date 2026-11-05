@@ -1,7 +1,7 @@
-use std::ops::{Add, Div, Mul, Sub};
+use std::ops::{Add, Div, Mul, Neg, Sub};
 use std::sync::{Arc, Once};
 
-use crate::num_traits::NegInfinity;
+use crate::num_traits::{NegInfinity, Sigmoid};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 use crate::operators::traits::AttentionTrait;
 use crate::runtime::SequenceSlice;
@@ -11,14 +11,21 @@ use super::utils::{split_sequence_by_triangle, RowVisitPlan};
 
 static BRGEMM_FALLBACK_WARNING: Once = Once::new();
 
-/// Core Attention computation structure
-/// Handles Q, K, V pointers and manages the attention computation
+/// Core Attention computation structure with a fused output gate.
+/// Handles Q, K, V pointers and manages the attention computation; when
+/// `use_gate` is set it also applies `attn_output *= sigmoid(gate)` in the
+/// col-loop epilogue.
 #[derive(Clone)]
-pub struct Attention<T> {
+pub struct GatedAttention<T> {
     pub(super) q_ptr: ConstPtr<T>,
     pub(super) k_ptr: ConstPtr<T>,
     pub(super) v_ptr: ConstPtr<T>,
     pub(super) output_ptr: MutPtr<T>,
+    // 输出门（Qwen3.5 `attn_output_gate`）：与 q/output 同布局的门控源指针，在
+    // 每个 row 段整条 col 循环结束后就地作用于 output（`attn_output *= sigmoid(gate)`）。
+    // `use_gate` 为 false 时 gate_ptr 从不被解引用（借用 q_ptr 占位，与 matmul3 同一手法）。
+    pub(super) gate_ptr: ConstPtr<T>,
+    pub(super) use_gate: bool,
     pub(super) sequence_length: usize,
     pub(super) batch_size: usize,
     pub(super) attention_head_num: usize,
@@ -50,7 +57,7 @@ pub struct Attention<T> {
     scratch: AttentionScratch<T>,
 }
 
-impl<T> Attention<T>
+impl<T> GatedAttention<T>
 where
     T: Copy
         + Default
@@ -66,6 +73,7 @@ where
         k_ptr: *const T,
         v_ptr: *const T,
         output_ptr: *mut T,
+        gate_ptr: *const T,
         sequence_length: usize,
         batch_size: usize,
         attention_head_num: usize,
@@ -83,6 +91,7 @@ where
         inverse_sqrt_head: T,
         decode_only_flag: bool,
         is_causal: bool,
+        use_gate: bool,
         thread_num: usize,
     ) -> Self {
         let thread_num = thread_num.max(1);
@@ -164,6 +173,10 @@ where
             k_ptr: ConstPtr { ptr: k_ptr },
             v_ptr: ConstPtr { ptr: v_ptr },
             output_ptr: MutPtr { ptr: output_ptr },
+            gate_ptr: ConstPtr {
+                ptr: if use_gate { gate_ptr } else { q_ptr },
+            },
+            use_gate,
             batch_size,
             attention_head_num,
             kv_head_num,
@@ -240,7 +253,7 @@ where
     }
 }
 
-impl<T> Attention<T>
+impl<T> GatedAttention<T>
 where
     T: Copy
         + Default
@@ -250,14 +263,42 @@ where
         + Div<Output = T>
         + PartialOrd
         + NegInfinity
+        + Neg<Output = T>
+        + Sigmoid
         + crate::num_traits::Exp,
 {
+    /// 输出门 epilogue：`attn_output *= sigmoid(gate)`（对齐 HF
+    /// `modeling_qwen3_5.py` L808 `attn_output * torch.sigmoid(gate)`）。
+    /// 在某个 row 段整条 col 循环结束后就地作用于 `output_head_ptr`，与 q/output
+    /// 同布局（gate 与 output 内存布局一致，故行/head 寻址完全对称）。
+    #[inline(always)]
+    pub(super) unsafe fn apply_output_gate(
+        &self,
+        output_head_ptr: *mut T,
+        gate_head_ptr: *const T,
+        row_begin: usize,
+        row_end: usize,
+    ) {
+        for row in row_begin..row_end {
+            let offset = row * self.q_seq_stride;
+            // sigmoid_multiply(value, gate, out, len) = value * sigmoid(gate)，
+            // 参数序 value 在前；out 与 value 均为 attn_output，就地写回。
+            crate::kernel::scalar::sigmoid::sigmoid_multiply(
+                output_head_ptr.add(offset),
+                gate_head_ptr.add(offset),
+                output_head_ptr.add(offset),
+                self.head_size,
+            );
+        }
+    }
+
     /// Visit aligned row ranges for attention computation
     #[inline(always)]
     unsafe fn visit_aligned_row_range<const CAUSAL: bool>(
         &self,
         q_head_ptr: *const T,
         output_head_ptr: *mut T,
+        gate_head_ptr: *const T,
         k_head_ptr: *const T,
         v_head_ptr: *const T,
         thread_id: usize,
@@ -340,6 +381,10 @@ where
                     );
                 }
             }
+
+            if self.use_gate {
+                self.apply_output_gate(output_head_ptr, gate_head_ptr, row_chunk, visible_row_end);
+            }
         }
     }
 
@@ -349,6 +394,7 @@ where
         &self,
         q_head_ptr: *const T,
         output_head_ptr: *mut T,
+        gate_head_ptr: *const T,
         k_head_ptr: *const T,
         v_head_ptr: *const T,
         thread_id: usize,
@@ -427,6 +473,10 @@ where
                 );
             }
         }
+
+        if self.use_gate {
+            self.apply_output_gate(output_head_ptr, gate_head_ptr, row_begin, visible_row_end);
+        }
     }
 
     /// Visit blocks for a single attention head
@@ -434,6 +484,7 @@ where
         &self,
         q_head_ptr: *const T,
         output_head_ptr: *mut T,
+        gate_head_ptr: *const T,
         k_head_ptr: *const T,
         v_head_ptr: *const T,
         thread_id: usize,
@@ -445,6 +496,7 @@ where
             self.visit_aligned_row_range::<CAUSAL>(
                 q_head_ptr,
                 output_head_ptr,
+                gate_head_ptr,
                 k_head_ptr,
                 v_head_ptr,
                 thread_id,
@@ -459,6 +511,7 @@ where
             self.visit_tail_row_range::<CAUSAL>(
                 q_head_ptr,
                 output_head_ptr,
+                gate_head_ptr,
                 k_head_ptr,
                 v_head_ptr,
                 thread_id,
@@ -475,6 +528,7 @@ where
         &self,
         q_slice_ptr: *const T,
         output_slice_ptr: *mut T,
+        gate_slice_ptr: *const T,
         k_batch_ptr: *const T,
         v_batch_ptr: *const T,
         next_sequence_index: usize,
@@ -499,7 +553,7 @@ where
         for kv_head in 0..self.kv_head_num {
             let k_head_ptr = k_batch_ptr.add(kv_head * k_head_stride);
             let v_head_ptr = v_batch_ptr.add(kv_head * v_head_stride);
-            if CAUSAL && attention_heads_per_kv == 8 {
+            if CAUSAL && attention_heads_per_kv == 8 && !self.use_gate {
                 let q_group_offset = kv_head * attention_heads_per_kv * self.head_size;
                 let q_group_ptr = q_slice_ptr.add(q_group_offset);
                 let output_group_ptr = output_slice_ptr.add(q_group_offset);
@@ -552,10 +606,12 @@ where
                 let q_head_offset = attention_head * self.head_size;
                 let q_head_ptr = q_slice_ptr.add(q_head_offset);
                 let output_head_ptr = output_slice_ptr.add(q_head_offset);
+                let gate_head_ptr = gate_slice_ptr.add(q_head_offset);
 
                 self.visit_blocks_for_head::<CAUSAL>(
                     q_head_ptr,
                     output_head_ptr,
+                    gate_head_ptr,
                     k_head_ptr,
                     v_head_ptr,
                     thread_id,
@@ -573,6 +629,7 @@ where
         &self,
         q_slice_ptr: *const T,
         output_slice_ptr: *mut T,
+        gate_slice_ptr: *const T,
         k_batch_ptr: *const T,
         v_batch_ptr: *const T,
         next_sequence_index: usize,
@@ -598,6 +655,7 @@ where
             self.run_sequence_split::<CAUSAL>(
                 q_slice_ptr,
                 output_slice_ptr,
+                gate_slice_ptr,
                 k_batch_ptr,
                 v_batch_ptr,
                 next_sequence_index,
@@ -644,7 +702,7 @@ where
             let k_head_ptr = k_batch_ptr.add(kv_head * k_head_stride);
             let v_head_ptr = v_batch_ptr.add(kv_head * v_head_stride);
 
-            if CAUSAL && attention_heads_per_kv == 8 {
+            if CAUSAL && attention_heads_per_kv == 8 && !self.use_gate {
                 let q_group_offset = kv_head * attention_heads_per_kv * self.head_size;
                 let q_group_ptr = q_slice_ptr.add(q_group_offset);
                 let output_group_ptr = output_slice_ptr.add(q_group_offset);
@@ -697,10 +755,12 @@ where
                 let q_head_offset = attention_head * self.head_size;
                 let q_head_ptr = q_slice_ptr.add(q_head_offset);
                 let output_head_ptr = output_slice_ptr.add(q_head_offset);
+                let gate_head_ptr = gate_slice_ptr.add(q_head_offset);
 
                 self.visit_blocks_for_head::<CAUSAL>(
                     q_head_ptr,
                     output_head_ptr,
+                    gate_head_ptr,
                     k_head_ptr,
                     v_head_ptr,
                     thread_id,
@@ -717,6 +777,7 @@ where
         &self,
         q_slice_ptr: *const T,
         output_slice_ptr: *mut T,
+        gate_slice_ptr: *const T,
         k_batch_ptr: *const T,
         v_batch_ptr: *const T,
         next_sequence_index: usize,
@@ -743,7 +804,12 @@ where
             tail: (aligned_len < slice_len).then_some((aligned_len, slice_len)),
         };
 
-        if CAUSAL && self.decode_gqa8 && slice_len == 1 && attention_heads_per_kv == 8 {
+        if CAUSAL
+            && self.decode_gqa8
+            && slice_len == 1
+            && attention_heads_per_kv == 8
+            && !self.use_gate
+        {
             let active_thread_num = thread_num.min(self.kv_head_num);
             if thread_id >= active_thread_num {
                 return;
@@ -803,6 +869,7 @@ where
                         self.visit_blocks_for_head::<CAUSAL>(
                             q_slice_ptr.add(q_head_offset),
                             output_slice_ptr.add(q_head_offset),
+                            gate_slice_ptr.add(q_head_offset),
                             k_head_ptr,
                             v_head_ptr,
                             thread_id,
@@ -845,10 +912,12 @@ where
                 let q_head_offset = attention_head * self.head_size;
                 let q_head_ptr = q_slice_ptr.add(q_head_offset);
                 let output_head_ptr = output_slice_ptr.add(q_head_offset);
+                let gate_head_ptr = gate_slice_ptr.add(q_head_offset);
 
                 self.visit_blocks_for_head::<CAUSAL>(
                     q_head_ptr,
                     output_head_ptr,
+                    gate_head_ptr,
                     k_head_ptr,
                     v_head_ptr,
                     thread_id,
@@ -869,6 +938,7 @@ where
         &self,
         q_slice_ptr: *const T,
         output_slice_ptr: *mut T,
+        gate_slice_ptr: *const T,
         k_batch_ptr: *const T,
         v_batch_ptr: *const T,
         next_sequence_index: usize,
@@ -928,6 +998,7 @@ where
                 self.visit_blocks_for_head::<CAUSAL>(
                     q_slice_ptr.add(q_head_offset),
                     output_slice_ptr.add(q_head_offset),
+                    gate_slice_ptr.add(q_head_offset),
                     k_head_ptr,
                     v_head_ptr,
                     thread_id,
@@ -971,6 +1042,7 @@ where
             let v_ptr = self.v_ptr.ptr;
             let output_ptr = self.output_ptr.ptr;
             let q_ptr = self.q_ptr.ptr;
+            let gate_ptr = self.gate_ptr.ptr;
             let q_token_stride = self.attention_head_num * self.head_size;
             let attention_heads_per_kv = self.attention_head_num / self.kv_head_num;
 
@@ -981,6 +1053,7 @@ where
 
                 let q_slice_ptr = q_ptr.add(slice.global_start_index * q_token_stride);
                 let output_slice_ptr = output_ptr.add(slice.global_start_index * q_token_stride);
+                let gate_slice_ptr = gate_ptr.add(slice.global_start_index * q_token_stride);
                 let k_batch_ptr = k_ptr.add(slice.batch_index * self.k_batch_stride);
                 let v_batch_ptr = v_ptr.add(slice.batch_index * self.v_batch_stride);
                 let col_end = slice.local_next_index + slice.local_length;
@@ -1029,6 +1102,7 @@ where
                     self.run_head_row_split::<CAUSAL>(
                         q_slice_ptr,
                         output_slice_ptr,
+                        gate_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
                         slice.local_next_index,
@@ -1044,6 +1118,7 @@ where
                     self.run_head_split::<CAUSAL>(
                         q_slice_ptr,
                         output_slice_ptr,
+                        gate_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
                         slice.local_next_index,
@@ -1060,6 +1135,7 @@ where
                     self.run_grouped_sequence_split::<CAUSAL>(
                         q_slice_ptr,
                         output_slice_ptr,
+                        gate_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
                         slice.local_next_index,
@@ -1076,6 +1152,7 @@ where
                     self.run_sequence_split::<CAUSAL>(
                         q_slice_ptr,
                         output_slice_ptr,
+                        gate_slice_ptr,
                         k_batch_ptr,
                         v_batch_ptr,
                         slice.local_next_index,
@@ -1096,7 +1173,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::Attention;
+    use super::GatedAttention;
     use crate::runtime::SequenceSlice;
 
     const EMPTY_SLICES: &[SequenceSlice] = &[];
@@ -1111,7 +1188,7 @@ mod tests {
 
         for thread_id in 0..thread_num {
             if let Some((begin, end)) =
-                Attention::<f32>::split_contiguous_range(total_tasks, thread_num, thread_id)
+                GatedAttention::<f32>::split_contiguous_range(total_tasks, thread_num, thread_id)
             {
                 for task_id in begin..end {
                     visits[task_id] += 1;
@@ -1177,11 +1254,12 @@ mod tests {
         let v = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let mut output = vec![-1.0; q.len()];
 
-        let mut attention = Attention::new(
+        let mut attention = GatedAttention::new(
             q.as_ptr(),
             k.as_ptr(),
             v.as_ptr(),
             output.as_mut_ptr(),
+            q.as_ptr(),
             3,
             1,
             1,
@@ -1199,6 +1277,7 @@ mod tests {
             inverse_sqrt_head,
             false,
             true,
+            false,
             1,
         );
         attention.causal_col_prune = true;
@@ -1250,11 +1329,12 @@ mod tests {
         }
 
         let mut output = vec![-1.0; q.len()];
-        let attention = Attention::new(
+        let attention = GatedAttention::new(
             q.as_ptr(),
             k.as_ptr(),
             v.as_ptr(),
             output.as_mut_ptr(),
+            q.as_ptr(),
             seq_len,
             batch_size,
             1,
@@ -1272,6 +1352,7 @@ mod tests {
             inverse_sqrt_head,
             false,
             true,
+            false,
             1,
         );
 
@@ -1329,11 +1410,12 @@ mod tests {
         let v = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let mut output = vec![-1.0; q.len()];
 
-        let attention = Attention::new(
+        let attention = GatedAttention::new(
             q.as_ptr(),
             k.as_ptr(),
             v.as_ptr(),
             output.as_mut_ptr(),
+            q.as_ptr(),
             3,
             1,
             1,
@@ -1351,6 +1433,7 @@ mod tests {
             inverse_sqrt_head,
             false,
             false, // is_causal = false → 分派到 compute_non_causal 空实现
+            false, // use_gate = false
             1,
         );
 
@@ -1365,5 +1448,79 @@ mod tests {
 
         // 不 panic 即通过（stub 为空实现，不产出 attention 数值）。
         attention.run(slices.iter().map(|s| s.local_length).sum(), &slices, 1, 0);
+    }
+
+    #[test]
+    fn output_gate_epilogue_applies_sigmoid() {
+        // 融合后的 attention epilogue：col 循环收尾对 output 就地做
+        // `attn_output *= sigmoid(gate)`（对齐 HF modeling_qwen3_5.py L808）。
+        // gate 与 q/output 同布局（单 head：每行 head_size 个连续元素）。
+        let head_size = 2;
+        let inverse_sqrt_head = 1.0;
+        let q = vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let k = vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let v = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // 每行一组门控值，取正负混合以覆盖 sigmoid 的值域行为。
+        let gate = vec![0.5, -1.0, 2.0, 0.0, -0.5, 1.5];
+        let mut output = vec![-1.0; q.len()];
+
+        let attention = GatedAttention::new(
+            q.as_ptr(),
+            k.as_ptr(),
+            v.as_ptr(),
+            output.as_mut_ptr(),
+            gate.as_ptr(),
+            3,
+            1,
+            1,
+            1,
+            3 * head_size,
+            3 * head_size,
+            head_size,
+            3 * head_size,
+            3 * head_size,
+            head_size,
+            head_size,
+            1,
+            1,
+            head_size,
+            inverse_sqrt_head,
+            false,
+            true, // is_causal
+            true, // use_gate
+            1,
+        );
+
+        let slices = vec![SequenceSlice {
+            global_start_index: 0,
+            batch_index: 0,
+            local_next_index: 0,
+            local_length: 3,
+            last_token_flag: false,
+            lift_index: 0,
+        }];
+
+        attention.run(slices.iter().map(|s| s.local_length).sum(), &slices, 1, 0);
+
+        for row in 0..3 {
+            let attn = naive_attention_row(
+                &q[row * head_size..(row + 1) * head_size],
+                &k,
+                &v,
+                head_size,
+                row + 1,
+                inverse_sqrt_head,
+            );
+            let expected: Vec<f32> = attn
+                .iter()
+                .enumerate()
+                .map(|(index, &value)| {
+                    let g = gate[row * head_size + index];
+                    value * (1.0 / (1.0 + (-g).exp()))
+                })
+                .collect();
+            let actual = &output[row * head_size..(row + 1) * head_size];
+            assert_close(actual, &expected);
+        }
     }
 }

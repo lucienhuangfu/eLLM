@@ -7,7 +7,7 @@ Quick reference for terms used throughout the eLLM documentation.
 ## A
 
 **`attn_output_gate`**  
-HF config flag that doubles the `q_proj` row count so every attention head also emits a gate; the attention output is multiplied by `sigmoid(gate)`. Implemented in `src/transformer/attention/full_attention.rs`, fused into `matmul3` (the gate rows interleave with the query rows per head).
+HF config flag that doubles the `q_proj` row count so every attention head also emits a gate; the attention output is multiplied by `sigmoid(gate)`, matching the reference `modeling_qwen3_5.py` L808 (`attn_output * torch.sigmoid(gate)`). The gate rows are produced by `matmul3` (interleaved with the query rows per head) and the gating is fused into the `attention` operator's col-loop epilogue (`src/operators/attention/full_attention`), which applies `attn_output *= sigmoid(gate)` in place; `src/transformer/attention/full_attention.rs` wires it. There is no longer a standalone gate node in the graph. (`output_gate_type` is parsed and asserted to be `"swish"`, but the reference forward uses plain sigmoid for this gate, not `ACT2FN`.)
 
 **Attention dispatch**  
 Per-layer attention form is a plain string test at the construction point — `config.layer_types[i].contains("linear")` in `src/transformer/attention/attention_enum.rs`. The former `AttentionKind` enum blueprint is retired.

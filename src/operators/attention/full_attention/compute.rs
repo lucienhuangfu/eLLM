@@ -5,9 +5,9 @@ use crate::kernel;
 use crate::num_traits::{Exp, NegInfinity};
 use crate::operators::traits::AttentionTrait;
 
-use super::Attention;
+use super::GatedAttention;
 
-impl<T> AttentionTrait<T> for Attention<T>
+impl<T> AttentionTrait<T> for GatedAttention<T>
 where
     T: Copy
         + Default
@@ -91,7 +91,7 @@ where
     }
 }
 
-impl AttentionTrait<f16> for Attention<f16> {
+impl AttentionTrait<f16> for GatedAttention<f16> {
     fn compute(
         &self,
         q_ptr: *const f16,
@@ -237,7 +237,7 @@ impl AttentionTrait<f16> for Attention<f16> {
     }
 }
 
-impl AttentionTrait<f32> for Attention<f32> {
+impl AttentionTrait<f32> for GatedAttention<f32> {
     fn compute(
         &self,
         q_ptr: *const f32,

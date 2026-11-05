@@ -3,7 +3,7 @@ use std::ops::{AddAssign, Neg, Sub};
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
-use crate::operators::linear::{Attention, MatMul, MatMul3, MatMulAdd};
+use crate::operators::linear::{GatedAttention, MatMul, MatMul3, MatMulAdd};
 use crate::operators::operator::Operator;
 use crate::operators::routing::MatMulTopK;
 
@@ -25,10 +25,11 @@ where
         + GlobalMemPool
         + GlobalOperatorQueue,
 {
-    pub fn attention(
+    pub fn gated_attention(
         &self,
         k_tensor: &Tensor<T>,
         v_tensor: &Tensor<T>,
+        gate_tensor: Option<&Tensor<T>>,
         sequence_length: usize,
         batch_size: usize,
         inverse_sqrt_head: T,
@@ -39,11 +40,19 @@ where
     ) -> Self {
         let output_tensor = Self::output_tensor(self.shape.clone(), &scope_name);
 
-        let operator = Operator::Attention(Attention::new(
+        // 输出门（Qwen3.5 `attn_output_gate`）：`gate_tensor` 为空即无门；
+        // 有门时 attention 在 col 循环收尾 epilogue 就地作用于 output。
+        let use_gate = gate_tensor.is_some();
+        let gate_ptr = gate_tensor
+            .map(|t| t.data as *const T)
+            .unwrap_or(std::ptr::null());
+
+        let operator = Operator::GatedAttention(GatedAttention::new(
             self.data,
             k_tensor.data,
             v_tensor.data,
             output_tensor.data,
+            gate_ptr,
             sequence_length,
             batch_size,
             self.shape[2],
@@ -61,6 +70,7 @@ where
             inverse_sqrt_head,
             decode_only_flag,
             is_causal,
+            use_gate,
             thread_num,
         ));
 

@@ -5,12 +5,6 @@ pub mod operator;
 pub mod send_sync_ptr;
 pub use operator::Operator;
 
-pub mod conv {
-    pub mod causal_conv1d_silu;
-
-    pub use causal_conv1d_silu::CausalConv1dSilu;
-}
-
 pub mod elementwise {
     pub mod add_zip;
     pub mod complex_zip;
@@ -59,7 +53,7 @@ pub mod expert_imports {
 }
 
 pub mod linear {
-    pub use super::attention::full_attention::Attention;
+    pub use super::attention::full_attention::GatedAttention;
     pub use super::matmul::matmul::MatMul;
     pub use super::matmul::matmul3::MatMul3;
     pub use super::matmul::matmul_add::MatMulAdd;
@@ -116,14 +110,12 @@ pub mod transform {
     pub use super::softmax::SigmoidMap;
 }
 pub mod traits {
-    pub mod conv;
     pub mod expert;
     pub mod linear;
     pub mod linear_attention;
     pub mod map;
     pub mod softmax;
 
-    pub use conv::CausalConvTrait;
     pub use expert::{
         ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait, SharedExpertsDownTrait,
         SharedExpertsSiluTrait, SharedMergeAddTrait,
@@ -132,7 +124,7 @@ pub mod traits {
         AttentionTrait, MatMulAddTrait, MatMulProjTrait, MatMulSigmoidTrait, MatMulTrait,
         MatMulkqvTrait,
     };
-    pub use linear_attention::{FusedGatedDeltaRuleTrait, RecurrentGatedDeltaRuleTrait};
+    pub use linear_attention::FusedGatedDeltaRuleTrait;
     pub use map::{MapTrait, ZipMapTrait};
     pub use softmax::{ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
 }

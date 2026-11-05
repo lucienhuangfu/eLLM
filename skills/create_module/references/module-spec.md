@@ -8,7 +8,7 @@ Lookup material for the `create_module` skill. The workflow lives in [SKILL.md](
 |------|--------|------|
 | `attention/attention_enum.rs` | `AttentionBlock<T>` | Per-layer dispatch by raw string: `config.layer_types[i].contains("linear")` → `GatedDelta`, anything else → `Full` |
 | `attention/full_attention.rs` | `FullAttention<T>` | GQA self-attention: `matmul3` (Q/K/V + qk-norm + RoPE, optionally the `attn_output_gate` half) → `attention` → `matmul_add` (o_proj + residual); owns the `NO_QK_NORM_MODELS` table |
-| `attention/linear_attention.rs` | `GatedDeltaAttention<T>` | Gated DeltaNet: `in_proj_*` → `causal_conv_silu` → `recurrent_gated_delta_rule` → `out_proj` |
+| `attention/linear_attention.rs` | `GatedDeltaAttention<T>` | Gated DeltaNet: `fused_gated_delta_rule` (hidden -> in_proj / causal conv / qk-norm / chunked delta rule / gated RMSNorm) → `matmul_add` (out_proj + residual) |
 | `mlp/dense_mlp.rs` | `DenseMlp<T>` | SwiGLU MLP: `matmul`×2 (gate/up) → `silu_mul` → `matmul_add` (down + residual); the simplest complete example |
 | `mlp/ffn_block.rs` | `FfnBlock<T>` | Inline sparse predicate (`mlp_only_layers` / `num_experts` / `decoder_sparse_step`) → `Dense` or `SparseMoe` |
 | `mlp/sparse_moe/` | `SparseMoe<T>` | MoE block in its own directory: `layer.rs` (public, dispatches the router on `scoring_func.contains("sigmoid")`), `router_softmax.rs` / `router_sigmoid.rs` (`pub(super)` variants behind a private `SparseMoeRouter` enum), `tests.rs` |
@@ -44,7 +44,7 @@ Modules compose the graph exclusively through `Tensor` builder methods; each cal
 | `tensor/ops.rs` | `add`, `silu_mul`, `sigmoid_mul`, `add_rms`, `sigmoid`, `rms`, `lookup_rms` (assoc.), `view`, `lift_vector` |
 | `tensor/matmul.rs` | `matmul`, `matmul_add`, `matmul3`, `attention`, `matmul_local_topk` |
 | `tensor/moe.rs` | `experts_matmul_silu_mul_matmul`, `experts_matmul_mul`, `experts_merge_add`, `softmax_norm`, `sigmoid_gate`, `topk_norm`, `topk_softmax` |
-| `tensor/linear_attention.rs` | `matmul_proj`, `causal_conv_silu`, `recurrent_gated_delta_rule` |
+| `tensor/linear_attention.rs` | `matmul_proj`, `causal_conv_silu`, `fused_gated_delta_rule` |
 
 Common arguments: `MatMulParams` (tiling, from `crate::kernel::common::matmul_params`), `decode_only_flag: bool`, and a `tensor_name: String` built from `self.scope_name`. If the needed op does not exist, create it with the `create_operator` skill first, then wire its Tensor API method.
 

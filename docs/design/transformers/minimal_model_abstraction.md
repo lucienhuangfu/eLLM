@@ -173,7 +173,7 @@ synthetic prefixes panic at graph build.
 |---|---|---|
 | G0 | `num_local_experts` (MiniMax's 256 experts) | fixed by serde alias |
 | G1 | the projection-based key name was wrong; HF uses `attention_bias` in every checkpoint | fixed by renaming the field and the key; the old spelling gets no alias, since it exists in no real `config.json` |
-| G2 | `attn_output_gate` / `output_gate_type` | implemented: `q_proj` doubles its rows and `matmul3` emits the gate half per head; `forward` multiplies the attention output by `sigmoid(gate)` |
+| G2 | `attn_output_gate` / `output_gate_type` | implemented: `q_proj` doubles its rows and `matmul3` emits the gate half per head; the gate is fused into the `attention` operator's col-loop epilogue, which multiplies the attention output in place by `sigmoid(gate)`, matching the reference `modeling_qwen3_5.py` L808 (`attn_output * torch.sigmoid(gate)`). Note: `output_gate_type` is parsed and asserted to be `"swish"`, but the reference forward still uses plain sigmoid for this gate (not `ACT2FN`), so the epilogue uses `sigmoid(gate)`. |
 | G3 | `hf_config_path` was ignored by `load` | fixed: an explicit path replaces `{model_dir}/config.json` |
 | G4 | zero-centered RMSNorm for `qwen3_5` | not enabled; `ZERO_CENTERED_MODELS` stays empty until the alignment run proves it |
 | G5 | keys intentionally not consumed (`mtp_*`, `mamba_ssm_dtype`, `attention_dropout`, `initializer_range`, `qk_norm_type`, `shared_intermediate_size`, …) | inventoried in the module doc of `text_config.rs`, each marked "not needed for inference" or "to wire" |

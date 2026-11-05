@@ -31,8 +31,9 @@ pub(crate) fn use_qk_norm(model_type: &str) -> bool {
 
 /// 输出门的门宽倍数：`attn_output_gate` 为真时 HF 的 `q_proj.weight` 按 head
 /// 交错存放 query|gate 两半，行数翻倍（modeling_qwen3_5.py L751-L753
-/// `config.num_attention_heads * self.head_dim * 2`），forward 里
-/// `attn_output * torch.sigmoid(gate)`（L808）。这是数据（JSON 键）而非架构
+/// `config.num_attention_heads * self.head_dim * 2`），forward 里门控为
+/// `attn_output * torch.sigmoid(gate)`（modeling_qwen3_5.py L808），已融合进 attention
+/// 算子的 col 循环收尾 epilogue。这是数据（JSON 键）而非架构
 /// 事实，故读 `config.attn_output_gate`，判定与实现都呆在本文件。
 const GATE_ROWS: usize = 2;
 
@@ -217,9 +218,10 @@ where
             // [chunk_size, head_num, head_size] <- [chunk_size, head_num, group_num, head_dim] [batch_size, head_num, sequence_length, head_dim] [batch_size, head_num, sequence_length, head_dim]
             // 核心注意力输出 [sequence_length, batch_size, num_attention_heads, head_dim]，
             // out_proj + residual 后处理由 attention_block.rs 的 AttentionBlock::forward 统一完成。
-            let attn_output = view_query_states.attention(
+            let attn_output = view_query_states.gated_attention(
                 &view_key_position_tensor,
                 &view_value_states2,
+                gate_state.as_ref(),
                 self.sequence_length,
                 self.batch_size,
                 self.scaling,
@@ -229,26 +231,12 @@ where
                 format!("{}.attn_output", self.scope_name),
             );
 
-            // 输出门（缺口 G2）：`attn_output * torch.sigmoid(gate)`
-            // （modeling_qwen3_5.py L808）。gate 与 query 同宽，在 MatMul3 里与
-            // q/k/v 一同算出。
-            //
-            // ZipMap 的分块契约是「total_size 行 × head_num 个 head_size 连续块」，
-            // 而 total_size 就是活跃行数，故此处先把 [seq, batch, head, dim] 压成
-            // 二维 [seq * batch, head * dim]（命中 `[_, cols]` 分支 → head_num = 1），
-            // 再逐元素乘门，最后还原四维交给 AttentionBlock 的 out_proj。
-            match gate_state {
-                Some(gate) => {
-                    let rows = attn_output.shape[0];
-                    let cols = attn_output.shape[1];
-                    let feature = self.num_attention_heads * self.head_dim;
-                    let flat = attn_output.view(vec![rows * cols, feature]);
-                    let gated =
-                        flat.sigmoid_mul(&gate, format!("{}.attn_output_gated", self.scope_name));
-                    gated.view(vec![rows, cols, self.num_attention_heads, self.head_dim])
-                }
-                None => attn_output,
-            }
+            // 输出门（缺口 G2）已融合进 attention 算子的 col 循环收尾 epilogue：
+            // `attn_output *= sigmoid(gate)`（对应 HF modeling_qwen3_5.py L808
+            // `attn_output * torch.sigmoid(gate)`）。gate 与 query 同宽，在 MatMul3 里与
+            // q/k/v 一同算出，经 `gate_state` 带入 attention()。此处 attn_output
+            // 已是门后结果，直接交给 AttentionBlock 的 out_proj。
+            attn_output
         }
     }
 }
@@ -452,14 +440,15 @@ mod test {
         }
     }
 
-    /// G2 的两条可验证后果：`q_proj.weight` 行数翻倍（对应 HF
-    /// `num_attention_heads * head_dim * 2`），且建图时多出一个输出门节点
-    /// （对应 forward 里的 `attn_output * torch.sigmoid(gate)`）。
+    /// G2 的可验证后果：`q_proj.weight` 行数翻倍（对应 HF
+    /// `num_attention_heads * head_dim * 2`）；输出门已融合进 attention 算子的
+    /// col 循环收尾 epilogue，故图里不再有独立的门控节点（`SigmoidMulZipMap`），
+    /// 只有携带门的 `GatedAttention` 节点。门控数值正确性由算子级 sigmoid 测试覆盖。
     ///
     /// 张量名沿用本文件既有测试的约定（`model.layers.N.*` / `model.position_embedding.weight`），
     /// 因为 MemPool 按名字正则分流，合成前缀会命中「无匹配模式」分支。
     #[test]
-    fn attn_output_gate_doubles_q_proj_and_adds_gating_node() {
+    fn attn_output_gate_doubles_q_proj_and_fuses_into_attention() {
         f32::init_global(HashMap::new());
         f32::init_operator_queue();
 
@@ -497,8 +486,12 @@ mod test {
             queue.iter().map(|operator| operator.kind()).collect()
         });
         assert!(
-            kinds.contains(&"SigmoidMulZipMap"),
-            "有门时图里必须有输出门节点：{kinds:?}"
+            kinds.contains(&"GatedAttention"),
+            "有门时 gated attention 节点必须存在：{kinds:?}"
+        );
+        assert!(
+            !kinds.contains(&"SigmoidMulZipMap"),
+            "门控已融合进 attention，图里不应再有独立门控节点：{kinds:?}"
         );
 
         // 无门对照：同一层造法但不加门，图里不得出现该节点，q_proj 不翻倍。

@@ -55,7 +55,7 @@ use crate::runtime::SequenceSlice;
 // 有意按任务重复计算，以冗余 FLOPs 换取零同步、零中间全局缓冲。
 //
 // conv_state uses a per-task-contiguous layout used only by this fused
-// path (the legacy CausalConv1dSilu keeps the old channel-major layout):
+// path:
 //   [batch_size, num_v_heads, 2 * head_k_dim + head_v_dim, kernel_size - 1]
 // with the in-segment order q(head_k_dim) | k(head_k_dim) | v(head_v_dim),
 // so task (batch, h) owns one contiguous block and rolls the window in
@@ -63,8 +63,7 @@ use crate::runtime::SequenceSlice;
 // the original channel order; compute indexes three sub-ranges (q starts
 // at kv_head * head_k_dim, k at key_dim + kv_head * head_k_dim, v at
 // 2 * key_dim + h * head_v_dim).
-// conv_state 采用仅融合路径使用的逐任务连续布局（旧 CausalConv1dSilu
-// 继续使用按通道组织的旧布局）：
+// conv_state 采用仅融合路径使用的逐任务连续布局：
 //   [batch_size, num_v_heads, 2 * head_k_dim + head_v_dim, kernel_size - 1]
 // 段内顺序 q(head_k_dim) | k(head_k_dim) | v(head_v_dim)，任务 (batch, h)
 // 独占一段连续内存、原地滚动窗口，无需 scratch 拷贝。权重

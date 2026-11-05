@@ -89,8 +89,11 @@ pub struct TextConfig {
     /// G1：HF 各家族都把这个键写成注意力偏置的本名。早期实现按投影合称去读，
     /// 那个键在任何真实 ckpt 里都不存在，因此不保留旧拼写的别名。
     pub attention_bias: bool,
-    /// Qwen3.8 的输出门控（`attn_output * sigmoid(gate)`）。判定与实现在
-    /// `transformer/attention/full_attention.rs`。
+    /// Qwen3.8 的输出门控。HF `modeling_qwen3_5.py` L808 的门控形态为
+    /// `attn_output * torch.sigmoid(gate)`（注：尽管 `output_gate_type` 配为
+    /// `"swish"`，本 ckpt 的参考 forward 对该门仍直接用 sigmoid，未走 ACT2FN）。
+    /// 门控已融合进 attention 算子的 col 循环收尾 epilogue；`attn_output_gate` 决定
+    /// 是否有门，判定与实现在 `transformer/attention/full_attention.rs`。
     pub attn_output_gate: bool,
     pub output_gate_type: String,
 

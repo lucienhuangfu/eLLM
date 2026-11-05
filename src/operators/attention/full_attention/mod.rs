@@ -7,4 +7,4 @@ mod scratch;
 // Utility functions for sequence splitting
 mod utils;
 
-pub use full_attention::Attention;
+pub use full_attention::GatedAttention;

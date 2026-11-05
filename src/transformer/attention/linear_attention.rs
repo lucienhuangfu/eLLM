@@ -12,16 +12,12 @@ use crate::transformer::tensor_name::GatedDeltaAttentionTensorNames;
 // b / a with the beta/g epilogue -> depthwise causal conv1d + SiLU ->
 // qk-norm -> chunked gated delta rule in a single interleaved loop ->
 // gated RMSNorm -> attention output) -> MatMulAdd (out_proj + residual).
-// The legacy three-operator path (MatMulProj -> CausalConv1dSilu ->
-// RecurrentGatedDeltaRule) is still in the library, unused by this module.
 // Qwen3.5-MoE 的 GatedDeltaAttention 线性注意力块
 // （scripts/modeling_qwen3_5_moe.py::Qwen3_5MoeGatedDeltaNet），
 // 两级流水线：FusedGatedDeltaRule（hidden -> 四路输入投影 qkv / z / b / a
 // 含 beta/g epilogue -> depthwise 因果卷积 + SiLU -> qk 归一化 ->
 // 单循环交错的 chunk 化 gated delta rule 递推 -> gated RMSNorm ->
 // 注意力输出）-> MatMulAdd（out_proj + residual）。
-// 旧三算子路径（MatMulProj -> CausalConv1dSilu ->
-// RecurrentGatedDeltaRule）仍保留在库中，本模块不再调用。
 
 // Delta rule chunking constant, aligned with the reference default.
 // delta rule 分块常量，对齐参考实现默认值。
