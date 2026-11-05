@@ -6,8 +6,11 @@ Quick reference for terms used throughout the eLLM documentation.
 
 ## A
 
-**AttentionKind**  
-Enum variant describing the attention type for one decoder layer: `Full`, `SlidingWindow`, or `Linear`.
+**`attn_output_gate`**  
+HF config flag that doubles the `q_proj` row count so every attention head also emits a gate; the attention output is multiplied by `sigmoid(gate)`. Implemented in `src/transformer/attention/full_attention.rs`, fused into `matmul3` (the gate rows interleave with the query rows per head).
+
+**Attention dispatch**  
+Per-layer attention form is a plain string test at the construction point — `config.layer_types[i].contains("linear")` in `src/transformer/attention/attention_enum.rs`. The former `AttentionKind` enum blueprint is retired.
 
 ---
 
@@ -46,8 +49,8 @@ A scheduling round where every active `Phase::Decode` sequence contributes exact
 
 ## F
 
-**FfnKind**  
-Enum variant describing the feed-forward network type for one decoder layer: `Dense { intermediate_size }` or `SparseMoe { … }`.
+**`FfnBlock`**  
+Runtime enum in `src/transformer/mlp/ffn_block.rs`: `Dense(DenseMlp)` or `SparseMoe(SparseMoe)`. The choice is the inline three-conjunction predicate `!mlp_only_layers.contains(i) && num_experts > 0 && (i + 1) % decoder_sparse_step == 0`, read straight from `TextConfig`; the former `FfnKind` enum is retired.
 
 **filling_length**  
 The number of remaining prefill tokens for a batch slot. Decremented by `TopKSoftmax` after each prefill step. When it reaches 0, the slot transitions to `Phase::Decode`.
@@ -61,6 +64,13 @@ An attention variant where multiple Q heads share a single K/V head. The ratio `
 
 ---
 
+## J
+
+**Judgment classes (A / B / C)**  
+The three-way split that decides where a config-driven difference belongs. *A — per-layer form*: an inline `if` at the construction point in `src/transformer/**`. *B — data defaults for a whole model*: the single `matches!(model_type, …)` block in `TextConfig::apply_family_defaults`. *C — architectural facts absent from `config.json`* (qk-norm, zero-centered RMSNorm): a constant table inside the layer file that consumes it, defaulting to true with exceptions registered.
+
+---
+
 ## K
 
 **kv_index**  
@@ -70,15 +80,18 @@ The next write position in the KV cache for a batch slot.
 
 ## L
 
-**LayerPlan**  
-A per-layer data structure that records `AttentionKind` and `FfnKind` for one decoder layer. Produced by the family resolver and stored in `ResolvedConfig.layers`.
+**`layer_types`**  
+Per-layer attention form as a plain `Vec<String>` mirrored from `config.json`. When the key is absent, `TextConfig::derive` synthesizes it from `full_attention_interval`; consumers test it with `contains("linear")` instead of unpacking a blueprint object. Replaces the former `LayerPlan`.
+
+**Load-time validation**  
+`TextConfig::validate` normalizes and checks `layer_types` / `scoring_func` and asserts required dimensions while the config is read, so malformed JSON panics at load instead of silently defaulting mid-inference.
 
 ---
 
 ## M
 
-**ModelFamily**  
-Enum identifying the model family: `Llama`, `Qwen`, `Mixtral`, `MiniMax`, `MiniMaxM2`, `Unknown`. Used to dispatch config resolution and tensor name generation.
+**Missing-key sentinels**  
+The zero values `#[serde(default)]` produces for absent JSON keys — `0`, `false`, `""`, empty `Vec` — which the config layer reads as "not given / feature not present" (`num_experts == 0` means no MoE, `head_dim == 0` means "derive it"). Keys that can legitimately hold an explicit `null` (`rope_scaling`, `pad_token_id`, `sliding_window`) must stay `Option`.
 
 ---
 
@@ -94,15 +107,21 @@ A scheduling round that processes prompt tokens. A single sequence may be split 
 
 ## R
 
-**ResolvedConfig**  
-The stable runtime config derived from `HfConfig`. Contains no family-specific optional fields. Passed to all runtime components.
-
 **RoPE (Rotary Position Embedding)**  
 A positional encoding scheme that multiplies Q/K projections by complex rotation factors. MiniMax-M2.5 uses partial-dimension RoPE (`rotary_dim < head_dim`).
+
+**`RootConfig`**  
+Serde view of a (possibly multimodal) `config.json`: text fields are flattened at the top level, a nested `text_config` takes precedence when present, and `vision_config` plus the vision token ids are captured alongside. Produced only inside `TextConfig::load`.
+
+**ResolvedConfig**  
+The *launch* config in `src/config/config_types.rs`: CLI flags + YAML/JSON args merged and validated (`config_validator.rs`), holding model path, batch/chunk sizes, thread counts, runner type. Unrelated to model architecture — the model-side mirror is `TextConfig`, and the former architecture `ResolvedConfig` derived from `HfConfig` is retired.
 
 ---
 
 ## S
+
+**`scoring_func`**  
+Router scoring as a raw string from `config.json` (`softmax` / `sigmoid`), normalized in `TextConfig::validate` and dispatched with `contains("sigmoid")` in `src/transformer/mlp/sparse_moe/layer.rs`. The former `RouterScoringKind` enum is retired.
 
 **ScheduleTask**  
 The payload for batch execution tasks. Carries `prefill_list`, `decode_list`, sizes, and a task ID. Used by ExecutorPool for manual batch execution.
@@ -123,8 +142,11 @@ The leader-follower thread-pool executor. Leader thread waits for requests and b
 
 ## T
 
-**TensorNames / ModelTensorNames**  
-A per-family name description object that maps logical tensor roles (e.g., `q_proj`) to their actual safetensors key names.
+**`tensor_name.rs`**  
+`src/transformer/tensor_name.rs` centralizes only the *scope* hierarchy (`MODEL_SCOPE`, `layer_scope(i)`, model-level weight names). Leaf weight names are formatted inside the operator that owns them, from the scope it is handed, so `config` keeps no dependency on a concrete model family.
+
+**TextConfig**  
+The single text-model config struct (`src/config/text_config.rs`), a 1:1 mirror of `config.json`. `TextConfig::load(path)` = serde read → `apply_family_defaults` (class B) → `derive` (pure arithmetic) → `validate` (load-time hard failure). Replaces the former `HfConfig` / `ResolvedConfig` / `LayerSpec` / `model_family::*` chain.
 
 **TokenCounter**  
 Tracks the total tokens written since the last scheduling trigger. Fires either when the count exceeds `chunk_size` (threshold trigger) or when the timeout window expires (timeout trigger).

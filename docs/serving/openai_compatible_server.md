@@ -204,7 +204,7 @@ The non-streaming path is unchanged: it still waits for the single EOS notificat
 
 * **Zero re-parsing** — only newly arrived deltas are processed; previously emitted events are never revisited.
 * **Boundary-safe buffering** — a small suffix of the internal buffer is always retained when it could be the prefix of an upcoming tag, preventing split-tag misses.
-* **Load-time rule selection** — format rules are chosen at construction time (from `ModelFamily`), not inferred at runtime.
+* **Load-time rule selection** — format rules are chosen at construction time (from the raw `model_type` string in `config.json`), not inferred at runtime.
 
 ---
 
@@ -220,19 +220,19 @@ Holds the four tag strings and the tool-call format for one model family:
 | `think_start` / `think_end` | Opening / closing tag for chain-of-thought reasoning |
 | `tool_format` | How to interpret the payload inside the tool block |
 
-Built-in presets and the families they target:
+Built-in presets and the `model_type` prefixes that select them:
 
-| Preset | `ModelFamily` | Tool format |
+| Preset | `model_type` prefix | Tool format |
 |---|---|---|
-| `qwen()` | `Qwen` | `Tagged` |
+| `qwen()` | `qwen*`, and the fallback for anything unrecognized | `Tagged` |
 | `deepseek()` | — | `Tagged` |
-| `hermes()` | fallback / `Unknown` | `Tagged` |
-| `llama3_json()` | `Llama` | `RawJson` |
-| `mistral()` | `Mixtral` | `PrefixedJson` |
-| `minimax_m1()` | `MiniMax`, `MiniMaxM2` | `Tagged` |
+| `hermes()` | — | `Tagged` |
+| `llama3_json()` | `llama*` | `RawJson` |
+| `mistral()` | `mixtral*`, `*mistral*` | `PrefixedJson` |
+| `minimax_m1()` | `minimax*` | `Tagged` |
 | `minimax_m2()` | — | `MiniMaxM2` |
 
-`ParserRule::for_model_family(family)` selects the correct preset automatically.
+`ParserRule::for_model_type(model_type)` selects the correct preset automatically: a lowercased prefix test on the raw config string, with no family enum in between.
 
 #### `ToolCallFormat`
 

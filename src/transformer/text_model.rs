@@ -1,11 +1,11 @@
 use std::ops::{AddAssign, Neg, Sub};
 use std::rc::Rc;
 
-use super::decoder_layer::DecoderLayer;
+use super::decoder_layer::{zero_centered_norm, DecoderLayer};
 use super::tensor_name::{
     lm_head_name, norm_weight_name, position_embedding_name, token_embedding_name, MODEL_SCOPE,
 };
-use crate::model_spec::TextConfig;
+use crate::config::TextConfig;
 use crate::num_traits::FromNumber;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
@@ -19,10 +19,10 @@ use super::rope::RotaryEmbedding;
 
 /// Family-agnostic text backbone runtime: token/position embedding + a stack of
 /// `DecoderLayer` + final norm + lm_head/topk. Migrated verbatim from the former
-/// `model_family::qwen3_moe::Model<T>` (renamed by role); it consumes the shared
-/// `model_spec::TextConfig` and is thus reusable by every family.
-/// 家族无关的文本主干运行时。由原 `model_family::qwen3_moe::Model<T>` 按角色改名
-/// 迁移而来，消费共享的 `model_spec::TextConfig`，故可被所有 family 复用。
+/// qwen3_moe `Model<T>` of the "one module per family" era (renamed by role); it
+/// consumes the shared `config::TextConfig` and is thus reusable by every family.
+/// 家族无关的文本主干运行时。由原先「每家族一个 Model」时期的 qwen3_moe
+/// `Model<T>` 按角色改名迁移而来，消费共享的 `config::TextConfig`，故可被所有 family 复用。
 // #[derive(Clone)]
 pub struct TextModel<T>
 where
@@ -169,7 +169,7 @@ where
             eos_ids,
             thread_num,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
-            zero_centered_norm: config.zero_centered_norm,
+            zero_centered_norm: zero_centered_norm(&config.model_type),
             scope_name: scope_name,
         }
     }
@@ -327,7 +327,7 @@ mod test {
             .map(|n| n.get())
             .unwrap_or(1);
 
-        let config = crate::model_family::load_text_config(
+        let config = crate::config::TextConfig::load(
             r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
         )
         .unwrap();
@@ -406,7 +406,7 @@ mod test {
             .map(|n| n.get())
             .unwrap_or(1);
 
-        let config = crate::model_family::load_text_config(
+        let config = crate::config::TextConfig::load(
             r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
         )
         .unwrap();
@@ -476,7 +476,7 @@ mod test {
             return;
         }
 
-        let config = crate::model_family::load_text_config(config_path).unwrap();
+        let config = crate::config::TextConfig::load(config_path).unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,
@@ -528,7 +528,7 @@ mod test {
             return;
         }
 
-        let config = crate::model_family::load_text_config(config_path).unwrap();
+        let config = crate::config::TextConfig::load(config_path).unwrap();
 
         let position_vec = RotaryEmbedding::new(
             config.head_dim,

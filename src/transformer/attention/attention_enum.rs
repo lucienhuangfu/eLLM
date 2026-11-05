@@ -1,8 +1,8 @@
 use std::ops::{AddAssign, Neg, Sub};
 
+use crate::config::TextConfig;
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::model_spec::TextConfig;
 use crate::num_traits::FromNumber;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
@@ -49,11 +49,12 @@ where
         layer_idx: usize,
     ) -> Self {
         // 单点字符串分派：layer_types[layer_idx] 含 "linear" → GatedDeltaNet；
-        // 其余（full_attention / 缺省 / 未识别）→ 全因果注意力。
+        // 其余（full_attention / 未识别）→ 全因果注意力。`validate()` 已保证清单
+        // 长度等于层数且词表合法，故 .get() 越界实际不可达，兜底分支仅为安全。
         let is_linear = config
-            .layer_spec
-            .layer_type(layer_idx)
-            .is_some_and(|t| t.to_ascii_lowercase().contains("linear"));
+            .layer_types
+            .get(layer_idx)
+            .is_some_and(|t| t.contains("linear"));
         if is_linear {
             AttentionEnum::GatedDelta(GatedDeltaAttention::<T>::new(
                 config.hidden_size,

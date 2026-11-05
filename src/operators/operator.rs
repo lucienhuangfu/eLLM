@@ -28,6 +28,7 @@ use crate::operators::movement::LiftVector;
 use crate::operators::routing::MatMulTopK;
 use crate::operators::transform::AddZipMap;
 use crate::operators::transform::SigmoidMap;
+use crate::operators::transform::SigmoidMulZipMap;
 use crate::operators::transform::SiluMulZipMap;
 use crate::operators::transform::{AddRMSZipMap, RMS};
 // use super::zip_map::complex_zip::ComplexZipMap;
@@ -71,6 +72,7 @@ pub enum Operator<T>
     SigmoidMap(SigmoidMap<T>),
     FakeEcho(FakeEcho),
     SiluMulZipMap(SiluMulZipMap<T>),
+    SigmoidMulZipMap(SigmoidMulZipMap<T>),
     SampleTokens(SampleTokens<T>),
     TopKSoftmax(TopKSoftmax<T>),
     // ArgmaxReduce(ArgmaxReduce<T>),
@@ -313,6 +315,9 @@ where
             Self::SiluMulZipMap(operator) => {
                 operator.run_scheduled(prefill_size, decode_size, total_size, cpu_num, thread_id);
             }
+            Self::SigmoidMulZipMap(operator) => {
+                operator.run_scheduled(prefill_size, decode_size, total_size, cpu_num, thread_id);
+            }
             /*
             Self::ComplexZipMap(operator) => {
             operator.run(prefill_size, cpu_num, thread_id);
@@ -355,6 +360,7 @@ where
             Self::SigmoidMap(_) => "SigmoidMap",
             Self::FakeEcho(_) => "FakeEcho",
             Self::SiluMulZipMap(_) => "SiluMulZipMap",
+            Self::SigmoidMulZipMap(_) => "SigmoidMulZipMap",
             Self::SampleTokens(_) => "SampleTokens",
             Self::TopKSoftmax(_) => "TopKSoftmax",
         }
@@ -625,6 +631,7 @@ mod test {
             params.a_row_step_micro,
             params.b_row_step_micro,
             false,
+            std::ptr::null_mut(),
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {
@@ -875,6 +882,7 @@ mod test {
                 params.a_row_step_micro,
                 params.b_row_step_micro,
                 false,
+                std::ptr::null_mut(),
             ));
 
             scheduler.slot_list().with_mut(|slot_list| {
@@ -1029,6 +1037,7 @@ mod test {
             params.a_row_step_micro,
             params.b_row_step_micro,
             false,
+            std::ptr::null_mut(),
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {
@@ -1272,6 +1281,7 @@ mod test {
             params.a_row_step_micro,
             params.b_row_step_micro,
             false,
+            std::ptr::null_mut(),
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {
@@ -1450,6 +1460,7 @@ mod test {
             params.a_row_step_micro,
             params.b_row_step_micro,
             false,
+            std::ptr::null_mut(),
         ));
 
         scheduler.slot_list().with_mut(|slot_list| {

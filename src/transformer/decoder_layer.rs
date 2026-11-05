@@ -9,8 +9,24 @@ use crate::num_traits::{Exp, Sigmoid, Sqrt};
 use super::attention::AttentionBlock;
 use super::mlp::FfnBlock;
 use super::tensor_name::layer_scope;
-use crate::model_spec::TextConfig;
+use crate::config::TextConfig;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
+
+/// C 类架构事实：归一化权重取 `(1 + w)` 的模型清单，对应 Python
+/// `Qwen3_5RMSNorm`（`self.weight` 初始化为 0，前向用 `(1 + weight) * x`）那一类
+/// 只写在**类体**里、`config.json` 从不表达的事实。
+///
+/// 实测四份 ckpt 均无 `zero_centered_norm` 键——它是本仓库自造的私有键，旧的
+/// 家族默认值注入对象又恒置 `false`，故本表当前为空，行为与重构
+/// 前逐字一致。待 alignment 脚本证实 qwen3_5 确实取 `(1 + w)` 后，在此登记
+/// `"qwen3_5" | "qwen3_5_text"`（缺口 G4）。
+pub(crate) const ZERO_CENTERED_MODELS: &[&str] = &[];
+
+/// 本模型的 RMSNorm 是否为零中心（`1 + w`）。由 `DecoderLayer` 的两处 norm 与
+/// `TextModel` 的最终 norm 共用，故不存进配置结构体——它不是数据。
+pub(crate) fn zero_centered_norm(model_type: &str) -> bool {
+    ZERO_CENTERED_MODELS.contains(&model_type)
+}
 
 // #[derive(Clone)]
 pub struct DecoderLayer<T>
@@ -64,18 +80,14 @@ where
         let attention_block =
             AttentionBlock::new(config, &attn_scope, sequence_length, batch_size, layer_idx);
 
-        let ffn_block = FfnBlock::new(
-            &config.layer_spec.ffn(layer_idx),
-            &ffn_scope,
-            config.hidden_size,
-        );
+        let ffn_block = FfnBlock::new(config, layer_idx, &ffn_scope);
 
         Self {
             chunk_size: chunk_size,
             sequence_length: sequence_length,
             batch_size: batch_size,
             rms_norm_eps: T::from_f32(config.rms_norm_eps),
-            zero_centered_norm: config.zero_centered_norm,
+            zero_centered_norm: zero_centered_norm(&config.model_type),
             layer_idx: layer_idx,
             attention_block,
             ffn_block,
@@ -183,7 +195,7 @@ mod test {
         let sequence_length = 1;
         let batch_size = 6;
 
-        let config = crate::model_family::load_text_config(
+        let config = crate::config::TextConfig::load(
             r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
         )
         .unwrap();
@@ -270,7 +282,7 @@ mod test {
         let position_window_size = 1;
         let batch_size = 3;
 
-        let config = crate::model_family::load_text_config(
+        let config = crate::config::TextConfig::load(
             r"checkpoints/Qwen3-Coder-30B-A3B-Instruct/config.json",
         )
         .unwrap();

@@ -1,7 +1,7 @@
 use std::ops::{AddAssign, Neg, Sub};
 
+use crate::config::TextConfig;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::model_spec::TextConfig;
 use crate::num_traits::FromNumber;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};

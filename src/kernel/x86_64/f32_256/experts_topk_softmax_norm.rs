@@ -4,13 +4,14 @@ use std::arch::x86_64::*;
 
 use crate::kernel::x86_64::f32_256::bitonic_sort::bitonic_sort_f32x8_desc;
 
+// Router 只保留 top-k 个专家，权重在选出的子集内归一化（HF 的
+// `norm_topk_prob = true`）——本仓库唯一使用的语义，旧的二态开关已删。
 pub fn experts_topk_softmax_norm(
     input_ptr: *const f32,
     topk_values_ptr: *mut f32,
     topk_indices_ptr: *mut usize,
     num_experts: usize,
     num_topk: usize,
-    norm_topk_prob: bool,
 ) {
     unsafe {
         get_topk(
@@ -20,12 +21,7 @@ pub fn experts_topk_softmax_norm(
             num_experts,
             num_topk,
         );
-        if norm_topk_prob == true {
-            softmax_topk_only_inplace(topk_values_ptr, num_topk);
-        } else {
-            let (max_val, denom) = softmax_stats_avx(input_ptr, num_experts);
-            softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
-        }
+        softmax_topk_only_inplace(topk_values_ptr, num_topk);
     }
 }
 
@@ -68,44 +64,6 @@ pub unsafe fn get_topk(
 }
 
 #[inline(always)]
-unsafe fn softmax_stats_avx(input_ptr: *const f32, len: usize) -> (f32, f32) {
-    debug_assert!(!input_ptr.is_null());
-    debug_assert!(len % 8 == 0 && len > 0);
-    let mut max_vec = _mm256_loadu_ps(input_ptr);
-    let mut offset = 8;
-    while offset < len {
-        let vals = _mm256_loadu_ps(input_ptr.add(offset));
-        max_vec = _mm256_max_ps(max_vec, vals);
-        offset += 8;
-    }
-    let mut tmp = _mm256_permute2f128_ps(max_vec, max_vec, 0x01);
-    max_vec = _mm256_max_ps(max_vec, tmp);
-    tmp = _mm256_shuffle_ps(max_vec, max_vec, 0x4E);
-    max_vec = _mm256_max_ps(max_vec, tmp);
-    tmp = _mm256_shuffle_ps(max_vec, max_vec, 0xB1);
-    max_vec = _mm256_max_ps(max_vec, tmp);
-    let max_scalar = _mm_cvtss_f32(_mm256_castps256_ps128(max_vec));
-    let max_broadcast = _mm256_set1_ps(max_scalar);
-
-    let mut sum_vec = _mm256_setzero_ps();
-    let mut sum_offset = 0;
-    while sum_offset < len {
-        let vals = _mm256_loadu_ps(input_ptr.add(sum_offset));
-        let shifted = _mm256_sub_ps(vals, max_broadcast);
-        let exp_vals = exp256(shifted);
-        sum_vec = _mm256_add_ps(sum_vec, exp_vals);
-        sum_offset += 8;
-    }
-    let mut acc = _mm256_hadd_ps(sum_vec, sum_vec);
-    acc = _mm256_hadd_ps(acc, acc);
-    let swapped = _mm256_permute2f128_ps(acc, acc, 0x01);
-    let total = _mm256_add_ps(acc, swapped);
-    let mut denom = _mm_cvtss_f32(_mm256_castps256_ps128(total));
-    denom = denom.max(f32::MIN_POSITIVE);
-    (max_scalar, denom)
-}
-
-#[inline(always)]
 unsafe fn softmax_topk_only_inplace(out_values: *mut f32, topk: usize) {
     debug_assert!(!out_values.is_null());
     debug_assert!(topk > 0 && topk <= 8);
@@ -125,25 +83,6 @@ unsafe fn softmax_topk_only_inplace(out_values: *mut f32, topk: usize) {
     let inv_sum = 1.0f32 / sum.max(f32::MIN_POSITIVE);
     for i in 0..topk {
         *out_values.add(i) = lane_buf[i] * inv_sum;
-    }
-}
-
-#[inline(always)]
-unsafe fn softmax_topk_inplace(out_values: *mut f32, topk: usize, max_val: f32, denom: f32) {
-    debug_assert!(!out_values.is_null());
-    debug_assert!(topk > 0 && topk <= 8);
-    let effective_denom = denom.max(f32::MIN_POSITIVE);
-    let mut lane_buf = [f32::NEG_INFINITY; 8];
-    for i in 0..topk {
-        lane_buf[i] = *out_values.add(i);
-    }
-    let values = _mm256_loadu_ps(lane_buf.as_ptr());
-    let shifted = _mm256_sub_ps(values, _mm256_set1_ps(max_val));
-    let exp_vals = exp256(shifted);
-    let normalized = _mm256_mul_ps(exp_vals, _mm256_set1_ps(1.0 / effective_denom));
-    _mm256_storeu_ps(lane_buf.as_mut_ptr(), normalized);
-    for i in 0..topk {
-        *out_values.add(i) = lane_buf[i];
     }
 }
 
@@ -172,11 +111,6 @@ mod tests {
                 topk,
             );
         }
-        let raw_vals = out_vals;
-        unsafe {
-            let (max_val, denom) = softmax_stats_avx(data.as_ptr(), data.len());
-            softmax_topk_inplace(out_vals.as_mut_ptr(), topk, max_val, denom);
-        }
 
         let mut expected: Vec<(f32, usize)> = data
             .iter()
@@ -186,58 +120,28 @@ mod tests {
             .collect();
         expected.sort_by(|a, b| b.0.total_cmp(&a.0));
         for i in 0..(topk) {
-            assert_ulps_eq!(raw_vals[i], expected[i].0);
+            assert_ulps_eq!(out_vals[i], expected[i].0);
             assert_eq!(out_idx[i], expected[i].1);
         }
-        let max_val = expected[0].0;
-        let denom = data.iter().map(|v| (v - max_val).exp()).sum::<f32>();
-        for i in 0..(topk) {
-            let expected_prob = ((expected[i].0 - max_val).exp()) / denom;
-            assert_relative_eq!(out_vals[i], expected_prob, epsilon = 1e-3);
-        }
     }
 
     #[test]
-    fn test_softmax_stats_avx() {
+    fn test_softmax_topk_only_inplace() {
         if !std::arch::is_x86_feature_detected!("avx2") {
             return;
         }
-        let data = [
-            -0.5, 0.25, 3.75, -2.0, 6.0, 1.75, -4.25, 2.5, 0.0, 5.25, -1.25, 4.0, 3.0, -3.5, 7.5,
-            2.25,
-        ];
-        let expected_max = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let expected_denom: f32 = data.iter().map(|v| (v - expected_max).exp()).sum();
-        let (max_val, denom) = unsafe { softmax_stats_avx(data.as_ptr(), data.len()) };
-        assert_relative_eq!(max_val, expected_max, epsilon = 1e-6);
-        assert_relative_eq!(denom, expected_denom, epsilon = 1e-3);
-    }
-
-    #[test]
-    fn test_softmax_topk_inplace() {
-        if !std::arch::is_x86_feature_detected!("avx2") {
-            return;
-        }
-        let data = [
-            0.5, -1.0, 2.5, 3.0, 7.5, 6.5, -2.0, 10.0, 4.0, 8.0, 1.0, 9.5, -3.5, 5.5, 11.0, -0.25,
-        ];
+        // 子集内归一化：只拿 top-k 的值，max / denom 均在这几个数上算。
         let topk = 4;
-        let mut expected: Vec<(f32, usize)> = data
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(idx, val)| (val, idx))
-            .collect();
-        expected.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let mut topk_vals = [expected[0].0, expected[1].0, expected[2].0, expected[3].0];
-        let (max_val, denom) = unsafe { softmax_stats_avx(data.as_ptr(), data.len()) };
+        let original = [11.0f32, 10.0, 9.5, 8.0];
+        let mut topk_vals = original;
+        let max_val = original[0];
+        let denom: f32 = original.iter().map(|v| (v - max_val).exp()).sum();
         unsafe {
-            softmax_topk_inplace(topk_vals.as_mut_ptr(), topk, max_val, denom);
+            softmax_topk_only_inplace(topk_vals.as_mut_ptr(), topk);
         }
-        let norm = denom;
-        for i in 0..(topk) {
-            let expected_prob = ((expected[i].0 - max_val).exp()) / norm;
-            assert_relative_eq!(topk_vals[i], expected_prob, epsilon = 1e-3);
+        for (i, v) in topk_vals.iter().enumerate() {
+            let expected_prob = ((original[i] - max_val).exp()) / denom;
+            assert_relative_eq!(*v, expected_prob, epsilon = 1e-3);
         }
     }
 
@@ -262,7 +166,6 @@ mod tests {
                 topk_idx.as_mut_ptr(),
                 NUM_EXPERTS,
                 NUM_TOPK,
-                true,
             );
         }
 

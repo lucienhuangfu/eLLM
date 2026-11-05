@@ -10,8 +10,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::model_spec::ModelName;
-
 /// Maximum accumulated tool-call buffer before forced recovery (256 KiB).
 const MAX_TOOL_BUF: usize = 256 * 1024;
 /// Compact the buffer when cursor exceeds this threshold.
@@ -146,13 +144,20 @@ impl ParserRule {
         )
     }
 
-    pub fn for_model_family(family: &ModelName) -> Self {
-        match family {
-            ModelName::Qwen | ModelName::Qwen3_5 => Self::qwen(),
-            ModelName::Llama => Self::llama3_json(),
-            ModelName::Mixtral => Self::mistral(),
-            ModelName::MiniMax | ModelName::MiniMaxM2 => Self::minimax_m1(),
-            ModelName::Unknown(_) => Self::qwen(),
+    /// 按 `config.json` 的原始 `model_type` 字符串选解析规则（前缀匹配，不做
+    /// 枚举归一化）：与层代码的字符串分派同形。
+    pub fn for_model_type(model_type: &str) -> Self {
+        let model_type = model_type.to_ascii_lowercase();
+        if model_type.starts_with("qwen") {
+            Self::qwen()
+        } else if model_type.starts_with("llama") {
+            Self::llama3_json()
+        } else if model_type.starts_with("mixtral") || model_type.contains("mistral") {
+            Self::mistral()
+        } else if model_type.starts_with("minimax") {
+            Self::minimax_m1()
+        } else {
+            Self::qwen()
         }
     }
 }

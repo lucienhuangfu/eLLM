@@ -1,416 +1,179 @@
-# Minimal Model Abstraction
+# Model Abstraction: Two Planes, No Relay
 
-## Goal
+## Status
 
-The goal of this proposal is not to refactor the current `src/transformer` directory into a complete framework in one step. Instead, it aims to turn the current implementation from a "Qwen3-MoE-only path" into a "general decoder path that can be extended to dense / sparse MoE / hybrid attention" while changing as little existing code as possible.
+This document describes the **shipped** config-to-model path.
 
-The proposal must satisfy all of the following:
+It supersedes the earlier proposal of the same file, which added three relay
+objects between `config.json` and the layer stack:
 
-1. Keep the current Qwen3-MoE execution path basically unchanged
-2. Be able to support dense MLP models such as Llama / Mistral later
-3. Be able to support MoE models such as Mixtral / MiniMax-M2.5 later
-4. Avoid introducing overly heavy abstraction in the first stage
+| Retired | Replaced by |
+|---|---|
+| `ModelFamily` / `ModelName` enum | the raw `TextConfig::model_type` string |
+| `LayerPlan` + `AttentionKind` / `FfnKind` enums | inline string predicates at the layer construction point |
+| `RouterScoringKind` (`router_scoring.rs`) | `scoring_func: String` + `contains("sigmoid")` in `mlp/sparse_moe/layer.rs` |
+| `LayerSpec` (`layer_spec.rs`) | flat `Vec<String> layer_types` on `TextConfig` |
+| `HfConfig` + a model-side `ResolvedConfig` two-layer split | one `TextConfig` (a 1:1 mirror of `config.json`) + its `load()` pipeline. The `ResolvedConfig` that still exists in `src/config/config_types.rs` is the *launch* config (CLI + YAML), not an architecture config |
+| `src/model_spec/`, `src/model_family/` | deleted; the vision config lives in `src/config/vision_config.rs` |
+| `norm_topk_prob` | dropped entirely: the router always normalizes inside the selected top-k |
+| `TensorNames` per-family name objects | `src/transformer/tensor_name.rs`, scope hierarchy only |
 
-## Design Basis
+The proposal's diagnosis was right — the problem was coupling, not directory
+depth — but its cure kept a blueprint layer in the middle. That layer is now
+gone.
 
-This proposal is based on two constraints:
+## The two planes
 
-### 1. Experience from Hugging Face Transformers
+Everything about a model is split by *kind of question*, not by family:
 
-Hugging Face does not first normalize every model into a single IR and then assemble it with one universal builder. Instead, it:
+```
+config.json (flat, or multimodal with a nested text_config)
+   |  (1) serde read: field name == JSON key, struct-level #[serde(default)],
+   |      missing key == sentinel 0 / false / "" / empty Vec
+   v
+TextConfig                      <- DATA PLANE: src/config/text_config.rs
+   |  (2) apply_family_defaults()  class-B numeric defaults, the ONLY model_type match
+   |      derive()                  branch-free arithmetic
+   |      validate()               normalize + whitelist + load-time hard failure
+   v
+TextModel::new(&config) -> DecoderLayer::new(&config, i)      <- JUDGMENT PLANE
+   |- config.layer_types[i].contains("linear")  -> GatedDelta | Full
+   |- mlp_only_layers / num_experts / decoder_sparse_step -> Dense | SparseMoe
+   |- config.scoring_func.contains("sigmoid")   -> Sigmoid | Softmax router
+   |- full_attention.rs: NO_QK_NORM_MODELS      -> create q_norm/k_norm or not
+   '- decoder_layer.rs:  ZERO_CENTERED_MODELS   -> norm takes w or (1 + w)
+```
 
-1. Dispatches by `model_type` / family
-2. Gives each family its own config
-3. Reuses similar models through inheritance and local overrides
-4. Expresses layer differences ahead of time via fields in the config, such as `layer_types`
+- **Data plane** knows only facts that a `config.json` can state. It never picks
+  a layer shape.
+- **Judgment plane** is `src/transformer/**`, i.e. the code of the layer that is
+  actually built. This mirrors Python, where the same decisions sit in the class
+  body and `__init__` of `modeling_<name>.py` — not in the config object.
 
-So the core lesson is not a "grand unified spec," but:
+## Judgment classes A / B / C
 
-1. family-first
-2. layer-plan-first
-3. unified entry point, localized differences
+The rule that decides where a difference goes:
 
-### 2. The Reality of This Repository
+| Class | Question | Example | Lives in |
+|---|---|---|---|
+| **A** | per-layer *form*, read from data | attention linear vs full; FFN dense vs MoE; router softmax vs sigmoid | inline `if` at the construction point (`attention/attention_enum.rs`, `mlp/ffn_block.rs`, `mlp/sparse_moe/layer.rs`) |
+| **B** | whole-model *missing numbers* | `full_attention_interval = 4`, `partial_rotary_factor = 0.25`, the five GatedDeltaNet dims | the single `matches!(model_type, …)` in `TextConfig::apply_family_defaults()` |
+| **C** | architectural fact the JSON never expresses | does this class create `q_norm`? does RMSNorm take `(1 + w)`? | a `const &[&str]` table inside the layer file that consumes it, **defaulting to true, exceptions registered** |
 
-The current `src/transformer` already has:
+B vs C is the key distinction: B is "the JSON forgot a number" (a config
+responsibility); C is "does the constructor contain that line" (never a config
+responsibility).
 
-1. `attention.rs`
-2. `decoder_layer.rs`
-3. `sparse_moe_block.rs`
-4. `mlp.rs`
-5. `model.rs`
-
-The real problem is not that the directory is too shallow. The problem is that there are three tight couplings:
-
-1. `config.rs` directly carries the JSON structure of one concrete model
-2. `decoder_layer.rs` is hard-coded as `Attention + SparseMoeBlock`
-3. Tensor-name concatenation is scattered across model / attention / block constructors
-
-So the simplest and most effective first-stage solution is not to split the directory first, but to split these three couplings first.
-
-## Minimal Abstraction
-
-The minimal solution introduces only 3 new abstractions:
-
-1. `ModelFamily`
-2. `LayerPlan`
-3. `TensorNames`
-
-These three abstractions are enough to cover:
-
-1. dense MLP
-2. sparse MoE
-3. hybrid attention
-4. naming differences across families
-
-## Abstraction 1: `ModelFamily`
-
-`ModelFamily` is used for family identification and dispatch upfront.
+Class A, verbatim from the code:
 
 ```rust
-pub enum ModelFamily {
-    Llama,
-    Qwen,
-    Mixtral,
-    MiniMax,
-    MiniMaxM2,
-    Unknown,
-}
+// src/transformer/attention/attention_enum.rs
+let is_linear = config.layer_types.get(layer_idx).is_some_and(|t| t.contains("linear"));
+
+// src/transformer/mlp/ffn_block.rs
+let sparse = !config.mlp_only_layers.contains(&layer_idx)
+    && config.num_experts > 0
+    && (layer_idx + 1) % config.decoder_sparse_step == 0;
+
+// src/transformer/mlp/sparse_moe/layer.rs
+if scoring.contains("sigmoid") { /* sigmoid router */ } else { /* softmax router */ }
 ```
 
-The purpose of this layer is:
-
-1. Not to fill the runtime core logic with `if model_type == ...`
-2. To concentrate family differences in the config resolution and name resolution stages
-
-At this stage there is no need for traits; a plain `match` is enough:
+Class C:
 
 ```rust
-match detect_family(hf_config) {
-    ModelFamily::Qwen => resolve_qwen(hf_config),
-    ModelFamily::Llama => resolve_llama(hf_config),
-    ModelFamily::Mixtral => resolve_mixtral(hf_config),
-    ModelFamily::MiniMax => resolve_minimax(hf_config),
-    ModelFamily::MiniMaxM2 => resolve_minimax_m2(hf_config),
-    ModelFamily::Unknown => bail!("unsupported model family"),
-}
+// src/transformer/attention/full_attention.rs
+pub(crate) const NO_QK_NORM_MODELS: &[&str] = &["llama", "mixtral", "qwen2", "qwen2_moe"];
+pub(crate) fn use_qk_norm(model_type: &str) -> bool { !NO_QK_NORM_MODELS.contains(&model_type) }
+
+// src/transformer/decoder_layer.rs
+pub(crate) const ZERO_CENTERED_MODELS: &[&str] = &[];   // pending alignment proof (gap G4)
 ```
 
-## Abstraction 2: `LayerPlan`
-
-`LayerPlan` is the core of this minimal proposal.
-
-The current problem with `DecoderLayer` is not its implementation details, but the fact that it hard-codes the layer structure. To support models like MiniMax / MiniMax-M2.5, the "how each layer runs" decision must be lifted into data.
-
-Recommended definition:
-
-```rust
-pub struct LayerPlan {
-    pub attention: AttentionKind,
-    pub ffn: FfnKind,
-}
-
-pub enum AttentionKind {
-    Full,
-    SlidingWindow,
-    Linear,
-}
-
-pub enum FfnKind {
-    Dense {
-        intermediate_size: usize,
-    },
-    SparseMoe {
-        moe_intermediate_size: usize,
-        num_experts: usize,
-        num_experts_per_tok: usize,
-        norm_topk_prob: bool,
-    },
-}
-```
-
-This is enough to express:
-
-1. Llama: `Full + Dense`
-2. Qwen3-MoE: `Full + SparseMoe`
-3. Mixtral: `Full + SparseMoe`
-4. MiniMax: mixed `Full/Linear` + `SparseMoe`
-5. MiniMax-M2.5: as long as it fits these attention/ffn combinations, it can be plugged in
-
-## Abstraction 3: `TensorNames`
-
-The current implementation hard-codes tensor keys directly in constructors, which is the weakest point when supporting multiple models.
-
-The minimal solution only needs a lightweight naming description object:
-
-```rust
-pub struct ModelTensorNames {
-    pub embed_tokens: String,
-    pub lm_head: String,
-    pub layers: Vec<LayerTensorNames>,
-}
-
-pub struct LayerTensorNames {
-    pub input_norm: String,
-    pub post_attn_norm: String,
-    pub q_proj: String,
-    pub k_proj: String,
-    pub v_proj: String,
-    pub o_proj: String,
-    pub ffn: FfnTensorNames,
-}
-
-pub enum FfnTensorNames {
-    Dense {
-        gate_proj: String,
-        up_proj: String,
-        down_proj: String,
-    },
-    SparseMoe {
-        router: String,
-        experts_gate: String,
-        experts_up: String,
-        experts_down: String,
-    },
-}
-```
-
-Then the components only care about "which tensors do I need" and not "what are they called in this family."
-
-## Split Config into Two Layers, Not a Full `ModelSpec`
-
-To keep the cost under control, I do not recommend introducing a full `ModelSpec` immediately. Two layers are enough for now:
-
-1. `HfConfig`: maps Hugging Face's original JSON as faithfully as possible, allowing `Option`
-2. `ResolvedConfig`: the stable runtime config actually used by the executor, with complete fields and no family-specific checks
-
-Recommended definition:
-
-```rust
-pub struct HfConfig {
-    pub model_type: String,
-    pub architectures: Vec<String>,
-
-    pub vocab_size: usize,
-    pub hidden_size: usize,
-    pub intermediate_size: Option<usize>,
-    pub moe_intermediate_size: Option<usize>,
-
-    pub num_hidden_layers: usize,
-    pub num_attention_heads: usize,
-    pub num_key_value_heads: Option<usize>,
-    pub head_dim: Option<usize>,
-
-    pub rms_norm_eps: f32,
-    pub rope_theta: Option<f32>,
-    pub max_position_embeddings: usize,
-
-    pub num_experts: Option<usize>,
-    pub num_experts_per_tok: Option<usize>,
-    pub norm_topk_prob: Option<bool>,
-    pub qkv_bias: Option<bool>,
-
-    pub mlp_only_layers: Option<Vec<usize>>,
-    pub layer_types: Option<Vec<String>>,
-    pub sliding_window: Option<usize>,
-}
-
-pub struct ResolvedConfig {
-    pub family: ModelFamily,
-    pub vocab_size: usize,
-    pub hidden_size: usize,
-    pub num_layers: usize,
-    pub num_attention_heads: usize,
-    pub num_key_value_heads: usize,
-    pub head_dim: usize,
-    pub max_position_embeddings: usize,
-    pub rms_norm_eps: f32,
-    pub rope_theta: f32,
-    pub tie_word_embeddings: bool,
-    pub layers: Vec<LayerPlan>,
-}
-```
-
-The core principles are:
-
-1. The raw JSON can be messy
-2. The runtime config must be stable
-3. Family-specific quirks are handled only in `HfConfig -> ResolvedConfig`
-
-## Minimal Change to `DecoderLayer`
-
-The current `DecoderLayer` directly owns:
-
-1. `Attention`
-2. `SparseMoeBlock`
-
-The minimal change is not to introduce trait objects, but to switch to enums:
-
-```rust
-pub enum AttentionBlock<T> {
-    Full(Attention<T>),
-    LinearPlaceholder,
-}
-
-pub enum FfnBlock<T> {
-    Dense(MLP<T>),
-    SparseMoe(SparseMoeBlock<T>),
-}
-
-pub struct DecoderLayer<T> {
-    attention: AttentionBlock<T>,
-    ffn: FfnBlock<T>,
-    ...
-}
-```
-
-In the first stage, we do not even need to implement `LinearAttention`; we only need to leave room for it.
-
-The benefits are:
-
-1. Runtime remains a static structure plus lightweight enum dispatch
-2. No deep trait object tree is needed
-3. MiniMax support later will not require another layer-framework rewrite
-
-## Why This Can Fit MiniMax M2.5
-
-The main challenges MiniMax / MiniMax-M2.5 pose to the current code fall into two categories:
-
-1. It may be a Mixtral-style sparse MoE
-2. It may use hybrid attention, meaning different layers may use different attention types
-
-Hugging Face handles MiniMax essentially by:
-
-1. Describing the model with family config
-2. Expressing layer differences ahead of time via `layer_types`
-3. Reusing the existing Mixtral-style implementation for similar families
-
-So as long as we have:
-
-1. `ModelFamily`
-2. `LayerPlan`
-3. `TensorNames`
-
-MiniMax-M2.5 is just one more resolver:
-
-```rust
-fn resolve_minimax_m25(hf: &HfConfig) -> anyhow::Result<ResolvedConfig>
-```
-
-It is responsible for:
-
-1. Identifying the family
-2. Generating `LayerPlan` for each layer
-3. Generating the corresponding `TensorNames`
-
-The core execution skeleton does not need to change again.
-
-## Recommended Directory Shape
-
-At this stage, I do not recommend immediately renaming `src/transformer` into a full `src/model/core/components/families/spec` tree.
-
-The minimal usable directory shape is:
-
-```text
-src/transformer/
-  mod.rs
-  config.rs
-  names.rs
-  attention.rs
-  decoder_layer.rs
-  mlp.rs
-  sparse_moe_block.rs
-  model.rs
-```
-
-Where:
-
-1. `config.rs`: `HfConfig + ResolvedConfig + resolve_xxx`
-2. `names.rs`: generates tensor names per family
-3. `decoder_layer.rs`: holds attention/ffn enums according to `LayerPlan`
-
-## Minimum First-Stage Implementation Order
-
-### 1. Split `Config` into Two Layers
-
-Split the current single `Config` into:
-
-1. `HfConfig`
-2. `ResolvedConfig`
-
-At the same time, keep the old calling interface for compatibility, for example:
-
-```rust
-pub type Config = ResolvedConfig;
-```
-
-This minimizes changes to `main.rs` and the current call sites.
-
-### 2. Restore `mlp.rs` as a Formal Module
-
-`mlp.rs` already exists, but it is not yet part of the public path. In the first stage, dense FFN must become a formal first-class citizen.
-
-### 3. Introduce `layers: Vec<LayerPlan>` in `ResolvedConfig`
-
-This moves "how each layer runs" upfront instead of inferring it in `DecoderLayer::new`.
-
-### 4. Change `DecoderLayer` to `AttentionBlock + FfnBlock`
-
-But only implement:
-
-1. `AttentionBlock::Full`
-2. `FfnBlock::Dense`
-3. `FfnBlock::SparseMoe`
-
-`Linear` can stay as a placeholder for now.
-
-### 5. Introduce `names.rs`
-
-Pull tensor-name concatenation out of:
-
-1. `model.rs`
-2. `decoder_layer.rs`
-3. `sparse_moe_block.rs`
-
-### 6. In the First Stage, Only Wire Up Qwen3-MoE
-
-The goal is not to support every model at once, but to prove:
-
-1. Current behavior remains unchanged
-2. The abstractions already allow dense and sparse paths to coexist
-
-### 7. In the Second Stage, Add Llama Dense
-
-This is the minimum requirement to validate that the abstraction works.
-
-### 8. In the Third Stage, Add MiniMax / MiniMax-M2.5
-
-At that point, you should only need new family resolution and name resolution, not another change to the shared layer skeleton.
-
-## What Not to Do in the Current Stage
-
-To keep complexity minimal, the following are not recommended in the first round:
-
-1. Do not rename `src/transformer` to `src/model` immediately
-2. Do not introduce a full `ModelSpec + FamilyAdapter + Registry` system right away
-3. Do not turn all differences into trait objects immediately
-4. Do not introduce multimodal abstractions immediately
-5. Do not overdesign spec structures just to cover every future model
-
-These can wait until the first restructuring round is stable.
-
-## Final Recommendation
-
-Considering implementation cost and extension benefit together, the most suitable landing approach is:
-
-1. family-first
-2. layer-plan-first
-3. names-outside-components
-
-That means:
-
-1. Use `ModelFamily` to decide which parsing path to take
-2. Use `LayerPlan` to decide each layer's block combination
-3. Use `TensorNames` to absorb naming differences
-
-These three layers are already enough to upgrade the current implementation from "Qwen3-MoE-only" to "a minimal general-purpose skeleton that can support Llama / Mixtral / MiniMax-M2.5", without rewriting the entire framework from scratch at the beginning.
+`use_qk_norm == false` must also *not register* the two weight names, because
+strict weight loading panics on a name the checkpoint does not have; hence
+`q_norm_weight` / `k_norm_weight` are `Option<Tensor<T>>` and the fused
+`matmul3` never dereferences them when the flag is off.
+
+## Config rules
+
+- **Raw types, sentinel defaults.** `layer_types: Vec<String>`,
+  `scoring_func: String`, `num_experts: usize`. `0` / `""` / `false` / empty
+  `Vec` mean "not given or not applicable", which is what the old
+  `Option` + `unwrap_or` chain meant.
+- **The `null` red line.** `#[serde(default)]` covers a *missing* key, not a key
+  whose value is `null`. Verified against every `checkpoints/*/config.json`, only
+  three keys are ever explicitly `null` and they must stay `Option`:
+  `rope_scaling`, `pad_token_id`, `sliding_window`.
+- **Aliases, not extra fields.** Where two HF spellings mean the same number,
+  one field carries an alias: `num_local_experts` → `num_experts`,
+  `rope_parameters` → `rope_scaling`. Where the old spelling was simply wrong
+  (`attention_bias`, never `qkv_bias`, in every real checkpoint) the key is
+  renamed outright and no alias is kept — the wrong name must not survive the
+  grep sweep.
+- **Neutrality by arithmetic.** The trick that lets two `Option`s disappear:
+  `full_attention_interval` defaults to `1`, so `(i + 1) % 1 == 0` is always
+  true and `derive()` synthesizes an all-`full_attention` list — byte-for-byte
+  the old "no layer_types means full attention everywhere" behavior, with no
+  special branch. `qwen3_5` overrides it to `4` in class B.
+- **Fail at load, not mid-inference.** `validate()` lowercases and trims,
+  asserts `layer_types.len() == num_hidden_layers`, whitelists the
+  `linear` / `full` and `softmax` / `sigmoid` vocabularies. A short list used to
+  fall through `.get(i) -> None` into a silent Full default — a bug magnet.
+- **Multimodal is one read.** `RootConfig { #[serde(flatten)] text, text_config:
+  Option<Box<TextConfig>>, vision_config, four vision token ids }`, with the
+  nested `text_config` taking precedence — the only place "nested wins" is
+  expressed. Both the top-level `qwen3_5` and the nested `qwen3_5_text` spellings
+  are listed in every `matches!`; there is no normalization function.
+
+## Naming
+
+`src/transformer/tensor_name.rs` centralizes the *scope hierarchy* only
+(`MODEL_SCOPE`, `layer_scope(i)`, the model-level weight names,
+`lm_head_name(tie_word_embeddings)`). Leaf names are formatted inside the
+operator that owns them, from the scope string it is handed, so the config layer
+keeps no dependency on any concrete model and the name lives next to its only
+consumer. Names still have to equal the HF safetensors keys and match
+`mem_pool.rs`'s `REGEX_SET`, which is what routes a tensor to a memory pool —
+synthetic prefixes panic at graph build.
+
+## Trade-offs accepted
+
+- **No exhaustive match.** Five string comparisons with fallbacks replace five
+  enums. The repository had already taken this step for `rope_type` and
+  `hidden_act`; the compensation is front-loading legality into `validate()`.
+- **Class B stays in the config layer, a deliberate deviation from Python.**
+  Python spreads defaults over `configuration_<name>.py`; Rust has no per-family
+  config file, so one ~35-line `matches!` is its closest equivalent. Spreading it
+  across layer files would be more fragmented than Python, not less.
+- **Class C tables are family knowledge kept by comment.** Each table has 0-1
+  entries, sits in the file that consumes it, and points back at the Python class
+  it corresponds to. If a family ever differs by more than one bool, per-family
+  layer classes become worth revisiting — not before.
+- **No `deny_unknown_fields`.** A misspelled key silently takes its default (gap
+  G1 was exactly this). The G5 inventory comment at the top of `text_config.rs`
+  is the only guard for now.
+
+## Adding a model
+
+1. Drop the checkpoint under `checkpoints/` and add a snapshot test that calls
+   `TextConfig::load` and locks `(layer count, layer_types, per-layer sparse
+   predicate, head_dim, rotary_dim, num_experts, scoring_func)`.
+2. If the JSON spells an existing concept differently, add a `#[serde(alias)]`.
+3. If it omits numbers the layers need, add a class-B branch in
+   `apply_family_defaults()`.
+4. If it introduces a new per-layer form, extend the inline predicate at the
+   construction point — not an enum in the config.
+5. If its class body creates (or omits) a submodule that the shared layer code
+   assumes, register the `model_type` in the class-C table of that layer file.
+
+## Known gaps
+
+| Ref | Item | State |
+|---|---|---|
+| G0 | `num_local_experts` (MiniMax's 256 experts) | fixed by serde alias |
+| G1 | the projection-based key name was wrong; HF uses `attention_bias` in every checkpoint | fixed by renaming the field and the key; the old spelling gets no alias, since it exists in no real `config.json` |
+| G2 | `attn_output_gate` / `output_gate_type` | implemented: `q_proj` doubles its rows and `matmul3` emits the gate half per head; `forward` multiplies the attention output by `sigmoid(gate)` |
+| G3 | `hf_config_path` was ignored by `load` | fixed: an explicit path replaces `{model_dir}/config.json` |
+| G4 | zero-centered RMSNorm for `qwen3_5` | not enabled; `ZERO_CENTERED_MODELS` stays empty until the alignment run proves it |
+| G5 | keys intentionally not consumed (`mtp_*`, `mamba_ssm_dtype`, `attention_dropout`, `initializer_range`, `qk_norm_type`, `shared_intermediate_size`, …) | inventoried in the module doc of `text_config.rs`, each marked "not needed for inference" or "to wire" |

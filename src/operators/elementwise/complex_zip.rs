@@ -233,7 +233,7 @@ mod test {
             1300.0, -55.0, 1512.0, -59.0, 1740.0, -63.0, 1984.0, -67.0, 2244.0,
         ];
 
-        let mut operator: ComplexZipMap<f32> = ComplexZipMap::new(
+        let operator: ComplexZipMap<f32> = ComplexZipMap::new(
             input_data1.as_ptr(),
             input_data2.as_ptr(),
             output_data.as_mut_ptr(),
@@ -244,12 +244,11 @@ mod test {
             false, // thread_num,
         );
         // operator.set_chunk(chunks);
+        // ZipMap 把 head_num 个工作单元按 assign 切给 cpu_num 个线程，每个单元只属于
+        // 一个线程，故必须让所有线程各跑一遍，输出才会被覆盖完整。
         let thread_num: usize = num_cpus::get();
         for i in 0..thread_num {
-            // for position_index in 0..sequence_length {
             operator.run(batch_size, 0, thread_num, i);
-            // }
-            break;
         }
 
         assert_eq!(output_data[34..68], expected);

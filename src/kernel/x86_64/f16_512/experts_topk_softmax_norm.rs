@@ -9,18 +9,6 @@ use std::f16;
 const LANES: usize = 32;
 
 #[inline(always)]
-unsafe fn sum_f16_vec(vec: __m512h, count: usize) -> f32 {
-    debug_assert!(count == LANES);
-
-    // Convert to f32 for reduction to maintain precision
-    let vec_i = _mm512_castph_si512(vec);
-    let lower = _mm512_cvtph_ps(_mm512_castsi512_si256(vec_i));
-    let upper = _mm512_cvtph_ps(_mm512_extracti64x4_epi64::<1>(vec_i));
-
-    _mm512_reduce_add_ps(_mm512_add_ps(lower, upper))
-}
-
-#[inline(always)]
 // #[target_feature(enable = "avx512f,avx512bw,avx512fp16")]
 pub unsafe fn get_topk(
     in_ptr: *const f16,
@@ -71,46 +59,6 @@ pub unsafe fn get_topk(
 }
 
 #[inline(always)]
-// #[target_feature(enable = "avx512f,avx512bw,avx512fp16")]
-unsafe fn softmax_stats_avx512_fp16(input_ptr: *const f16, len: usize) -> (f32, f32) {
-    debug_assert!(!input_ptr.is_null());
-    debug_assert!(len % LANES == 0 && len > 0);
-
-    let mut max_vec = _mm512_loadu_ph(input_ptr as *const _);
-    let mut offset = LANES;
-    while offset < len {
-        let vals = _mm512_loadu_ph(input_ptr.add(offset) as *const _);
-        max_vec = _mm512_max_ph(max_vec, vals);
-        offset += LANES;
-    }
-
-    let mut tmp = [0.0f16; LANES];
-    _mm512_storeu_ph(tmp.as_mut_ptr() as *mut _, max_vec);
-    let mut max_scalar = f16::NEG_INFINITY;
-    for &v in &tmp {
-        max_scalar = max_scalar.max(v);
-    }
-    let mut max_scalar_f32 = max_scalar as f32;
-    if !max_scalar_f32.is_finite() {
-        max_scalar_f32 = 0.0;
-        max_scalar = 0.0;
-    }
-
-    let max_broadcast = _mm512_set1_ph(max_scalar);
-    let mut denom = 0.0f32;
-    offset = 0;
-    while offset < len {
-        let vals = _mm512_loadu_ph(input_ptr.add(offset) as *const _);
-        let exp_vals = exp512(_mm512_sub_ph(vals, max_broadcast));
-        denom += sum_f16_vec(exp_vals, LANES);
-        offset += LANES;
-    }
-
-    denom = denom.max(f32::MIN_POSITIVE);
-    (max_scalar_f32, denom)
-}
-
-#[inline(always)]
 unsafe fn softmax_topk_only_inplace(out_values: *mut f16, topk: usize) {
     debug_assert!(!out_values.is_null());
     debug_assert!(topk > 0 && topk <= LANES);
@@ -137,35 +85,12 @@ unsafe fn softmax_topk_only_inplace(out_values: *mut f16, topk: usize) {
     }
 }
 
-#[inline(always)]
-unsafe fn softmax_topk_inplace(out_values: *mut f16, topk: usize, max_val: f32, denom: f32) {
-    debug_assert!(!out_values.is_null());
-    debug_assert!(topk > 0 && topk <= LANES);
-
-    let mut lane_buf = [0.0f16; LANES];
-    for i in 0..topk {
-        lane_buf[i] = *out_values.add(i);
-    }
-
-    let values = _mm512_loadu_ph(lane_buf.as_ptr() as *const _);
-    let shifted = _mm512_sub_ph(values, _mm512_set1_ph(max_val as f16));
-    let exp_vals = exp512(shifted);
-    let scale = _mm512_set1_ph((1.0f32 / denom.max(f32::MIN_POSITIVE)) as f16);
-    let normalized = _mm512_mul_ph(exp_vals, scale);
-    _mm512_storeu_ph(lane_buf.as_mut_ptr() as *mut _, normalized);
-
-    for i in 0..topk {
-        *out_values.add(i) = lane_buf[i];
-    }
-}
-
 pub fn experts_topk_softmax_norm(
     input_ptr: *const f16,
     topk_values_ptr: *mut f16,
     topk_indices_ptr: *mut usize,
     num_experts: usize,
     num_topk: usize,
-    norm_topk_prob: bool,
 ) {
     debug_assert!(!input_ptr.is_null());
     debug_assert!(!topk_values_ptr.is_null());
@@ -180,12 +105,9 @@ pub fn experts_topk_softmax_norm(
             num_experts,
             num_topk,
         );
-        if norm_topk_prob {
-            softmax_topk_only_inplace(topk_values_ptr, num_topk);
-        } else {
-            let (max_val, denom) = softmax_stats_avx512_fp16(input_ptr, num_experts);
-            softmax_topk_inplace(topk_values_ptr, num_topk, max_val, denom);
-        }
+        // Router 只保留 top-k 个专家，权重在选出的子集内归一化（HF 的
+        // `norm_topk_prob = true`）——本仓库唯一使用的语义，旧的二态开关已删。
+        softmax_topk_only_inplace(topk_values_ptr, num_topk);
     }
 }
 
@@ -239,48 +161,6 @@ mod tests {
     }
 
     #[test]
-    fn test_softmax_stats_avx512_fp16() {
-        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512fp16") {
-            return;
-        }
-        let data: [f16; 32] = [
-            -0.5, 0.25, 3.75, -2.0, 6.0, 1.75, -4.25, 2.5, 0.0, 5.25, -1.25, 4.0, 3.0, -3.5, 7.5,
-            2.25, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7,
-        ];
-
-        let data_f32: Vec<f32> = data.iter().map(|&x| (x as f32)).collect();
-        let expected_max = data_f32.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let expected_denom: f32 = data_f32.iter().map(|v| (v - expected_max).exp()).sum();
-
-        let (max_val, denom) = unsafe { softmax_stats_avx512_fp16(data.as_ptr(), data.len()) };
-
-        assert_relative_eq!(max_val, expected_max, epsilon = 1e-2);
-        assert_relative_eq!(denom, expected_denom, max_relative = 0.05, epsilon = 1e-3);
-    }
-
-    #[test]
-    fn test_softmax_topk_inplace() {
-        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512fp16") {
-            return;
-        }
-        let topk = 4;
-        let mut topk_vals: [f16; 4] = [10.0, 9.5, 8.0, 7.5];
-
-        let max_val = 10.0f32;
-        let data_f32: Vec<f32> = topk_vals.iter().map(|&x| (x as f32)).collect();
-        let denom: f32 = data_f32.iter().map(|v| (v - max_val).exp()).sum();
-
-        unsafe {
-            softmax_topk_inplace(topk_vals.as_mut_ptr(), topk, max_val, denom);
-        }
-
-        for i in 0..topk {
-            let expected = (data_f32[i] - max_val).exp() / denom;
-            assert_relative_eq!((topk_vals[i] as f32), expected, epsilon = 1e-3);
-        }
-    }
-
-    #[test]
     fn test_experts_topk_softmax_norm() {
         if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512fp16") {
             return;
@@ -309,7 +189,6 @@ mod tests {
                 topk_idx.as_mut_ptr(),
                 NUM_EXPERTS,
                 NUM_TOPK,
-                true,
             );
         }
 
@@ -332,7 +211,7 @@ mod tests {
             .map(|&v| (v - max_global).exp() / denom_global)
             .collect();
 
-        // Since we passed true for norm_topk_prob, we expect normalized probabilities
+        // 子集内归一化：kernel 把 top-k 概率再除以其总和。
         let sum_probs: f32 = top_k_probs.iter().sum();
         for p in &mut top_k_probs {
             *p /= sum_probs;

@@ -1,13 +1,13 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use super::config::{
     determine_thread_config, extract_generation_params, GenerationParameters, ThreadingConfig,
 };
 use super::executor::executor_pool::ExecutorPool;
-use crate::config::{GenerationConfig, ResolvedConfig};
+use crate::config::{GenerationConfig, ResolvedConfig, TextConfig};
 use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
-use crate::model_family::load_text_config;
 use crate::operators::send_sync_ptr::SharedMut;
 use crate::runtime::scheduler::Scheduler;
 use crate::runtime::session::{build_slot_sequence, SlotSequence};
@@ -45,8 +45,21 @@ pub fn initialize_runtime(
     let model_dir = &resolved_config.model.raw_config.model;
     println!("Loading config from: {}", model_dir);
 
-    let model_config = load_text_config(format!("{}/config.json", model_dir))
-        .map_err(|e| format!("failed to load config: {}", e))?;
+    // 缺省拼 `{model_dir}/config.json`；CLI 显式给了 `hf_config_path` 时以其
+    // 替代拼接（目录则补标准文件名，文件则直用）。
+    let config_path = match resolved_config.model.raw_config.hf_config_path.as_deref() {
+        Some(p) if !p.trim().is_empty() => {
+            let path = Path::new(p);
+            if path.is_dir() {
+                path.join("config.json")
+            } else {
+                path.to_path_buf()
+            }
+        }
+        _ => Path::new(model_dir).join("config.json"),
+    };
+    let model_config =
+        TextConfig::load(&config_path).map_err(|e| format!("failed to load config: {}", e))?;
 
     let generation_config =
         GenerationConfig::load_from_file(format!("{}/generation_config.json", model_dir)).ok();

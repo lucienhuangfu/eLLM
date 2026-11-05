@@ -14,6 +14,7 @@ pub mod conv {
 pub mod elementwise {
     pub mod add_zip;
     pub mod complex_zip;
+    pub mod sigmoid_mul_zip;
     pub mod silu_mul_zip;
 }
 
@@ -107,6 +108,7 @@ pub mod softmax;
 pub mod transform {
     pub use super::elementwise::add_zip::AddZipMap;
     pub use super::elementwise::complex_zip::ComplexZipMap;
+    pub use super::elementwise::sigmoid_mul_zip::SigmoidMulZipMap;
     pub use super::elementwise::silu_mul_zip::SiluMulZipMap;
     pub use super::normalization::add_rms_zip::AddRMSZipMap;
     pub use super::normalization::lookup_rms::LookupRMS;

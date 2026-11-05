@@ -6,7 +6,6 @@ use crate::num_traits::{Exp, NegInfinity, Sigmoid, Sqrt};
 use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-use super::router_scoring::RouterScoringKind;
 use super::router_sigmoid::SparseMoeSigmoidRouter;
 use super::router_softmax::SparseMoeSoftmaxRouter;
 
@@ -40,25 +39,29 @@ where
         num_topk: usize,
         gate_weight: Tensor<T>,
         gate_bias: Option<Tensor<T>>,
-        router_scoring: RouterScoringKind,
+        scoring_func: &str,
         scope_name: String,
     ) -> Self {
-        match router_scoring {
-            RouterScoringKind::Softmax => Self::Softmax(SparseMoeSoftmaxRouter::new(
-                hidden_size,
-                num_experts,
-                num_topk,
-                gate_weight,
-                scope_name,
-            )),
-            RouterScoringKind::Sigmoid => Self::Sigmoid(SparseMoeSigmoidRouter::new(
+        // 单点字符串分派，与 AttentionBlock::new 的 layer_types 分派同形：
+        // 含 "sigmoid" → Sigmoid router，其余（softmax / 未识别）兜底 Softmax。
+        // `TextConfig::validate()` 已在加载期归一化并限定词表，此处不再 lowercase。
+        if scoring_func.contains("sigmoid") {
+            Self::Sigmoid(SparseMoeSigmoidRouter::new(
                 hidden_size,
                 num_experts,
                 num_topk,
                 gate_weight,
                 gate_bias,
                 scope_name,
-            )),
+            ))
+        } else {
+            Self::Softmax(SparseMoeSoftmaxRouter::new(
+                hidden_size,
+                num_experts,
+                num_topk,
+                gate_weight,
+                scope_name,
+            ))
         }
     }
 
@@ -104,8 +107,7 @@ where
         moe_intermediate_size: usize,
         num_experts: usize,
         num_topk: usize,
-        _norm_topk_prob: bool,
-        router_scoring: RouterScoringKind,
+        scoring_func: &str,
         use_routing_bias: bool,
         scope: &str,
     ) -> Self {
@@ -132,7 +134,7 @@ where
                 num_topk,
                 gate_weight,
                 router_bias.clone(),
-                router_scoring,
+                scoring_func,
                 scope_name.clone(),
             ),
             experts_gate_weight: Tensor::zeros(

@@ -1,14 +1,18 @@
 use std::ops::{AddAssign, Neg, Sub};
 
+use crate::config::TextConfig;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
 
-use super::{DenseMlp, FfnKind, SparseMoe};
+use super::{DenseMlp, SparseMoe};
 use crate::tensor::{GlobalOperatorQueue, Tensor};
 
-// FFN 运行时块：配置蓝图 FfnKind 的已实例化对应物。仿照 SparseMoeRouter 范本——
-// 私有 enum,由 new() 内一次 exhaustive match 从 config enum 构建,张量名在分支内派生。
+// FFN 运行时块：逐层形态判断就在本构造点的行内 `if`，不经任何跨层蓝图中转，
+// 逐字对应 `Qwen3MoeDecoderLayer.__init__` / `Qwen3NextDecoderLayer.__init__` 的
+// `layer_idx not in mlp_only_layers and num_experts > 0 and (layer_idx + 1) %
+// decoder_sparse_step == 0`。dense / MoE 的超参直接从 `TextConfig` 取，张量名在
+// 分支内经 scope 派生。
 pub enum FfnBlock<T>
 where
     T: Copy + PartialOrd,
@@ -32,28 +36,27 @@ where
         + GlobalMemPool
         + GlobalOperatorQueue,
 {
-    pub fn new(spec: &FfnKind, ffn_scope: &str, hidden_size: usize) -> Self {
-        match spec {
-            FfnKind::Dense { intermediate_size } => {
-                FfnBlock::Dense(DenseMlp::new(hidden_size, *intermediate_size, ffn_scope))
-            }
-            FfnKind::SparseMoe {
-                intermediate_size,
-                num_experts,
-                num_experts_per_tok,
-                norm_topk_prob,
-                router_scoring,
-                use_routing_bias,
-            } => FfnBlock::SparseMoe(SparseMoe::new(
-                hidden_size,
-                *intermediate_size,
-                *num_experts,
-                *num_experts_per_tok,
-                *norm_topk_prob,
-                router_scoring.clone(),
-                *use_routing_bias,
+    pub fn new(config: &TextConfig, layer_idx: usize, ffn_scope: &str) -> Self {
+        // A 类形态判断：三条件合取，行内展开。
+        let sparse = !config.mlp_only_layers.contains(&layer_idx)
+            && config.num_experts > 0
+            && (layer_idx + 1) % config.decoder_sparse_step == 0;
+        if sparse {
+            FfnBlock::SparseMoe(SparseMoe::new(
+                config.hidden_size,
+                config.moe_intermediate_size,
+                config.num_experts,
+                config.num_experts_per_tok,
+                &config.scoring_func,
+                config.use_routing_bias,
                 ffn_scope,
-            )),
+            ))
+        } else {
+            FfnBlock::Dense(DenseMlp::new(
+                config.hidden_size,
+                config.intermediate_size,
+                ffn_scope,
+            ))
         }
     }
 

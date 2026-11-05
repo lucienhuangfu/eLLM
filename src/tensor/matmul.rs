@@ -165,6 +165,7 @@ where
         self.matmul_add(tensor2, tensor3, params, decode_only_flag, tensor_name)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn matmul3(
         &self,
         q_weight: &Tensor<T>,
@@ -181,8 +182,9 @@ where
         use_qk_norm: bool,
         params: MatMulParams,
         zero_centered: bool,
+        use_gate: bool,
         scope_name: String,
-    ) -> (Self, Self, Self)
+    ) -> (Self, Self, Self, Option<Self>)
     where
         T: Send + 'static,
     {
@@ -192,9 +194,11 @@ where
             (self.shape[0], 1, self.shape[1])
         };
         let output_rows = active_sequence_length * active_batch_size;
+        // q 输出宽按 head 几何而非权重行数：带输出门的 q_proj 行数是它的两倍。
+        let query_cols = kv_head_num * group_num * head_dim;
 
         let q_state = Self::from_mem_pool(
-            vec![active_sequence_length, active_batch_size, q_weight.shape[0]],
+            vec![active_sequence_length, active_batch_size, query_cols],
             format!("{}.q_proj.output", scope_name),
         );
 
@@ -207,6 +211,15 @@ where
             vec![sequence_length, batch_size, v_weight.shape[0]],
             format!("{}.v_proj.output", scope_name),
         );
+
+        // 输出门（Qwen3.5 `attn_output_gate`）：q_proj 权重行数是 query 列数的两倍，
+        // 后半与 query 同宽，故 gate_state 与 q_state 同形状。无门时不分配。
+        let gate_state = use_gate.then(|| {
+            Self::from_mem_pool(
+                vec![active_sequence_length, active_batch_size, query_cols],
+                format!("{}.q_gate.output", scope_name),
+            )
+        });
 
         let operator = Operator::MatMul3(MatMul3::new(
             self.data,
@@ -233,13 +246,18 @@ where
             params.a_row_step_micro,
             params.b_row_step_micro,
             zero_centered,
+            // 无门时传空指针：MatMul3 内部以 是否非空 判定输出门。
+            gate_state
+                .as_ref()
+                .map(|t| t.data)
+                .unwrap_or(std::ptr::null_mut()),
         ));
 
         // 权重常驻 MemPool；不再 `pool.remove`。MatMul3 自己的 packed
         // 副本仅在算子内部，与池中 HF 原始布局并存。
 
         Self::enqueue(operator);
-        (q_state, k_state, v_state)
+        (q_state, k_state, v_state, gate_state)
     }
 
     pub fn matmul_local_topk(

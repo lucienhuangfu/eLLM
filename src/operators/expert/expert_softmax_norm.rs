@@ -71,7 +71,11 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> ExpertSoftmax
             }
         }
 
-        let task_size = if self.decode_only_flag { lift_size } else { _total_size };
+        let task_size = if self.decode_only_flag {
+            lift_size
+        } else {
+            _total_size
+        };
 
         if let Some((begin, end)) = assign(task_size, 1, 0) {
             let ptr1 = self.ptr1.ptr;
@@ -122,7 +126,6 @@ impl<T: Sqrt + Exp + Default + AddAssign + Sub<Output = T> + Copy> SoftmaxTrait<
             topk_indices_ptr,
             input_length,
             output_length,
-            true,
         );
     }
 }
@@ -143,7 +146,6 @@ impl SoftmaxTrait<f16> for ExpertSoftmaxNorm<f16> {
             topk_indices_ptr,
             input_length,
             output_length,
-            true,
         );
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512fp16")))]
         scalar::experts_topk_softmax_norm::experts_topk_softmax_norm(
@@ -152,7 +154,6 @@ impl SoftmaxTrait<f16> for ExpertSoftmaxNorm<f16> {
             topk_indices_ptr,
             input_length,
             output_length,
-            true,
         );
     }
 }
@@ -172,7 +173,6 @@ impl SoftmaxTrait<f32> for ExpertSoftmaxNorm<f32> {
             topk_indices_ptr,
             input_length,
             output_length,
-            true,
         );
     }
 }

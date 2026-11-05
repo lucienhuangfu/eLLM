@@ -10,7 +10,7 @@ Internal architecture documentation for the eLLM inference engine.
 
 ## Transformer
 
-- [Minimal Model Abstraction](transformers/minimal_model_abstraction.md) — ModelFamily, LayerPlan, TensorNames
+- [Model Abstraction](transformers/minimal_model_abstraction.md) — two planes: `TextConfig` data mirror + inline layer judgments
 - [MiniMax-M2.5 RoPE](transformers/minimax_m2.5_rope.md) — partial-dimension RoPE, attention_scaling
 - [MoE Routing Data Structures](transformers/moe_routing_data_structures.md) — compact expert queues, routing write flow
 

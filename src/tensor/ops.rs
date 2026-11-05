@@ -6,7 +6,7 @@ use crate::operators::movement::{HeadLookup, LiftVector};
 use crate::operators::operator::Operator;
 use crate::operators::routing::SampleTokens;
 use crate::operators::transform::{
-    AddRMSZipMap, AddZipMap, LookupRMS, SigmoidMap, SiluMulZipMap, RMS,
+    AddRMSZipMap, AddZipMap, LookupRMS, SigmoidMap, SigmoidMulZipMap, SiluMulZipMap, RMS,
 };
 
 use super::{GlobalOperatorQueue, Tensor};
@@ -67,6 +67,26 @@ where
             head_num,
             head_size,
             decode_only_flag,
+        ));
+        Self::enqueue(operator);
+        output_tensor
+    }
+
+    /// Elementwise `self * sigmoid(other)`：注意力输出门 `attn_output * sigmoid(gate)`
+    /// 的单节点实现（SigmoidMulZipMap），对应 modeling_qwen3_5.py L808。
+    pub fn sigmoid_mul(&self, gate_tensor: &Tensor<T>, tensor_name: String) -> Self {
+        let output_tensor = Self::from_mem_pool(self.shape.clone(), tensor_name);
+        let (head_num, head_size) = match self.shape.as_slice() {
+            [_, cols] => (1, *cols),
+            [_, heads, size] => (*heads, *size),
+            _ => (self.last_dim(), 1),
+        };
+        let operator = Operator::SigmoidMulZipMap(SigmoidMulZipMap::new(
+            self.data,
+            gate_tensor.data,
+            output_tensor.data,
+            head_num,
+            head_size,
         ));
         Self::enqueue(operator);
         output_tensor

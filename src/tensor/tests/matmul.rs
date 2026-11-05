@@ -94,7 +94,7 @@ fn test_matmul3_f16() {
         b_row_step_micro: 32,
     };
 
-    let (q_out, k_out, v_out) = input_tensor.matmul3(
+    let (q_out, k_out, v_out, _gate) = input_tensor.matmul3(
         &q_weight,
         &k_weight,
         &v_weight,
@@ -108,6 +108,7 @@ fn test_matmul3_f16() {
         head_dim,
         true,
         params,
+        false,
         false,
         "model.layers.0.matmul3".to_string(),
     );
@@ -251,7 +252,7 @@ fn test_tensor_matmul3_f16_seq1_batch24() {
         b_row_step_micro: 32,
     };
 
-    let (q_out, k_out, v_out) = input_tensor.matmul3(
+    let (q_out, k_out, v_out, _gate) = input_tensor.matmul3(
         &q_weight,
         &k_weight,
         &v_weight,
@@ -265,6 +266,7 @@ fn test_tensor_matmul3_f16_seq1_batch24() {
         head_dim,
         true,
         params,
+        false,
         false,
         "model.layers.0.matmul3".to_string(),
     );

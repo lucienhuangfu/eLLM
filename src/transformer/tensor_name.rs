@@ -3,7 +3,7 @@
 //! Only the *scope hierarchy* is centralized here; leaf weight names
 //! (`.q_proj.weight`, `.gate_proj.weight`, `.gate.weight`, `.experts.*`, ...) are
 //! formatted inside each operator from the scope it is handed, co-located with
-//! their sole consumer. This keeps `model_spec` free of any reverse dependency
+//! their sole consumer. This keeps `config` free of any reverse dependency
 //! on a concrete model family `Config`.
 
 /// Root scope for model-level tensors (`model.embed_tokens.weight`, ...).

@@ -1,4 +1,3 @@
-use super::router_scoring::RouterScoringKind;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::operator::Operator;
 use crate::runtime::SequenceSlice;
@@ -67,7 +66,7 @@ fn build_case(
     intermediate_size: usize,
     num_experts: usize,
     top_k: usize,
-    router_scoring: RouterScoringKind,
+    scoring_func: &str,
     use_routing_bias: bool,
 ) -> (SparseMoe<f16>, Tensor<f16>, Tensor<f16>) {
     f16::init_global(HashMap::new());
@@ -78,8 +77,7 @@ fn build_case(
         intermediate_size,
         num_experts,
         top_k,
-        true,
-        router_scoring,
+        scoring_func,
         use_routing_bias,
         "model.layers.0.mlp",
     );
@@ -94,8 +92,7 @@ fn build_case(
 
 #[test]
 fn test_sparse_moe_queue_structure() {
-    let (moe, input, residual) =
-        build_case(1, 24, 256, 1024, 128, 8, RouterScoringKind::Softmax, false);
+    let (moe, input, residual) = build_case(1, 24, 256, 1024, 128, 8, "softmax", false);
 
     let out = moe.forward(
         &input,
@@ -131,8 +128,7 @@ fn test_sparse_moe_queue_structure() {
 
 #[test]
 fn test_sparse_moe_sigmoid_queue_structure() {
-    let (moe, input, residual) =
-        build_case(1, 24, 256, 1024, 128, 8, RouterScoringKind::Sigmoid, true);
+    let (moe, input, residual) = build_case(1, 24, 256, 1024, 128, 8, "sigmoid", true);
 
     let out = moe.forward(
         &input,
@@ -168,8 +164,7 @@ fn test_sparse_moe_sigmoid_queue_structure() {
 
 #[test]
 fn test_sparse_moe_zero_weights_output_equals_residual_bits() {
-    let (moe, input, residual) =
-        build_case(1, 24, 256, 1024, 128, 8, RouterScoringKind::Softmax, false);
+    let (moe, input, residual) = build_case(1, 24, 256, 1024, 128, 8, "softmax", false);
 
     fill_tensor_f16(&input, f16_one());
     fill_tensor_f16(&residual, f16_one());
@@ -190,8 +185,7 @@ fn test_sparse_moe_zero_weights_output_equals_residual_bits() {
 
 #[test]
 fn test_sparse_moe_single_thread_equals_multi_thread_bits() {
-    let (moe, input, residual) =
-        build_case(1, 24, 256, 1024, 128, 8, RouterScoringKind::Softmax, false);
+    let (moe, input, residual) = build_case(1, 24, 256, 1024, 128, 8, "softmax", false);
 
     fill_tensor_f16(&input, f16_one());
     fill_tensor_f16(&residual, f16_one());

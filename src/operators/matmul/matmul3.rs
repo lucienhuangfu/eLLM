@@ -84,6 +84,14 @@ pub struct MatMul3<T> {
     pub q_state_ptr: MutPtr<T>, // Query state. query 输出。
     pub k_state_ptr: MutPtr<T>, // Key cache/state. key cache/state。
     pub v_state_ptr: MutPtr<T>, // Value cache/state. value cache/state。
+    // 输出门（Qwen3.5 / `attn_output_gate`）：q_proj 的权重行数是 query 列数的两倍，
+    // 每个 head 的前 head_dim 行是 query、后 head_dim 行是 gate；gate 走同一条
+    // GEMM 但不做 norm+RoPE，写入调用方预分配的 gate_state。`use_gate` 为 false
+    // 时 gate_state_ptr 从不被解引用（借用 q_state 占位，与 q_norm 同一手法）。
+    gate_state_ptr: MutPtr<T>,
+    use_gate: bool,
+    // q_proj 权重实际行数：无门时 = Nq，有门时 = 2 * Nq（panel 寻址用）。
+    q_weight_cols: usize,
     q_norm_weight: MutPtr<T>,
     k_norm_weight: MutPtr<T>,
 
@@ -148,6 +156,7 @@ where
         a_row_step_micro: usize,
         b_row_step_micro: usize,
         zero_centered: bool,
+        gate_state_ptr: *mut T,
     ) -> Self
     where
         T: Send + 'static,
@@ -180,11 +189,17 @@ where
         let kc = reduction_block_cols;
         let nr = micro_tile_cols;
         let col_v = col;
-        let nq_v = nq;
         let nkv_v = nkv;
 
+        // 输出门（Qwen3.5 `attn_output_gate`）：gate_state 指针为空即无门。有门时
+        // q_proj 权重行数 = 2 * Nq，每个 head 的前 head_dim 行为 query、后
+        // head_dim 行为 gate（HF 以 head 为单位交错存放，见 modeling_qwen3_5.py
+        // L777 `torch.chunk(q_proj(x).view(*input_shape, -1, head_dim * 2), 2, -1)`）。
+        let use_gate = !gate_state_ptr.is_null();
+        let nq_pack = if use_gate { nq * 2 } else { nq };
+
         let task_q = SendFn(Box::new(move || {
-            Self::pack_b_panels(q_addr, nq_v, col_v, kc, nr)
+            Self::pack_b_panels(q_addr, nq_pack, col_v, kc, nr)
         }));
         let task_k = SendFn(Box::new(move || {
             Self::pack_b_panels(k_addr, nkv_v, col_v, kc, nr)
@@ -202,8 +217,12 @@ where
             let one = T::from_f32(1.0);
             unsafe {
                 for i in 0..head_dim {
-                    q_norm_weight.add(i).write(q_norm_weight.add(i).read() + one);
-                    k_norm_weight.add(i).write(k_norm_weight.add(i).read() + one);
+                    q_norm_weight
+                        .add(i)
+                        .write(q_norm_weight.add(i).read() + one);
+                    k_norm_weight
+                        .add(i)
+                        .write(k_norm_weight.add(i).read() + one);
                 }
             }
         }
@@ -213,6 +232,15 @@ where
             q_state_ptr: MutPtr { ptr: q_state_ptr },
             k_state_ptr: MutPtr { ptr: k_state_ptr },
             v_state_ptr: MutPtr { ptr: v_state_ptr },
+            gate_state_ptr: MutPtr {
+                ptr: if use_gate {
+                    gate_state_ptr
+                } else {
+                    q_state_ptr
+                },
+            },
+            use_gate,
+            q_weight_cols: nq_pack,
             q_norm_weight: MutPtr { ptr: q_norm_weight },
             k_norm_weight: MutPtr { ptr: k_norm_weight },
 
@@ -492,7 +520,7 @@ where
         dst_head: *mut T,
         packed_b: &[T],
         n_total: usize,
-        head_index: usize,
+        head_col0: usize,
         apply_rope: bool,
         norm_weight: *const T,
         next_sequence_index: usize,
@@ -508,7 +536,7 @@ where
         // Zero-init removed: compute_head_gemv starts accumulators from zero internally.
         // 移除 zero-init：compute_head_gemv 内部从零开始累加。
 
-        let head_col0 = head_index * self.head_dim;
+        // head_col0 是权重行基址（有门时一个 head 占 2*head_dim 行），与 dst 偏移解耦。
         let head_output_panel0 = head_col0 / micro_tile_cols;
         let output_panel_count = n_total.div_ceil(micro_tile_cols);
         self.compute_head_gemv(
@@ -534,16 +562,21 @@ where
         }
     }
 
+    /// Split a flat task id into (path, row, unit). `q_unit_num` is the number of
+    /// Q-side tasks per row: one per query head without the output gate, two
+    /// (query + gate) per head with it.
+    /// 将线性 task id 拆为 (路径, 行, 单元)。`q_unit_num` = 每行的 Q 侧 task 数：
+    /// 无输出门时每个 query head 一个，有门时每个 head 两个（query + gate）。
     #[inline(always)]
     fn path_task(
         row_count: usize,
         kv_head_num: usize,
-        q_head_num: usize,
+        q_unit_num: usize,
         task_id: usize,
     ) -> Option<(KqvPath, usize, usize)> {
         let v_tasks = row_count * kv_head_num;
         let k_tasks = v_tasks;
-        let q_tasks = row_count * q_head_num;
+        let q_tasks = row_count * q_unit_num;
         let total = v_tasks + k_tasks + q_tasks;
         if task_id >= total {
             return None;
@@ -559,7 +592,7 @@ where
         }
 
         let task_id = task_id - k_tasks;
-        Some((KqvPath::Q, task_id / q_head_num, task_id % q_head_num))
+        Some((KqvPath::Q, task_id / q_unit_num, task_id % q_unit_num))
     }
 
     #[inline(always)]
@@ -583,7 +616,7 @@ where
         packed_b: &[T],
         n_total: usize,
         output_row_stride: usize,
-        head_index: usize,
+        head_col0: usize,
         valid_rows: usize,
         apply_rope: bool,
         norm_weight: *const T,
@@ -607,7 +640,7 @@ where
                     dst_head.add(row * output_row_stride),
                     packed_b,
                     n_total,
-                    head_index,
+                    head_col0,
                     apply_rope,
                     norm_weight,
                     sequence_index + row,
@@ -618,7 +651,7 @@ where
 
         // Full 3-row tile: first panel uses compute1_init (starts from zero, no C load),
         // subsequent panels use compute1 (accumulate). Zero-init pass eliminated.
-        let head_col0 = head_index * self.head_dim;
+        // head_col0 为权重行基址，与 dst 的 head 偏移解耦（有门时二者不相等）。
         let output_panel_count = n_total.div_ceil(micro_tile_cols);
         for head_col in (0..self.head_dim).step_by(micro_tile_cols) {
             let output_panel = (head_col0 + head_col) / micro_tile_cols;
@@ -683,6 +716,11 @@ where
         let query_output_cols = self.kv_head_num * self.group_num * self.head_dim;
         let key_value_output_cols = self.kv_head_num * self.head_dim;
         let query_head_count = self.kv_head_num * self.group_num;
+        // 有输出门时每个 query head 派两个 task：单元 0 = query（走 norm+RoPE），
+        // 单元 1 = gate（纯 GEMM，不 norm 不 rope）。权重行基址 = 单元 * head_dim，
+        // 恰好落在 HF 交错存放的 query|gate 两半上。
+        let q_units = if self.use_gate { 2 } else { 1 };
+        let q_unit_count = query_head_count * q_units;
         let row_step = self.params.a_row_step_micro.max(1);
         let row_tile_count = row_count.div_ceil(row_step);
 
@@ -691,10 +729,10 @@ where
         let ck_base = self.k_state_ptr.ptr;
         let cv_base = self.v_state_ptr.ptr;
 
-        let total_tasks = row_tile_count * (self.kv_head_num * 2 + query_head_count);
+        let total_tasks = row_tile_count * (self.kv_head_num * 2 + q_unit_count);
         for task_id in (thread_id..total_tasks).step_by(thread_num) {
-            let Some((path, row_tile_id, head_index)) =
-                Self::path_task(row_tile_count, self.kv_head_num, query_head_count, task_id)
+            let Some((path, row_tile_id, unit_index)) =
+                Self::path_task(row_tile_count, self.kv_head_num, q_unit_count, task_id)
             else {
                 continue;
             };
@@ -705,14 +743,14 @@ where
             match path {
                 KqvPath::V => {
                     let dst_head =
-                        cv_base.add(row_begin * key_value_output_cols + head_index * self.head_dim);
+                        cv_base.add(row_begin * key_value_output_cols + unit_index * self.head_dim);
                     self.compute_head_tile_from_packed(
                         input_row,
                         dst_head,
                         &self.packed_v,
                         key_value_output_cols,
                         key_value_output_cols,
-                        head_index,
+                        unit_index * self.head_dim,
                         valid_rows,
                         false,
                         self.k_norm_weight.ptr,
@@ -721,14 +759,14 @@ where
                 }
                 KqvPath::K => {
                     let dst_head =
-                        ck_base.add(row_begin * key_value_output_cols + head_index * self.head_dim);
+                        ck_base.add(row_begin * key_value_output_cols + unit_index * self.head_dim);
                     self.compute_head_tile_from_packed(
                         input_row,
                         dst_head,
                         &self.packed_k,
                         key_value_output_cols,
                         key_value_output_cols,
-                        head_index,
+                        unit_index * self.head_dim,
                         valid_rows,
                         true,
                         self.k_norm_weight.ptr,
@@ -736,17 +774,24 @@ where
                     );
                 }
                 KqvPath::Q => {
+                    let head_index = unit_index / q_units;
+                    let is_gate = unit_index % q_units != 0;
+                    let dst_base = if is_gate {
+                        self.gate_state_ptr.ptr
+                    } else {
+                        cq_base
+                    };
                     let dst_head =
-                        cq_base.add(row_begin * query_output_cols + head_index * self.head_dim);
+                        dst_base.add(row_begin * query_output_cols + head_index * self.head_dim);
                     self.compute_head_tile_from_packed(
                         input_row,
                         dst_head,
                         &self.packed_q,
+                        self.q_weight_cols,
                         query_output_cols,
-                        query_output_cols,
-                        head_index,
+                        unit_index * self.head_dim,
                         valid_rows,
-                        true,
+                        !is_gate,
                         self.q_norm_weight.ptr,
                         row_begin,
                     );
@@ -790,10 +835,12 @@ where
             let query_row_stride = query_output_cols;
             let key_row_stride = key_value_output_cols;
             let value_row_stride = key_value_output_cols;
-            let total_tasks = row_count * (self.kv_head_num * 2 + query_head_count);
+            let q_units = if self.use_gate { 2 } else { 1 };
+            let q_unit_count = query_head_count * q_units;
+            let total_tasks = row_count * (self.kv_head_num * 2 + q_unit_count);
             for task_id in (thread_id..total_tasks).step_by(thread_num) {
-                let Some((path, row_idx, head_index)) =
-                    Self::path_task(row_count, self.kv_head_num, query_head_count, task_id)
+                let Some((path, row_idx, unit_index)) =
+                    Self::path_task(row_count, self.kv_head_num, q_unit_count, task_id)
                 else {
                     continue;
                 };
@@ -811,13 +858,13 @@ where
                     KqvPath::V => {
                         let cache_row =
                             (sequence_index * self.batch_size + batch_index) * value_row_stride;
-                        let dst_head = cv_base.add(cache_row + head_index * self.head_dim);
+                        let dst_head = cv_base.add(cache_row + unit_index * self.head_dim);
                         self.compute_head_from_packed(
                             input_row,
                             dst_head,
                             &self.packed_v,
                             key_value_output_cols,
-                            head_index,
+                            unit_index * self.head_dim,
                             false,
                             self.k_norm_weight.ptr,
                             rope_sequence_index,
@@ -826,28 +873,35 @@ where
                     KqvPath::K => {
                         let cache_row =
                             (sequence_index * self.batch_size + batch_index) * key_row_stride;
-                        let dst_head = ck_base.add(cache_row + head_index * self.head_dim);
+                        let dst_head = ck_base.add(cache_row + unit_index * self.head_dim);
                         self.compute_head_from_packed(
                             input_row,
                             dst_head,
                             &self.packed_k,
                             key_value_output_cols,
-                            head_index,
+                            unit_index * self.head_dim,
                             true,
                             self.k_norm_weight.ptr,
                             rope_sequence_index,
                         );
                     }
                     KqvPath::Q => {
-                        let dst_head = cq_base
+                        let head_index = unit_index / q_units;
+                        let is_gate = unit_index % q_units != 0;
+                        let dst_base = if is_gate {
+                            self.gate_state_ptr.ptr
+                        } else {
+                            cq_base
+                        };
+                        let dst_head = dst_base
                             .add(token_index * query_row_stride + head_index * self.head_dim);
                         self.compute_head_from_packed(
                             input_row,
                             dst_head,
                             &self.packed_q,
-                            query_output_cols,
-                            head_index,
-                            true,
+                            self.q_weight_cols,
+                            unit_index * self.head_dim,
+                            !is_gate,
                             self.q_norm_weight.ptr,
                             rope_sequence_index,
                         );
@@ -1260,7 +1314,6 @@ impl MatMulkqvTrait<f32> for MatMul3<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_abs_diff_eq;
 
     const EMPTY_SLICES: &[SequenceSlice] = &[];
 
@@ -1399,7 +1452,11 @@ mod tests {
 
         let mut q_norm = vec![1.0f32; head_dim];
         let mut k_norm = vec![1.0f32; head_dim];
-        let mut rope = vec![1.0f32; n_q.max(n_kv)];
+        // rope 行索引是 `next_sequence_index * head_dim`（最大 m-1），故长度必须覆盖
+        // m * head_dim；只给 n_q 会越界读到堆上邻居。
+        // 填成 (cos=1, sin=0) 的恒等旋转：本文件内其余 matmul3 测试同此写法，
+        // 内核对半拆分与相邻复数对两种约定在此取值下都是恒等。
+        let mut rope = vec![0.0f32; m * head_dim];
 
         for i in 0..m * k {
             a[i] = (i % 100) as f32 * 0.01;
@@ -1420,7 +1477,7 @@ mod tests {
                 wv_nt[j * k + kk] = ((idx_old + 3) % 7) as f32 * 0.01;
             }
         }
-        for i in 0..rope.len() {
+        for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0;
         }
 
@@ -1436,20 +1493,21 @@ mod tests {
                 q_norm.as_mut_ptr(),
                 k_norm.as_mut_ptr(),
                 rope.as_ptr(),
-                sequence_length, // sequence_length
-                1,               // batch_size
-                n_kv / head_dim, // kv_head_num
-                n_q / n_kv,      // group_num
-                head_dim,        // head_dim
-                true,            // use_qk_norm
-                m,               // m_row
-                k,               // col
-                24,              // a_row_step_macro
-                128,             // b_row_step_macro
-                32,              // column_step_macro
-                3,               // a_row_step_micro
-                32,              // b_row_step_micro
-                false,           // zero_centered
+                sequence_length,      // sequence_length
+                1,                    // batch_size
+                n_kv / head_dim,      // kv_head_num
+                n_q / n_kv,           // group_num
+                head_dim,             // head_dim
+                true,                 // use_qk_norm
+                m,                    // m_row
+                k,                    // col
+                24,                   // a_row_step_macro
+                128,                  // b_row_step_macro
+                32,                   // column_step_macro
+                3,                    // a_row_step_micro
+                32,                   // b_row_step_micro
+                false,                // zero_centered
+                std::ptr::null_mut(), // gate_state_ptr：无输出门
             );
 
             matmul.run(m, 0, 0, EMPTY_SLICES, 1, 0);
@@ -1486,6 +1544,192 @@ mod tests {
         }
     }
 
+    /// 缺口 G2（`attn_output_gate`）的内核语义：q_proj 的权重行数是 query 列数的两倍，
+    /// **以 head 为单位交错**存放 query | gate（modeling_qwen3_5.py L777-L779
+    /// `torch.chunk(q_proj(x).view(*shape, -1, head_dim * 2), 2, dim=-1)`）。
+    /// query 半区走与 K/V 相同的 norm+RoPE 后处理写进 q_state；gate 半区是纯
+    /// GEMM，不 norm 不 rope，写进调用方预分配的 gate_state。
+    ///
+    /// 断言刻意不依赖 norm/RoPE 的公式（本机的 f32 后处理与 scalar 参考写法本就
+    /// 不同，HEAD 上既有的 72 行用例即因此失败，与本改动无关）：
+    /// - query / K / V：与「只喂 query 半区权重、无门」的同一内核逐元素相等
+    ///   → 证明交错读法、权重行基址与 dst 偏移的解耦均正确；
+    /// - gate：与 gate 半区权重的纯 GEMM 参考相等 → 证明 gate 未被 norm/RoPE 改写。
+    /// 两条路径都跑：`EMPTY_SLICES` 走逐行 GEMV，带 slices 走 3×32 tile
+    /// （m = 8 不被 3 整除，尾部 2 行回落 tile 内的逐行递归）。
+    #[test]
+    fn test_matmul3_output_gate_f32_head_interleaved() {
+        let m = 8;
+        let k = 256;
+        let head_dim = 128;
+        let n_q = 2 * head_dim; // query 列数：2 个 query head
+        let n_kv = head_dim; // 1 个 kv head
+        let n_qg = n_q * 2; // q_proj 权重行数 = query + gate
+
+        let mut a = vec![0.0f32; m * k];
+        let mut wqg_nt = vec![0.0f32; n_qg * k];
+        let mut wk_nt = vec![0.0f32; n_kv * k];
+        let mut wv_nt = vec![0.0f32; n_kv * k];
+        // 同一份交错权重逐 head 切出的两半，用于构造「无门对照实例」。
+        let mut wq_query_nt = vec![0.0f32; n_q * k];
+        let mut wq_gate_nt = vec![0.0f32; n_q * k];
+
+        // B：有门实例。A：无门对照实例。
+        let mut cq_b = vec![0.0f32; m * n_q];
+        let mut cg_b = vec![0.0f32; m * n_q];
+        let mut ck_b = vec![0.0f32; m * n_kv];
+        let mut cv_b = vec![0.0f32; m * n_kv];
+        let mut cq_a = vec![0.0f32; m * n_q];
+        let mut ck_a = vec![0.0f32; m * n_kv];
+        let mut cv_a = vec![0.0f32; m * n_kv];
+
+        let q_norm = vec![1.0f32; head_dim];
+        let k_norm = vec![1.0f32; head_dim];
+        // rope 行索引是 next_sequence_index（最大 m-1），故长度必须覆盖
+        // m * head_dim；只给 n_q 会越界读到堆上邻居，结果随同进程其它测试
+        // 遗留的分配状态漂移。
+        let rope = vec![1.0f32; m * head_dim];
+
+        for i in 0..m * k {
+            a[i] = (i % 100) as f32 * 0.01;
+        }
+        // 权重按行号给不同相位：让 query 行与 gate 行的值不同，否则
+        // 「上下面切分」与「逐 head 交错切分」两种读法会得到同样的测试值。
+        for j in 0..n_qg {
+            for kk in 0..k {
+                wqg_nt[j * k + kk] = ((j * 3 + kk * 5 + 1) % 11) as f32 * 0.01;
+            }
+        }
+        for j in 0..n_kv {
+            for kk in 0..k {
+                wk_nt[j * k + kk] = ((j * 7 + kk * 3 + 2) % 11) as f32 * 0.01;
+                wv_nt[j * k + kk] = ((j * 5 + kk * 9 + 3) % 11) as f32 * 0.01;
+            }
+        }
+        // 逐 head 切两半：前 head_dim 行 = query，后 head_dim 行 = gate。
+        for head in 0..(n_q / head_dim) {
+            for j in 0..head_dim {
+                let dst = (head * head_dim + j) * k;
+                let qsrc = (head * 2 * head_dim + j) * k;
+                let gsrc = (head * 2 * head_dim + head_dim + j) * k;
+                wq_query_nt[dst..dst + k].copy_from_slice(&wqg_nt[qsrc..qsrc + k]);
+                wq_gate_nt[dst..dst + k].copy_from_slice(&wqg_nt[gsrc..gsrc + k]);
+            }
+        }
+
+        // gate 半区不做任何后处理，故参考就是纯 GEMM（rope 全 1 时 complex_mul
+        // 并非恒等，若 gate 被误施 norm/RoPE 必然对不上）。
+        let mut cg_ref = vec![0.0f32; m * n_q];
+        ref_matmul_f32_from_wnt(m, k, n_q, &a, &wq_gate_nt, &mut cg_ref);
+
+        let verify = |name: &str, out: &[f32], reference: &[f32]| {
+            for (i, (v1, v2)) in out.iter().zip(reference.iter()).enumerate() {
+                let diff = (v1 - v2).abs();
+                assert!(
+                    diff < 1e-3,
+                    "{name} mismatch at index {i}: got {v1}, expected {v2}"
+                );
+            }
+        };
+
+        let slices = [SequenceSlice {
+            local_length: m,
+            ..Default::default()
+        }];
+        // row_map = (row, 0, row) 且 batch_size = 1 → run() 内部分流到
+        // run_prefill_row_tiled；各线程共同覆盖完整 task 空间。
+        let threads = avail_threads_cap(4);
+
+        unsafe {
+            let build =
+                |q_weight: *const f32, cq: *mut f32, ck: *mut f32, cv: *mut f32, cg: *mut f32| {
+                    MatMul3::<f32>::new(
+                        a.as_ptr(),
+                        q_weight,
+                        cq,
+                        wk_nt.as_ptr(),
+                        ck,
+                        wv_nt.as_ptr(),
+                        cv,
+                        q_norm.as_ptr() as *mut f32,
+                        k_norm.as_ptr() as *mut f32,
+                        rope.as_ptr(),
+                        m,               // sequence_length
+                        1,               // batch_size
+                        n_kv / head_dim, // kv_head_num
+                        n_q / n_kv,      // group_num
+                        head_dim,
+                        true,  // use_qk_norm
+                        m,     // m_row
+                        k,     // col
+                        24,    // a_row_step_macro
+                        128,   // b_row_step_macro
+                        32,    // column_step_macro
+                        3,     // a_row_step_micro
+                        32,    // b_row_step_micro
+                        false, // zero_centered
+                        cg,    // gate_state_ptr：非空即启用输出门
+                    )
+                };
+
+            // A：无门对照 —— gate_state_ptr 传空，权重只给 query 半区。
+            // B：有门 —— 权重给交错全量，gate 单元写进 cg_b。
+            let matmul_a = build(
+                wq_query_nt.as_ptr(),
+                cq_a.as_mut_ptr(),
+                ck_a.as_mut_ptr(),
+                cv_a.as_mut_ptr(),
+                std::ptr::null_mut(),
+            );
+            let matmul_b = build(
+                wqg_nt.as_ptr(),
+                cq_b.as_mut_ptr(),
+                ck_b.as_mut_ptr(),
+                cv_b.as_mut_ptr(),
+                cg_b.as_mut_ptr(),
+            );
+
+            // ① 逐行 GEMV 路径（无 slices）。
+            matmul_a.run(m, 0, 0, EMPTY_SLICES, 1, 0);
+            matmul_b.run(m, 0, 0, EMPTY_SLICES, 1, 0);
+            verify("Q 与无门对照 (gemv)", &cq_b, &cq_a);
+            verify("K 与无门对照 (gemv)", &ck_b, &ck_a);
+            verify("V 与无门对照 (gemv)", &cv_b, &cv_a);
+            verify("Gate 纯 GEMM (gemv)", &cg_b, &cg_ref);
+
+            // ② 3 行 tile 的 prefill 路径（尾部 2 行走 tile 内逐行递归）。
+            for v in &mut cq_a {
+                *v = 0.0;
+            }
+            for v in &mut ck_a {
+                *v = 0.0;
+            }
+            for v in &mut cv_a {
+                *v = 0.0;
+            }
+            for v in &mut cq_b {
+                *v = 0.0;
+            }
+            for v in &mut cg_b {
+                *v = 0.0;
+            }
+            for v in &mut ck_b {
+                *v = 0.0;
+            }
+            for v in &mut cv_b {
+                *v = 0.0;
+            }
+            for tid in 0..threads {
+                matmul_a.run(m, 0, 0, &slices, threads, tid);
+                matmul_b.run(m, 0, 0, &slices, threads, tid);
+            }
+            verify("Q 与无门对照 (tiled)", &cq_b, &cq_a);
+            verify("K 与无门对照 (tiled)", &ck_b, &ck_a);
+            verify("V 与无门对照 (tiled)", &cv_b, &cv_a);
+            verify("Gate 纯 GEMM (tiled)", &cg_b, &cg_ref);
+        }
+    }
+
     #[test]
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
     fn test_kqv_f16_avx512_small_single_tile() {
@@ -1510,7 +1754,7 @@ mod tests {
 
         let mut q_norm = vec![1.0f16; HEAD_DIM];
         let mut k_norm = vec![1.0f16; HEAD_DIM];
-        let mut rope = vec![0.0f16; NQ.max(NKV)];
+        let mut rope = vec![0.0f16; M * HEAD_DIM];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
         }
@@ -1613,7 +1857,7 @@ mod tests {
 
         let mut q_norm = vec![1.0f16; HEAD_DIM];
         let mut k_norm = vec![1.0f16; HEAD_DIM];
-        let mut rope = vec![0.0f16; NQ.max(NKV)];
+        let mut rope = vec![0.0f16; M * HEAD_DIM];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
         }
@@ -1706,7 +1950,7 @@ mod tests {
 
         let mut q_norm = vec![1.0f16; HEAD_DIM];
         let mut k_norm = vec![1.0f16; HEAD_DIM];
-        let mut rope = vec![0.0f16; NQ.max(NKV)];
+        let mut rope = vec![0.0f16; M * HEAD_DIM];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
         }
@@ -1799,7 +2043,7 @@ mod tests {
 
         let mut q_norm = vec![1.0f16; HEAD_DIM];
         let mut k_norm = vec![1.0f16; HEAD_DIM];
-        let mut rope = vec![0.0f16; NQ.max(NKV)];
+        let mut rope = vec![0.0f16; M * HEAD_DIM];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
         }
@@ -1917,7 +2161,7 @@ mod tests {
 
         let mut q_norm = vec![1.0f16; HEAD_DIM];
         let mut k_norm = vec![1.0f16; HEAD_DIM];
-        let mut rope = vec![0.0f16; HEAD_DIM.max(NQ).max(NKV)];
+        let mut rope = vec![0.0f16; M_MAX * HEAD_DIM];
         for i in (0..rope.len()).step_by(2) {
             rope[i] = 1.0f16;
         }

@@ -1,9 +1,8 @@
 #![feature(f16)]
 
-use ellm::config::GenerationConfig;
+use ellm::config::{GenerationConfig, TextConfig};
 use ellm::mem_mgr::allocator::AlignedBox;
 use ellm::mem_mgr::mem_pool::GlobalMemPool;
-use ellm::model_family::load_text_config;
 use ellm::operators::send_sync_ptr::SharedMut;
 use ellm::runtime::{
     ExecutorPool, Phase, SafeTensorsLoader, ScheduleTask, Scheduler, SessionMode, SlotManager,
@@ -37,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chunk_size = 64;
 
     let model_dir = "checkpoints/Qwen3-Coder-30B-A3B-Instruct";
-    let config = load_text_config(format!("{}/config.json", model_dir)).unwrap();
+    let config = TextConfig::load(format!("{}/config.json", model_dir)).unwrap();
     let generation_config =
         GenerationConfig::load_from_file(format!("{}/generation_config.json", model_dir)).ok();
 

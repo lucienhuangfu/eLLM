@@ -100,6 +100,22 @@ where
         let value_dim = head_v_dim * num_v_heads;
         let conv_dim = key_dim * 2 + value_dim;
 
+        // 自需维度硬校验（P2）：这六个维度是 GatedDeltaNet 的构造前提，配置层只在
+        // qwen3_5 家族的 B 类分支里补其缺省（`apply_family_defaults`）。若某个
+        // `layer_types` 写了 linear_attention 而 ckpt 没带这些键，此前会静默建出
+        // 零宽权重，到推理期才以越界或全零输出的形式暴露；现在建图期即失败。
+        assert!(
+            hidden_size > 0
+                && num_k_heads > 0
+                && num_v_heads > 0
+                && head_k_dim > 0
+                && head_v_dim > 0
+                && conv_kernel_size > 0,
+            "GatedDeltaAttention 自需维度缺失: hidden_size={hidden_size} num_k_heads={num_k_heads} \
+             num_v_heads={num_v_heads} head_k_dim={head_k_dim} head_v_dim={head_v_dim} \
+             conv_kernel_size={conv_kernel_size}"
+        );
+
         Self {
             sequence_length,
             batch_size,
@@ -173,6 +189,7 @@ where
 mod test {
     use super::*;
     use crate::runtime::SequenceSlice;
+    use crate::transformer::tensor_name::gated_delta_attention_tensor_names;
     use std::collections::HashMap;
 
     const EMPTY_SLICES: &[SequenceSlice] = &[];
@@ -261,5 +278,18 @@ mod test {
                 }
             }
         });
+    }
+
+    /// P2 自需维度校验的反例：`layer_types` 写了 linear_attention 但 ckpt 没带
+    /// `linear_key_head_dim` 时，必须在建图期 panic，而不是静默建出零宽权重。
+    /// panic 发生在任何内存池分配之前，故本用例不需 init_global。
+    #[test]
+    fn missing_self_required_dims_panics_at_build() {
+        let names = gated_delta_attention_tensor_names(0);
+        let build = |head_k_dim: usize| {
+            GatedDeltaAttention::<f32>::new(8, 1, 2, head_k_dim, 2, 4, 2, 1, names.clone())
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(0)));
+        assert!(result.is_err(), "head_k_dim = 0 必须建图期 panic");
     }
 }

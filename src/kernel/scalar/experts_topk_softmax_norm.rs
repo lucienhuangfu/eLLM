@@ -2,6 +2,8 @@ use crate::kernel::common::heap::FixedMinHeap;
 use crate::num_traits::Exp;
 use std::ops::{AddAssign, Div, Sub};
 
+// Router 只保留 top-k 个专家，故权重在选出的子集内归一化（对应 HF 的
+// `norm_topk_prob = true`）——本仓库唯一使用的语义，旧的二态开关已删。
 pub fn experts_topk_softmax_norm<
     T: Exp + Default + AddAssign + PartialOrd + Copy + Sub<Output = T> + Div<Output = T>,
 >(
@@ -10,7 +12,6 @@ pub fn experts_topk_softmax_norm<
     topk_indices_ptr: *mut usize,
     num_experts: usize,
     num_topk: usize,
-    norm_topk_prob: bool,
 ) {
     unsafe {
         let topk_len = num_topk.min(num_experts);
@@ -29,31 +30,19 @@ pub fn experts_topk_softmax_norm<
             return;
         }
 
-        if norm_topk_prob {
-            // The caller only keeps top-k experts, so normalize within the selected subset.
-            // This avoids a full softmax over all experts and keeps the hot path compact.
-            let max_value = *topk_values_ptr;
-            let mut norm_sum = T::default();
-            for i in 0..len {
-                let value = *topk_values_ptr.add(i);
-                let normalized = (value - max_value).exp();
-                *topk_values_ptr.add(i) = normalized;
-                norm_sum += normalized;
-            }
-            for i in 0..len {
-                let prob = *topk_values_ptr.add(i) / norm_sum;
-                *topk_values_ptr.add(i) = prob;
-            }
-        } else {
-            let mut sum = T::default();
-            for expert_idx in 0..num_experts {
-                sum += (*input_ptr.add(expert_idx)).exp();
-            }
-
-            for i in 0..len {
-                let softmax_value = (*topk_values_ptr.add(i)).exp() / sum;
-                *topk_values_ptr.add(i) = softmax_value;
-            }
+        // The caller only keeps top-k experts, so normalize within the selected subset.
+        // This avoids a full softmax over all experts and keeps the hot path compact.
+        let max_value = *topk_values_ptr;
+        let mut norm_sum = T::default();
+        for i in 0..len {
+            let value = *topk_values_ptr.add(i);
+            let normalized = (value - max_value).exp();
+            *topk_values_ptr.add(i) = normalized;
+            norm_sum += normalized;
+        }
+        for i in 0..len {
+            let prob = *topk_values_ptr.add(i) / norm_sum;
+            *topk_values_ptr.add(i) = prob;
         }
     }
 }
@@ -81,7 +70,6 @@ mod tests {
                 topk_idx.as_mut_ptr(),
                 NUM_EXPERTS,
                 NUM_TOPK,
-                true,
             );
         }
 
@@ -116,7 +104,6 @@ mod tests {
                 topk_idx.as_mut_ptr(),
                 NUM_EXPERTS,
                 NUM_TOPK,
-                true,
             );
         }
 
@@ -132,7 +119,9 @@ mod tests {
     }
 
     #[test]
-    fn test_experts_topk_softmax_norm_without_topk_normalization() {
+    fn test_experts_topk_softmax_norm_normalizes_within_topk() {
+        // 子集内归一化：top-k 概率之和恒为 1，与「全专家 softmax」的
+        // 旧 `norm_topk_prob = false` 路径不再共存。
         const NUM_EXPERTS: usize = 4;
         const NUM_TOPK: usize = 2;
         let data = [0.0f32, 1.0, 2.0, 3.0];
@@ -146,11 +135,10 @@ mod tests {
                 topk_idx.as_mut_ptr(),
                 NUM_EXPERTS,
                 NUM_TOPK,
-                false,
             );
         }
 
-        let denom: f32 = data.iter().map(|v| v.exp()).sum();
+        let denom: f32 = data[2..4].iter().map(|v| v.exp()).sum();
         let expected = [
             (3usize, data[3].exp() / denom),
             (2usize, data[2].exp() / denom),

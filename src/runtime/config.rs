@@ -1,5 +1,4 @@
-use crate::config::GenerationConfig;
-use crate::model_spec::TextConfig;
+use crate::config::{GenerationConfig, TextConfig};
 
 #[derive(Debug, Clone)]
 pub struct GenerationParameters {
