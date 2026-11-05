@@ -13,7 +13,6 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::MatMulAddTrait;
 
 // Variable naming used in this operator:
 // - input_rows / input_row_start: rows from A, residual, and C.
@@ -27,6 +26,46 @@ use crate::operators::traits::MatMulAddTrait;
 // - reduction_cols / reduction_col_start：GEMM 中被规约的 K 维度。
 // - input_block_rows / output_block_cols / reduction_block_cols：宏块大小。
 // - micro_tile_rows / micro_tile_cols：微内核 tile 大小。
+
+/// Fused GEMM + residual micro-kernel interface.
+/// 乘法混合 residual 加法的微内核接口。
+pub trait MatMulAddTrait<T> {
+    fn compute(
+        &self,
+        input_ptr1: *const T,
+        input_ptr2: *const T,
+        input_ptr3: *const T,
+        output_ptr: *mut T,
+    );
+
+    fn compute_init(
+        &self,
+        input_ptr1: *const T,
+        weight_panel: *const T,
+        residual_ptr: *const T,
+        output_ptr: *mut T,
+        kc: usize,
+    );
+
+    fn compute_rows(
+        &self,
+        input_row: *const T,
+        weight_panel: *const T,
+        output_row: *mut T,
+        kc: usize,
+        rows: usize,
+    );
+
+    fn compute_rows_init(
+        &self,
+        input_row: *const T,
+        weight_panel: *const T,
+        residual_row: *const T,
+        output_row: *mut T,
+        kc: usize,
+        rows: usize,
+    );
+}
 
 #[derive(Clone)]
 pub struct MatMulAdd<T> {
@@ -54,7 +93,7 @@ pub struct MatMulAdd<T> {
     // 在 `new_cached` 路径下命中 MemPool `packed_views`，多 step 只 pack 一次（如
     // markov draft head 循环里的 `markov_w2`）。旧 `new` 路径依然会新建一份。
     packed_b: Arc<AlignedBox<T>>, // [reduction_panels][output_panels][reduction_block * micro_cols]
-    packed_panel_stride: usize, // reduction_block_cols * micro_tile_cols
+    packed_panel_stride: usize,   // reduction_block_cols * micro_tile_cols
 }
 
 impl<T> MatMulAdd<T>

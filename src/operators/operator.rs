@@ -28,7 +28,7 @@ use crate::operators::transform::AddZipMap;
 use crate::operators::transform::SigmoidMap;
 use crate::operators::transform::SigmoidMulZipMap;
 use crate::operators::transform::SiluMulZipMap;
-use crate::operators::transform::{AddRMSZipMap, RMS};
+use crate::operators::transform::RMS;
 // use super::zip_map::complex_zip::ComplexZipMap;
 // use super::zip_map::silu_mul_zip::SiluMulZipMap;
 // use crate::kernel::common::matmul_params::MatMulParams;
@@ -41,7 +41,6 @@ pub enum Operator<T>
 // where
 //    T: PartialOrd + Copy,
 {
-    AddRMSZipMap(AddRMSZipMap<T>),
     AddZipMap(AddZipMap<T>),
     GatedAttention(GatedAttention<T>),
     // ComplexZipMap(ComplexZipMap<T>),
@@ -109,9 +108,6 @@ where
         }
 
         match self {
-            Self::AddRMSZipMap(operator) => {
-                run_simple!(operator);
-            }
             Self::AddZipMap(operator) => {
                 run_simple!(operator);
             }
@@ -323,7 +319,6 @@ where
 
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::AddRMSZipMap(_) => "AddRMSZipMap",
             Self::AddZipMap(_) => "AddZipMap",
             Self::GatedAttention(_) => "GatedAttention",
             Self::ExpertMatMulDown(_) => "ExpertMatMulDown",

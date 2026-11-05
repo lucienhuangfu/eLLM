@@ -9,7 +9,7 @@ use crate::num_traits::{exp::Exp, sqrt::Sqrt};
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::SoftmaxTrait;
+use crate::operators::softmax::traits::SoftmaxTrait;
 
 #[derive(Clone)]
 pub struct ExpertSoftmaxNorm<T> {

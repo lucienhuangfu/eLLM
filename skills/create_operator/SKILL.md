@@ -33,7 +33,7 @@ eLLM is a static-graph engine (unlike PyTorch eager): the graph is built once at
 // src/operators/<family>/<op_name>.rs
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::MapTrait;
+use crate::operators::elementwise::traits::MapTrait;
 
 #[derive(Clone)]
 pub struct MyOp<T> {

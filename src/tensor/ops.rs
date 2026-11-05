@@ -6,7 +6,7 @@ use crate::operators::movement::{HeadLookup, LiftVector};
 use crate::operators::operator::Operator;
 use crate::operators::routing::SampleTokens;
 use crate::operators::transform::{
-    AddRMSZipMap, AddZipMap, LookupRMS, SigmoidMap, SigmoidMulZipMap, SiluMulZipMap, RMS,
+    AddZipMap, LookupRMS, SigmoidMap, SigmoidMulZipMap, SiluMulZipMap, RMS,
 };
 
 use super::{GlobalOperatorQueue, Tensor};
@@ -87,26 +87,6 @@ where
             output_tensor.data,
             head_num,
             head_size,
-        ));
-        Self::enqueue(operator);
-        output_tensor
-    }
-
-    pub fn add_rms(
-        &self,
-        b_tensor: &Tensor<T>,
-        _weight: *const T,
-        eps: T,
-        tensor_name: String,
-    ) -> Self {
-        let output_tensor = Self::from_mem_pool(self.shape.clone(), tensor_name);
-
-        let operator = Operator::AddRMSZipMap(AddRMSZipMap::new(
-            self.data,
-            b_tensor.data,
-            output_tensor.data,
-            self.shape[1],
-            eps,
         ));
         Self::enqueue(operator);
         output_tensor

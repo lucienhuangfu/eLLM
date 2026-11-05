@@ -3,13 +3,83 @@ use std::sync::{Arc, Once};
 
 use crate::num_traits::{NegInfinity, Sigmoid};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::AttentionTrait;
 use crate::runtime::SequenceSlice;
 
 use super::scratch::{AttentionScratch, AttentionScratchSlice};
 use super::utils::{split_sequence_by_triangle, RowVisitPlan};
 
 static BRGEMM_FALLBACK_WARNING: Once = Once::new();
+
+/// Attention micro-kernel interface.
+/// 注意力微内核接口。
+pub trait AttentionTrait<T> {
+    #[allow(clippy::too_many_arguments)]
+    fn compute(
+        &self,
+        q_ptr1: *const T,
+        k_ptr2: *const T,
+        v_ptr3: *const T,
+        output_ptr: *mut T,
+        row_begin: usize,
+        row_end: usize,
+        col_begin: usize,
+        col_end: usize,
+        total_col_end: usize,
+        next_sequence_index: usize,
+        k_seq_stride: usize,
+        v_seq_stride: usize,
+        q_seq_stride: usize,
+        running_max: &mut [T],
+        running_denom: &mut [T],
+        scores: &mut [T],
+    );
+
+    /// Non-causal (bidirectional) counterpart of [`compute`]: every query row
+    /// may attend to all columns up to `total_col_end`, with no triangular mask.
+    /// 非因果（双向）版本的 [`compute`]：每个 query 行可见 `total_col_end` 之前的
+    /// 全部列，不做三角掩码。
+    #[allow(clippy::too_many_arguments)]
+    fn compute_non_causal(
+        &self,
+        _q_ptr1: *const T,
+        _k_ptr2: *const T,
+        _v_ptr3: *const T,
+        _output_ptr: *mut T,
+        _row_begin: usize,
+        _row_end: usize,
+        _col_begin: usize,
+        _col_end: usize,
+        _total_col_end: usize,
+        _next_sequence_index: usize,
+        _k_seq_stride: usize,
+        _v_seq_stride: usize,
+        _q_seq_stride: usize,
+        _running_max: &mut [T],
+        _running_denom: &mut [T],
+        _scores: &mut [T],
+    ) {
+        // TODO: 非因果（双向）attention：每行可见列 = total_col_end，不做三角掩码；
+        // 实现时须绕开 causal_col_prune / 三角切分 / gqa8 等因果专用路径，改均匀切分 + 全列可见。
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compute_gqa8(
+        &self,
+        _q_group_ptr: *const T,
+        _k_head_ptr: *const T,
+        _v_head_ptr: *const T,
+        _output_group_ptr: *mut T,
+        _row_begin: usize,
+        _row_end: usize,
+        _total_col_end: usize,
+        _sequence_index: usize,
+        _k_seq_stride: usize,
+        _v_seq_stride: usize,
+        _q_seq_stride: usize,
+    ) -> bool {
+        false
+    }
+}
 
 /// Core Attention computation structure with a fused output gate.
 /// Handles Q, K, V pointers and manages the attention computation; when

@@ -5,7 +5,6 @@ use crate::kernel;
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::operators::expert::expert_routing::{ExpertRouting, ExpertTaskMeta};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::ExpertsDownTrait;
 use std::f16;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
@@ -25,6 +24,51 @@ use std::sync::atomic::Ordering;
 // - micro_tile_rows / micro_tile_cols：微内核 tile 大小。
 // - routed_token_begin / token_offset_in_block：compact expert queue 中的位置。
 // - topk_slot：某个 expert route 在 token-major 输出中的 slot。
+
+/// Micro-kernel interface of the sparse experts down projection.
+/// sparse expert down 投影的微内核接口。
+pub trait ExpertsDownTrait<T> {
+    fn compute1(&self, a_tile: *const T, b_panel: *const T, acc: *mut T);
+
+    fn compute1_single(&self, input_row: *const T, b_panel: *const T, acc: *mut T, kc: usize);
+
+    fn compute1_rows(
+        &self,
+        a_tile: *const T,
+        b_panel: *const T,
+        acc: *mut T,
+        kc: usize,
+        rows: usize,
+    );
+
+    fn compute1_gather_rows(
+        &self,
+        input_base: *const T,
+        input_row_stride: usize,
+        idx_buf: *const usize,
+        idx_off: usize,
+        reduction_col_start: usize,
+        b_panel: *const T,
+        acc: *mut T,
+        kc: usize,
+    );
+
+    /// 2-row gather micro-kernel for partial tiles: skip a_tile pack, direct gather+FMA.
+    /// 两行 gather 微内核（partial tile）：跳过 a_tile pack，直接 gather+FMA。
+    fn compute1_gather_2rows(
+        &self,
+        input_base: *const T,
+        input_row_stride: usize,
+        idx_buf: *const usize,
+        idx_off: usize,
+        reduction_col_start: usize,
+        b_panel: *const T,
+        acc: *mut T,
+        kc: usize,
+    );
+
+    fn compute2(&self, out_row: *mut T, acc_row: *const T, factor: *const T, len: usize);
+}
 
 /// Experts Down Projection:
 ///   NONLIN[e, b, Hmid]   ×  W_down[e, Hmid, H]   → OUT[b, slot(b,e), H]

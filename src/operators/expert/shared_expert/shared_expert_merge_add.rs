@@ -10,7 +10,6 @@ use crate::num_traits::Sigmoid;
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::SharedMergeAddTrait;
 
 // Variable naming used in this operator:
 // - active_token_count: number of token rows handled by this run().
@@ -24,6 +23,16 @@ use crate::operators::traits::SharedMergeAddTrait;
 // - num_experts_per_token / topk_slot：每个 token 需要合并的 routed expert 输出数量。
 // - shared_gate：sigmoid(dot(input_hidden[b], shared_gate_weight))，用于缩放 shared 输出。
 // - token_id：当前正在合并的 token 行。
+
+/// Merge routed expert outputs, residual, and the gated shared-expert output.
+/// 合并 routed expert 输出、residual 以及带门控的 shared expert 输出。
+pub trait SharedMergeAddTrait<T> {
+    /// out_row[j] += add_row[j].
+    fn merge_add(&self, out_row: *mut T, add_row: *const T, len: usize);
+
+    /// out_row[j] += add_row[j] * factor.
+    fn merge_add_scaled(&self, out_row: *mut T, add_row: *const T, factor: T, len: usize);
+}
 
 /// Merge routed expert outputs, residual, and the gated shared-expert output.
 /// 合并 routed expert 输出、residual 以及带门控的 shared expert 输出。

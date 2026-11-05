@@ -5,8 +5,8 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 use crate::kernel;
 use crate::num_traits::Sigmoid;
 use crate::operators::assign::assign;
+use crate::operators::elementwise::traits::MapTrait;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::MapTrait;
 
 #[derive(Clone)]
 pub struct SigmoidMap<T> {
@@ -34,12 +34,7 @@ where
         }
     }
 
-    pub fn run(
-        &self,
-        _total_size: usize,
-        thread_num: usize,
-        thread_id: usize,
-    ) {
+    pub fn run(&self, _total_size: usize, thread_num: usize, thread_id: usize) {
         if let Some((begin, end)) = assign(self.length, thread_num, thread_id) {
             let ptr1 = self.ptr1.ptr;
             let output_ptr = self.output_ptr.ptr;

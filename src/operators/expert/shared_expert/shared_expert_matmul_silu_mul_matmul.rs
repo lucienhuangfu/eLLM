@@ -11,7 +11,6 @@ use crate::num_traits::Sigmoid;
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::SharedExpertsSiluTrait;
 
 // Variable naming used in this operator:
 // - token_block_rows / token_block_start: routed-token macro block inside one expert (sparse
@@ -28,6 +27,43 @@ use crate::operators::traits::SharedExpertsSiluTrait;
 // - reduction_cols / reduction_col_start：GEMM 中被规约的 hidden H 维度。
 // - micro_tile_rows / micro_tile_cols：微内核 tile 大小。
 // - gate_acc / up_acc：执行 SiLU(gate) * up 前的每线程累加器。
+
+/// Shared + routed gate/up projection micro-kernel interface.
+/// shared 与 routed 的 gate/up 投影微内核接口。
+pub trait SharedExpertsSiluTrait<T> {
+    fn compute1(
+        &self,
+        a_tile: *const T,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+    );
+
+    fn compute1_single(
+        &self,
+        input_row: *const T,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+    );
+
+    fn compute1_rows(
+        &self,
+        a_tile: *const T,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+        rows: usize,
+    );
+
+    fn compute2(&self, gate_row: *const T, up_row: *const T, c_row: *mut T);
+}
 
 /// Shared expert + routed experts gate/up projection fused with SiLU(gate) * up.
 /// shared expert 与 routed experts 的 gate/up 投影，融合 SiLU(gate) * up。

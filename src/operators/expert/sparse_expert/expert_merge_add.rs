@@ -9,7 +9,6 @@ use std::sync::atomic::Ordering;
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::MoeMergeTrait;
 
 // Variable naming used in this operator:
 // - active_token_count: number of token rows handled by this run().
@@ -21,6 +20,12 @@ use crate::operators::traits::MoeMergeTrait;
 // - hidden_size / hidden_index：每个 token 行中的 hidden 列。
 // - num_experts_per_token / topk_slot：每个 token 需要合并的 expert 输出数量。
 // - token_id：当前正在合并的 token 行。
+
+/// Merge-add micro-kernel interface of the routed expert outputs.
+/// routed expert 输出合并加法的微内核接口。
+pub trait MoeMergeTrait<T> {
+    fn merge_add(&self, out_row: *mut T, add_row: *const T, len: usize);
+}
 
 /// Merge per-token expert outputs and add residual.
 /// 合并每个 token 的 expert 输出，并加上 residual。

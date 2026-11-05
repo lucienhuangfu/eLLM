@@ -5,8 +5,8 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 use crate::kernel;
 use crate::num_traits::Sigmoid;
 use crate::operators::assign::assign;
+use crate::operators::elementwise::traits::ZipMapTrait;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::ZipMapTrait;
 
 #[derive(Clone)]
 pub struct SiluMulZipMap<T> {

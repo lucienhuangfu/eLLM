@@ -3,8 +3,8 @@ use std::f16;
 use crate::kernel;
 use crate::num_traits::Sqrt;
 use crate::operators::assign::assign;
+use crate::operators::elementwise::traits::MapTrait;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::MapTrait;
 
 #[derive(Clone)]
 pub struct RMS<T> {

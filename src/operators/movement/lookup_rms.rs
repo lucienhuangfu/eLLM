@@ -3,7 +3,7 @@ use std::ptr;
 
 use crate::kernel;
 use crate::operators::assign::assign;
-use crate::operators::traits::MapTrait;
+use crate::operators::elementwise::traits::MapTrait;
 
 // use crate::runtime::inference::state::TaskList;
 use crate::num_traits::Sqrt;

@@ -750,7 +750,7 @@ decode 的核心矛盾是：
 
 **改动文件**：
 - [expert_matmul_mul.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/expert/expert_matmul_mul.rs)：`run()` 中 2-row 路径
-- [expert.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/traits/expert.rs)：`ExpertsDownTrait` 新增 `compute1_gather_2rows`
+- [expert_matmul_mul.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/expert/sparse_expert/expert_matmul_mul.rs)：`ExpertsDownTrait` 新增 `compute1_gather_2rows`
 - 9 个单测通过
 
 ### 9.2 MatMulAdd compute_rows 3-row unroll（✅ 保留）
@@ -773,7 +773,7 @@ decode 的核心矛盾是：
 
 **改动文件**：
 - [matmul_rms_complex.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/kernel/x86_64/f16_512/matmul_rms_complex.rs)：新增 `matmul_update_inplace_3x32_first`
-- [linear.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/traits/linear.rs)：`MatMulkqvTrait` 新增 `compute1_init`
+- [matmul3.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/matmul/matmul3.rs)：`MatMulkqvTrait` 新增 `compute1_init`
 - [matmul3.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/matmul/matmul3.rs)：`compute1_init` trait dispatch + `compute_head_tile_from_packed` 零写消除
 - [matmul3.rs](https://github.com/lucienhuangfu/eLLM/blob/main/src/operators/matmul/matmul3.rs)：`compute_head_from_packed` 冗余 zero-init 移除（`compute_head_gemv` 内部用 `_mm512_setzero_ph` 开始）
 

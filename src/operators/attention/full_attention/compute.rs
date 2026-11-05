@@ -3,8 +3,8 @@ use std::ops::{Add, Div, Mul, Sub};
 
 use crate::kernel;
 use crate::num_traits::{Exp, NegInfinity};
-use crate::operators::traits::AttentionTrait;
 
+use super::full_attention::AttentionTrait;
 use super::GatedAttention;
 
 impl<T> AttentionTrait<T> for GatedAttention<T>

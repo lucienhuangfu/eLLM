@@ -8,7 +8,7 @@ Lookup material for the `create_operator` skill. The workflow lives in [SKILL.md
 |--------|-----------|----------------|
 | attention/ | `Attention<T>` | `AttentionTrait` |
 | elementwise/ | `AddZipMap`, `ComplexZipMap` (`ZipMapTrait`); `SigmoidMap` (`MapTrait`); `SiluMulZipMap` (fused SiLU×mul) | map / zip |
-| expert/ | `ExpertMatMulDown`, `ExpertMatMulSilu`, `ExpertMergeAdd`, `ExpertRouting`, `ExpertTopkNorm` | `ExpertsDownTrait`, `ExpertsSiluTrait`, `MoeMergeTrait`, `ExpertsTopkNormTrait` |
+| expert/ | `ExpertMatMulDown`, `ExpertMatMulSilu`, `ExpertMergeAdd`, `ExpertRouting`, `ExpertTopkNorm` | `ExpertsDownTrait`, `ExpertsSiluTrait`, `MoeMergeTrait`, `ExpertTopkNormTrait` |
 | matmul/ | `MatMul`, `MatMul3` (head-by-head K/Q/V), `MatMulAdd` (fused GEMM+residual), `MatMulSigmoid`, `MatMulTopK` | `MatMul*Trait` |
 | normalization/ | `RMSMap` (canonical simple example), `AddRMSZipMap` (fused), `LookupRMS` (embedding+norm) | `MapTrait` |
 | softmax/ | `ExpertsSoftmaxNorm`, `TopKSoftmax` | `SoftmaxTrait`, `TopKSoftmaxTrait` |
@@ -17,15 +17,20 @@ Family choice: per-element math → `elementwise/`, GEMM-family → `matmul/`, n
 
 Helpers (top level): `operator.rs` (dispatch enum), `assign.rs` (`assign()` even thread partition, `assign_kqv_tile()` for merged K/Q/V), `send_sync_ptr.rs` (`ConstPtr`/`MutPtr`/`SharedMut`), `fake_echo.rs` / `lift_vector.rs` (minimal reference operators).
 
-## Traits (`src/operators/traits/`)
+## Compute Traits (colocated with operators)
+
+There is no central `traits/` directory: each trait lives next to the code it serves.
+
+- **Rule A — single implementor**: the trait is defined in the implementing operator's own file, right above the struct. Examples: `ExpertsDownTrait` in `expert/sparse_expert/expert_matmul_mul.rs`, `MatMulTrait` in `matmul/matmul.rs`, `AttentionTrait` in `attention/full_attention/full_attention.rs`, `TopKSoftmaxTrait` in `softmax/topk_softmax.rs`.
+- **Rule B — shared within a family**: the trait lives in the family directory's `traits.rs`. Examples: `elementwise/traits.rs` (`ZipMapTrait`, `MapTrait`), `softmax/traits.rs` (`SoftmaxTrait`).
 
 ```rust
-// map.rs — the two simplest primitives
+// elementwise/traits.rs — the two simplest primitives
 pub trait MapTrait<T>    { fn compute(&self, input_ptr: *const T, output_ptr: *mut T, length: usize); }
 pub trait ZipMapTrait<T> { fn compute(&self, input_ptr1: *const T, input_ptr_2: *const T, output_ptr: *mut T); }
 ```
 
-Other trait files: `linear.rs` (`AttentionTrait`, `MatMulTrait`, `MatMulAddTrait`, `MatMulSigmoidTrait`, `MatMulkqvTrait`), `expert.rs` (`ExpertsDownTrait`, `ExpertsSiluTrait`, `MoeMergeTrait`), `softmax.rs` (`MatMulTopKTrait`, `TopKSoftmaxTrait`, `SoftmaxTrait`, `ExpertsTopkNormTrait`). New primitive → add trait there and re-export in `mod.rs`.
+New primitive → if only one operator implements it, declare the trait in that operator's file (Rule A); if it is shared, add it to the family's `traits.rs` and declare `pub mod traits;` in the family `mod.rs` (Rule B; families declared inline in `operators/mod.rs` like `elementwise` get the `pub mod traits;` line there).
 
 ## `run` Signature Families
 

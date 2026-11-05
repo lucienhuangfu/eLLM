@@ -9,7 +9,6 @@ use crate::kernel;
 use crate::kernel::common::matmul_params::MatMulParams;
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::MatMulTrait;
 
 // Variable naming used in this operator:
 // - input_rows / input_row_start: rows from A and C.
@@ -23,6 +22,22 @@ use crate::operators::traits::MatMulTrait;
 // - reduction_cols / reduction_col_start：GEMM 中被规约的 K 维度。
 // - input_block_rows / output_block_cols / reduction_block_cols：宏块大小。
 // - micro_tile_rows / micro_tile_cols：微内核 tile 大小。
+
+/// Plain GEMM micro-kernel interface.
+/// 纯乘法微内核接口。
+pub trait MatMulTrait<T> {
+    fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, output_ptr: *mut T);
+
+    fn compute2(
+        &self,
+        _input_ptr1: *const T,
+        _input_ptr2: *const T,
+        _output_ptr: *mut T,
+        _length: usize,
+    ) {
+        unreachable!("MatMulTrait::compute2 is not implemented for this operator")
+    }
+}
 
 #[derive(Clone)]
 pub struct MatMul<T> {
@@ -176,7 +191,11 @@ where
         thread_id: usize,
     ) {
         unsafe {
-            let active_input_rows = if self.decode_only_flag { lift_size } else { _total_size };
+            let active_input_rows = if self.decode_only_flag {
+                lift_size
+            } else {
+                _total_size
+            };
 
             let output_cols = self.n_max;
             let reduction_cols = self.k_max;

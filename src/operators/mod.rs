@@ -2,6 +2,7 @@ pub mod assign;
 pub mod attention;
 pub mod fake_echo;
 pub mod operator;
+pub mod rms;
 pub mod send_sync_ptr;
 pub use operator::Operator;
 
@@ -10,6 +11,7 @@ pub mod elementwise {
     pub mod complex_zip;
     pub mod sigmoid_mul_zip;
     pub mod silu_mul_zip;
+    pub mod traits;
 }
 
 pub mod expert {
@@ -73,19 +75,15 @@ pub mod matmul {
 pub mod movement {
     pub mod head_lookup;
     pub mod lift_vector;
+    pub mod lookup_rms;
 
     pub use head_lookup::HeadLookup;
     pub use lift_vector::LiftVector;
+    pub use lookup_rms::LookupRMS;
 }
 
 pub mod testing {
     pub use super::fake_echo::FakeEcho;
-}
-
-pub mod normalization {
-    pub mod add_rms_zip;
-    pub mod lookup_rms;
-    pub mod rms;
 }
 
 pub mod routing {
@@ -104,27 +102,7 @@ pub mod transform {
     pub use super::elementwise::complex_zip::ComplexZipMap;
     pub use super::elementwise::sigmoid_mul_zip::SigmoidMulZipMap;
     pub use super::elementwise::silu_mul_zip::SiluMulZipMap;
-    pub use super::normalization::add_rms_zip::AddRMSZipMap;
-    pub use super::normalization::lookup_rms::LookupRMS;
-    pub use super::normalization::rms::RMS;
+    pub use super::movement::lookup_rms::LookupRMS;
+    pub use super::rms::RMS;
     pub use super::softmax::SigmoidMap;
-}
-pub mod traits {
-    pub mod expert;
-    pub mod linear;
-    pub mod linear_attention;
-    pub mod map;
-    pub mod softmax;
-
-    pub use expert::{
-        ExpertsDownTrait, ExpertsSiluTrait, MoeMergeTrait, SharedExpertsDownTrait,
-        SharedExpertsSiluTrait, SharedMergeAddTrait,
-    };
-    pub use linear::{
-        AttentionTrait, MatMulAddTrait, MatMulProjTrait, MatMulSigmoidTrait, MatMulTrait,
-        MatMulkqvTrait,
-    };
-    pub use linear_attention::FusedGatedDeltaRuleTrait;
-    pub use map::{MapTrait, ZipMapTrait};
-    pub use softmax::{ExpertsTopkNormTrait, MatMulTopKTrait, SoftmaxTrait, TopKSoftmaxTrait};
 }

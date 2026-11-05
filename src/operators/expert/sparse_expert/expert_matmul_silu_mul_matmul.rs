@@ -10,7 +10,6 @@ use crate::kernel::common::matmul_params::MatMulParams;
 
 use crate::operators::expert::expert_routing::{ExpertRouting, ExpertTaskMeta};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::ExpertsSiluTrait;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512fp16"))]
 use std::arch::x86_64::{
     _mm512_fmadd_ph, _mm512_loadu_ph, _mm512_mul_ph, _mm512_set1_ph, _mm512_storeu_ph,
@@ -30,6 +29,57 @@ use std::arch::x86_64::{
 // - micro_tile_rows / micro_tile_cols：微内核 tile 大小。
 // - gate_acc / up_acc：执行 SiLU(gate) * up 前的每线程累加器。
 // - token_offset_in_block：compact routed-token block 内的位置。
+
+/// Micro-kernel interface of the sparse experts gate/up projection fused with SiLU.
+/// sparse expert gate/up 投影（融合 SiLU）的微内核接口。
+pub trait ExpertsSiluTrait<T> {
+    fn compute1(
+        &self,
+        a_tile: *const T,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+    );
+
+    fn compute1_single(
+        &self,
+        input_row: *const T,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+    );
+
+    fn compute1_rows(
+        &self,
+        a_tile: *const T,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+        rows: usize,
+    );
+
+    fn compute1_gather_rows(
+        &self,
+        input_base: *const T,
+        input_row_stride: usize,
+        idx_buf: *const usize,
+        idx_off: usize,
+        reduction_col_start: usize,
+        gate_panel: *const T,
+        up_panel: *const T,
+        gate_acc: *mut T,
+        up_acc: *mut T,
+        kc: usize,
+    );
+
+    fn compute2(&self, gate_row: *const T, up_row: *const T, c_row: *mut T);
+}
 
 #[derive(Clone)]
 pub struct ExpertMatMulSilu<T> {

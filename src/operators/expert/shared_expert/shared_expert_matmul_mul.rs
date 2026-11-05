@@ -5,7 +5,6 @@ use crate::kernel::common::matmul_params::MatMulParams;
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::{task_assign, ExpertRouting, ExpertTaskMeta};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::SharedExpertsDownTrait;
 use std::marker::PhantomData;
 use std::ops::{Add, Mul};
 use std::sync::atomic::Ordering;
@@ -26,6 +25,29 @@ use std::sync::atomic::Ordering;
 // - micro_tile_rows / micro_tile_cols：微内核 tile 大小。
 // - routed_token_begin / token_offset_in_block：compact expert queue 中的位置。
 // - topk_slot：某个 expert route 在 token-major 输出中的 slot。
+
+/// Shared + routed down projection micro-kernel interface.
+/// shared 与 routed 的 down 投影微内核接口。
+///
+/// Signatures mirror
+/// [`ExpertsDownTrait`](crate::operators::expert::sparse_expert::expert_matmul_mul::ExpertsDownTrait).
+/// 签名与 sparse 侧的 `ExpertsDownTrait` 一致。
+pub trait SharedExpertsDownTrait<T> {
+    fn compute1(&self, a_tile: *const T, b_panel: *const T, acc: *mut T);
+
+    fn compute1_single(&self, input_row: *const T, b_panel: *const T, acc: *mut T, kc: usize);
+
+    fn compute1_rows(
+        &self,
+        a_tile: *const T,
+        b_panel: *const T,
+        acc: *mut T,
+        kc: usize,
+        rows: usize,
+    );
+
+    fn compute2(&self, out_row: *mut T, acc_row: *const T, factor: *const T, len: usize);
+}
 
 /// Shared expert + routed experts down projection.
 /// shared expert 与 routed experts 的 down 投影。

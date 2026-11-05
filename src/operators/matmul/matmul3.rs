@@ -10,7 +10,6 @@ use crate::num_traits::{FromNumber, Sqrt};
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
 
 use crate::operators::assign::KqvPath;
-use crate::operators::traits::MatMulkqvTrait;
 use crate::runtime::SequenceSlice;
 
 // Generic scalar helpers used by fallback paths.
@@ -76,6 +75,57 @@ where
 ///
 /// Weights must already be NT layout; new() packs panels but does not transpose.
 /// 权重必须已经是 NT 布局；new() 只 pack panel，不做转置。
+
+/// Head-by-head K/Q/V projection micro-kernel interface.
+/// 逐头 K/Q/V 投影的微内核接口。
+pub trait MatMulkqvTrait<T> {
+    fn compute1(
+        &self,
+        a: *const T,
+        b_panel: *const T,
+        c: *mut T,
+        lda: usize,
+        ldc: usize,
+        kc: usize,
+    );
+
+    /// compute1_init: C = A × B_panel（first K-block, no prior C load）.
+    /// Eliminates the external zero-init pass for the 3-row tile path.
+    fn compute1_init(
+        &self,
+        a: *const T,
+        b_panel: *const T,
+        c: *mut T,
+        lda: usize,
+        ldc: usize,
+        kc: usize,
+    );
+
+    fn compute2(&self, c_head: *mut T, rope_head: *const T, ldc: usize);
+
+    fn compute_norm_rope(
+        &self,
+        c_head: *mut T,
+        norm_weight: *const T,
+        rope_head: *const T,
+        length: usize,
+        eps: T,
+    );
+
+    fn compute_head_gemv(
+        &self,
+        a_row: *const T,
+        dst_head: *mut T,
+        packed_b: *const T,
+        head_output_panel: usize,
+        output_panel_count: usize,
+        reduction_cols: usize,
+        reduction_block_cols: usize,
+        micro_tile_cols: usize,
+        head_dim: usize,
+    );
+}
+
 #[derive(Clone)]
 pub struct MatMul3<T> {
     // Input and Q/K/V output states.

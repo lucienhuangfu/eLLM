@@ -7,7 +7,18 @@ use crate::mem_mgr::allocator::AlignedBox;
 use crate::operators::assign::assign;
 use crate::operators::expert::expert_routing::ExpertRouting;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::softmax::ExpertsTopkNormTrait;
+/// Top-k + normalize micro-kernel interface of the expert router.
+/// expert 路由 top-k + 归一化的微内核接口。
+pub trait ExpertTopkNormTrait<T> {
+    fn compute(
+        &self,
+        ptr1: *const T,
+        topk_values_ptr: *mut T,
+        topk_indices_ptr: *mut usize,
+        input_length: usize,
+        output_length: usize,
+    );
+}
 
 #[derive(Clone)]
 pub struct ExpertTopkNorm<T> {
@@ -100,7 +111,7 @@ where
     }
 }
 
-impl<T> ExpertsTopkNormTrait<T> for ExpertTopkNorm<T>
+impl<T> ExpertTopkNormTrait<T> for ExpertTopkNorm<T>
 where
     T: Copy + PartialOrd + PartialEq + Default + AddAssign + Div<Output = T>,
 {
@@ -122,7 +133,7 @@ where
     }
 }
 
-impl ExpertsTopkNormTrait<f16> for ExpertTopkNorm<f16> {
+impl ExpertTopkNormTrait<f16> for ExpertTopkNorm<f16> {
     fn compute(
         &self,
         ptr1: *const f16,
@@ -141,7 +152,7 @@ impl ExpertsTopkNormTrait<f16> for ExpertTopkNorm<f16> {
     }
 }
 
-impl ExpertsTopkNormTrait<f32> for ExpertTopkNorm<f32> {
+impl ExpertTopkNormTrait<f32> for ExpertTopkNorm<f32> {
     fn compute(
         &self,
         ptr1: *const f32,

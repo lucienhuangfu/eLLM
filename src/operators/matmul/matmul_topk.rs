@@ -12,7 +12,6 @@ use crate::kernel::common::matmul_params::MatMulParams;
 use crate::num_traits::NegInfinity;
 use crate::operators::assign::assign;
 use crate::operators::send_sync_ptr::{ConstPtr, MutPtr};
-use crate::operators::traits::MatMulTopKTrait;
 
 // Variable naming used in this operator:
 // - input_rows / input_row_start: rows from the input matrix A and batch rows.
@@ -28,6 +27,21 @@ use crate::operators::traits::MatMulTopKTrait;
 // - input_block_rows / output_block_cols / reduction_block_cols：宏块大小。
 // - micro_tile_rows / micro_tile_cols：微内核 tile 大小。
 // - batch_row：真实的非 padding 输入行，对应一个 top-k heap。
+
+/// GEMM + top-k selection micro-kernel interface.
+/// 乘法混合 top-k 选择的微内核接口。
+pub trait MatMulTopKTrait<T> {
+    fn compute(&self, input_ptr1: *const T, input_ptr2: *const T, value_ptr: *mut T);
+
+    fn compute_rows(
+        &self,
+        input_row: *const T,
+        weight_panel: *const T,
+        output_row: *mut T,
+        kc: usize,
+        rows: usize,
+    );
+}
 
 #[derive(Clone)]
 pub struct MatMulTopK<T> {

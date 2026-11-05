@@ -6,11 +6,26 @@ use crate::kernel;
 use crate::num_traits::Exp;
 use crate::num_traits::FromNumber;
 use crate::operators::assign::assign;
-use crate::operators::traits::TopKSoftmaxTrait;
 use crate::runtime::session::Phase;
 use crate::runtime::session::SlotState;
 use crate::runtime::SequenceSlice;
 use rand::prelude::*;
+
+/// Top-k sampling + softmax micro-kernel interface.
+/// top-k 采样 + softmax 的微内核接口。
+pub trait TopKSoftmaxTrait<T> {
+    fn compute(
+        &self,
+        input_indices_ptr: *const usize,
+        input_values_ptr: *const T,
+        temperature: T,
+        output_indices_ptr: *mut usize,
+        output_values_ptr: *mut T,
+        thread_num: usize,
+        input_topk_size: usize,
+        topk_size: usize,
+    );
+}
 
 #[derive(Clone)]
 pub struct TopKSoftmax<T> {
