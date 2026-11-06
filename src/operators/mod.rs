@@ -59,7 +59,6 @@ pub mod linear {
     pub use super::matmul::matmul::MatMul;
     pub use super::matmul::matmul3::MatMul3;
     pub use super::matmul::matmul_add::MatMulAdd;
-    pub use super::matmul::matmul_proj::MatMulProj;
     pub use super::matmul::matmul_sigmoid::MatMulSigmoid;
 }
 
@@ -67,7 +66,6 @@ pub mod matmul {
     pub mod matmul;
     pub mod matmul3;
     pub mod matmul_add;
-    pub mod matmul_proj;
     pub mod matmul_sigmoid;
     pub mod matmul_topk;
 }

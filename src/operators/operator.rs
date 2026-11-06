@@ -20,7 +20,6 @@ use crate::operators::expert::{
     ExpertMatMulDown, ExpertMatMulSilu, ExpertMergeAdd, SharedExpertMatMulDown,
     SharedExpertMatMulSilu, SharedExpertMergeAdd,
 };
-use crate::operators::linear::MatMulProj;
 use crate::operators::movement::HeadLookup;
 use crate::operators::movement::LiftVector;
 use crate::operators::routing::MatMulTopK;
@@ -60,7 +59,6 @@ pub enum Operator<T>
     MatMul(MatMul<T>),
     MatMul3(MatMul3<T>),
     MatMulAdd(MatMulAdd<T>),
-    MatMulProj(MatMulProj<T>),
     // MatMulSiluMulMatMul(MatMulSilu<T>),
     MatMulTopK(MatMulTopK<T>),
     RMS(RMS<T>),
@@ -249,9 +247,6 @@ where
                     thread_id,
                 );
             }
-            Self::MatMulProj(operator) => {
-                operator.run(total_size, computing_slices, cpu_num, thread_id);
-            }
             /*
             Self::MatMulSiluMulMatMul(operator) => {
                 operator.run(
@@ -337,7 +332,6 @@ where
             Self::MatMul(_) => "MatMul",
             Self::MatMul3(_) => "MatMul3",
             Self::MatMulAdd(_) => "MatMulAdd",
-            Self::MatMulProj(_) => "MatMulProj",
             Self::MatMulTopK(_) => "MatMulTopK",
             Self::RMS(_) => "RMS",
             Self::SigmoidMap(_) => "SigmoidMap",

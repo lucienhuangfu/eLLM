@@ -44,7 +44,7 @@ Modules compose the graph exclusively through `Tensor` builder methods; each cal
 | `tensor/ops.rs` | `add`, `silu_mul`, `sigmoid_mul`, `add_rms`, `sigmoid`, `rms`, `lookup_rms` (assoc.), `view`, `lift_vector` |
 | `tensor/matmul.rs` | `matmul`, `matmul_add`, `matmul3`, `attention`, `matmul_local_topk` |
 | `tensor/moe.rs` | `experts_matmul_silu_mul_matmul`, `experts_matmul_mul`, `experts_merge_add`, `softmax_norm`, `sigmoid_gate`, `topk_norm`, `topk_softmax` |
-| `tensor/linear_attention.rs` | `matmul_proj`, `causal_conv_silu`, `fused_gated_delta_rule` |
+| `tensor/linear_attention.rs` | `fused_gated_delta_rule` |
 
 Common arguments: `MatMulParams` (tiling, from `crate::kernel::common::matmul_params`), `decode_only_flag: bool`, and a `tensor_name: String` built from `self.scope_name`. If the needed op does not exist, create it with the `create_operator` skill first, then wire its Tensor API method.
 

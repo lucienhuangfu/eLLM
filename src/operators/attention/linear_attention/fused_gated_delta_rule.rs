@@ -279,8 +279,8 @@ pub struct FusedGatedDeltaRule<T> {
     // hidden 输入与注意力输出缓存的形状。
     pub sequence_length: usize,
     pub batch_size: usize,
-    pub m_max: usize, // hidden row capacity (token_index bound), matching MatMulProj
-    pub k_max: usize, // hidden row width (reduction cols), matching MatMulProj
+    pub m_max: usize, // hidden row capacity (token_index bound)
+    pub k_max: usize, // hidden row width (reduction cols)
 
     pub thread_num: usize, // scratch lane count fixed at construction
     pub scratch: FusedScratch<T>,
