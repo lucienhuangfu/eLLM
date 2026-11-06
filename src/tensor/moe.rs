@@ -6,7 +6,9 @@ use crate::mem_mgr::mem_pool::GlobalMemPool;
 use crate::num_traits::NegInfinity;
 use crate::num_traits::{Exp, Sigmoid, Sqrt};
 use crate::operators::expert::expert_routing::{compact_moe_enabled, ExpertRouting};
-use crate::operators::expert::{ExpertMatMulDown, ExpertMatMulSilu, ExpertMergeAdd};
+use crate::operators::expert::{
+    ExpertMatMulDown, ExpertMatMulSilu, ExpertMergeAdd, SharedExpertMLP, SharedExpertMergeAdd,
+};
 use crate::operators::operator::Operator;
 use crate::operators::routing::{ExpertSoftmaxNorm, ExpertTopkNorm, MatMulSigmoid, TopKSoftmax};
 
@@ -145,6 +147,137 @@ where
             pool.remove(&gate_weights.tensor_name);
             pool.remove(&up_weights.tensor_name);
         });
+
+        Self::enqueue(operator);
+        output_tensor
+    }
+}
+
+// Unified shared+routed MoE-FFN path: a single fused MLP operator (gate/up + SiLU + down)
+// followed by the shared merge-add. `shared_intermediate_size == 0` degenerates to routed-only.
+// 统一 shared+routed MoE-FFN 路径：单个融合 MLP 算子（gate/up + SiLU + down）后接 shared
+// merge-add。`shared_intermediate_size == 0` 退化为 routed-only。
+impl<T> Tensor<T>
+where
+    T: Copy
+        + PartialOrd
+        + Default
+        + Sub<Output = T>
+        + Neg<Output = T>
+        + Exp
+        + NegInfinity
+        + Sigmoid
+        + Sqrt
+        + AddAssign
+        + GlobalMemPool
+        + GlobalOperatorQueue,
+{
+    /// Fused gate/up + SiLU + down for shared + routed experts in one operator.
+    /// Returns routed `[token, K, H]` and shared `[token, H]`; the intermediate nonlin
+    /// never materializes (on-chip scratch only). When `shared_inter == 0` the shared
+    /// weights are `None` (null pointers, never read) and Phase A is skipped → routed-only.
+    #[allow(clippy::too_many_arguments)]
+    pub fn experts_mlp_fused(
+        &self,
+        gate_weights: &Tensor<T>,                // [E, I, H]
+        up_weights: &Tensor<T>,                  // [E, I, H]
+        down_weights: &Tensor<T>,                // [E, H, I]
+        shared_gate_weights: Option<&Tensor<T>>, // [Is, H]
+        shared_up_weights: Option<&Tensor<T>>,   // [Is, H]
+        shared_down_weights: Option<&Tensor<T>>, // [H, Is]
+        routing: ExpertRouting<T>,
+        num_experts_per_tok: usize,
+        shared_inter: usize,
+        decode_only_flag: bool,
+        routed_scope_name: String,
+        shared_scope_name: String,
+    ) -> (Self, Self)
+    where
+        T: Send + 'static,
+    {
+        let token_count = self.row_count();
+        let hidden_size = self.last_dim();
+        let inter = gate_weights.shape[1];
+        let num_experts = gate_weights.shape[0];
+
+        let routed_shape = vec![token_count, num_experts_per_tok, hidden_size];
+        let shared_shape = vec![token_count, hidden_size];
+        let routed_tensor = Self::output_tensor(routed_shape, &routed_scope_name);
+        let shared_tensor = Self::output_tensor(shared_shape, &shared_scope_name);
+
+        let null_ptr: *const T = std::ptr::null();
+        let operator = Operator::SharedExpertMLP(unsafe {
+            SharedExpertMLP::new(
+                self.data,
+                gate_weights.data,
+                up_weights.data,
+                down_weights.data,
+                shared_gate_weights
+                    .map(|t| t.data as *const T)
+                    .unwrap_or(null_ptr),
+                shared_up_weights
+                    .map(|t| t.data as *const T)
+                    .unwrap_or(null_ptr),
+                shared_down_weights
+                    .map(|t| t.data as *const T)
+                    .unwrap_or(null_ptr),
+                routing,
+                routed_tensor.data,
+                shared_tensor.data,
+                token_count,
+                inter,
+                shared_inter,
+                hidden_size,
+                num_experts,
+                num_experts_per_tok,
+                decode_only_flag,
+            )
+        });
+
+        // Weights are read in place at run time (no packing), so keep them resident.
+        // 权重在 run 时就地读取（不打包），因此保持常驻，不 pool.remove。
+        Self::enqueue(operator);
+        (routed_tensor, shared_tensor)
+    }
+
+    /// Merge residual + routed slots + (optionally) the gated shared-expert output.
+    /// `shared_out`/`shared_gate_weight` are `None` for a routed-only model, in which case
+    /// null pointers are passed and the operator skips the gated shared term.
+    /// 合并 residual + routed slot +（可选）带门控的 shared expert 输出。routed-only 模型
+    /// 传 `None`，此时用空指针，算子跳过带门控的 shared 项。
+    #[allow(clippy::too_many_arguments)]
+    pub fn experts_merge_add_fused(
+        &self,
+        residual: &Tensor<T>,                   // [token, H]
+        shared_out: Option<&Tensor<T>>,         // [token, H]
+        shared_gate_weight: Option<&Tensor<T>>, // [H]
+        input_hidden: &Tensor<T>,               // [token, H]
+        routing: ExpertRouting<T>,
+        decode_only_flag: bool,
+        scope_name: String,
+    ) -> Self {
+        let output_shape = residual.shape.clone();
+        let output_tensor = Self::output_tensor(output_shape, &scope_name);
+
+        let null_ptr: *const T = std::ptr::null();
+        let operator = Operator::SharedExpertMergeAdd(SharedExpertMergeAdd::new(
+            self.data,
+            residual.data,
+            shared_out.map(|t| t.data as *const T).unwrap_or(null_ptr),
+            shared_gate_weight
+                .map(|t| t.data as *const T)
+                .unwrap_or(null_ptr),
+            input_hidden.data,
+            routing,
+            output_tensor.data,
+            1,
+            self.row_count(),
+            routing.num_experts,
+            self.shape[1],
+            self.last_dim(),
+            false,
+            decode_only_flag,
+        ));
 
         Self::enqueue(operator);
         output_tensor

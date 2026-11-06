@@ -74,10 +74,7 @@ pub struct SharedExpertMergeAdd<T> {
     _marker: PhantomData<T>,
 }
 
-impl<T> SharedExpertMergeAdd<T>
-where
-    T: Copy + Add<Output = T> + Mul<Output = T> + Default + Sigmoid,
-{
+impl<T> SharedExpertMergeAdd<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         input_ptr: *const T,              // Routed expert outputs: [num_tokens,K,H].
@@ -119,7 +116,12 @@ where
             _marker: PhantomData,
         }
     }
+}
 
+impl<T> SharedExpertMergeAdd<T>
+where
+    T: Copy + Add<Output = T> + Mul<Output = T> + Default + Sigmoid,
+{
     pub fn run(
         &self,
         _prefill_size: usize,
@@ -182,21 +184,31 @@ where
                         self.merge_add(output_row, expert_output_row, hidden_size);
                     }
 
-                    // Shared-expert gate: sigmoid(dot(x[b], w_sgate)).
-                    // shared expert 门控：sigmoid(dot(x[b], w_sgate))。
-                    let input_hidden_row = input_hidden_base.add(token_id * hidden_size);
-                    let mut gate_acc = T::default();
-                    for hidden_index in 0..hidden_size {
-                        gate_acc = gate_acc
-                            + *input_hidden_row.add(hidden_index)
-                                * *shared_gate_weight.add(hidden_index);
-                    }
-                    let shared_gate = gate_acc.sigmoid();
+                    // Shared-expert gate: sigmoid(dot(x[b], w_sgate)). Null gate weight means a
+                    // routed-only model (shared weights never allocated), so the gated shared term
+                    // is skipped entirely and out = residual + Σ routed slots.
+                    // shared expert 门控：sigmoid(dot(x[b], w_sgate))。门控权重为空表示 routed-only
+                    // 模型（未分配 shared 权重），此时整段跳过带门控的 shared 项。
+                    if !shared_gate_weight.is_null() {
+                        let input_hidden_row = input_hidden_base.add(token_id * hidden_size);
+                        let mut gate_acc = T::default();
+                        for hidden_index in 0..hidden_size {
+                            gate_acc = gate_acc
+                                + *input_hidden_row.add(hidden_index)
+                                    * *shared_gate_weight.add(hidden_index);
+                        }
+                        let shared_gate = gate_acc.sigmoid();
 
-                    // Add the gated shared-expert output.
-                    // 累加带门控的 shared expert 输出。
-                    let shared_down_row = shared_down_base.add(token_id * hidden_size);
-                    self.merge_add_scaled(output_row, shared_down_row, shared_gate, hidden_size);
+                        // Add the gated shared-expert output.
+                        // 累加带门控的 shared expert 输出。
+                        let shared_down_row = shared_down_base.add(token_id * hidden_size);
+                        self.merge_add_scaled(
+                            output_row,
+                            shared_down_row,
+                            shared_gate,
+                            hidden_size,
+                        );
+                    }
                 }
             }
         }

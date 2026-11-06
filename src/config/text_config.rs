@@ -28,8 +28,9 @@
 //! - `mamba_ssm_dtype`（Qwen3.8）：GatedDeltaNet 内部 dtype，本引擎按 `T` 决定。不需要。
 //! - `attention_dropout` / `initializer_range` / `num_logits_to_keep`：训练期参数。不需要。
 //! - `qk_norm_type`（MiniMax，值 `"per_layer"`）：**待接** —— 现层代码只做 per-head。
-//! - `shared_intermediate_size`（MiniMax，值 `0`）：**待接** —— 共享专家未实现；`0`
-//!   恰好表示无共享专家，故当前不消费它是安全的。
+//! - `shared_intermediate_size` / `shared_expert_intermediate_size`：共享专家 intermediate
+//!   大小，已接入 `TextConfig::shared_intermediate_size`；`0` 表示无共享专家，
+//!   融合 MLP 算子的 Phase A 自动跳过（见 `operators/expert/shared_expert`）。
 //! - `sliding_window` / `use_sliding_window`：滑窗注意力已从本引擎移除，仅保留
 //!   `sliding_window` 字段以接受显式 `null`。
 //! - `image_token_id` / `video_token_id` / `vision_start_token_id` / `vision_end_token_id`
@@ -118,6 +119,12 @@ pub struct TextConfig {
     /// router 打分函数原始字符串，`validate()` 归一化并限定词表。
     pub scoring_func: String,
     pub use_routing_bias: bool,
+    /// shared expert 的 intermediate 大小。`0` = 无共享专家（routed-only）。
+    /// MiniMax 拼 `shared_intermediate_size`，Qwen3-Next / DeepSeek 拼
+    /// `shared_expert_intermediate_size`（收为别名）。融合 MLP 算子的 Phase A 在
+    /// `shared_intermediate_size == 0` 时自动跳过，形态判断留在层构造点。
+    #[serde(alias = "shared_expert_intermediate_size")]
+    pub shared_intermediate_size: usize,
 
     // ── 只能留 Option：真实 ckpt 里会显式写 null ──
     /// RoPE 参数表。HF 5.x 起该对象名为 `rope_parameters`（旧名 `rope_scaling`，

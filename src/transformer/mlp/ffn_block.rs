@@ -42,15 +42,7 @@ where
             && config.num_experts > 0
             && (layer_idx + 1) % config.decoder_sparse_step == 0;
         if sparse {
-            FfnBlock::SparseMoe(SparseMoe::new(
-                config.hidden_size,
-                config.moe_intermediate_size,
-                config.num_experts,
-                config.num_experts_per_tok,
-                &config.scoring_func,
-                config.use_routing_bias,
-                ffn_scope,
-            ))
+            FfnBlock::SparseMoe(SparseMoe::new(config, ffn_scope))
         } else {
             FfnBlock::Dense(DenseMlp::new(
                 config.hidden_size,

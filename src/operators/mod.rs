@@ -26,13 +26,11 @@ pub mod expert {
     }
 
     pub mod shared_expert {
-        pub mod shared_expert_matmul_mul;
-        pub mod shared_expert_matmul_silu_mul_matmul;
         pub mod shared_expert_merge_add;
+        pub mod shared_expert_mlp;
 
-        pub use shared_expert_matmul_mul::SharedExpertMatMulDown;
-        pub use shared_expert_matmul_silu_mul_matmul::SharedExpertMatMulSilu;
         pub use shared_expert_merge_add::SharedExpertMergeAdd;
+        pub use shared_expert_mlp::SharedExpertMLP;
     }
 
     pub mod expert_routing;
@@ -40,8 +38,7 @@ pub mod expert {
     pub mod expert_topk_norm;
 
     pub use expert_softmax_norm::ExpertSoftmaxNorm;
-    pub use shared_expert::SharedExpertMatMulDown;
-    pub use shared_expert::SharedExpertMatMulSilu;
+    pub use shared_expert::SharedExpertMLP;
     pub use shared_expert::SharedExpertMergeAdd;
     pub use sparse_expert::ExpertMatMulDown;
     pub use sparse_expert::ExpertMatMulSilu;
