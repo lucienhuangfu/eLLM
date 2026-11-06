@@ -191,10 +191,7 @@ where
         decode_only_flag: bool,
         routed_scope_name: String,
         shared_scope_name: String,
-    ) -> (Self, Self)
-    where
-        T: Send + 'static,
-    {
+    ) -> (Self, Self) {
         let token_count = self.row_count();
         let hidden_size = self.last_dim();
         let inter = gate_weights.shape[1];

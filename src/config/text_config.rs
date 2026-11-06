@@ -275,7 +275,7 @@ impl TextConfig {
         );
         for t in &self.layer_types {
             assert!(
-                t.contains("linear") || t.contains("full"),
+                t == "linear_attention" || t == "full_attention",
                 "未知 layer_type: {t}"
             );
         }

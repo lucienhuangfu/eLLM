@@ -209,7 +209,7 @@ where
         gate_state_ptr: *mut T,
     ) -> Self
     where
-        T: Send + 'static,
+        T: 'static,
     {
         let reduction_block_cols = column_step_macro.max(1);
         let micro_tile_cols = b_row_step_micro.max(1);

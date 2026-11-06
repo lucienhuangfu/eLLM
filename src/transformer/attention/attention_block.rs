@@ -60,7 +60,7 @@ where
         decode_only_flag: bool,
     ) -> Tensor<T>
     where
-        T: Send + 'static,
+        T: 'static,
     {
         // enum 分支各自完成核心注意力计算，并带出后处理所需的差异参数
         // （输出权重、feature 维、MatMulParams、张量名）。

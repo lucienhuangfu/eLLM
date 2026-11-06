@@ -12,9 +12,9 @@ use super::full_attention::FullAttention;
 use super::linear_attention::GatedDeltaAttention;
 use crate::transformer::tensor_name::gated_delta_attention_tensor_names;
 
-// Attention 运行时枚举：按 layer_types 原始字符串直接分派——含 "linear" →
-// GatedDeltaNet，其余（full_attention / 缺省 / 未识别）兜底全因果注意力
-// （滑窗已移除）。对应 Qwen3_5DecoderLayer 的 full_attention(self_attn) /
+// Attention 运行时枚举：按 layer_types 原始字符串与 config 词表精确匹配分派——
+// `linear_attention` → GatedDeltaNet，`full_attention` → 全因果注意力
+// （滑窗已移除），其余 → panic。对应 Qwen3_5DecoderLayer 的 full_attention(self_attn) /
 // linear_attention(linear_attn) 双分支。
 // out_proj + residual 后处理骨架见 attention_block.rs 的 AttentionBlock。
 pub(crate) enum AttentionEnum<T>
@@ -48,15 +48,11 @@ where
         batch_size: usize,
         layer_idx: usize,
     ) -> Self {
-        // 单点字符串分派：layer_types[layer_idx] 含 "linear" → GatedDeltaNet；
-        // 其余（full_attention / 未识别）→ 全因果注意力。`validate()` 已保证清单
-        // 长度等于层数且词表合法，故 .get() 越界实际不可达，兜底分支仅为安全。
-        let is_linear = config
-            .layer_types
-            .get(layer_idx)
-            .is_some_and(|t| t.contains("linear"));
-        if is_linear {
-            AttentionEnum::GatedDelta(GatedDeltaAttention::<T>::new(
+        // 与 config 词表精确匹配的分派：layer_types[layer_idx] == "linear_attention" →
+        // GatedDeltaNet；== "full_attention" → 全因果注意力；其余 → panic。
+        // `validate()` 已保证清单长度等于层数，故 .get() 越界实际不可达，兜底仅为安全。
+        match config.layer_type(layer_idx) {
+            Some("linear_attention") => AttentionEnum::GatedDelta(GatedDeltaAttention::<T>::new(
                 config.hidden_size,
                 config.linear_num_key_heads,
                 config.linear_num_value_heads,
@@ -66,29 +62,31 @@ where
                 sequence_length,
                 batch_size,
                 gated_delta_attention_tensor_names(layer_idx),
-            ))
-        } else {
-            // 现有 family 全为因果注意力，is_causal 传 true。
-            AttentionEnum::Full(FullAttention::<T>::new(
-                config,
-                sequence_length,
-                batch_size,
-                true,
-                attn_scope,
-            ))
+            )),
+            Some("full_attention") | None => {
+                // 现有 family 全为因果注意力，is_causal 传 true。
+                AttentionEnum::Full(FullAttention::<T>::new(
+                    config,
+                    sequence_length,
+                    batch_size,
+                    true,
+                    attn_scope,
+                ))
+            }
+            Some(other) => panic!("未知 layer_type: {other}"),
         }
     }
 
     // 执行核心注意力计算，并带出后处理（out_proj + residual）所需的差异参数
     // （输出权重、feature 维、MatMulParams、张量名）。
-    pub(crate) fn forward<'a>(
-        &'a self,
+    pub(crate) fn forward(
+        &self,
         norm_hidden: &Tensor<T>,
         position_embedding: &Tensor<T>,
         decode_only_flag: bool,
-    ) -> (Tensor<T>, usize, &'a Tensor<T>, MatMulParams, String)
+    ) -> (Tensor<T>, usize, &Tensor<T>, MatMulParams, String)
     where
-        T: Send + 'static,
+        T: 'static,
     {
         // RoPE 全/滑窗注意力消费位置编码；GatedDeltaNet 线性注意力无位置编码，
         // 仅为统一签名而透传。

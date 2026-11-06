@@ -143,7 +143,7 @@ where
         decode_only_flag: bool,
     ) -> Tensor<T>
     where
-        T: Send + 'static,
+        T: 'static,
     {
         {
             //println!("hidden_states shape: {:?}", hidden_states.shape);
@@ -519,7 +519,7 @@ mod test {
     // `text_config.rs` 的快照锁的是**数据**（层清单、维度、专家数），本测试锁的是
     // 数据喂进判断平面后**每层的最终形态** `(是否线性注意力, 是否分配 q_norm,
     // 是否 zero_centered)`。三谓词即建图点实际使用的那三个：
-    // `layer_types[i].contains("linear")`（`AttentionEnum::new` 的行内 `if`）、
+    // `layer_types[i] == "linear_attention"`（`AttentionEnum::new` 的精确匹配 `match`）、
     // `use_qk_norm` 与 `zero_centered_norm`（本文件与 `decoder_layer.rs` 的 C 类表）。
     // P1/P2 声明行为等价，故此处的期望值就是重构前 profile/from_hf 给出的形态。
 
@@ -540,7 +540,7 @@ mod test {
         config
             .layer_types
             .iter()
-            .map(|t| (t.contains("linear"), has_qk_norm, zero_centered))
+            .map(|t| (t == "linear_attention", has_qk_norm, zero_centered))
             .collect()
     }
 

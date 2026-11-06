@@ -196,7 +196,7 @@ where
         scope_name: String,
     ) -> (Self, Self, Self, Option<Self>)
     where
-        T: Send + 'static,
+        T: 'static,
     {
         let (active_sequence_length, active_batch_size, hidden_size) = if self.shape.len() >= 3 {
             (self.shape[0], self.shape[1], self.shape[2])
